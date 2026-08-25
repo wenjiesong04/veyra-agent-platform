@@ -3,9 +3,9 @@ from __future__ import annotations
 import unittest
 
 from veyra_agent_platform.contracts.common import (
+    SCHEMA_VERSION,
     ContractValidationError,
     IdempotencyKey,
-    SCHEMA_VERSION,
     new_uuid7,
     require_uuid7,
 )

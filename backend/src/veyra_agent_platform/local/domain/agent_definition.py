@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource
-from veyra_agent_platform.contracts.common import ContractValidationError
 
 
 @dataclass(frozen=True)
@@ -43,10 +42,21 @@ def compile_agent_definition(
             "inputs": dict(blueprint.inputs),
             "outputs": dict(blueprint.outputs),
             "nodes": [node.to_dict() for node in blueprint.nodes],
-            "transitions": [transition.to_dict() for transition in blueprint.transitions],
-            "extensions": {"veyra": {"runtime_profile": runtime_profile, "secret_refs": secret_refs, "permissions": blueprint.requested_permissions.to_dict(), "verification": blueprint.verification.to_dict()}},
+            "transitions": [
+                transition.to_dict() for transition in blueprint.transitions
+            ],
+            "extensions": {
+                "veyra": {
+                    "runtime_profile": runtime_profile,
+                    "secret_refs": secret_refs,
+                    "permissions": blueprint.requested_permissions.to_dict(),
+                    "verification": blueprint.verification.to_dict(),
+                }
+            },
             "ui": blueprint.ui_suggestions,
             "lock": dict(lock),
         }
     )
-    return AgentDefinition(source, source.source_hash, source.behavior_hash, source.lock_hash)
+    return AgentDefinition(
+        source, source.source_hash, source.behavior_hash, source.lock_hash
+    )

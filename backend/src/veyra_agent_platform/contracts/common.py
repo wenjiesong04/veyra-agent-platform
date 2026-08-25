@@ -6,10 +6,11 @@ import re
 import secrets
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 SCHEMA_VERSION = "1.0"
 _UUID7_RE = re.compile(
@@ -28,7 +29,9 @@ def new_uuid7() -> str:
     timestamp_ms = int(time.time_ns() // 1_000_000)
     random_a = secrets.randbits(12)
     random_b = secrets.randbits(62)
-    value = (timestamp_ms << 80) | (0x7 << 76) | (random_a << 64) | (0b10 << 62) | random_b
+    value = (
+        (timestamp_ms << 80) | (0x7 << 76) | (random_a << 64) | (0b10 << 62) | random_b
+    )
     return str(uuid.UUID(int=value))
 
 
@@ -44,7 +47,7 @@ def require_node_id(value: Any, field: str) -> str:
 
 def freeze_json(value: Any) -> Any:
     """Defensively copy JSON-compatible data into immutable recursive values."""
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, str | bool | int):
         return value
     if isinstance(value, float):
         if not isfinite(value):
@@ -54,7 +57,7 @@ def freeze_json(value: Any) -> Any:
         if not all(isinstance(key, str) for key in value):
             raise ContractValidationError("JSON object keys must be strings")
         return MappingProxyType({key: freeze_json(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return tuple(freeze_json(item) for item in value)
     raise ContractValidationError("value must contain JSON data only")
 
@@ -75,7 +78,9 @@ def require_schema_version(data: Mapping[str, Any]) -> None:
         )
 
 
-def require_keys(data: Mapping[str, Any], *, allowed: set[str], required: set[str]) -> None:
+def require_keys(
+    data: Mapping[str, Any], *, allowed: set[str], required: set[str]
+) -> None:
     unknown = set(data) - allowed
     missing = required - set(data)
     if unknown:
@@ -84,7 +89,9 @@ def require_keys(data: Mapping[str, Any], *, allowed: set[str], required: set[st
         raise ContractValidationError(f"missing field(s): {', '.join(sorted(missing))}")
 
 
-def require_string(value: Any, field: str, *, pattern: re.Pattern[str] | None = None) -> str:
+def require_string(
+    value: Any, field: str, *, pattern: re.Pattern[str] | None = None
+) -> str:
     if not isinstance(value, str) or not value:
         raise ContractValidationError(f"{field} must be a non-empty string")
     if pattern is not None and not pattern.fullmatch(value):
@@ -145,7 +152,11 @@ class RevisionEtag:
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
             raise ContractValidationError("invalid revision schema_version")
-        if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 0
+        ):
             raise ContractValidationError("revision must be a non-negative integer")
         if not isinstance(self.etag, str) or not _ETAG_RE.fullmatch(self.etag):
             raise ContractValidationError("etag must be a quoted SHA-256 digest")

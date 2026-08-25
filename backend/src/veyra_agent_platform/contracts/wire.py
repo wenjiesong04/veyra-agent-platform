@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from math import isfinite
-import re
-from typing import Any, Mapping
+from typing import Any, cast
 
 from .common import (
     SCHEMA_VERSION,
@@ -148,32 +149,45 @@ def _payload(value: Any, field: str) -> Mapping[str, Any]:
     # Payloads are data-only; a nested callable is never a portable wire value.
     if not _json_data(item):
         raise ContractValidationError(f"{field} must contain JSON data only")
-    return freeze_json(item)
+    return cast(Mapping[str, Any], freeze_json(item))
 
 
-def _state_change_payload(value: Any, state_type: type[RunState] | type[NodeState]) -> Mapping[str, Any]:
+def _state_change_payload(
+    value: Any, state_type: type[RunState] | type[NodeState]
+) -> Mapping[str, Any]:
     item = require_mapping(value, "state-change payload")
-    require_keys(item, allowed={"previous_state", "state", "reason"}, required={"previous_state", "state"})
+    require_keys(
+        item,
+        allowed={"previous_state", "state", "reason"},
+        required={"previous_state", "state"},
+    )
     try:
         previous_state = state_type(item["previous_state"])
         state = state_type(item["state"])
     except (TypeError, ValueError) as exc:
-        raise ContractValidationError("state-change payload contains an unknown state") from exc
-    result: dict[str, str] = {"previous_state": previous_state.value, "state": state.value}
+        raise ContractValidationError(
+            "state-change payload contains an unknown state"
+        ) from exc
+    result: dict[str, str] = {
+        "previous_state": previous_state.value,
+        "state": state.value,
+    }
     if "reason" in item:
         result["reason"] = require_string(item["reason"], "reason")
-    return freeze_json(result)
+    return cast(Mapping[str, Any], freeze_json(result))
 
 
 def _json_data(value: Any) -> bool:
-    if value is None or isinstance(value, (str, int, bool)):
+    if value is None or isinstance(value, str | int | bool):
         return True
     if isinstance(value, float):
         return isfinite(value)
     if isinstance(value, list):
         return all(_json_data(item) for item in value)
     if isinstance(value, Mapping):
-        return all(isinstance(key, str) and _json_data(item) for key, item in value.items())
+        return all(
+            isinstance(key, str) and _json_data(item) for key, item in value.items()
+        )
     return False
 
 
@@ -189,9 +203,18 @@ class RunEvent:
     payload: Mapping[str, Any]
 
     @classmethod
-    def from_dict(cls, data: Any) -> "RunEvent":
+    def from_dict(cls, data: Any) -> RunEvent:
         item = require_mapping(data, "run event")
-        required = {"schema_version", "event_id", "run_id", "timestamp", "sequence", "kind", "node_id", "payload"}
+        required = {
+            "schema_version",
+            "event_id",
+            "run_id",
+            "timestamp",
+            "sequence",
+            "kind",
+            "node_id",
+            "payload",
+        }
         require_keys(item, allowed=required, required=required)
         require_schema_version(item)
         try:
@@ -200,7 +223,9 @@ class RunEvent:
             raise ContractValidationError("run event kind is unknown") from exc
         sequence = item["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
-            raise ContractValidationError("run event sequence must be a positive integer")
+            raise ContractValidationError(
+                "run event sequence must be a positive integer"
+            )
         node_id = item["node_id"]
         if EVENT_NODE_ID_REQUIRED[kind]:
             require_node_id(node_id, "node_id")
@@ -212,10 +237,28 @@ class RunEvent:
             payload = _state_change_payload(item["payload"], NodeState)
         else:
             payload = _payload(item["payload"], "payload")
-        return cls(SCHEMA_VERSION, require_uuid7(item["event_id"], "event_id"), require_uuid7(item["run_id"], "run_id"), _utc_timestamp(item["timestamp"]), sequence, kind, node_id, payload)
+        return cls(
+            SCHEMA_VERSION,
+            require_uuid7(item["event_id"], "event_id"),
+            require_uuid7(item["run_id"], "run_id"),
+            _utc_timestamp(item["timestamp"]),
+            sequence,
+            kind,
+            node_id,
+            payload,
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "event_id": self.event_id, "run_id": self.run_id, "timestamp": self.timestamp, "sequence": self.sequence, "kind": self.kind.value, "node_id": self.node_id, "payload": thaw_json(self.payload)}
+        return {
+            "schema_version": self.schema_version,
+            "event_id": self.event_id,
+            "run_id": self.run_id,
+            "timestamp": self.timestamp,
+            "sequence": self.sequence,
+            "kind": self.kind.value,
+            "node_id": self.node_id,
+            "payload": thaw_json(self.payload),
+        }
 
 
 @dataclass(frozen=True)
@@ -230,9 +273,18 @@ class RunCommand:
     payload: Mapping[str, Any]
 
     @classmethod
-    def from_dict(cls, data: Any) -> "RunCommand":
+    def from_dict(cls, data: Any) -> RunCommand:
         item = require_mapping(data, "run command")
-        required = {"schema_version", "command_id", "run_id", "idempotency_key", "kind", "node_id", "expected_revision", "payload"}
+        required = {
+            "schema_version",
+            "command_id",
+            "run_id",
+            "idempotency_key",
+            "kind",
+            "node_id",
+            "expected_revision",
+            "payload",
+        }
         require_keys(item, allowed=required, required=required)
         require_schema_version(item)
         try:
@@ -246,11 +298,31 @@ class RunCommand:
             raise ContractValidationError("run-level command must have null node_id")
         revision = item["expected_revision"]
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-            raise ContractValidationError("expected_revision must be a non-negative integer")
-        return cls(SCHEMA_VERSION, require_uuid7(item["command_id"], "command_id"), require_uuid7(item["run_id"], "run_id"), require_uuid7(item["idempotency_key"], "idempotency_key"), kind, node_id, revision, _payload(item["payload"], "payload"))
+            raise ContractValidationError(
+                "expected_revision must be a non-negative integer"
+            )
+        return cls(
+            SCHEMA_VERSION,
+            require_uuid7(item["command_id"], "command_id"),
+            require_uuid7(item["run_id"], "run_id"),
+            require_uuid7(item["idempotency_key"], "idempotency_key"),
+            kind,
+            node_id,
+            revision,
+            _payload(item["payload"], "payload"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "command_id": self.command_id, "run_id": self.run_id, "idempotency_key": self.idempotency_key, "kind": self.kind.value, "node_id": self.node_id, "expected_revision": self.expected_revision, "payload": thaw_json(self.payload)}
+        return {
+            "schema_version": self.schema_version,
+            "command_id": self.command_id,
+            "run_id": self.run_id,
+            "idempotency_key": self.idempotency_key,
+            "kind": self.kind.value,
+            "node_id": self.node_id,
+            "expected_revision": self.expected_revision,
+            "payload": thaw_json(self.payload),
+        }
 
 
 _UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
@@ -259,7 +331,9 @@ _UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6
 def _utc_timestamp(value: Any) -> str:
     timestamp = require_string(value, "timestamp")
     if not _UTC_TIMESTAMP_RE.fullmatch(timestamp):
-        raise ContractValidationError("timestamp must be canonical RFC 3339 UTC text with T and Z")
+        raise ContractValidationError(
+            "timestamp must be canonical RFC 3339 UTC text with T and Z"
+        )
     try:
         parsed = datetime.fromisoformat(f"{timestamp[:-1]}+00:00")
     except ValueError as exc:

@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .common import ContractValidationError
 
@@ -65,7 +66,9 @@ def normalized_source_bytes(source_text: str) -> bytes:
     """Normalize portable source text before its whole-file digest is computed."""
     if not isinstance(source_text, str):
         raise ContractValidationError("raw source must be text")
-    normalized = unicodedata.normalize("NFC", source_text.replace("\r\n", "\n").replace("\r", "\n"))
+    normalized = unicodedata.normalize(
+        "NFC", source_text.replace("\r\n", "\n").replace("\r", "\n")
+    )
     return normalized.encode("utf-8")
 
 
