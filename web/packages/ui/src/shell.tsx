@@ -27,7 +27,7 @@ function readCollapsed(storageKey: string): boolean {
 }
 
 function readMobileViewport(): boolean {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 920px)").matches;
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 960px)").matches;
 }
 
 const shellLabelKeys: Record<string, string> = {
@@ -40,17 +40,6 @@ const shellLabelKeys: Record<string, string> = {
   Identity: "identity",
   Explore: "explore",
   "Your space": "yourSpace",
-  Projects: "projects",
-  Runs: "runs",
-  Monitor: "monitor",
-  Components: "components",
-  Files: "files",
-  Community: "community",
-  Account: "account",
-  Settings: "settings",
-  Catalog: "catalog",
-  "Route not found": "routeNotFound",
-  "Version-aware catalog": "versionAwareCatalog",
   History: "historyPage",
   Discover: "discover",
   Preferences: "preferences",
@@ -65,6 +54,17 @@ const shellLabelKeys: Record<string, string> = {
   Component: "component",
   File: "file",
   "Entry detail": "entryDetail",
+  Projects: "projects",
+  Runs: "runs",
+  Monitor: "monitor",
+  Components: "components",
+  Files: "files",
+  Community: "community",
+  Account: "account",
+  Settings: "settings",
+  Catalog: "catalog",
+  "Route not found": "routeNotFound",
+  "Version-aware catalog": "versionAwareCatalog",
 };
 
 function shellText(value: string, translate: (key: string, fallback?: string) => string): string {
@@ -102,7 +102,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia("(max-width: 920px)");
+    const media = window.matchMedia("(max-width: 960px)");
     const onChange = (event: MediaQueryListEvent) => {
       setMobileViewport(event.matches);
       if (!event.matches) setMobileOpen(false);

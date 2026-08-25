@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Activity, FolderKanban, Gauge, Globe2, Settings2, UserRound } from "lucide-react";
 import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
-import { ApplicationShell, LinkButton, ThemeProvider } from "@veyra/ui";
+import { ApplicationShell, LinkButton, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
 import { AccountPage } from "./pages/account";
 import { AgentRunPage } from "./pages/agent-run";
@@ -82,6 +82,8 @@ function useHashRoute(): DesktopRouteLocation {
 }
 
 function PageContent({ route }: { route: DesktopRouteLocation }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
   if (route.kind === "projects") return <ProjectsPage />;
   if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
@@ -101,13 +103,15 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "community-version") return <CommunityPage owner={route.owner} slug={route.slug} versionId={route.versionId} />;
   if (route.kind === "account") return <AccountPage />;
   if (route.kind === "settings") return <SettingsPage />;
-  if (route.kind === "not-found" && route.path.startsWith("#/community")) return <NotFoundPage backHref={desktopRoutePaths.community} backLabel="Back to Community" />;
-  if (route.kind === "not-found" && route.path.startsWith("#/components")) return <NotFoundPage backHref={desktopRoutePaths.components} backLabel="Back to Components" />;
-  if (route.kind === "not-found" && route.path.startsWith("#/files")) return <NotFoundPage backHref={desktopRoutePaths.files} backLabel="Back to Files" />;
+  if (route.kind === "not-found" && route.path.startsWith("#/community")) return <NotFoundPage backHref={desktopRoutePaths.community} backLabel={zh ? "返回社区" : "Back to Community"} />;
+  if (route.kind === "not-found" && route.path.startsWith("#/components")) return <NotFoundPage backHref={desktopRoutePaths.components} backLabel={zh ? "返回组件库" : "Back to Components"} />;
+  if (route.kind === "not-found" && route.path.startsWith("#/files")) return <NotFoundPage backHref={desktopRoutePaths.files} backLabel={zh ? "返回文件" : "Back to Files"} />;
   return <NotFoundPage />;
 }
 
 function DesktopWorkspace() {
+  const { locale, t } = useLocale();
+  const zh = locale === "zh";
   const route = useHashRoute();
   const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run" ? route.projectId : undefined;
   const activeHref = route.kind === "projects" || route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
@@ -131,12 +135,12 @@ function DesktopWorkspace() {
 
   return (
     <ApplicationShell
-      brand={{ name: "Veyra", subtitle: "Agent Platform", mark: "V" }}
+      brand={{ name: "Veyra", subtitle: t("agentPlatform"), mark: "V" }}
       navigation={navigation}
       activeHref={activeHref}
       eyebrow={meta.eyebrow}
       title={meta.title}
-      headerActions={scopedProjectId ? <LinkButton href={projectRoutePaths.factory(scopedProjectId)} variant="primary">Create agent</LinkButton> : undefined}
+      headerActions={scopedProjectId ? <LinkButton href={projectRoutePaths.factory(scopedProjectId)} variant="primary">{zh ? "创建 Agent" : "Create agent"}</LinkButton> : undefined}
     >
       <PageContent route={route} />
     </ApplicationShell>
