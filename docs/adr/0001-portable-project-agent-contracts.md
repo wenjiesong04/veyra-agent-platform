@@ -32,8 +32,9 @@ Accepted — V1.
   Parsed contract maps/lists are recursively frozen; Tool node references must
   appear by exact version in the lock; event timestamps are UTC RFC 3339 `Z`.
 - Runtime wire contracts freeze the V1 RunState and NodeState vocabularies. An
-  explicit per-kind node-ID table keeps run lifecycle/input/artifact/checkpoint
-  events run-scoped, and node/tool/approval/verification events node-scoped;
+  explicit per-kind node-ID table keeps only run lifecycle events run-scoped,
+  while node/tool/approval/input/artifact/checkpoint/verification events are
+  node-scoped;
   controls use the matching explicit command table.
 
 ## Consequences

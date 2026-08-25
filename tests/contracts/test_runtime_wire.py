@@ -77,7 +77,7 @@ class RuntimeWireContractTests(unittest.TestCase):
 
     def test_v1_state_enums_are_complete_and_strict(self) -> None:
         self.assertEqual([state.value for state in RunState], ["created", "validating", "queued", "preparing", "running", "waiting_approval", "waiting_input", "waiting_external", "verifying", "verified", "unverified", "failed", "cancelling", "cancelled", "interrupted"])
-        self.assertEqual([state.value for state in NodeState], ["queued", "running", "waiting", "completed", "failed", "skipped", "cancelled", "verifying", "verified", "unverified"])
+        self.assertEqual([state.value for state in NodeState], ["queued", "running", "waiting_approval", "waiting_input", "waiting_external", "completed", "failed", "skipped", "cancelled", "verifying", "verified", "unverified"])
 
     def test_every_event_kind_has_an_explicit_node_id_classification(self) -> None:
         self.assertEqual(set(EVENT_NODE_ID_REQUIRED), set(RunEventKind))
@@ -106,3 +106,14 @@ class RuntimeWireContractTests(unittest.TestCase):
                 data["node_id"] = None if requires_node_id else "node_1"
                 with self.assertRaises(ContractValidationError):
                     RunCommand.from_dict(data)
+
+    def test_timestamp_requires_t_and_z_and_normalizes_fractional_seconds(self) -> None:
+        data = {
+            "schema_version": "1.0", "event_id": "01a03795-a5b0-7b1c-bad0-e07ac7dda22b",
+            "run_id": "01a03795-a5b0-72d3-8204-6f66a60073db", "timestamp": "2026-08-25 00:00:00Z", "sequence": 1,
+            "kind": "run.started", "node_id": None, "payload": {},
+        }
+        with self.assertRaises(ContractValidationError):
+            RunEvent.from_dict(data)
+        data["timestamp"] = "2026-08-25T00:00:00.120000Z"
+        self.assertEqual(RunEvent.from_dict(data).timestamp, "2026-08-25T00:00:00.12Z")

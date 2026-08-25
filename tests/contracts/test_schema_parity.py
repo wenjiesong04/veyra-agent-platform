@@ -8,7 +8,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS = ROOT / "contracts" / "schemas"
 
-from veyra_agent_platform.contracts.wire import NodeState, RunCommandKind, RunEventKind, RunState
+from veyra_agent_platform.contracts.wire import EVENT_NODE_ID_REQUIRED, NodeState, RunCommandKind, RunEventKind, RunState
 
 
 def visit(schema: Any) -> None:
@@ -85,4 +85,10 @@ class SchemaParityTests(unittest.TestCase):
         self.assertEqual(len(wire["$defs"]["run_event"]["allOf"]), 2)
         self.assertEqual(len(wire["$defs"]["run_command"]["allOf"]), 2)
         self.assertIn("timestamp", wire["$defs"]["run_event"]["required"])
+        self.assertEqual(wire["$defs"]["run_event"]["properties"]["timestamp"]["pattern"], "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$")
+        event_conditions = wire["$defs"]["run_event"]["allOf"]
+        schema_run_events = set(event_conditions[0]["if"]["properties"]["kind"]["enum"])
+        schema_node_events = set(event_conditions[1]["if"]["properties"]["kind"]["enum"])
+        self.assertEqual(schema_run_events, {kind.value for kind, required in EVENT_NODE_ID_REQUIRED.items() if not required})
+        self.assertEqual(schema_node_events, {kind.value for kind, required in EVENT_NODE_ID_REQUIRED.items() if required})
         self.assertEqual(project["properties"]["resource_policy"]["additionalProperties"], False)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from math import isfinite
+import re
 from typing import Any, Mapping
 
 from .common import (
@@ -85,7 +86,9 @@ class RunState(StrEnum):
 class NodeState(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
-    WAITING = "waiting"
+    WAITING_APPROVAL = "waiting_approval"
+    WAITING_INPUT = "waiting_input"
+    WAITING_EXTERNAL = "waiting_external"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -116,10 +119,10 @@ EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
     RunEventKind.TOOL_COMPLETED: True,
     RunEventKind.APPROVAL_REQUESTED: True,
     RunEventKind.APPROVAL_RESOLVED: True,
-    RunEventKind.INPUT_REQUESTED: False,
-    RunEventKind.INPUT_RESOLVED: False,
-    RunEventKind.ARTIFACT_CREATED: False,
-    RunEventKind.CHECKPOINT_CREATED: False,
+    RunEventKind.INPUT_REQUESTED: True,
+    RunEventKind.INPUT_RESOLVED: True,
+    RunEventKind.ARTIFACT_CREATED: True,
+    RunEventKind.CHECKPOINT_CREATED: True,
     RunEventKind.VERIFICATION_COMPLETED: True,
     RunEventKind.VERIFIER_RESULT: True,
 }
@@ -228,14 +231,20 @@ class RunCommand:
         return {"schema_version": self.schema_version, "command_id": self.command_id, "run_id": self.run_id, "idempotency_key": self.idempotency_key, "kind": self.kind.value, "node_id": self.node_id, "expected_revision": self.expected_revision, "payload": thaw_json(self.payload)}
 
 
+_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
+
+
 def _utc_timestamp(value: Any) -> str:
     timestamp = require_string(value, "timestamp")
-    if not timestamp.endswith("Z"):
-        raise ContractValidationError("timestamp must be an RFC 3339 UTC Z timestamp")
+    if not _UTC_TIMESTAMP_RE.fullmatch(timestamp):
+        raise ContractValidationError("timestamp must be canonical RFC 3339 UTC text with T and Z")
     try:
         parsed = datetime.fromisoformat(f"{timestamp[:-1]}+00:00")
     except ValueError as exc:
         raise ContractValidationError("timestamp must be RFC 3339") from exc
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ContractValidationError("timestamp must be timezone-aware UTC")
-    return timestamp
+    base = parsed.strftime("%Y-%m-%dT%H:%M:%S")
+    if parsed.microsecond == 0:
+        return f"{base}Z"
+    return f"{base}.{parsed.microsecond:06d}".rstrip("0") + "Z"
