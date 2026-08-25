@@ -10,8 +10,10 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "alembic==1.16.4",
     "aiosqlite==0.21.0",
+    "argon2-cffi==25.1.0",
     "cryptography==45.0.5",
     "fastapi==0.116.1",
+    "greenlet==3.5.5",
     "httpx==0.28.1",
     "jsonschema==4.26.0",
     "platformdirs==4.3.8",

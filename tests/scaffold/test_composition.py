@@ -36,14 +36,14 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
     }
     community_paths = {route.path for route in create_community_app().routes}
 
-    expected_shared_paths = {
+    shared_paths = {
         "/openapi.json",
         "/docs",
         "/docs/oauth2-redirect",
         "/redoc",
         "/api/v1/health",
     }
-    expected_local_paths = expected_shared_paths | {
+    expected_local_paths = shared_paths | {
         "/api/v1/projects",
         "/api/v1/projects/open",
         "/api/v1/projects/{project_id}",
@@ -55,7 +55,19 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/agents/{agent_id}/export",
     }
     assert local_paths == expected_local_paths
-    assert community_paths == expected_shared_paths
+    assert community_paths == shared_paths | {
+        "/api/v1/auth/registration-code",
+        "/api/v1/auth/register",
+        "/api/v1/auth/login",
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/password-reset/request",
+        "/api/v1/auth/password-reset/confirm",
+        "/api/v1/account/me",
+        "/api/v1/account/profile",
+        "/api/v1/account/sessions",
+        "/api/v1/account/sessions/{session_id}",
+    }
 
 
 def test_local_health_reports_identity_and_database_placeholder() -> None:
@@ -222,6 +234,10 @@ def test_global_environment_selects_community_production_mode(
         "VEYRA_COMMUNITY_DATABASE_URL",
         "postgresql+psycopg://db.example/app",
     )
+    monkeypatch.setenv(
+        "VEYRA_AUTH_HMAC_SECRET", "production-auth-hmac-secret-that-is-long-enough"
+    )
+    monkeypatch.setenv("VEYRA_COMMUNITY_ORIGIN", "https://community.veyra.example")
 
     settings = CommunitySettings()
 
@@ -242,6 +258,8 @@ def test_community_production_accepts_psycopg_postgresql_url(
         environment="production",
         build_sha="community-test-sha",
         database_url="postgresql+psycopg://db.example/app",
+        auth_hmac_secret="production-auth-hmac-secret-that-is-long-enough",
+        public_origin="https://community.veyra.example",
     )
 
     assert settings.mode == "production"
