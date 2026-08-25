@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from typing import Any, Mapping
 
 from .common import ContractValidationError
@@ -38,7 +39,8 @@ def behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "agentspec_version": source["agentspec_version"],
         "component_type": source["component_type"],
-        "id": source["id"],
+        "agent_id": source["agent_id"],
+        "slug": source["slug"],
         "inputs": source["inputs"],
         "outputs": source["outputs"],
         "nodes": source["nodes"],
@@ -61,9 +63,17 @@ def source_hash(source: Mapping[str, Any]) -> str:
     return sha256_digest(source_projection(source))
 
 
-def file_hash(source: Mapping[str, Any]) -> str:
-    """Design-document name for the whole-source digest."""
-    return source_hash(source)
+def normalized_source_bytes(source_text: str) -> bytes:
+    """Normalize portable source text before its whole-file digest is computed."""
+    if not isinstance(source_text, str):
+        raise ContractValidationError("raw source must be text")
+    normalized = unicodedata.normalize("NFC", source_text.replace("\r\n", "\n").replace("\r", "\n"))
+    return normalized.encode("utf-8")
+
+
+def file_hash(source_text: str) -> str:
+    """Digest normalized raw source bytes; distinct from canonical semantic hashes."""
+    return hashlib.sha256(normalized_source_bytes(source_text)).hexdigest()
 
 
 def behavior_hash(source: Mapping[str, Any]) -> str:

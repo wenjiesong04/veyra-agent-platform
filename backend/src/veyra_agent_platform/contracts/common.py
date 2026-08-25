@@ -7,6 +7,8 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from math import isfinite
+from types import MappingProxyType
 from typing import Any, Mapping
 
 SCHEMA_VERSION = "1.0"
@@ -14,6 +16,7 @@ _UUID7_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 _ETAG_RE = re.compile(r'^"[0-9a-f]{64}"$')
+NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
 class ContractValidationError(ValueError):
@@ -32,6 +35,36 @@ def new_uuid7() -> str:
 def require_uuid7(value: Any, field: str) -> str:
     if not isinstance(value, str) or not _UUID7_RE.fullmatch(value):
         raise ContractValidationError(f"{field} must be a lowercase UUIDv7 text ID")
+    return value
+
+
+def require_node_id(value: Any, field: str) -> str:
+    return require_string(value, field, pattern=NODE_ID_RE)
+
+
+def freeze_json(value: Any) -> Any:
+    """Defensively copy JSON-compatible data into immutable recursive values."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not isfinite(value):
+            raise ContractValidationError("JSON numbers must be finite")
+        return value
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ContractValidationError("JSON object keys must be strings")
+        return MappingProxyType({key: freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_json(item) for item in value)
+    raise ContractValidationError("value must contain JSON data only")
+
+
+def thaw_json(value: Any) -> Any:
+    """Return a fresh mutable JSON-compatible copy for serialization."""
+    if isinstance(value, Mapping):
+        return {key: thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [thaw_json(item) for item in value]
     return value
 
 

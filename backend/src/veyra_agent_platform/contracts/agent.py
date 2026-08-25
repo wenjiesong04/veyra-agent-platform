@@ -15,16 +15,18 @@ from .canonical import behavior_hash, lock_hash, source_hash
 from .common import (
     SCHEMA_VERSION,
     ContractValidationError,
+    NODE_ID_RE,
+    freeze_json,
     require_keys,
     require_list,
     require_mapping,
     require_schema_version,
     require_string,
     require_uuid7,
+    thaw_json,
 )
 
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-_NODE_ID = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]*@[0-9]+\.[0-9]+\.[0-9]+$")
 _HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 _SECRET_REF = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
@@ -145,7 +147,7 @@ class FlowNode:
         item = require_mapping(data, "node")
         fields = {"id", "component_type", "model_ref", "system_prompt", "uses", "expression", "mapping", "prompt", "checks", "output_name"}
         require_keys(item, allowed=fields, required={"id", "component_type"})
-        node_id = require_string(item["id"], "node.id", pattern=_NODE_ID)
+        node_id = require_string(item["id"], "node.id", pattern=NODE_ID_RE)
         try:
             component_type = ComponentType(item["component_type"])
         except (TypeError, ValueError) as exc:
@@ -179,7 +181,7 @@ class FlowNode:
             raw_mapping = require_mapping(item["mapping"], "node.mapping")
             if not raw_mapping or not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_mapping.items()):
                 raise ContractValidationError("node.mapping must be a non-empty string map")
-            mapping = dict(raw_mapping)
+            mapping = freeze_json(dict(raw_mapping))
         checks = _strict_str_list(item["checks"], "node.checks") if "checks" in present else None
         if checks == ():
             raise ContractValidationError("node.checks must not be empty")
@@ -201,7 +203,7 @@ class FlowNode:
         for key in ("model_ref", "system_prompt", "uses", "expression", "mapping", "prompt", "checks", "output_name"):
             value = getattr(self, key)
             if value is not None:
-                result[key] = list(value) if key == "checks" else value
+                result[key] = list(value) if key == "checks" else thaw_json(value)
         return result
 
 
@@ -220,9 +222,9 @@ class Transition:
         except (TypeError, ValueError) as exc:
             raise ContractValidationError("transition.port is unknown") from exc
         return cls(
-            from_node=require_string(item["from"], "transition.from", pattern=_NODE_ID),
+            from_node=require_string(item["from"], "transition.from", pattern=NODE_ID_RE),
             port=port,
-            to_node=require_string(item["to"], "transition.to", pattern=_NODE_ID),
+            to_node=require_string(item["to"], "transition.to", pattern=NODE_ID_RE),
         )
 
     def to_dict(self) -> dict[str, str]:
@@ -232,19 +234,21 @@ class Transition:
 @dataclass(frozen=True)
 class ProjectAgentDirectory:
     agent_id: str
+    slug: str
     path: str
 
     @classmethod
     def from_dict(cls, data: Any) -> "ProjectAgentDirectory":
         item = require_mapping(data, "project agent")
-        require_keys(item, allowed={"agent_id", "path"}, required={"agent_id", "path"})
+        require_keys(item, allowed={"agent_id", "slug", "path"}, required={"agent_id", "slug", "path"})
         path = require_string(item["path"], "project agent.path")
-        if path.startswith("/") or ".." in path.split("/") or not path.startswith("agents/"):
-            raise ContractValidationError("project agent.path must be a relative agents/ directory")
-        return cls(agent_id=require_string(item["agent_id"], "project agent.agent_id", pattern=_SLUG), path=path)
+        slug = require_string(item["slug"], "project agent.slug", pattern=_SLUG)
+        if "\\" in path or path != f"agents/{slug}":
+            raise ContractValidationError("project agent.path must be exactly agents/<slug>")
+        return cls(agent_id=require_uuid7(item["agent_id"], "project agent.agent_id"), slug=slug, path=path)
 
     def to_dict(self) -> dict[str, str]:
-        return {"agent_id": self.agent_id, "path": self.path}
+        return {"agent_id": self.agent_id, "slug": self.slug, "path": self.path}
 
 
 @dataclass(frozen=True)
@@ -254,21 +258,46 @@ class ProjectManifest:
     project_id: str
     name: str
     agents: tuple[ProjectAgentDirectory, ...]
+    default_agent_id: str
+    resource_policy: "ResourcePolicy"
 
     @classmethod
     def from_dict(cls, data: Any) -> "ProjectManifest":
         item = require_mapping(data, "project manifest")
-        require_keys(item, allowed={"schema_version", "project_version", "project_id", "name", "agents"}, required={"schema_version", "project_version", "project_id", "name", "agents"})
+        require_keys(item, allowed={"schema_version", "project_version", "project_id", "name", "agents", "default_agent_id", "resource_policy"}, required={"schema_version", "project_version", "project_id", "name", "agents", "default_agent_id", "resource_policy"})
         require_schema_version(item)
         if item["project_version"] != "1":
             raise ContractValidationError("project_version must be exactly '1'")
         agents = tuple(ProjectAgentDirectory.from_dict(value) for value in require_list(item["agents"], "agents"))
-        if not agents or len({agent.agent_id for agent in agents}) != len(agents) or len({agent.path for agent in agents}) != len(agents):
-            raise ContractValidationError("project agents must be non-empty with unique IDs and paths")
-        return cls(SCHEMA_VERSION, "1", require_uuid7(item["project_id"], "project_id"), require_string(item["name"], "name"), agents)
+        if not agents or len({agent.agent_id for agent in agents}) != len(agents) or len({agent.slug for agent in agents}) != len(agents) or len({agent.path for agent in agents}) != len(agents):
+            raise ContractValidationError("project agents must be non-empty with unique IDs, slugs, and paths")
+        default_agent_id = require_uuid7(item["default_agent_id"], "default_agent_id")
+        if default_agent_id not in {agent.agent_id for agent in agents}:
+            raise ContractValidationError("default_agent_id must identify a listed Project Agent")
+        return cls(SCHEMA_VERSION, "1", require_uuid7(item["project_id"], "project_id"), require_string(item["name"], "name"), agents, default_agent_id, ResourcePolicy.from_dict(item["resource_policy"]))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "project_version": self.project_version, "project_id": self.project_id, "name": self.name, "agents": [agent.to_dict() for agent in self.agents]}
+        return {"schema_version": self.schema_version, "project_version": self.project_version, "project_id": self.project_id, "name": self.name, "agents": [agent.to_dict() for agent in self.agents], "default_agent_id": self.default_agent_id, "resource_policy": self.resource_policy.to_dict()}
+
+
+@dataclass(frozen=True)
+class ResourcePolicy:
+    max_concurrent_runs: int
+    max_nodes_per_run: int
+    max_run_seconds: int
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ResourcePolicy":
+        item = require_mapping(data, "resource_policy")
+        required = {"max_concurrent_runs", "max_nodes_per_run", "max_run_seconds"}
+        require_keys(item, allowed=required, required=required)
+        values = {key: item[key] for key in required}
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in values.values()):
+            raise ContractValidationError("resource_policy limits must be positive integers")
+        return cls(**values)
+
+    def to_dict(self) -> dict[str, int]:
+        return {"max_concurrent_runs": self.max_concurrent_runs, "max_nodes_per_run": self.max_nodes_per_run, "max_run_seconds": self.max_run_seconds}
 
 
 @dataclass(frozen=True)
@@ -311,7 +340,7 @@ def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
     item = require_mapping(value, field)
     if not item or not all(isinstance(key, str) and _SLUG.fullmatch(key) and isinstance(item_value, str) and item_value for key, item_value in item.items()):
         raise ContractValidationError(f"{field} must be a non-empty map of slug names to non-empty types")
-    return dict(item)
+    return freeze_json(dict(item))
 
 
 def _ui_layout(value: Any) -> Mapping[str, Any]:
@@ -320,14 +349,14 @@ def _ui_layout(value: Any) -> Mapping[str, Any]:
     positions = require_mapping(item["positions"], "ui.positions")
     parsed: dict[str, dict[str, int]] = {}
     for node_id, point in positions.items():
-        require_string(node_id, "ui.positions node", pattern=_NODE_ID)
+        require_string(node_id, "ui.positions node", pattern=NODE_ID_RE)
         coordinates = require_mapping(point, "ui.positions coordinate")
         require_keys(coordinates, allowed={"x", "y"}, required={"x", "y"})
         x, y = coordinates["x"], coordinates["y"]
         if any(isinstance(number, bool) or not isinstance(number, int) for number in (x, y)):
             raise ContractValidationError("ui positions must have integer x and y")
         parsed[node_id] = {"x": x, "y": y}
-    return {"positions": parsed}
+    return freeze_json({"positions": parsed})
 
 
 @dataclass(frozen=True)
@@ -335,7 +364,8 @@ class AgentSource:
     schema_version: str
     agentspec_version: str
     component_type: str
-    id: str
+    agent_id: str
+    slug: str
     name: str
     description: str
     inputs: Mapping[str, str]
@@ -352,7 +382,7 @@ class AgentSource:
     @classmethod
     def from_dict(cls, data: Any) -> "AgentSource":
         item = require_mapping(data, "agent source")
-        allowed = {"schema_version", "agentspec_version", "component_type", "id", "name", "description", "inputs", "outputs", "nodes", "transitions", "extensions", "ui", "lock"}
+        allowed = {"schema_version", "agentspec_version", "component_type", "agent_id", "slug", "name", "description", "inputs", "outputs", "nodes", "transitions", "extensions", "ui", "lock"}
         require_keys(item, allowed=allowed, required=allowed)
         require_schema_version(item)
         if item["agentspec_version"] != "26.1" or item["component_type"] != "Flow":
@@ -369,7 +399,8 @@ class AgentSource:
             schema_version=SCHEMA_VERSION,
             agentspec_version="26.1",
             component_type="Flow",
-            id=require_string(item["id"], "id", pattern=_SLUG),
+            agent_id=require_uuid7(item["agent_id"], "agent_id"),
+            slug=require_string(item["slug"], "slug", pattern=_SLUG),
             name=require_string(item["name"], "name"),
             description=require_string(item["description"], "description"),
             inputs=_typed_fields(item["inputs"], "inputs"), outputs=_typed_fields(item["outputs"], "outputs"),
@@ -377,25 +408,23 @@ class AgentSource:
             runtime_profile=require_string(veyra["runtime_profile"], "runtime_profile"),
             secret_refs=_strict_str_list(veyra["secret_refs"], "secret_refs", pattern=_SECRET_REF),
             permissions=PermissionContract.from_dict(veyra["permissions"]), verification=VerifierContract.from_dict(veyra["verification"]),
-            ui=ui, lock=dict(lock),
+            ui=ui, lock=freeze_json(dict(lock)),
         )
         _validate_graph(source.nodes, source.transitions, source.verification)
         tool_references = {node.uses.rsplit("@", 1)[0] for node in source.nodes if node.uses}
         if not tool_references.issubset(set(source.permissions.tools)):
             raise ContractValidationError("every Tool node must be included in permissions.tools")
+        exact_tool_references = {node.uses for node in source.nodes if node.uses}
+        if not exact_tool_references.issubset(set(source.lock)):
+            raise ContractValidationError("every Tool node's exact versioned uses reference must be locked")
         return source
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "agentspec_version": self.agentspec_version, "component_type": self.component_type, "id": self.id, "name": self.name, "description": self.description, "inputs": dict(self.inputs), "outputs": dict(self.outputs), "nodes": [node.to_dict() for node in self.nodes], "transitions": [transition.to_dict() for transition in self.transitions], "extensions": {"veyra": {"runtime_profile": self.runtime_profile, "secret_refs": list(self.secret_refs), "permissions": self.permissions.to_dict(), "verification": self.verification.to_dict()}}, "ui": dict(self.ui), "lock": dict(self.lock)}
+        return {"schema_version": self.schema_version, "agentspec_version": self.agentspec_version, "component_type": self.component_type, "agent_id": self.agent_id, "slug": self.slug, "name": self.name, "description": self.description, "inputs": thaw_json(self.inputs), "outputs": thaw_json(self.outputs), "nodes": [node.to_dict() for node in self.nodes], "transitions": [transition.to_dict() for transition in self.transitions], "extensions": {"veyra": {"runtime_profile": self.runtime_profile, "secret_refs": list(self.secret_refs), "permissions": self.permissions.to_dict(), "verification": self.verification.to_dict()}}, "ui": thaw_json(self.ui), "lock": thaw_json(self.lock)}
 
     @property
     def source_hash(self) -> str:
         return source_hash(self.to_dict())
-
-    @property
-    def file_hash(self) -> str:
-        """Compatibility name for the complete portable-source hash."""
-        return self.source_hash
 
     @property
     def behavior_hash(self) -> str:
@@ -424,7 +453,7 @@ class AgentDraft:
         revision = item["revision"]
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
             raise ContractValidationError("draft revision must be a non-negative integer")
-        return cls(SCHEMA_VERSION, require_uuid7(item["draft_id"], "draft_id"), require_uuid7(item["project_id"], "project_id"), require_string(item["agent_id"], "agent_id", pattern=_SLUG), revision, AgentBlueprint.from_dict(item["blueprint"]))
+        return cls(SCHEMA_VERSION, require_uuid7(item["draft_id"], "draft_id"), require_uuid7(item["project_id"], "project_id"), require_uuid7(item["agent_id"], "agent_id"), revision, AgentBlueprint.from_dict(item["blueprint"]))
 
 
 def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, ...], verification: VerifierContract) -> None:
@@ -443,9 +472,10 @@ def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, 
         if node.component_type is ComponentType.VERIFIER and node.checks is not None
         for check in node.checks
     }
-    if not verifier_checks.issubset(set(verification.checks)):
-        raise ContractValidationError("Verifier node checks must be declared by verification")
+    if verifier_checks != set(verification.checks):
+        raise ContractValidationError("Verifier node checks must exactly implement declared verification checks")
     seen_edges: set[tuple[str, TransitionPort, str]] = set()
+    seen_ports: set[tuple[str, TransitionPort]] = set()
     outgoing: dict[str, list[Transition]] = {node.id: [] for node in nodes}
     for transition in transitions:
         if transition.from_node not in types or transition.to_node not in types:
@@ -455,10 +485,16 @@ def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, 
         edge = (transition.from_node, transition.port, transition.to_node)
         if edge in seen_edges:
             raise ContractValidationError("duplicate transition")
+        port_edge = (transition.from_node, transition.port)
+        if port_edge in seen_ports:
+            raise ContractValidationError("each transition port may have exactly one target")
         seen_edges.add(edge)
+        seen_ports.add(port_edge)
         outgoing[transition.from_node].append(transition)
-    if any(node.component_type is not ComponentType.OUTPUT and not outgoing[node.id] for node in nodes):
-        raise ContractValidationError("every non-Output node must have an outgoing transition")
+    for node in nodes:
+        actual_ports = {edge.port for edge in outgoing[node.id]}
+        if actual_ports != _ALLOWED_PORTS[node.component_type]:
+            raise ContractValidationError("component transitions must cover exactly its declared output ports")
     start = next(node.id for node in nodes if node.component_type is ComponentType.START)
     reached: set[str] = set()
     todo = [start]
@@ -470,3 +506,18 @@ def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, 
         todo.extend(edge.to_node for edge in outgoing[node_id])
     if set(types) != reached:
         raise ContractValidationError("every node must be reachable from Start")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in visiting:
+            raise ContractValidationError("Flow graph must be a DAG; Loop is not a V1 component")
+        if node_id in visited:
+            return
+        visiting.add(node_id)
+        for edge in outgoing[node_id]:
+            visit(edge.to_node)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    visit(start)
