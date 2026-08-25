@@ -150,10 +150,18 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
                 </button>
               </>
             ) : (
-              <a className="shell-account-menu-item" role="menuitem" href={account.accountHref} onClick={closeAndNavigate}>
-                <LogIn size={16} aria-hidden="true" />
-                <span>{t("signInOrRegister")}</span>
-              </a>
+              <>
+                <a className="shell-account-menu-item" role="menuitem" href={account.accountHref} onClick={closeAndNavigate}>
+                  <LogIn size={16} aria-hidden="true" />
+                  <span>{t("signInOrRegister")}</span>
+                </a>
+                {account.settingsHref ? (
+                  <a className="shell-account-menu-item" role="menuitem" href={account.settingsHref} onClick={closeAndNavigate}>
+                    <Settings2 size={16} aria-hidden="true" />
+                    <span>{t("settings")}</span>
+                  </a>
+                ) : null}
+              </>
             )}
           </div>
         </div>

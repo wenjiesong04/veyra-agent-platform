@@ -35,7 +35,7 @@ describe("desktop workspace", () => {
     expect(screen.queryByRole("link", { name: "Factory" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open account menu" }));
     expect(screen.getByRole("menuitem", { name: "Sign in or register" })).toHaveAttribute("href", "#/account");
-    expect(screen.queryByRole("menuitem", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "#/settings");
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
