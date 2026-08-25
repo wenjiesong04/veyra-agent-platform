@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from platformdirs import user_data_dir
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LocalEnvironmentMode = Literal["development", "test", "production", "release"]
 
 
 def _default_database_url() -> str:
@@ -22,7 +24,6 @@ class LocalSettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="VEYRA_LOCAL_",
-        env_file=".env",
         env_ignore_empty=True,
         populate_by_name=True,
         extra="ignore",
@@ -35,19 +36,21 @@ class LocalSettings(BaseSettings):
         "info"
     )
     database_url: str = Field(default_factory=_default_database_url)
+    mode: LocalEnvironmentMode = Field(
+        default="development",
+        validation_alias=AliasChoices(
+            "VEYRA_LOCAL_MODE",
+            "VEYRA_ENVIRONMENT",
+            "mode",
+        ),
+    )
     app_version: str = Field(
         default="0.1.0",
-        validation_alias=AliasChoices(
-            "VEYRA_APP_VERSION",
-            "VEYRA_LOCAL_APP_VERSION",
-        ),
+        validation_alias=AliasChoices("VEYRA_APP_VERSION", "app_version"),
     )
     build_sha: str = Field(
         default="unknown",
-        validation_alias=AliasChoices(
-            "VEYRA_BUILD_SHA",
-            "VEYRA_LOCAL_BUILD_SHA",
-        ),
+        validation_alias=AliasChoices("VEYRA_BUILD_SHA", "build_sha"),
     )
 
     @field_validator("host")
@@ -57,3 +60,23 @@ class LocalSettings(BaseSettings):
         if normalized not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("local service host must be 127.0.0.1, ::1, or localhost")
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_release_build_identity(self) -> Self:
+        if self.mode in {
+            "production",
+            "release",
+        } and self.build_sha.strip().lower() in {
+            "",
+            "unknown",
+        }:
+            raise ValueError(
+                "local production/release mode requires a concrete VEYRA_BUILD_SHA"
+            )
+        return self
+
+    @property
+    def environment(self) -> LocalEnvironmentMode:
+        """Expose the mode under the deployment-oriented name as well."""
+
+        return self.mode

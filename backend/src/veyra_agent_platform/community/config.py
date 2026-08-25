@@ -26,7 +26,6 @@ class CommunitySettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="VEYRA_COMMUNITY_",
-        env_file=".env",
         env_ignore_empty=True,
         populate_by_name=True,
         extra="ignore",
@@ -43,22 +42,17 @@ class CommunitySettings(BaseSettings):
         default="development",
         validation_alias=AliasChoices(
             "VEYRA_COMMUNITY_MODE",
-            "VEYRA_COMMUNITY_ENVIRONMENT",
+            "VEYRA_ENVIRONMENT",
+            "mode",
         ),
     )
     app_version: str = Field(
         default="0.1.0",
-        validation_alias=AliasChoices(
-            "VEYRA_APP_VERSION",
-            "VEYRA_COMMUNITY_APP_VERSION",
-        ),
+        validation_alias=AliasChoices("VEYRA_APP_VERSION", "app_version"),
     )
     build_sha: str = Field(
         default="unknown",
-        validation_alias=AliasChoices(
-            "VEYRA_BUILD_SHA",
-            "VEYRA_COMMUNITY_BUILD_SHA",
-        ),
+        validation_alias=AliasChoices("VEYRA_BUILD_SHA", "build_sha"),
     )
 
     @model_validator(mode="before")
@@ -76,12 +70,15 @@ class CommunitySettings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_production_database(self) -> Self:
-        if self.mode == "production" and not self.database_url.lower().startswith(
-            ("postgresql://", "postgresql+psycopg://")
-        ):
-            raise ValueError(
-                "production Community mode requires an explicit PostgreSQL URL"
-            )
+        if self.mode == "production":
+            if not self.database_url.lower().startswith("postgresql+psycopg://"):
+                raise ValueError(
+                    "production Community mode requires a postgresql+psycopg:// URL"
+                )
+            if self.build_sha.strip().lower() in {"", "unknown"}:
+                raise ValueError(
+                    "production Community mode requires a concrete VEYRA_BUILD_SHA"
+                )
         return self
 
     @property

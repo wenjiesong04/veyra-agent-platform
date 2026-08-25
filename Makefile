@@ -11,7 +11,7 @@ LOCK_OPTIONS := --generate-hashes --reuse-hashes --no-emit-index-url --no-emit-t
 
 .PHONY: install verify-environment format format-check lint typecheck test \
 	install-runtime lock-refresh dependency-check dependency-lock-check \
-	dependency-lock-refresh check \
+	dependency-lock-refresh linux-lock-check check \
 	migrate-local migrate-community migrations
 
 install: verify-environment
@@ -52,7 +52,10 @@ lock-refresh:
 
 dependency-lock-refresh: lock-refresh
 
-check: verify-environment dependency-check dependency-lock-check format-check lint typecheck test
+linux-lock-check:
+	$(PIP) install --dry-run --ignore-installed --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.11 --implementation cp --abi cp311 --require-hashes --requirement $(DEV_LOCK)
+
+check: verify-environment dependency-check dependency-lock-check linux-lock-check format-check lint typecheck test
 
 migrate-local:
 	$(ALEMBIC) -c backend/migrations/local/alembic.ini upgrade head

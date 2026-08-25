@@ -38,3 +38,7 @@ installs the local package with `--no-deps --no-build-isolation`. Runtime-only
 environments use `make install-runtime`. The runtime and dev lock files are the
 only committed dependency locks. Refresh both generated locks deterministically
 with `make lock-refresh`; the lock files pin versions and artifact hashes.
+
+The common locks intentionally exclude `keyring`; it is a macOS-only
+`desktop-macos` optional extra until the desktop boundary is implemented.
+`make linux-lock-check` validates the dev lock with Linux wheel resolution.

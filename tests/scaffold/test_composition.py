@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -95,6 +96,34 @@ def test_build_identity_can_come_from_process_environment(
     assert settings.build_sha == "env-test-sha"
 
 
+def test_settings_do_not_read_a_malicious_cwd_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text(
+        "VEYRA_LOCAL_HOST=0.0.0.0\n"
+        "VEYRA_ENVIRONMENT=production\n"
+        "VEYRA_COMMUNITY_DATABASE_URL=sqlite:///:memory:\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    for key in (
+        "VEYRA_LOCAL_HOST",
+        "VEYRA_ENVIRONMENT",
+        "VEYRA_COMMUNITY_DATABASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    local_settings = LocalSettings()
+    community_settings = CommunitySettings()
+
+    assert local_settings.host == "127.0.0.1"
+    assert local_settings.mode == "development"
+    assert community_settings.mode == "development"
+    assert community_settings.database_url.startswith("sqlite:///")
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.2", "example.test", "::"])
 def test_local_settings_reject_non_loopback_hosts(host: str) -> None:
     with pytest.raises(ValidationError, match="local service host"):
@@ -131,6 +160,20 @@ def test_local_cli_rejects_non_loopback_before_server_launch() -> None:
     assert "Uvicorn running" not in f"{result.stdout}\n{result.stderr}"
 
 
+@pytest.mark.parametrize("mode", ["production", "release"])
+def test_local_packaged_modes_require_concrete_build_sha(mode: str) -> None:
+    for build_sha in ("unknown", ""):
+        with pytest.raises(ValidationError, match="concrete VEYRA_BUILD_SHA"):
+            LocalSettings(mode=mode, build_sha=build_sha)
+
+    settings = LocalSettings(
+        mode=mode,
+        build_sha="release-test-sha",
+        database_url="sqlite:///:memory:",
+    )
+    assert settings.mode == mode
+
+
 def test_community_sqlite_is_allowed_only_outside_production() -> None:
     for mode in ("development", "test"):
         settings = CommunitySettings(
@@ -139,13 +182,49 @@ def test_community_sqlite_is_allowed_only_outside_production() -> None:
         )
         assert settings.environment == mode
 
-    with pytest.raises(ValidationError, match="explicit PostgreSQL URL"):
-        CommunitySettings(mode="production", database_url="sqlite:///:memory:")
+    with pytest.raises(ValidationError, match=r"postgresql\+psycopg://"):
+        CommunitySettings(
+            mode="production",
+            build_sha="community-test-sha",
+            database_url="sqlite:///:memory:",
+        )
+
+    with pytest.raises(ValidationError, match=r"postgresql\+psycopg://"):
+        CommunitySettings(
+            mode="production",
+            build_sha="community-test-sha",
+            database_url="postgresql://db.example/app",
+        )
 
 
-def test_community_production_accepts_psycopg_postgresql_url() -> None:
+def test_global_environment_selects_community_production_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VEYRA_ENVIRONMENT", "production")
+    monkeypatch.setenv("VEYRA_BUILD_SHA", "community-test-sha")
+    monkeypatch.setenv(
+        "VEYRA_COMMUNITY_DATABASE_URL",
+        "postgresql+psycopg://db.example/app",
+    )
+
+    settings = CommunitySettings()
+
+    assert settings.mode == "production"
+
+
+def test_community_production_accepts_psycopg_postgresql_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VEYRA_BUILD_SHA", raising=False)
+    with pytest.raises(ValidationError, match="concrete VEYRA_BUILD_SHA"):
+        CommunitySettings(
+            mode="production",
+            database_url="postgresql+psycopg://db.example/app",
+        )
+
     settings = CommunitySettings(
         environment="production",
+        build_sha="community-test-sha",
         database_url="postgresql+psycopg://db.example/app",
     )
 
