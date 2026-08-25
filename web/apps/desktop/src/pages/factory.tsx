@@ -1,13 +1,18 @@
 import { ArrowRight, Check, FileCode2, LockKeyhole, Sparkles } from "lucide-react";
+import { projectRoutePaths } from "@veyra/api-contracts";
 import { Button, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag } from "@veyra/ui";
 import { useState } from "react";
+import { NotFoundPage } from "./not-found";
+import { projects } from "./projects";
 
 const initialPrompt = "Create a review Agent that gathers evidence, pauses before publishing, and leaves a verifiable result.";
 
-export function FactoryPage() {
+export function FactoryPage({ projectId }: { projectId: string }) {
   const [prompt, setPrompt] = useState(initialPrompt);
   const [submitted, setSubmitted] = useState(false);
   const [generating, setGenerating] = useState(false);
+
+  if (!projects.some((project) => project.id === projectId)) return <NotFoundPage backHref="#/projects" backLabel="Back to Projects" />;
 
   const generateDraft = () => {
     if (!prompt.trim()) return;
@@ -35,7 +40,7 @@ export function FactoryPage() {
         </Panel>
 
         <Panel className="factory-result-panel">
-          <SectionHeading eyebrow="02 / Inspect" title="Draft outline" action={<LinkButton href="#/studio" icon={ArrowRight} size="sm">Open Studio</LinkButton>} />
+          <SectionHeading eyebrow="02 / Inspect" title="Draft outline" action={<LinkButton href={projectRoutePaths.agentDesign(projectId, "reviewer")} icon={ArrowRight} size="sm">Open Studio</LinkButton>} />
           {generating ? <LoadingState label="Compiling a typed draft…" /> : submitted ? <div className="draft-outline">
             <div className="draft-header"><span className="draft-icon"><FileCode2 size={18} /></span><span><strong>Review Agent</strong><small>Draft / behavior not yet committed</small></span><StatusBadge label="Schema valid" tone="good" /></div>
             <div className="draft-node"><span>01</span><div><strong>Collect evidence</strong><small>Read from the selected project scope.</small></div><Check size={16} /></div>

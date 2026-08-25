@@ -1,7 +1,7 @@
 export const desktopRoutePaths = {
   projects: "#/projects",
-  factory: "#/factory",
-  studio: "#/studio",
+  components: "#/components",
+  files: "#/files",
   runs: "#/runs",
   monitor: "#/monitor",
   community: "#/community",
@@ -10,6 +10,115 @@ export const desktopRoutePaths = {
 } as const;
 
 export type DesktopRoute = keyof typeof desktopRoutePaths;
+
+export const projectRoutePaths = {
+  project: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}`,
+  agents: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents`,
+  agent: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}`,
+  agentVersion: (projectId: string, agentId: string, versionId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/versions/${encodeRouteSegment(versionId)}`,
+  factory: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/factory`,
+  agentDesign: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/design`,
+  agentRun: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/run`,
+} as const;
+
+export const communityRoutePaths = {
+  catalog: "#/community",
+  entry: (owner: string, slug: string) => `#/community/${encodeRouteSegment(owner)}/${encodeRouteSegment(slug)}`,
+  version: (owner: string, slug: string, versionId: string) => `#/community/${encodeRouteSegment(owner)}/${encodeRouteSegment(slug)}/versions/${encodeRouteSegment(versionId)}`,
+} as const;
+
+export const libraryRoutePaths = {
+  component: (componentId: string) => `#/components/${encodeRouteSegment(componentId)}`,
+  file: (fileId: string) => `#/files/${encodeRouteSegment(fileId)}`,
+} as const;
+
+export type ProjectRouteKind = "project" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-run";
+export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
+
+export type DesktopRouteLocation =
+  | { kind: "projects"; path: string }
+  | { kind: DesktopRoute; path: string; }
+  | { kind: ProjectRouteKind; path: string; projectId: string; agentId?: string; versionId?: string }
+  | { kind: DesktopSubrouteKind; path: string; componentId?: string; fileId?: string; owner?: string; slug?: string; versionId?: string }
+  | { kind: "not-found"; path: string };
+
+function encodeRouteSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
+function decodeRouteSegment(value: string): string | null {
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.trim() ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRoutePath(input: string): string {
+  const withoutHash = input.replace(/^#\/?/, "");
+  const withoutQuery = withoutHash.split("?")[0] ?? "";
+  return withoutQuery.replace(/^\/+|\/+$/g, "");
+}
+
+export function parseDesktopRoute(input: string): DesktopRouteLocation {
+  const normalized = normalizeRoutePath(input);
+  const path = normalized ? `#/${normalized}` : "#/projects";
+  const parts = normalized.split("/").filter(Boolean);
+
+  if (parts.length === 0 || (parts.length === 1 && parts[0] === "projects")) {
+    return { kind: "projects", path };
+  }
+
+  const topLevel = parts[0] as DesktopRoute | undefined;
+  if (parts.length === 1 && topLevel && topLevel in desktopRoutePaths) {
+    return { kind: topLevel, path };
+  }
+
+  if (parts[0] === "components" && parts.length === 2) {
+    const componentId = decodeRouteSegment(parts[1]);
+    return componentId ? { kind: "component", path, componentId } : { kind: "not-found", path };
+  }
+  if (parts[0] === "files" && parts.length === 2) {
+    const fileId = decodeRouteSegment(parts[1]);
+    return fileId ? { kind: "file", path, fileId } : { kind: "not-found", path };
+  }
+  if (parts[0] === "components" || parts[0] === "files") return { kind: "not-found", path };
+
+  if (parts[0] === "community" && parts.length === 3) {
+    const owner = decodeRouteSegment(parts[1]);
+    const slug = decodeRouteSegment(parts[2]);
+    return owner && slug ? { kind: "community-entry", path, owner, slug } : { kind: "not-found", path };
+  }
+  if (parts[0] === "community" && parts.length === 5 && parts[3] === "versions") {
+    const owner = decodeRouteSegment(parts[1]);
+    const slug = decodeRouteSegment(parts[2]);
+    const versionId = decodeRouteSegment(parts[4]);
+    return owner && slug && versionId ? { kind: "community-version", path, owner, slug, versionId } : { kind: "not-found", path };
+  }
+  if (parts[0] === "community") return { kind: "not-found", path };
+
+  if (parts[0] !== "projects") return { kind: "not-found", path };
+  const projectId = parts[1] ? decodeRouteSegment(parts[1]) : null;
+  if (!projectId) return { kind: "not-found", path };
+  if (parts.length === 2) return { kind: "project", path, projectId };
+  if (parts.length === 3 && parts[2] === "factory") return { kind: "factory", path, projectId };
+
+  if (parts.length === 3 && parts[2] === "agents") return { kind: "project-agents", path, projectId };
+
+  const agentId = parts[3] ? decodeRouteSegment(parts[3]) : null;
+  if (parts.length === 4 && parts[2] === "agents" && agentId) return { kind: "agent-detail", path, projectId, agentId };
+  const versionId = parts[5] ? decodeRouteSegment(parts[5]) : null;
+  if (parts.length === 6 && parts[2] === "agents" && agentId && parts[4] === "versions" && versionId) return { kind: "agent-version", path, projectId, agentId, versionId };
+  if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "design") {
+    return { kind: "agent-design", path, projectId, agentId };
+  }
+  if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "run") {
+    return { kind: "agent-run", path, projectId, agentId };
+  }
+
+  return { kind: "not-found", path };
+}
 
 export type HealthTone = "good" | "warn" | "bad" | "neutral";
 export type ProjectState = "active" | "paused" | "ready";
@@ -28,6 +137,7 @@ export type ProjectSummary = {
 
 export type AgentSummary = {
   id: string;
+  projectId: string;
   name: string;
   description: string;
   state: AgentState;
@@ -56,14 +166,25 @@ export type MonitorSignal = {
 
 export type CommunityEntry = {
   id: string;
+  owner: string;
+  slug: string;
   name: string;
   author: string;
   summary: string;
   version: string;
+  versionId: string;
+  versions: Array<{ id: string; label: string; behaviorHash: string }>;
   category: string;
   installs: string;
   verified: boolean;
 };
+
+export const communityEntries: CommunityEntry[] = [
+  { id: "research-brief", owner: "north-star", slug: "research-brief", name: "Research Brief", author: "north-star", summary: "Turn a bounded question into a sourced, reviewable brief.", version: "v1.3", versionId: "v1.3", versions: [{ id: "v1.3", label: "v1.3", behaviorHash: "8f2a…c91d" }, { id: "v1.2", label: "v1.2", behaviorHash: "6ab1…440e" }], category: "Research", installs: "2.4k", verified: true },
+  { id: "issue-triage", owner: "signal-lab", slug: "issue-triage", name: "Issue Triage", author: "signal-lab", summary: "Sort incoming issues, request approval, and record a checked response.", version: "v0.9", versionId: "v0.9", versions: [{ id: "v0.9", label: "v0.9", behaviorHash: "2e11…79a0" }], category: "Operations", installs: "1.8k", verified: true },
+  { id: "release-notes", owner: "paper-plane", slug: "release-notes", name: "Release Notes", author: "paper-plane", summary: "Collect changes and prepare a release note with explicit review points.", version: "v0.6", versionId: "v0.6", versions: [{ id: "v0.6", label: "v0.6", behaviorHash: "f4c2…19d1" }], category: "Writing", installs: "940", verified: false },
+  { id: "meeting-synthesis", owner: "clear-room", slug: "meeting-synthesis", name: "Meeting Synthesis", author: "clear-room", summary: "Turn notes into decisions, open questions, and follow-up work.", version: "v0.4", versionId: "v0.4", versions: [{ id: "v0.4", label: "v0.4", behaviorHash: "b621…90af" }], category: "Communication", installs: "730", verified: true },
+];
 
 export type AccountSummary = {
   displayName: string;

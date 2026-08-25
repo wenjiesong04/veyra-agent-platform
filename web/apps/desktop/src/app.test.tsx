@@ -1,25 +1,151 @@
-import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseDesktopRoute, projectRoutePaths } from "@veyra/api-contracts";
 import { DesktopApp } from "./app";
 
+function setViewport(isMobile: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({ matches: isMobile && query.includes("max-width"), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+  });
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+  window.location.hash = "#/projects";
+  setViewport(false);
+});
+
 afterEach(() => {
+  cleanup();
   window.location.hash = "";
 });
 
 describe("desktop workspace", () => {
-  it("renders the Projects surface and V1 navigation", () => {
-    window.location.hash = "#/projects";
+  it("renders the Projects surface and complete top-level navigation", () => {
     render(<DesktopApp />);
     expect(screen.getByRole("heading", { name: "Make work repeatable." })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Factory" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Components" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Monitor" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Factory" })).not.toBeInTheDocument();
   });
 
-  it("renders the Factory route from the hash", () => {
-    window.location.hash = "#/factory";
+  it("uses Project-first links for project rows and Agent cards", () => {
     render(<DesktopApp />);
+    expect(screen.getByRole("link", { name: /Signal Review/ })).toHaveAttribute("href", projectRoutePaths.project("signal-review"));
+    expect(screen.getByRole("link", { name: /Review Companion/ })).toHaveAttribute("href", projectRoutePaths.agentDesign("signal-review", "reviewer"));
+  });
+
+  it("renders nested Project, Factory, Design, Run, list, detail, and version routes", () => {
+    window.location.hash = projectRoutePaths.project("signal-review");
+    const { unmount } = render(<DesktopApp />);
+    expect(screen.getByRole("heading", { name: "Signal Review" })).toBeInTheDocument();
+    unmount();
+
+    window.location.hash = projectRoutePaths.factory("signal-review");
+    const factory = render(<DesktopApp />);
     expect(screen.getByRole("heading", { name: "Give the Factory a job to shape." })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate draft" })).toBeInTheDocument();
+    factory.unmount();
+
+    window.location.hash = projectRoutePaths.agentDesign("signal-review", "reviewer");
+    const design = render(<DesktopApp />);
+    expect(screen.getByRole("heading", { name: "Review Companion" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Run" })).toHaveAttribute("href", projectRoutePaths.agentRun("signal-review", "reviewer"));
+    design.unmount();
+
+    window.location.hash = projectRoutePaths.agent("signal-review", "reviewer");
+    const detail = render(<DesktopApp />);
+    expect(screen.getByRole("heading", { name: "Review Companion" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open version detail" })).toHaveAttribute("href", projectRoutePaths.agentVersion("signal-review", "reviewer", "v0.4"));
+    detail.unmount();
+
+    window.location.hash = projectRoutePaths.agentVersion("signal-review", "reviewer", "v0.4");
+    const version = render(<DesktopApp />);
+    expect(screen.getByRole("heading", { name: /Review Companion v0.4/ })).toBeInTheDocument();
+    version.unmount();
+
+    window.location.hash = projectRoutePaths.agentRun("signal-review", "reviewer");
+    render(<DesktopApp />);
+    expect(screen.getByRole("heading", { name: "Review Companion" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ready to run" })).toBeInTheDocument();
+  });
+
+  it("renders explicit NotFound for unknown and swallowed subpaths", () => {
+    window.location.hash = "#/community/unknown/path";
+    render(<DesktopApp />);
+    expect(screen.getByText("That workspace route is not available.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Community" })).toBeInTheDocument();
+  });
+
+  it("persists light/dark/system theme choices", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("veyra.ui.theme", "dark");
+    window.location.hash = "#/settings";
+    render(<DesktopApp />);
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    await waitFor(() => expect(window.localStorage.getItem("veyra.ui.theme")).toBe("system"));
+    expect(document.documentElement.dataset.theme).toBe("system");
+  });
+
+  it("exposes collapsed navigation names and expanded state", async () => {
+    const user = userEvent.setup();
+    render(<DesktopApp />);
+    const collapse = screen.getByRole("button", { name: "Collapse sidebar" });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+    expect(collapse).toHaveAttribute("aria-controls", "primary-navigation");
+    await user.click(collapse);
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("title", "Projects");
+  });
+
+  it("closes the mobile sidebar with Escape and restores focus", async () => {
+    const user = userEvent.setup();
+    setViewport(true);
+    render(<DesktopApp />);
+    const menu = screen.getByRole("button", { name: "Open navigation" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(menu).toHaveAttribute("aria-controls", "primary-navigation");
+    expect(screen.getByRole("complementary", { hidden: true })).toHaveAttribute("aria-hidden", "true");
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("complementary", { hidden: true })).not.toHaveAttribute("aria-hidden");
+    await user.keyboard("{Escape}");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("complementary", { hidden: true })).toHaveAttribute("aria-hidden", "true");
+    expect(menu).toHaveFocus();
+  });
+
+  it("renders without making API requests", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("API unavailable"));
+    render(<DesktopApp />);
+    expect(screen.getByRole("heading", { name: "Make work repeatable." })).toBeInTheDocument();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+});
+
+describe("desktop route parser", () => {
+  it("covers the typed route matrix without redirecting unknown paths", () => {
+    expect(parseDesktopRoute("#/projects").kind).toBe("projects");
+    expect(parseDesktopRoute(projectRoutePaths.project("p")).kind).toBe("project");
+    expect(parseDesktopRoute(projectRoutePaths.agents("p")).kind).toBe("project-agents");
+    expect(parseDesktopRoute(projectRoutePaths.agent("p", "a")).kind).toBe("agent-detail");
+    expect(parseDesktopRoute(projectRoutePaths.agentVersion("p", "a", "v1")).kind).toBe("agent-version");
+    expect(parseDesktopRoute(projectRoutePaths.factory("p")).kind).toBe("factory");
+    expect(parseDesktopRoute(projectRoutePaths.agentDesign("p", "a")).kind).toBe("agent-design");
+    expect(parseDesktopRoute(projectRoutePaths.agentRun("p", "a")).kind).toBe("agent-run");
+    expect(parseDesktopRoute("#/components").kind).toBe("components");
+    expect(parseDesktopRoute("#/components/c").kind).toBe("component");
+    expect(parseDesktopRoute("#/files").kind).toBe("files");
+    expect(parseDesktopRoute("#/files/f").kind).toBe("file");
+    expect(parseDesktopRoute("#/community").kind).toBe("community");
+    expect(parseDesktopRoute("#/community/o/s").kind).toBe("community-entry");
+    expect(parseDesktopRoute("#/community/o/s/versions/v1").kind).toBe("community-version");
+    expect(parseDesktopRoute("#/community/o/s/unknown/v1").kind).toBe("not-found");
+    expect(parseDesktopRoute("#/nowhere").kind).toBe("not-found");
   });
 });

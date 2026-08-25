@@ -1,0 +1,45 @@
+.run-list {
+  display: grid;
+  gap: 4px;
+}
+
+.run-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 11px 10px;
+  color: var(--ink);
+  text-decoration: none;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.run-row:hover,
+.run-row.selected {
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+
+.run-row em {
+  gap: 3px;
+}
+
+.run-detail-header {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 540px) {
+  .run-row {
+    align-items: flex-start;
+  }
+
+  .run-row > .ui-status {
+    display: none;
+  }
+}

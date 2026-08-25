@@ -1,6 +1,9 @@
 import { Check, CircleHelp, Code2, Eye, GitBranch, LayoutPanelTop, Play, Save, ShieldCheck, SlidersHorizontal, SquareStack } from "lucide-react";
+import { projectRoutePaths } from "@veyra/api-contracts";
 import { useState } from "react";
 import { Button, LinkButton, Panel, SectionHeading, StatusBadge, Tag } from "@veyra/ui";
+import { NotFoundPage } from "./not-found";
+import { agents, projects } from "./projects";
 
 type StudioView = "canvas" | "form" | "source";
 
@@ -12,16 +15,19 @@ const nodes = [
   { id: "verify", label: "Verify result", detail: "Independent check", tone: "neutral" as const },
 ];
 
-export function StudioPage({ agentId }: { agentId?: string }) {
+export function StudioPage({ projectId, agentId }: { projectId: string; agentId: string }) {
   const [view, setView] = useState<StudioView>("canvas");
   const [saved, setSaved] = useState(false);
-  const title = agentId ? "Review Agent" : "Untitled Agent";
+  const project = projects.find((item) => item.id === projectId);
+  const agent = agents.find((item) => item.id === agentId && item.projectId === projectId);
+  if (!project || !agent) return <NotFoundPage backHref={project ? projectRoutePaths.project(project.id) : "#/projects"} backLabel="Back to Project" />;
+  const title = agent.name;
 
   return (
     <div className="page-stack">
       <div className="page-intro studio-intro">
         <div><span className="ui-eyebrow">Agent definition</span><h2>{title}</h2><p>Form, Canvas, and Source are three views of one normalized definition.</p></div>
-        <div className="intro-actions"><StatusBadge label={saved ? "Saved version" : "Draft changes"} tone={saved ? "good" : "warn"} /><Button icon={Save} variant="primary" onClick={() => setSaved(true)}>Save version</Button><Button icon={Play}>Run</Button></div>
+        <div className="intro-actions"><StatusBadge label={saved ? "Saved version" : "Draft changes"} tone={saved ? "good" : "warn"} /><Button icon={Save} variant="primary" onClick={() => setSaved(true)}>Save version</Button><LinkButton href={projectRoutePaths.agentRun(projectId, agentId)} icon={Play}>Run</LinkButton></div>
       </div>
 
       <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label="Studio view">{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{item[0].toUpperCase() + item.slice(1)}</button>)}</div><span className="toolbar-meta"><GitBranch size={14} /> behavior hash <strong>8f2a…c91d</strong></span></div>

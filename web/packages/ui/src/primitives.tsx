@@ -1,4 +1,4 @@
-import type { AnchorHTMLAttributes, ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
+import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
@@ -34,13 +34,9 @@ export function LinkButton({ icon: Icon, variant = "secondary", size = "md", cla
   );
 }
 
-export function IconButton({ icon: Icon, label, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label: string }) {
-  return (
-    <button className={`ui-icon-button ${className}`.trim()} type="button" aria-label={label} {...props}>
-      <Icon size={18} aria-hidden="true" />
-    </button>
-  );
-}
+export const IconButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label: string }>(function IconButton({ icon: Icon, label, className = "", ...props }, ref) {
+  return <button ref={ref} className={`ui-icon-button ${className}`.trim()} type="button" aria-label={label} {...props}><Icon size={18} aria-hidden="true" /></button>;
+});
 
 export function Panel({ children, className = "", ...props }: HTMLAttributes<HTMLElement>) {
   return <section className={`ui-panel ${className}`.trim()} {...props}>{children}</section>;

@@ -1,5 +1,5 @@
 import { Menu, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IconButton } from "./primitives";
 import type { Brand, NavigationGroup } from "./types";
 
@@ -23,9 +23,16 @@ function readCollapsed(storageKey: string): boolean {
   }
 }
 
+function readMobileViewport(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 920px)").matches;
+}
+
 export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, headerActions, children, footer, storageKey = "veyra.ui.sidebar-collapsed" }: ApplicationShellProps) {
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileViewport, setMobileViewport] = useState(readMobileViewport);
+  const mobileMenuRef = useRef<HTMLButtonElement>(null);
+  const sidebarCloseRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     try {
@@ -38,15 +45,40 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   useEffect(() => {
     if (!mobileOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMobileOpen(false);
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+        window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [mobileOpen]);
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 920px)");
+    const onChange = (event: MediaQueryListEvent) => {
+      setMobileViewport(event.matches);
+      if (!event.matches) setMobileOpen(false);
+    };
+    setMobileViewport(media.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  const openMobile = () => {
+    setMobileOpen(true);
+    window.requestAnimationFrame(() => sidebarCloseRef.current?.focus());
+  };
+
+  const closeMobile = () => {
+    setMobileOpen(false);
+    window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
+  };
+
   return (
     <div className={`app-shell ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-mobile-open" : ""}`}>
-      <aside className="app-sidebar" aria-label={`${brand.name} navigation`}>
+      <aside id="primary-navigation" className="app-sidebar" aria-label={`${brand.name} navigation`} aria-hidden={mobileViewport && !mobileOpen ? true : undefined} inert={mobileViewport && !mobileOpen ? true : undefined}>
         <div className="sidebar-header">
           <a className="brand" href={navigation[0]?.items[0]?.href ?? "#/"} onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden="true">{brand.mark ?? "V"}</span>
@@ -56,9 +88,11 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
             className="sidebar-toggle"
             icon={collapsed ? PanelLeftOpen : PanelLeftClose}
             label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            aria-controls="primary-navigation"
             onClick={() => setCollapsed((value) => !value)}
           />
-          <IconButton className="sidebar-close" icon={X} label="Close navigation" onClick={() => setMobileOpen(false)} />
+          <IconButton ref={sidebarCloseRef} className="sidebar-close" icon={X} label="Close navigation" aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={closeMobile} />
         </div>
 
         <div className="sidebar-context">
@@ -73,7 +107,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
               {group.items.map((item) => {
                 const Icon = item.icon;
                 const active = item.href === activeHref;
-                return <a className={active ? "active" : ""} href={item.href} aria-current={active ? "page" : undefined} key={item.href} onClick={() => setMobileOpen(false)}><Icon size={18} aria-hidden="true" /><span>{item.label}</span></a>;
+                return <a className={active ? "active" : ""} href={item.href} aria-label={item.label} title={item.label} aria-current={active ? "page" : undefined} key={item.href} onClick={closeMobile}><Icon size={18} aria-hidden="true" /><span>{item.label}</span></a>;
               })}
             </div>
           ))}
@@ -86,11 +120,11 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
         </div>
       </aside>
 
-      {mobileOpen ? <button className="sidebar-backdrop" type="button" aria-label="Close navigation" onClick={() => setMobileOpen(false)} /> : null}
+      {mobileOpen ? <button className="sidebar-backdrop" type="button" aria-label="Close navigation" aria-controls="primary-navigation" onClick={closeMobile} /> : null}
 
       <div className="app-main">
         <header className="app-header">
-          <IconButton className="mobile-menu" icon={Menu} label="Open navigation" onClick={() => setMobileOpen(true)} />
+          <IconButton ref={mobileMenuRef} className="mobile-menu" icon={Menu} label="Open navigation" aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={openMobile} />
           <div className="header-copy"><span className="ui-eyebrow">{eyebrow}</span><h1>{title}</h1></div>
           <div className="header-actions">{headerActions}</div>
         </header>

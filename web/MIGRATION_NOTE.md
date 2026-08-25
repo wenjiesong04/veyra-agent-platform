@@ -11,3 +11,5 @@ The new workspace rewrites the selected visual behavior into new package boundar
 No source file was copied verbatim. Product-domain pages, API clients, proxies, browser identity, old selectors, and bundled runtime output were intentionally excluded. Desktop and Community consume only the new shared UI package and typed contracts.
 
 Validation for this slice is executable through the root `web/` scripts: strict typecheck, Vitest/React Testing Library, and separate production builds for both applications.
+
+TODO for the next Studio slice: connect the reserved React Query client, Zustand transient canvas state, and graph editor dependency to real versioned contracts; this slice intentionally adds no mock integrations.

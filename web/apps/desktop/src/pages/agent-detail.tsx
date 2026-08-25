@@ -1,0 +1,11 @@
+import { ArrowLeft, Code2, Play, Wrench } from "lucide-react";
+import { projectRoutePaths } from "@veyra/api-contracts";
+import { LinkButton, Panel, SectionHeading, StatusBadge, Tag } from "@veyra/ui";
+import { agents, projects } from "./projects";
+
+export function AgentDetailPage({ projectId, agentId }: { projectId: string; agentId: string }) {
+  const project = projects.find((item) => item.id === projectId);
+  const agent = agents.find((item) => item.id === agentId && item.projectId === projectId);
+  if (!project || !agent) return <div className="project-missing"><StatusBadge label="Agent not found" tone="bad" /><p>The requested Agent does not belong to this Project.</p><LinkButton href={project ? projectRoutePaths.project(project.id) : "#/projects"} icon={ArrowLeft} variant="primary">Back to Project</LinkButton></div>;
+  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">Agent / {project.name}</span><h2>{agent.name}</h2><p>{agent.description}</p></div><div className="intro-actions"><LinkButton href={projectRoutePaths.agents(project.id)} icon={ArrowLeft} variant="ghost">Agent list</LinkButton><LinkButton href={projectRoutePaths.agentDesign(project.id, agent.id)} icon={Wrench} variant="primary">Open Studio</LinkButton><LinkButton href={projectRoutePaths.agentRun(project.id, agent.id)} icon={Play}>Run</LinkButton></div></div><div className="content-grid two-thirds"><Panel><SectionHeading eyebrow="Current version" title={agent.version} detail="Committed behavior remains immutable." /><div className="settings-facts"><div><span>State</span><StatusBadge label={agent.state} tone={agent.state === "ready" ? "good" : agent.state === "running" ? "warn" : "neutral"} /></div><div><span>Components</span><strong>{agent.componentCount}</strong></div><div><span>Last run</span><strong>{agent.lastRun}</strong></div><div><span>Definition</span><Tag tone="good">Inspectable</Tag></div></div></Panel><Panel><SectionHeading eyebrow="Source views" title="Round-trip surface" /><div className="account-note"><Code2 size={15} /><span>Form, Canvas, and Source edit one normalized Agent definition.</span></div><LinkButton href={projectRoutePaths.agentVersion(project.id, agent.id, agent.version)} size="sm">Open version detail</LinkButton></Panel></div></div>;
+}
