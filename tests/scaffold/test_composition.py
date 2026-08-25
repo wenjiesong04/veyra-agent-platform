@@ -27,19 +27,29 @@ def test_local_and_community_have_distinct_app_factories() -> None:
     assert community_app.state.settings.service_name == "community"
 
 
-def test_each_app_exposes_only_the_versioned_scaffold_health_route() -> None:
+def test_each_app_exposes_its_versioned_routes() -> None:
     local_paths = {route.path for route in create_local_app().routes}
     community_paths = {route.path for route in create_community_app().routes}
 
-    expected_paths = {
+    expected_shared_paths = {
         "/openapi.json",
         "/docs",
         "/docs/oauth2-redirect",
         "/redoc",
         "/api/v1/health",
     }
-    assert local_paths == expected_paths
-    assert community_paths == expected_paths
+    expected_local_paths = expected_shared_paths | {
+        "/api/v1/projects",
+        "/api/v1/projects/open",
+        "/api/v1/projects/{project_id}",
+        "/api/v1/projects/{project_id}/agents",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/draft",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/validate",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/commit",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/export",
+    }
+    assert local_paths == expected_local_paths
+    assert community_paths == expected_shared_paths
 
 
 def test_local_health_reports_identity_and_database_placeholder() -> None:
