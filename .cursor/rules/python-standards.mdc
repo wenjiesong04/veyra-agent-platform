@@ -1,0 +1,15 @@
+---
+description: Python service and contract rules
+globs: "backend/**/*.py"
+alwaysApply: false
+---
+
+# Python standards
+
+- Use Python 3.11 and fully typed Pydantic models at every external boundary.
+- Routers validate and delegate; domain services own behavior; repositories own SQL.
+- Use explicit transactions, revision checks, idempotency keys, and typed errors.
+- Never log credentials, verification codes, passwords, tokens, or raw model reasoning.
+- Use timezone-aware UTC values and stable UUIDv7 text identifiers.
+- Add unit, contract, integration, and adversarial tests beside every new behavior.
+

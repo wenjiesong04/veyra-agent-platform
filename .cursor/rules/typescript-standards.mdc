@@ -1,0 +1,15 @@
+---
+description: React and TypeScript feature boundaries
+globs: "web/**/*.ts,web/**/*.tsx"
+alwaysApply: false
+---
+
+# TypeScript standards
+
+- Keep TypeScript strict and derive API types from versioned contracts.
+- Put product behavior under one feature directory; shared UI must be domain-neutral.
+- Server state uses query clients; transient canvas state stays local to the feature.
+- Never trust localStorage as account identity or product truth.
+- Handle loading, error, offline, keyboard, responsive, and reduced-motion states.
+- Add component tests and an end-to-end scenario for every user-visible workflow.
+

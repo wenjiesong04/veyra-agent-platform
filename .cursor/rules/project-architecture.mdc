@@ -1,0 +1,16 @@
+---
+description: Enforce Veyra module ownership and evidence rules
+alwaysApply: true
+---
+
+# Project architecture
+
+- Read `docs/PROJECT_DESIGN.md` before implementation.
+- Keep local desktop and public Community services in separate modules and processes.
+- Treat Project directories and Agent source files as user-owned source truth.
+- Keep secrets, runs, events, caches, and account tokens outside Project directories.
+- Do not introduce generic catch-all modules or cross-layer database access.
+- Do not copy runtime state or imports from the legacy repository.
+- Preserve unrelated work and stay inside the assigned directory ownership.
+- Finish changes with focused tests and report the exact commit SHA.
+

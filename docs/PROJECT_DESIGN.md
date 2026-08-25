@@ -1,0 +1,1408 @@
+# Veyra Agent Platform — Canonical Development Design
+
+> Status: **ONLY CURRENT PRODUCT AND ENGINEERING AUTHORITY**
+> Revision: 1.1
+> Date: 2026-08-25
+> Repository: `/Users/spectre/PycharmProjects/veyra-agent-platform`
+> Development branch: `codex/agent-platform`
+> Legacy source: `/Users/spectre/PycharmProjects/veyra @ 1ffb4cdd45c798556390c20e53fc2d265cd56471`
+> Implementation status: greenfield repository bootstrap; product features are not implemented yet
+
+This document starts from a new, independent project. It does not assume that the old Veyra repository will be cleaned, merged, or used as a runtime dependency. The old repository is read-only migration evidence. Every extracted behavior must be re-namespaced, simplified, tested, and recorded in this document or a later migration ledger.
+
+---
+
+## 0. Executive Decision
+
+Veyra Agent Platform will be a local-first desktop product with six connected surfaces:
+
+1. **Veyra Studio** — generate or manually design an Agent using Form, Canvas, and Source views.
+2. **Veyra Runtime** — run an Agent locally with tools, state, approvals, checkpoints, cancellation, and verification.
+3. **Veyra Orchestrator** — a deterministic scheduler for tasks, dependencies, isolated workspaces, retries, and multiple Agent runs.
+4. **Veyra Monitor** — live workflow visualization, run timelines, evidence, failures, and human controls.
+5. **Veyra Library** — manage Agent files, Component files, packages, versions, imports, exports, and artifacts.
+6. **Veyra Community** — required V1 accounts and a remote registry for publishing, downloading, Forking, starring, and reviewing Agent versions and templates.
+
+Veyra's own Factory Agent will use **Kimi K3** by default. Generated Agents remain provider-neutral and may use Kimi K3 or another configured model.
+
+Core product loop:
+
+```text
+Describe requirement
+→ Kimi K3 generates typed AgentBlueprint Draft
+→ server compiles Agent Definition
+→ user edits Form / Canvas / Source
+→ validate schema, graph, components, permissions, secrets and verifier
+→ save immutable version
+→ run locally
+→ Run Canvas shows every node and event
+→ user can stop / approve / reject / resume
+→ verifier establishes result status
+→ export, Fork or publish a version
+```
+
+Product promise:
+
+> **Describe it. Design it. Run it. Share it.**
+
+Chinese promise:
+
+> **描述你的需求，得到一个真正属于你的 Agent；看见它如何工作，并把可靠版本分享给别人。**
+
+---
+
+## 1. Confirmed Development Environment
+
+### 1.1 Legacy environment snapshot
+
+The old Veyra project currently uses:
+
+| Layer | Confirmed environment |
+|---|---|
+| OS | macOS 26.6.2, Apple Silicon arm64 |
+| Python | 3.11.15, Conda env `/opt/anaconda3/envs/veyra` |
+| Backend | FastAPI 0.136.1, Uvicorn 0.46.0 |
+| Validation | Pydantic 2.13.2 |
+| HTTP | httpx 0.28.1 |
+| Streaming | websockets 15.0.1 plus HTTP SSE endpoints |
+| Security | cryptography 48.0.0, certifi 2025.1.31 |
+| Legacy integration | lark-oapi 1.6.7 |
+| Persistence | custom JSON/JSONL `WorldStateStore`; no SQLite/SQLAlchemy/Alembic |
+| Frontend | React 19.2.6, React DOM 19.2.6 |
+| Build | TypeScript 5.9.3, Vite 7.3.3, plugin-react 5.2.0 |
+| Icons | lucide-react 0.555.0 |
+| Styling | hand-written CSS; no Tailwind/component framework |
+| Node | 24.16.0 |
+| npm | 11.13.0 |
+| Desktop | Tauri 2.11.4, Rust 1.96.1, PyInstaller 6.22.0 |
+| Desktop process | React SPA + packaged Python/FastAPI sidecar on loopback |
+| Tests | custom Python smoke scripts and Node contract scripts; no pytest/Vitest/Playwright baseline |
+
+Rust is installed under `/Users/spectre/.cargo/bin` but is not currently on the default shell `PATH`. Desktop scripts must add this path explicitly or document shell initialization.
+
+### 1.2 Suitability verdict
+
+| Technology | Keep? | Verdict and adjustment |
+|---|---|---|
+| Python 3.11.15 | Yes | Stable with FastAPI and existing desktop packaging; create a fresh environment instead of reusing old packages |
+| FastAPI | Yes | Well suited to local API, SSE, typed OpenAPI, and a future separate Community API |
+| Pydantic 2 | Yes | Use for every Agent/Component/API contract and schema version |
+| React 19 | Yes | Suitable for Studio, Run Canvas, Monitor, Community, and desktop SPA |
+| TypeScript 5.9 | Yes | Keep strict mode; generate types from backend contracts where practical |
+| Vite 7 | Yes | Fast local/desktop builds; keep separate web and desktop configs only if needed |
+| Hand-written CSS | Partly | Reuse visual tokens and shell style, not old product selectors/pages; introduce a small UI layer |
+| Lucide | Yes | Continue for product icons |
+| SQLite | Add | Best local persistence choice; replace JSON/JSONL state with migrations and repositories |
+| SQLAlchemy/Alembic | Add | Needed for maintainable SQLite schema and later server migration |
+| httpx/OpenAI-compatible transport | Yes | Rebuild as a focused Kimi/provider client with streaming and structured output |
+| websockets | Optional | Prefer replayable SSE plus POST commands; use WebSocket only where bidirectional streaming materially helps |
+| Tauri 2 | Yes, later | Existing process model is appropriate; integrate after backend/frontend kernel is stable |
+| PyInstaller 6 | Yes, later | Proven sidecar packaging; build from the new isolated environment and lock |
+| Rust 1.96 | Yes | Add `$HOME/.cargo/bin` to documented build environment |
+| WorldStateStore JSON/JSONL | No | Replace with SQLite WAL and content-addressed objects |
+| lark-oapi/Feishu | No | Not part of the new product |
+| Custom smoke-script gate | No | Replace with pytest, frontend tests, E2E, security, and explicit live lanes |
+
+Overall verdict:
+
+> **The original language/runtime stack is suitable and should be retained. The original persistence, dependency environment, domain modules, test organization, and product pages are not suitable and must be replaced.**
+
+### 1.3 New environment decision
+
+Keep the proven major versions, but do not reuse the old environment packages.
+
+```text
+Python family       3.11.15
+Python environment  dedicated Conda env `veyra-agent-platform`
+Frontend            React 19 + TypeScript 5.9 + Vite 7
+Backend             FastAPI + Pydantic
+Database            SQLite WAL locally
+Desktop             Tauri 2 + PyInstaller sidecar after kernel stability
+```
+
+The new isolated environment is created from `environment.yml` at:
+
+```text
+/opt/anaconda3/envs/veyra-agent-platform
+```
+
+It uses Python 3.11.15 with its own `sys.prefix` and site-packages. The old `veyra` Conda environment remains only for reproducing the legacy repository.
+
+### 1.4 New Python dependencies
+
+Runtime dependencies:
+
+- FastAPI
+- Uvicorn
+- Pydantic and pydantic-settings
+- SQLAlchemy 2
+- Alembic
+- aiosqlite
+- httpx
+- OpenAI SDK for Kimi/OpenAI-compatible transport, unless a single httpx transport is deliberately selected
+- PyYAML safe loader
+- platformdirs
+- keyring
+- cryptography
+- python-multipart
+
+Development dependencies:
+
+- pytest
+- pytest-asyncio
+- pytest-cov
+- respx or equivalent HTTP mock
+- Ruff
+- mypy or pyright; this project initially selects mypy
+
+Desktop build dependencies:
+
+- PyInstaller 6.x
+- Tauri CLI 2.x
+- Rust stable toolchain
+
+Do not migrate `lark-oapi`, Weather, Calendar, Feishu, Living Context, Belief, Attention, Commitment, or old Project Guardian dependencies.
+
+### 1.5 Environment isolation requirements
+
+- `sys.executable` must point inside `/opt/anaconda3/envs/veyra-agent-platform`.
+- `sys.prefix` must not equal `/opt/anaconda3/envs/veyra`.
+- No `PYTHONPATH` entry may point at the old repository.
+- No `.pth` or editable install may expose old packages.
+- CI installs the new project from an empty environment.
+- Tests use temporary SQLite databases and temporary object roots.
+- New runtime state must never fall back to old `state/` or `agency/` directories.
+- Desktop packaging must install from the new lock/dependency definition, not developer machine site-packages.
+
+### 1.6 SQLite decision
+
+SQLite is the correct local database because the packaged desktop app is single-user and local-first.
+
+Use:
+
+- WAL mode
+- foreign keys
+- migration version table
+- short transactions
+- one application writer
+- `busy_timeout`
+- content-addressed files outside the database
+- backup before migration
+
+The public Community V1 uses a separate PostgreSQL deployment. The local desktop database remains SQLite permanently.
+
+---
+
+## 2. Product Positioning and User Need
+
+### 2.1 What the user owns
+
+An Agent is represented by a portable, inspectable source definition:
+
+```text
+*.vagent.yaml
+```
+
+The file contains behavior, components, tools, inputs, outputs, permissions, approval points, state schema, verification rules, UI metadata, and dependency locks.
+
+The file does not contain:
+
+- secret values
+- OAuth tokens
+- user project files
+- conversation history
+- transient run state
+- unbounded arbitrary code
+
+### 2.2 Why users need Veyra
+
+Users should choose Veyra when they need to:
+
+1. Own an Agent as source instead of hidden workspace database state.
+2. Generate an Agent quickly but still inspect and modify its actual structure.
+3. Keep Agent definitions in Git and review semantic changes.
+4. Run locally without uploading project data or secrets.
+5. See which node is running, blocked, waiting, failed, or verified.
+6. Stop, approve, reject, steer, reply, or resume from one interface.
+7. Organize several Agent tasks and isolated workspaces with a deterministic orchestrator.
+8. Share a version with explicit permissions, dependencies, provenance, and compatibility.
+9. Fork an Agent or Component while retaining exact lineage.
+
+### 2.3 Target users
+
+Primary V1 users:
+
+- people who want to create an Agent without writing code
+- Agent developers and power users
+- small AI-native teams
+- creators who want to publish a runnable Agent, not only a prompt
+
+Not initial requirements:
+
+- multi-region cloud execution
+- hundreds of SaaS connectors on day one
+- cloud execution of downloaded Agents
+
+### 2.4 Product combination
+
+Veyra's intended combination is:
+
+> **Project-owned Agent files + deterministic Canvas round-trip + Kimi-assisted generation + governed local Runtime + node-level run evidence + deterministic orchestration + a version-aware community.**
+
+That combination is the product. No single individual feature is the moat.
+
+---
+
+## 3. Product Scope
+
+### 3.1 Product modules
+
+#### Veyra Studio
+
+- Prompt generation panel
+- Form editor
+- visual Canvas editor
+- source editor
+- node inspector
+- permission preview
+- semantic diff
+- validation diagnostics
+- save version, run, import, export
+
+#### Veyra Runtime
+
+- graph executor
+- model adapters
+- tool/component registry
+- MCP
+- state and checkpoints
+- human approvals
+- secret broker
+- cancellation and recovery
+- verification and evidence
+
+#### Veyra Orchestrator
+
+- projects and work items
+- dependencies
+- Agent version binding
+- isolated workspaces/worktrees
+- concurrency and leases
+- retries and stall detection
+- human input and verification gates
+
+#### Veyra Monitor
+
+- active runs
+- Run Canvas
+- Orchestrator Canvas
+- timelines
+- approvals
+- errors and stale runs
+- workspace/branch identity
+- stop/steer/reply/resume/retry controls
+
+#### Veyra Library
+
+- Agents
+- Components
+- files/resources
+- immutable versions
+- imports/exports
+- packages
+- run artifacts
+- trash/restore
+
+#### Veyra Community
+
+- optional account
+- Agent and Component publishing
+- immutable versions
+- download/import
+- Fork lineage
+- Star
+- version-bound Review
+- Report and moderation
+- compatibility and risk information
+
+### 3.2 Phase boundaries
+
+Local product must remain usable without an account.
+
+Community does not execute downloaded Agents on the server. Users explicitly import and run them locally.
+
+Cloud Runtime, billing, organizations, branch/merge collaboration, recommendation algorithms, and arbitrary code components are later work.
+
+---
+
+## 4. System Architecture
+
+```text
+Tauri Desktop Host
+  ├─ React SPA
+  ├─ Python/FastAPI sidecar
+  └─ isolated per-run executor processes
+
+React
+  ↕ loopback HTTP + replayable SSE + POST commands
+
+FastAPI
+  ├─ Agent Definition compiler
+  ├─ Kimi Factory client
+  ├─ Studio services
+  ├─ Runtime coordinator
+  ├─ deterministic orchestrator
+  ├─ Tool/approval/secret proxy
+  ├─ verifier and evidence
+  ├─ SQLite repositories
+  ├─ content-addressed object store
+  └─ Community API client
+
+Optional Community Server
+  ├─ account/auth API
+  ├─ registry API
+  ├─ upload validation worker
+  ├─ closed alpha SQLite / public PostgreSQL
+  └─ object storage
+```
+
+### 4.1 Process rules
+
+- Local FastAPI listens only on loopback or Unix socket.
+- It generates a random local bearer token and checks Origin.
+- React never accesses SQLite directly.
+- Executor processes never write SQLite directly; they emit IPC events to the coordinator.
+- LocalStorage contains only theme/layout preferences, not product truth.
+- Community is a separate service; never expose the desktop sidecar to the public internet.
+
+---
+
+## 5. Agent and Component Formats
+
+### 5.1 Source and package files
+
+```text
+Agent source       *.vagent.yaml
+Agent package      *.vagent
+Component source   *.vcomponent.yaml
+Component package  *.vcomponent
+```
+
+Source is human-readable and Git-friendly. Package is an immutable archive containing canonical source, lock data, documentation, icons, test fixtures, and signatures.
+
+### 5.2 Standards strategy
+
+Use portable Agent/Flow/Tool semantics with a versioned Veyra profile for:
+
+- permissions
+- secret references
+- state/checkpoints
+- UI layout
+- verification
+- evals
+- dependency lock
+- lineage
+- runtime compatibility
+
+Published versions expose a versioned discovery and provenance record.
+
+### 5.3 Agent source example
+
+```yaml
+agentspec_version: "26.1"
+component_type: Flow
+
+id: github-bug-triage
+name: GitHub Bug Triage
+description: Analyze new bug reports and prepare a verified response.
+
+inputs:
+  repository:
+    type: string
+    required: true
+
+nodes:
+  - id: start
+    component_type: Start
+
+  - id: read_issues
+    component_type: Tool
+    uses: veyra.github.issue_search@1.0.0
+
+  - id: analyze
+    component_type: Agent
+    model_ref: model.primary
+    system_prompt: Analyze the issue and identify missing evidence.
+
+  - id: approval
+    component_type: HumanApproval
+    prompt: Publish this response?
+
+  - id: publish
+    component_type: Tool
+    uses: veyra.github.issue_comment@1.0.0
+
+  - id: verify
+    component_type: Verifier
+    checks:
+      - github.comment.exists
+
+  - id: output
+    component_type: Output
+
+transitions:
+  - [start, read_issues]
+  - [read_issues, analyze]
+  - [analyze, approval]
+  - [approval.proceed, publish]
+  - [publish, verify]
+  - [verify.passed, output]
+
+extensions:
+  veyra:
+    runtime_profile: veyra-runtime-profile/1
+    secret_refs:
+      - github.main
+    permissions:
+      network_hosts: [api.github.com]
+      tools: [github.issue_search, github.issue_comment]
+    verification:
+      required: true
+```
+
+### 5.4 Core components
+
+V1:
+
+- Start
+- Agent
+- Tool
+- Condition
+- Transform
+- HumanApproval
+- Verifier
+- Output
+
+Later:
+
+- Loop
+- Parallel
+- SubAgent
+- Schedule/Webhook
+- CustomFunction
+
+### 5.5 Tools
+
+Initial tools:
+
+- filesystem.read
+- filesystem.write, approval by default
+- shell.exec, approval and workspace scope by default
+- http.request, host allowlist
+- github.read
+- github.write, approval by default
+- mcp.call
+- browser read/navigation after the core Runtime is stable
+
+Browser, GitHub, OCR, Email, and databases are tools or providers, not separate control-flow component types.
+
+### 5.6 Version hashes
+
+Compute:
+
+- `file_hash`: entire source including UI layout and documentation
+- `behavior_hash`: execution semantics only
+- `lock_hash`: resolved dependencies
+- `package_hash`: immutable package bytes
+
+Moving a Canvas node must not change `behavior_hash`. Changing prompt, tool, permission, transition, model, or verifier must change it.
+
+---
+
+## 6. Kimi K3 Factory Agent
+
+### 6.1 Official API baseline
+
+```text
+model           kimi-k3
+base URL        https://api.moonshot.ai/v1
+chat endpoint   /v1/chat/completions
+models endpoint /v1/models
+auth            Authorization: Bearer $MOONSHOT_API_KEY
+```
+
+Kimi K3 supports OpenAI-compatible Chat Completions, Structured Output, tool calling, streaming, reasoning, and a large context window.
+
+### 6.2 Factory responsibility
+
+Kimi produces a strict `AgentBlueprint` Draft containing:
+
+- goal
+- inputs/outputs
+- required capabilities
+- known component/tool references
+- graph nodes and transitions
+- approval points
+- requested permissions
+- verification checks
+- UI suggestions
+
+The server then resolves registered components and compiles canonical Agent source.
+
+Kimi cannot:
+
+- publish
+- execute the Draft directly
+- read secret values
+- register unknown tools
+- grant permissions
+- claim verification
+- create arbitrary executable code in V1
+
+### 6.3 Generation flow
+
+```text
+User requirement
+→ Kimi JSON Schema AgentBlueprint
+→ schema validation
+→ component/tool resolution
+→ permission derivation
+→ graph validation
+→ bounded repair loop, maximum three attempts
+→ user-visible Draft
+→ user edits and confirms
+→ immutable version
+```
+
+### 6.4 Kimi configuration
+
+```text
+VEYRA_FACTORY_MODEL_BASE_URL=https://api.moonshot.ai/v1
+VEYRA_FACTORY_MODEL_ID=kimi-k3
+VEYRA_FACTORY_MODEL_API_KEY_ENV=MOONSHOT_API_KEY
+```
+
+The key belongs in Keychain/environment, never SQLite, Agent source, browser storage, logs, or packages.
+
+### 6.5 Kimi acceptance
+
+- `/v1/models` discovery
+- structured-output probe
+- mock streaming and tool calls
+- malformed/partial output
+- 401/429/5xx
+- cancellation and timeout
+- secret redaction
+- injection attempts requesting unknown components
+- 20 real requirements; at least 15 produce valid Drafts after bounded repair
+
+Factory and user Runtime models use separate configuration, keys, and budgets.
+
+---
+
+## 7. Studio and Frontend Design
+
+### 7.1 Preserved visual direction
+
+Reuse the old Veyra visual language only:
+
+- restrained light/dark themes
+- typography and spacing
+- sidebar/header/workspace shell
+- neutral surfaces
+- badges, freshness, errors, loading
+- responsive desktop layout
+
+Do not migrate old product pages, React state, APIs, Today, Situations, Reactions, Chat, or LegacyConsole.
+
+### 7.2 Navigation
+
+```text
+Create     Studio
+Library    Agents / Components / Files
+Operate    Runs / Monitor
+Discover   Community
+Identity   Account / Settings
+```
+
+Routes:
+
+```text
+#/studio/new
+#/studio/:agentId
+#/agents
+#/agents/:agentId
+#/agents/:agentId/versions/:versionId
+#/runs
+#/runs/:runId
+#/monitor
+#/components
+#/components/:componentId
+#/files
+#/files/:fileId
+#/community
+#/community/:owner/:slug
+#/community/:owner/:slug/versions/:versionId
+#/settings
+#/account
+```
+
+Empty library redirects to Studio onboarding. Otherwise `/` redirects to Agents/Dashboard.
+
+### 7.3 Studio layout
+
+```text
+Left      component and tool library
+Center    Prompt / Canvas / Source / Run
+Right     inspector, schemas, permissions, diagnostics
+Top       name, version, validation, save, run, export
+Bottom    errors, semantic diff, generator explanation
+```
+
+### 7.4 Canonical state
+
+Prompt, Form, Canvas, and Source edit the same normalized IR.
+
+- React Query: persisted/server state
+- Zustand or equivalent: Canvas selection/pan/zoom/transient inspector state
+- revision/ETag: protect drafts from multi-window overwrite
+- stable node IDs: map runtime events back to source
+- Source/Canvas round-trip: behavior hash must remain stable when semantics do not change
+
+### 7.5 Run Canvas
+
+The same graph switches from Design to Run mode:
+
+- queued
+- running
+- waiting approval/input/external
+- completed
+- failed
+- skipped
+- cancelled
+- verifying/verified/unverified
+
+Show node duration, redacted inputs/outputs, tool calls, approvals, checkpoints, artifacts, verifier results, and final output.
+
+Controls:
+
+- Stop
+- Approve/Reject
+- Reply/Steer when supported
+- Resume from checkpoint
+- Retry safe node
+- Open workspace/artifact
+
+---
+
+## 8. Local Runtime
+
+### 8.1 Run state machine
+
+```text
+created → validating → queued → preparing → running
+running → waiting_approval | waiting_input | waiting_external
+running → verifying → verified | unverified | failed
+running → cancelling → cancelled
+process loss → interrupted
+```
+
+Terminal runs never return to running. Resume creates a child run referencing an explicit checkpoint.
+
+### 8.2 Runtime guarantees
+
+- Every run uses an immutable Agent version.
+- Every event has run ID, sequence, node ID, and timestamp.
+- Every tool call has exact input digest, permission decision, result, and receipt.
+- Unknown external effects are not retried blindly.
+- Cancellation terminates the full child process group and revokes unused grants.
+- Secrets are injected only into an authorized tool call.
+- Model output is not proof of an external effect.
+- Verification is separate from Agent-reported completion.
+
+### 8.3 Events
+
+```text
+run.created
+run.state_changed
+node.queued
+node.started
+node.completed
+node.failed
+tool.requested
+tool.started
+tool.completed
+approval.requested
+approval.resolved
+artifact.created
+checkpoint.created
+verification.completed
+run.completed
+run.interrupted
+```
+
+Persist append-only events using `(run_id, seq)`. Stream ephemeral token deltas to UI but persist only merged user-visible content/reasoning summaries.
+
+### 8.4 Secret broker
+
+- Agent contains `secretRef`, never a value.
+- Values live in macOS Keychain/system keyring.
+- Export/import preserves references only.
+- Import requires rebinding.
+- Logs/errors/artifacts/packages are scanned and redacted.
+
+---
+
+## 9. Deterministic Orchestrator and Monitor
+
+### 9.1 Purpose
+
+The Orchestrator connects work to Agent versions:
+
+```text
+Work Item defines what to accomplish
+Agent Version defines how to accomplish it
+Orchestrator schedules and reconciles
+Monitor makes the state visible and controllable
+```
+
+### 9.2 Entities
+
+- Project
+- WorkItem
+- WorkItemDependency
+- AgentVersionBinding
+- WorkspaceLease
+- OrchestratedRun
+- RunAttempt
+- HumanInputRequest
+- VerificationGate
+
+### 9.3 Work item state
+
+```text
+backlog → ready → claimed → preparing_workspace → running
+running → waiting_input | waiting_dependency | verifying | review
+review → done
+running/verifying → failed | cancelled
+```
+
+### 9.4 Scheduler
+
+- deterministic, not LLM-owned
+- global and per-project concurrency
+- priority and dependency ordering
+- CAS/lease claims
+- one active attempt per WorkItem
+- isolated Git worktree for code Agents
+- workspace write lock
+- retry only classified transient failures
+- timeout-after-dispatch requires read-back
+- non-idempotent lease loss becomes `needs_recovery`
+
+### 9.5 Work item sources
+
+1. Internal Veyra task board
+2. GitHub Issues adapter
+3. Linear adapter
+4. Other tracker adapters later
+
+Tracker credentials remain in host-side adapters and never enter Agent prompts.
+
+### 9.6 Monitor
+
+Monitor focuses on current operational attention:
+
+- active
+- blocked
+- waiting approval/input
+- stale
+- failed
+- verification gaps
+- workspace/branch conflicts
+
+Runs remains immutable history. Monitor must not duplicate the full Run detail page.
+
+---
+
+## 10. Local Library and File Management
+
+### 10.1 Data root
+
+```text
+<platform application data>/Veyra Agent Platform/v1/
+  db/app.sqlite3
+  library/agents/
+  library/components/
+  packages/
+  objects/sha256/
+  workspaces/
+  runs/
+  logs/
+  cache/
+  trash/
+```
+
+Use `platformdirs`; never use the current working directory or the old Veyra state root as fallback.
+
+### 10.2 File operations
+
+- create
+- generate
+- import
+- open source/open folder
+- save immutable version
+- duplicate
+- Fork
+- compare semantic diff
+- export source/package
+- validate
+- run
+- move to trash
+- restore
+- permanent delete with confirmation
+
+Trash retention defaults to 30 days. Published or referenced versions are yanked, not hard-deleted.
+
+### 10.3 External edits
+
+- filesystem watch
+- safe parse after change
+- conflict prompt when Studio has unsaved edits
+- Reload / Keep Local / Semantic Diff
+- atomic save via temporary file, fsync, replace
+- no silent Canvas overwrite
+
+---
+
+## 11. SQLite Data Model
+
+Use application-generated UUIDv7/ULID text IDs, UTC timestamps, foreign keys, WAL, and forward-only migrations.
+
+### 11.1 Agent graph
+
+- `agents`
+- `agent_drafts`
+- `agent_versions`
+- `version_edges`
+- `components`
+- `component_versions`
+- `agent_version_components`
+
+Draft is mutable with revision. Version is immutable. Every run materializes or selects an immutable version.
+
+### 11.2 Files and blobs
+
+- `blobs`
+- `files`
+- `file_versions`
+- `agent_version_files`
+- `run_artifacts`
+
+Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or long stdout.
+
+### 11.3 Runtime
+
+- `runs`
+- `run_tasks`
+- `task_dependencies`
+- `task_attempts`
+- `run_events`
+- `run_checkpoints`
+- `tool_calls`
+- `approval_requests`
+- `run_commands`
+- `runtime_connections`
+- `external_agent_sessions`
+- `workspace_locks`
+
+All frontend controls first write a durable `run_command`; they do not directly manipulate executors.
+
+### 11.4 Local account/community cache
+
+- `local_profiles`
+- `account_links`
+- `remote_bindings`
+- `community_cache`
+- `community_outbox`
+- `local_stars`
+- `local_reviews`
+
+Logout does not delete or change local Agent IDs, versions, or Runs.
+
+### 11.5 SQLite maintenance
+
+- backup before migration
+- recover stale leases on startup
+- mark orphan runs interrupted
+- periodic WAL checkpoint and ANALYZE
+- VACUUM only in explicit maintenance window
+- integrity checks
+- mark-and-sweep unreferenced artifacts after grace period
+- hash verification on blob reads
+
+---
+
+## 12. Account and Community
+
+### 12.1 Modes
+
+Local Guest Mode provides Studio, Runtime, Orchestrator, Monitor, Library, and Files without login.
+
+Cloud Account Mode adds:
+
+- publish
+- download/import
+- Fork
+- Star
+- Review
+- Report
+- organizations later
+- optional private backup later
+
+### 12.2 Authentication
+
+First choice: GitHub OAuth/OIDC with PKCE/device flow.
+
+Email/password may be added with:
+
+- Argon2id
+- email verification
+- opaque server sessions
+- hashed refresh/session tokens
+- CSRF/Origin/SameSite/secure cookie
+- password reset
+- rate limit
+- device/session revoke
+
+Tokens live in Keychain, not local SQLite plaintext.
+
+### 12.3 Community service
+
+Community is a separate FastAPI deployment. Never expose the local desktop service publicly.
+
+Closed single-instance alpha may use SQLite WAL. Public multi-user launch uses PostgreSQL plus object storage.
+
+Community data:
+
+- users/profiles/oauth/sessions
+- Agents and immutable versions
+- Components and immutable versions
+- version/Fork edges
+- Stars
+- version-bound Reviews
+- downloads
+- reports/moderation
+- upload/scan jobs
+- compatibility and verification claims
+
+### 12.4 Upload pipeline
+
+```text
+explicit upload
+→ quarantine
+→ size/MIME/schema check
+→ secret scan
+→ permission/risk analysis
+→ dependency lock check
+→ license/provenance check
+→ preview
+→ moderation/review
+→ immutable published version or rejection
+```
+
+Downloaded content is not automatically installed or run. Import again validates locally and displays permission differences.
+
+### 12.5 Community UI
+
+Agent/Component detail includes:
+
+- source and behavior hashes
+- author/organization
+- license
+- version list
+- Canvas preview
+- component lock
+- permissions/secrets/network/shell requirements
+- runtime compatibility
+- conformance/evals
+- verified claims
+- Fork lineage
+- Download/Import/Fork/Star/Review/Report
+
+Star does not mean safe or effective.
+
+---
+
+## 13. Local API v1
+
+### Bootstrap and settings
+
+- `GET /api/v1/bootstrap`
+- `GET /api/v1/health`
+- `GET /api/v1/runtime/capabilities`
+- `GET /api/v1/factory/status`
+
+### Agents
+
+- `GET/POST /api/v1/agents`
+- `GET /api/v1/agents/{id}`
+- `GET/PATCH /api/v1/agents/{id}/draft`
+- `POST /api/v1/agents/{id}/generate`
+- `POST /api/v1/agents/{id}/validate`
+- `POST /api/v1/agents/{id}/commit`
+- `GET /api/v1/agents/{id}/versions`
+- `POST /api/v1/agents/{id}/fork`
+- `POST /api/v1/import`
+- `GET /api/v1/agents/{id}/export`
+
+### Components and files
+
+- `GET/POST /api/v1/components`
+- `POST /api/v1/components/resolve`
+- `GET /api/v1/files`
+- `POST /api/v1/files/import`
+- `GET/DELETE /api/v1/files/{id}`
+- `POST /api/v1/files/{id}/restore`
+- `GET /api/v1/artifacts/{id}`
+
+### Runtime
+
+- `POST /api/v1/agents/{id}/run`
+- `GET /api/v1/runs`
+- `GET /api/v1/runs/{id}`
+- `GET /api/v1/runs/{id}/events?after_seq=N`
+- `GET /api/v1/runs/{id}/events/stream`
+- `POST /api/v1/runs/{id}/commands`
+- `POST /api/v1/runs/{id}/cancel`
+- `POST /api/v1/approvals/{id}/decision`
+- `GET /api/v1/monitor`
+- `GET /api/v1/monitor/stream`
+
+### Orchestrator
+
+- `GET/POST /api/v1/projects`
+- `GET/POST /api/v1/projects/{id}/work-items`
+- `PATCH /api/v1/work-items/{id}`
+- `POST /api/v1/work-items/{id}/dispatch`
+- `POST /api/v1/work-items/{id}/cancel`
+- `GET /api/v1/orchestrator/status`
+- `GET /api/v1/orchestrator/stream`
+
+### Account/community proxy
+
+- `GET /api/v1/account`
+- `POST /api/v1/account/login/start`
+- `POST /api/v1/account/logout`
+- `GET /api/v1/community/catalog`
+- `POST /api/v1/community/publish`
+- `POST /api/v1/community/forks`
+- `POST /api/v1/community/stars`
+- `POST /api/v1/community/reviews`
+
+---
+
+## 14. Legacy Asset Migration
+
+The old Veyra repository remains unchanged and read-only for the new project.
+
+### 14.1 Extract or rewrite
+
+- AgentAdapter/ExecutionResult provider boundary
+- task lifecycle/status/cancel semantics
+- DurableCase revision/checkpoint/replay concepts
+- EventInbox sequence/dedupe/recovery concepts
+- Receipt/VerifiedEffect/Verifier contracts
+- ExecutionTrace and replay concepts
+- OpenClaw send/status/wait/cancel adapter behavior
+- Ed25519 signing primitives
+- canonical JSON/digest/idempotency helpers
+- React visual tokens and small shared UI primitives
+- Tauri sidecar lifecycle pattern
+
+### 14.2 Do not migrate
+
+- Living Context/Situation/Need/Reaction
+- Today/Home/Chat product
+- Weather/Calendar/Public Web/App Activity
+- Belief/Attention/Commitment/Cognitive pipeline
+- Feishu/channel integrations
+- Project Guardian special cases
+- old `main.py`
+- WorldStateStore JSON layout
+- old UI bundles/pages
+- old state, `.env`, logs, snapshots, data
+- old documentation and roadmaps
+- old smoke suite wholesale
+
+### 14.3 Provenance rule
+
+Every extracted behavior must record:
+
+- old repository
+- source SHA
+- source file/symbol
+- copied vs rewritten
+- new contract and tests
+- reason for migration
+
+No old directory may be added to `PYTHONPATH` or package search paths.
+
+---
+
+## 15. Repository Structure
+
+```text
+backend/
+  app.py
+  config.py
+  api/
+  domain/
+    agent.py
+    component.py
+    run.py
+    event.py
+    receipt.py
+  compiler/
+  factory/
+  runtime/
+  orchestrator/
+  components/
+  storage/
+  community/
+
+web/
+  src/
+    app/
+    ui/
+    features/
+      studio/
+      agents/
+      runs/
+      monitor/
+      components/
+      files/
+      community/
+      account/
+
+apps/desktop/
+docs/
+tests/
+  unit/
+  contracts/
+  integration/
+  security/
+  e2e/
+  live/
+  fixtures/
+```
+
+Avoid generic top-level packages named `core`, `runtime`, or `interface` without product scope.
+
+---
+
+## 16. Testing and Quality Gates
+
+### Backend
+
+- pytest unit/contracts
+- SQLite migrations from empty and previous versions
+- restart/replay/checkpoint
+- cancellation process group
+- receipt/verifier
+- secret leak
+- malicious YAML/package
+- path/symlink escape
+- concurrency/lease/idempotency
+- deterministic Kimi mock
+- optional Kimi live lane
+
+### Frontend
+
+- TypeScript strict
+- Vitest/React Testing Library
+- Source/Canvas round-trip
+- Run event reducer
+- permission diff
+- auth states
+- Playwright desktop and responsive sizes
+- production build
+
+### Desktop
+
+- sidecar start/stop
+- new data root
+- health/build identity
+- isolated temporary SQLite
+- package contains exact sidecar
+- macOS arm64 validation first
+
+### CI order
+
+1. format/lint/typecheck
+2. unit/contracts
+3. SQLite/restart integration
+4. security/adversarial
+5. Studio → Kimi Draft → Runtime → Monitor → Verifier E2E with fake model
+6. optional live provider/community lanes
+7. frontend build
+8. desktop package lane
+
+Historical smoke counts are not a quality goal.
+
+---
+
+## 17. Development Roadmap
+
+### R0 — Environment and contracts
+
+- confirm this document
+- isolate Python/Node environment
+- project package structure
+- SQLite configuration and migration baseline
+- three handwritten Agent fixtures
+- migration provenance ledger
+
+### R1 — Agent/Component kernel
+
+- schemas
+- parser/canonicalizer
+- hashes and semantic diff
+- component registry
+- file library
+- import/export
+
+### R2 — Kimi Factory and Studio
+
+- model discovery/settings
+- AgentBlueprint
+- generator and repair
+- Form/Source
+- React Flow Canvas
+- permission preview
+- save version
+
+### R3 — Local Runtime and Run Canvas
+
+- graph executor
+- tools and MCP
+- secret broker
+- approvals/checkpoints
+- cancel/resume
+- event store/SSE
+- verifier/evidence
+- Run Canvas
+
+### R4 — Deterministic Orchestrator and Monitor
+
+- projects/work items/dependencies
+- scheduler/reconciler
+- isolated workspaces
+- concurrency/retries/stall
+- Monitor and Orchestrator Canvas
+- GitHub Issues adapter
+
+### R5 — Account and Community Public Beta
+
+- separate Community service
+- email verification, password login, recovery, and session management
+- PostgreSQL Community database and object storage
+- upload quarantine
+- Agent/Component versions
+- download/import/Fork/Star/Review/Report
+- Community UI
+
+### R6 — Desktop release candidate
+
+- Tauri shell
+- PyInstaller sidecar
+- setup/settings
+- three official Agents
+- full security/test gate
+- documentation
+- user trial
+
+### R7 — New repository main release
+
+- clean branch
+- reviewed changes
+- exact-revision tests/build/package
+- PR `codex/agent-platform → main`
+- retain old Veyra repository as legacy reference
+
+---
+
+## 18. Acceptance Metrics
+
+Local V1:
+
+- median time from requirement to first valid Draft
+- generated Draft validation rate
+- import/export behavior-hash stability
+- Source/Canvas round-trip stability
+- run completion rate
+- verified completion rate
+- stop/approval/resume success
+- same Agent second-run rate
+- percentage creating a second version
+
+Community:
+
+- successful download/import rate
+- successful first local run rate
+- Fork lineage correctness
+- version upgrade regression rate
+- permission escalation detection
+- repeat publisher rate
+- external creator count
+
+North star:
+
+> **Weekly Agent versions that are run repeatedly and produce at least one verified result.**
+
+### Kill criteria
+
+Stop expanding if:
+
+- target users do not want file ownership/versioning
+- generation still requires extensive manual repair
+- Source/Canvas round-trip is unstable
+- local setup is too difficult
+- users run each Agent only once
+- downloaded Agents depend on hidden platform state
+- product only visualizes nodes without producing verified output
+
+---
+
+## 19. Maintainability Rules
+
+- This document is the single current authority.
+- Every public JSON contract has `schema_version`.
+- Every write has revision and idempotency.
+- Every run event has run ID, sequence, and node ID.
+- Model output is always untrusted until validated.
+- External effects require receipts and independent verification.
+- Drafts are mutable; committed/published versions are immutable.
+- SQLite access goes through repositories and migrations.
+- Large files are content-addressed objects, not database blobs.
+- Secrets never enter source, SQLite plaintext, logs, artifacts, or packages.
+- Local product remains usable without account/community.
+- Community server and desktop sidecar are separate deployments.
+- No giant `main.py`, `LegacyConsole.tsx`, or global raw-dict state store.
+- Every feature owns contracts, services, routes, UI, tests, and docs.
+- Any compatibility degradation is explicit.
+- Deletion is recoverable by default.
+
+---
+
+## 20. Immediate Next Documentation/Implementation Tasks
+
+1. Review and approve this design.
+2. Create `docs/MIGRATION_PROVENANCE.md` before extracting old code.
+3. Add ADRs for Agent Spec profile, SQLite, Kimi transport, Runtime events, Community separation, and Tauri.
+4. Finalize Python dependency versions and lock.
+5. Finalize frontend package versions and lock.
+6. Handwrite three Agent fixtures: Repo Auditor, GitHub Issue Triage, Research Brief.
+7. Implement only R0 after explicit approval.
+
+No implementation phase should begin by copying old Veyra directories.

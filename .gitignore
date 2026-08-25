@@ -1,0 +1,60 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Conda and virtual environments
+.conda/
+.venv/
+venv/
+
+# Node and frontend output
+node_modules/
+web/**/node_modules/
+web/**/dist/
+web/**/coverage/
+playwright-report/
+test-results/
+
+# Rust and desktop output
+target/
+apps/desktop/src-tauri/target/
+
+# Runtime data
+data/
+state/
+runs/
+logs/
+objects/
+workspaces/
+*.sqlite
+*.sqlite3
+*.db
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp
+*.bak
+
