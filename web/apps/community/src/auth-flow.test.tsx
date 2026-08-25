@@ -106,14 +106,14 @@ describe("Community account flows", () => {
     expect(registration).not.toHaveProperty("handle");
   });
 
-  it("requests a recovery code and confirms a new password", async () => {
+  it("confirms a new password and clears an authenticated account", async () => {
     window.location.hash = "#/forgot-password";
     const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
       const body = requestBody(init);
       requests.push({ url, body });
-      if (url.endsWith("/account/me")) return jsonResponse(401, { detail: "authentication_required" });
+      if (url.endsWith("/account/me")) return jsonResponse(200, { schema_version: "community.account.v1", account });
       if (url.endsWith("/auth/verification-codes")) return jsonResponse(202, { schema_version: "community.auth.v1", accepted: true });
       if (url.endsWith("/auth/password-reset/confirm")) return jsonResponse(200, { schema_version: "community.auth.v1", reset: true });
       return jsonResponse(404, { detail: "not_found" });
@@ -128,6 +128,9 @@ describe("Community account flows", () => {
     await user.type(screen.getByLabelText("Confirm new password"), "even-more-correct-password");
     await user.click(screen.getByRole("button", { name: "Update password" }));
     expect(await screen.findByRole("heading", { name: "Password updated" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Sign in with the new password" }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "You are already signed in" })).not.toBeInTheDocument();
     expect(requests.find((request) => request.url.endsWith("/auth/verification-codes"))?.body).toMatchObject({ purpose: "password_reset" });
     expect(requests.find((request) => request.url.endsWith("/auth/password-reset/confirm"))?.body).toMatchObject({ verification_code: "239104", new_password: "even-more-correct-password" });
   });

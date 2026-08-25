@@ -89,6 +89,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const resetPassword = useCallback(async (payload: Omit<CommunityPasswordResetRequest, "device_name">) => {
     await communityApi.resetPassword(payload);
+    setAccount(null);
+    setStatus("anonymous");
+    setBootstrapError(null);
   }, []);
 
   const logout = useCallback(async () => {
