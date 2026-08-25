@@ -1,1 +1,1 @@
-"""Backend package for the local-first Agent platform."""
+"""Backend package for the Veyra Agent Platform."""

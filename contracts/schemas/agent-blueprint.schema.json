@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/contracts/agent-blueprint.schema.json",
+  "title": "Untrusted Factory AgentBlueprint V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "goal", "inputs", "outputs", "nodes", "transitions", "requested_permissions", "verification"],
+  "properties": {"schema_version": {"const": "1.0"}, "goal": {"type": "string", "minLength": 1}, "inputs": {"type": "object"}, "outputs": {"type": "object"}, "nodes": {"type": "array"}, "transitions": {"type": "array"}, "requested_permissions": {"type": "object"}, "verification": {"type": "object"}}
+}

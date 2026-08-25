@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "agentspec_version": "26.1",
+  "component_type": "Flow",
+  "id": "approval-gate",
+  "name": "Approval Gate",
+  "description": "A minimal human approval and verifier flow.",
+  "inputs": {"request": "string"},
+  "outputs": {"decision": "string"},
+  "nodes": [
+    {"id": "start", "component_type": "Start"},
+    {"id": "approval", "component_type": "HumanApproval", "prompt": "Allow this request?"},
+    {"id": "verify", "component_type": "Verifier", "checks": ["human.approval.recorded"]},
+    {"id": "approved", "component_type": "Output", "output_name": "decision"},
+    {"id": "rejected", "component_type": "Output", "output_name": "decision"}
+  ],
+  "transitions": [
+    {"from": "start", "port": "next", "to": "approval"},
+    {"from": "approval", "port": "approved", "to": "verify"},
+    {"from": "approval", "port": "rejected", "to": "rejected"},
+    {"from": "verify", "port": "passed", "to": "approved"},
+    {"from": "verify", "port": "failed", "to": "rejected"}
+  ],
+  "extensions": {"veyra": {
+    "runtime_profile": "veyra-runtime-profile/1",
+    "secret_refs": [],
+    "permissions": {"network_hosts": [], "tools": []},
+    "verification": {"required": true, "checks": ["human.approval.recorded"]}
+  }},
+  "ui": {"positions": {"start": {"x": 0, "y": 0}, "approval": {"x": 120, "y": 0}, "verify": {"x": 240, "y": 0}, "approved": {"x": 360, "y": 0}, "rejected": {"x": 240, "y": 120}}},
+  "lock": {"veyra.human.approval@1.0.0": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+}

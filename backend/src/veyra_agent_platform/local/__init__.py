@@ -1,1 +1,1 @@
-"""Local desktop service package."""
+"""Local desktop service and application boundary."""

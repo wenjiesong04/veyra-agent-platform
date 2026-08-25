@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/contracts/runtime-wire.schema.json",
+  "title": "Veyra Runtime Event and Command V1",
+  "oneOf": [
+    {"type": "object", "additionalProperties": false, "required": ["schema_version", "event_id", "run_id", "sequence", "kind", "node_id", "payload"], "properties": {"schema_version": {"const": "1.0"}, "event_id": {"type": "string"}, "run_id": {"type": "string"}, "sequence": {"type": "integer", "minimum": 1}, "kind": {"type": "string"}, "node_id": {"type": ["string", "null"]}, "payload": {"type": "object"}}},
+    {"type": "object", "additionalProperties": false, "required": ["schema_version", "command_id", "run_id", "idempotency_key", "kind", "node_id", "expected_revision", "payload"], "properties": {"schema_version": {"const": "1.0"}, "command_id": {"type": "string"}, "run_id": {"type": "string"}, "idempotency_key": {"type": "string"}, "kind": {"type": "string"}, "node_id": {"type": ["string", "null"]}, "expected_revision": {"type": "integer", "minimum": 0}, "payload": {"type": "object"}}}
+  ]
+}

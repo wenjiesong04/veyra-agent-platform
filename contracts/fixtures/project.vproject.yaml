@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "project_version": "1",
+  "project_id": "01a03795-a5b0-7234-ba76-5c5f0e029334",
+  "name": "Veyra Contract Examples",
+  "agents": [
+    {"agent_id": "github-triage", "path": "agents/github-triage"},
+    {"agent_id": "release-summary", "path": "agents/release-summary"},
+    {"agent_id": "approval-gate", "path": "agents/approval-gate"}
+  ]
+}
