@@ -1,0 +1,47 @@
+name: backend-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.15"
+          cache: pip
+          cache-dependency-path: requirements/constraints-py311.txt
+
+      - name: Install locked backend dependencies
+        run: python -m pip install --constraint requirements/constraints-py311.txt --editable '.[dev]'
+
+      - name: Verify dependency consistency
+        run: make dependency-check PYTHON=python
+
+      - name: Run formatting, lint, typing, and tests
+        run: make check PYTHON=python
+
+      - name: Validate local migrations from an empty database
+        run: |
+          database_dir="$(mktemp -d)"
+          database_path="${database_dir}/local.sqlite3"
+          VEYRA_LOCAL_DATABASE_URL="sqlite:///${database_path}" \
+            python -m alembic -c backend/migrations/local/alembic.ini upgrade head
+
+      - name: Validate Community migrations from an empty database
+        run: |
+          database_dir="$(mktemp -d)"
+          database_path="${database_dir}/community.sqlite3"
+          VEYRA_COMMUNITY_DATABASE_URL="sqlite:///${database_path}" \
+            python -m alembic -c backend/migrations/community/alembic.ini upgrade head
