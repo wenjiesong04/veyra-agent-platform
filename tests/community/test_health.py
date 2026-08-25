@@ -21,9 +21,7 @@ def _upgrade(
     monkeypatch: pytest.MonkeyPatch, database_path: Path, revision: str
 ) -> None:
     monkeypatch.setenv("VEYRA_COMMUNITY_MODE", "test")
-    monkeypatch.setenv(
-        "VEYRA_COMMUNITY_DATABASE_URL", f"sqlite:///{database_path}"
-    )
+    monkeypatch.setenv("VEYRA_COMMUNITY_DATABASE_URL", f"sqlite:///{database_path}")
     command.upgrade(Config("backend/migrations/community/alembic.ini"), revision)
 
 
