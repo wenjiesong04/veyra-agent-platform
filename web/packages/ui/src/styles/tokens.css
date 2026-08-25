@@ -26,7 +26,9 @@
   --shell-shadow: 0 24px 60px rgba(28, 42, 61, 0.12);
   --soft-shadow: 0 10px 28px rgba(28, 42, 61, 0.07);
   --radius: 18px;
-  --sidebar-width: clamp(240px, 25vw, 330px);
+  --hero-line: #303641;
+  --sidebar-width: clamp(300px, 29vw, 510px);
+  --header-height: 122px;
 }
 
 :root[data-theme="light"] {
@@ -58,6 +60,8 @@
   --hero-end: #0b1116;
   --hero-text: #f7f7f8;
   --hero-muted: #a8b1c0;
+  --hero-line: #303744;
+  --header-height: 122px;
   --shell-shadow: 0 26px 70px rgba(0, 0, 0, 0.42);
   --soft-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
 }
@@ -88,6 +92,8 @@
     --hero-end: #0b1116;
     --hero-text: #f7f7f8;
     --hero-muted: #a8b1c0;
+    --hero-line: #303744;
+    --header-height: 122px;
     --shell-shadow: 0 26px 70px rgba(0, 0, 0, 0.42);
     --soft-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
   }

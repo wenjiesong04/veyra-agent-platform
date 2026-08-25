@@ -6,6 +6,7 @@ export type Brand = {
   name: string;
   subtitle: string;
   mark?: string;
+  iconSrc?: string;
 };
 
 export type NavigationItem = {

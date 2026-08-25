@@ -96,12 +96,12 @@ describe("desktop workspace", () => {
 
   it("persists light/dark/system theme choices", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("veyra.ui.theme", "dark");
+    window.localStorage.setItem("veyra.theme", "dark");
     window.location.hash = "#/settings";
     render(<DesktopApp />);
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
     await user.click(screen.getByRole("button", { name: "System" }));
-    await waitFor(() => expect(window.localStorage.getItem("veyra.ui.theme")).toBe("system"));
+    await waitFor(() => expect(window.localStorage.getItem("veyra.theme")).toBe("system"));
     expect(document.documentElement.dataset.theme).toBe("system");
   });
 

@@ -3,16 +3,16 @@
   grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr);
   gap: 28px;
   overflow: hidden;
-  border: 1px solid var(--hero-line, #303641);
+  border: 1px solid var(--line);
   border-radius: 22px;
   padding: clamp(24px, 4vw, 42px);
-  color: var(--hero-text);
-  background: linear-gradient(130deg, var(--hero-start), var(--hero-end));
-  box-shadow: var(--shell-shadow);
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--soft-shadow);
 }
 
 .hero-kicker {
-  color: var(--accent);
+  color: var(--accent-strong);
   font-size: 10px;
   font-weight: 820;
   letter-spacing: 0.12em;
@@ -22,7 +22,7 @@
 .hero-copy h2 {
   max-width: 720px;
   margin-top: 7px;
-  color: var(--hero-text);
+  color: var(--ink);
   font-size: clamp(24px, 3.2vw, 38px);
   font-weight: 840;
   letter-spacing: -0.06em;
@@ -32,7 +32,7 @@
 .hero-copy p {
   max-width: 690px;
   margin-top: 8px;
-  color: var(--hero-muted);
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.65;
 }
@@ -46,13 +46,13 @@
 }
 
 .hero-actions .ui-button.secondary {
-  border-color: rgba(255, 255, 255, 0.22);
-  color: var(--hero-text);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--line);
+  color: var(--ink);
+  background: var(--surface-soft);
 }
 
 .hero-actions .ui-button.ghost {
-  color: var(--hero-muted);
+  color: var(--muted);
 }
 
 .hero-diagram {
@@ -68,7 +68,7 @@
   align-items: center;
   gap: 13px;
   min-height: 60px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 1px solid var(--line);
 }
 
 .hero-diagram > div:last-child {
@@ -81,11 +81,12 @@
 }
 
 .hero-diagram strong {
+  color: var(--ink);
   font-size: 15px;
 }
 
 .hero-diagram small {
-  color: var(--hero-muted);
+  color: var(--muted);
   font-size: 11px;
 }
 
