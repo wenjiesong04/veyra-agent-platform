@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from fastapi import FastAPI
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from .accounts.profiles import AccountProfileService
 from .api.account.routes import build_router as build_account_router
@@ -17,6 +21,27 @@ from .mail.outbox import MailOutboxDispatcher
 from .mail.provider import MailProvider
 from .mail.smtp import QQSmtpMailProvider
 from .storage.database import CommunityDatabase
+
+COMMUNITY_DATABASE_HEAD = "community_0002_accounts_auth_mail"
+
+
+def _database_revision(database: CommunityDatabase) -> str | None:
+    """Read the single Alembic revision without modifying database state."""
+
+    try:
+        with database.engine.connect() as connection:
+            if not inspect(connection).has_table("alembic_version"):
+                return None
+            revisions = tuple(
+                connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalars()
+            )
+    except SQLAlchemyError:
+        return None
+    if len(revisions) != 1:
+        return None
+    return revisions[0]
 
 
 def create_app(
@@ -38,14 +63,28 @@ def create_app(
         session_ttl=timedelta(minutes=resolved_settings.session_ttl_minutes),
         refresh_ttl=timedelta(days=resolved_settings.refresh_ttl_days),
     )
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        revision = _database_revision(resolved_database)
+        application.state.database_revision = revision
+        application.state.database_ready = revision == COMMUNITY_DATABASE_HEAD
+        try:
+            yield
+        finally:
+            application.state.database_ready = False
+
     application = FastAPI(
         title="Veyra Agent Platform Community",
         version=resolved_settings.app_version,
+        lifespan=lifespan,
     )
     application.state.settings = resolved_settings
     application.state.community_database = resolved_database
     application.state.auth_workflows = auth_workflows
     application.state.account_profiles = AccountProfileService(resolved_database)
+    application.state.database_revision = None
+    application.state.database_ready = False
 
     application.include_router(
         build_router(

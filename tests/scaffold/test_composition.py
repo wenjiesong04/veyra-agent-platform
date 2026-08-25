@@ -91,7 +91,7 @@ def test_local_health_reports_identity_and_database_placeholder() -> None:
     }
 
 
-def test_community_health_reports_identity_and_database_placeholder() -> None:
+def test_community_health_reports_unstarted_database_state() -> None:
     settings = CommunitySettings(
         app_version="0.2.0",
         build_sha="community-test-sha",
@@ -103,7 +103,7 @@ def test_community_health_reports_identity_and_database_placeholder() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "schema_version": "health.v1",
-        "status": "ok",
+        "status": "starting",
         "service": "community",
         "app_version": "0.2.0",
         "build_sha": "community-test-sha",
