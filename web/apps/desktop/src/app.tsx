@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Activity, FolderKanban, Gauge, Globe2, Settings2, UserRound } from "lucide-react";
+import { Activity, FolderKanban, Gauge, Globe2 } from "lucide-react";
 import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
 import { ApplicationShell, LinkButton, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
@@ -43,13 +43,6 @@ const navigation: NavigationGroup[] = [
   {
     label: "Connect",
     items: [{ href: desktopRoutePaths.community, label: "Community", icon: Globe2 }],
-  },
-  {
-    label: "Identity",
-    items: [
-      { href: desktopRoutePaths.account, label: "Account", icon: UserRound },
-      { href: desktopRoutePaths.settings, label: "Settings", icon: Settings2 },
-    ],
   },
 ];
 
@@ -140,6 +133,14 @@ function DesktopWorkspace() {
       activeHref={activeHref}
       eyebrow={meta.eyebrow}
       title={meta.title}
+      account={{
+        displayName: t("localWorkspace"),
+        detail: t("notSignedIn"),
+        initials: zh ? "本" : "LW",
+        authenticated: false,
+        accountHref: desktopRoutePaths.account,
+        settingsHref: desktopRoutePaths.settings,
+      }}
       headerActions={scopedProjectId ? <LinkButton href={projectRoutePaths.factory(scopedProjectId)} variant="primary">{zh ? "创建 Agent" : "Create agent"}</LinkButton> : undefined}
     >
       <PageContent route={route} />

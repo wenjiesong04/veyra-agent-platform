@@ -1,8 +1,11 @@
 import { Check, Cloud, KeyRound, LogIn, ShieldCheck } from "lucide-react";
-import type { AccountSummary } from "@veyra/api-contracts";
-import { Button, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { LinkButton, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 
-const account: AccountSummary = { displayName: "Local workspace", mode: "local", workspaceLabel: "This device", permissions: ["Studio", "Runtime", "Library", "Monitor"] };
+function communityLoginHref(): string {
+  const configuredOrigin = import.meta.env.VITE_COMMUNITY_ORIGIN?.trim();
+  const origin = (configuredOrigin || "http://127.0.0.1:5174").replace(/\/+$/, "");
+  return `${origin}/#/login`;
+}
 
 export function AccountPage() {
   const { locale } = useLocale();
@@ -30,6 +33,8 @@ export function AccountPage() {
     community: "社区连接",
     disconnected: "未连接 · 本机模式仍可继续工作",
     manage: "管理连接",
+    displayName: "本机工作区",
+    workspaceLabel: "此设备",
     permissions: ["Studio", "Runtime", "组件库", "监控"],
   } : {
     eyebrow: "Identity boundary",
@@ -55,7 +60,10 @@ export function AccountPage() {
     community: "Community connection",
     disconnected: "Not connected · local mode continues to work",
     manage: "Manage connection",
-    permissions: account.permissions,
+    displayName: "Local workspace",
+    workspaceLabel: "This device",
+    permissions: ["Studio", "Runtime", "Library", "Monitor"],
   };
-  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div><StatusBadge label={copy.guest} tone="good" /></div><div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.profileEyebrow} title={account.displayName} detail={account.workspaceLabel} action={<Tag tone="good">{copy.local}</Tag>} /><div className="account-avatar">V</div><dl className="detail-list"><div><dt>{copy.workspace}</dt><dd>{copy.workspaceValue}</dd></div><div><dt>{copy.sourceFiles}</dt><dd>{copy.sourceValue}</dd></div><div><dt>{copy.runs}</dt><dd>{copy.runsValue}</dd></div></dl><Button icon={LogIn} variant="primary">{copy.connect}</Button></Panel><Panel><SectionHeading eyebrow={copy.capabilities} title={copy.available} /><div className="capability-list">{copy.permissions.map((permission) => <div key={permission}><Check size={15} /><span>{permission}<small>{copy.availableLocally}</small></span></div>)}</div><div className="account-note"><ShieldCheck size={16} /><span>{copy.credentialNote}</span></div></Panel></div><Panel><SectionHeading eyebrow={copy.optional} title={copy.share} detail={copy.optionalDetail} /><div className="connection-card"><span className="connection-icon"><Cloud size={18} /></span><span><strong>{copy.community}</strong><small>{copy.disconnected}</small></span><Button icon={KeyRound} size="sm">{copy.manage}</Button></div></Panel></div>;
+  const loginHref = communityLoginHref();
+  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div><StatusBadge label={copy.guest} tone="good" /></div><div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.profileEyebrow} title={copy.displayName} detail={copy.workspaceLabel} action={<Tag tone="good">{copy.local}</Tag>} /><div className="account-page-avatar">V</div><dl className="detail-list"><div><dt>{copy.workspace}</dt><dd>{copy.workspaceValue}</dd></div><div><dt>{copy.sourceFiles}</dt><dd>{copy.sourceValue}</dd></div><div><dt>{copy.runs}</dt><dd>{copy.runsValue}</dd></div></dl><LinkButton href={loginHref} icon={LogIn} variant="primary">{copy.connect}</LinkButton></Panel><Panel><SectionHeading eyebrow={copy.capabilities} title={copy.available} /><div className="capability-list">{copy.permissions.map((permission) => <div key={permission}><Check size={15} /><span>{permission}<small>{copy.availableLocally}</small></span></div>)}</div><div className="account-note"><ShieldCheck size={16} /><span>{copy.credentialNote}</span></div></Panel></div><Panel><SectionHeading eyebrow={copy.optional} title={copy.share} detail={copy.optionalDetail} /><div className="connection-card"><span className="connection-icon"><Cloud size={18} /></span><span><strong>{copy.community}</strong><small>{copy.disconnected}</small></span><LinkButton href={loginHref} icon={KeyRound} size="sm">{copy.manage}</LinkButton></div></Panel></div>;
 }

@@ -1,7 +1,9 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FolderKanban } from "lucide-react";
 import { parseDesktopRoute, projectRoutePaths } from "@veyra/api-contracts";
+import { ApplicationShell, ThemeProvider } from "@veyra/ui";
 import { DesktopApp } from "./app";
 
 function setViewport(isMobile: boolean) {
@@ -23,14 +25,49 @@ afterEach(() => {
 });
 
 describe("desktop workspace", () => {
-  it("renders the Projects surface and complete top-level navigation", () => {
+  it("renders the Projects surface and complete top-level navigation", async () => {
+    const user = userEvent.setup();
     render(<DesktopApp />);
     expect(screen.getByRole("heading", { name: "Make work repeatable." })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Components" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Monitor" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Factory" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open account menu" }));
+    expect(screen.getByRole("menuitem", { name: "Sign in or register" })).toHaveAttribute("href", "#/account");
+    expect(screen.queryByRole("menuitem", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Sign out" })).not.toBeInTheDocument();
+  });
+
+  it("shows account controls and invokes sign out only for an authenticated account", async () => {
+    const user = userEvent.setup();
+    const onSignOut = vi.fn();
+    render(
+      <ThemeProvider>
+        <ApplicationShell
+          brand={{ name: "Veyra", subtitle: "Agent Platform" }}
+          navigation={[{ label: "Build", items: [{ href: "#/projects", label: "Projects", icon: FolderKanban }] }]}
+          activeHref="#/projects"
+          eyebrow="Workspace"
+          title="Projects"
+          account={{ displayName: "Ada", authenticated: true, accountHref: "#/account", settingsHref: "#/settings", onSignOut }}
+        >
+          <div>Workspace content</div>
+        </ApplicationShell>
+      </ThemeProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Open account menu" }));
+    expect(screen.getByRole("menuitem", { name: "Account" })).toHaveAttribute("href", "#/account");
+    expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "#/settings");
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(onSignOut).toHaveBeenCalledOnce();
+  });
+
+  it("links the local guest account page to Community sign in", () => {
+    window.location.hash = "#/account";
+    render(<DesktopApp />);
+    expect(screen.getByRole("link", { name: "Connect account" })).toHaveAttribute("href", "http://127.0.0.1:5174/#/login");
+    expect(screen.getByText("Guest mode")).toBeInTheDocument();
   });
 
   it("uses Project-first links for project rows and Agent cards", () => {

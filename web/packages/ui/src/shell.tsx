@@ -1,9 +1,9 @@
-import { History, Languages, Menu, Moon, PanelLeftClose, PanelLeftOpen, ShieldCheck, Sparkles, Sun, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, UserRound, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useLocale } from "./i18n";
 import { IconButton } from "./primitives";
 import { useTheme } from "./theme";
-import type { Brand, NavigationGroup } from "./types";
+import type { AccountMenuConfig, Brand, NavigationGroup } from "./types";
 
 type ApplicationShellProps = {
   brand: Brand;
@@ -13,6 +13,7 @@ type ApplicationShellProps = {
   title: string;
   headerActions?: ReactNode;
   children: ReactNode;
+  account?: AccountMenuConfig;
   footer?: ReactNode;
   storageKey?: string;
   onHistoryClick?: () => void;
@@ -28,6 +29,14 @@ function readCollapsed(storageKey: string): boolean {
 
 function readMobileViewport(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 960px)").matches;
+}
+
+function initialsFromName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "V";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
+  return trimmed.slice(0, 2).toUpperCase();
 }
 
 const shellLabelKeys: Record<string, string> = {
@@ -71,7 +80,106 @@ function shellText(value: string, translate: (key: string, fallback?: string) =>
   return translate(shellLabelKeys[value] ?? "", value);
 }
 
-export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, headerActions, children, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
+function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: AccountMenuConfig; collapsed: boolean; onNavigate: () => void }) {
+  const { t } = useLocale();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+  const initials = account.initials?.trim() || initialsFromName(account.displayName);
+  const detail = account.detail ?? t("notSignedIn");
+  const authenticated = account.authenticated === true;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const closeAndNavigate = () => {
+    setOpen(false);
+    onNavigate();
+  };
+
+  const handleSignOut = () => {
+    setOpen(false);
+    account.onSignOut?.();
+    onNavigate();
+  };
+
+  return (
+    <div className={`shell-account ${open ? "is-open" : ""} ${collapsed ? "is-collapsed-account" : ""}`} ref={rootRef}>
+      {open ? (
+        <div className="shell-account-menu" id={menuId} role="menu" aria-label={t("openAccountMenu")}>
+          <div className="shell-account-menu-header">
+            <span className="shell-account-avatar" aria-hidden="true">{initials}</span>
+            <span className="shell-account-menu-copy">
+              <strong>{account.displayName}</strong>
+              <small>{detail}</small>
+            </span>
+          </div>
+          <div className="shell-account-menu-list">
+            {authenticated ? (
+              <>
+                <a className="shell-account-menu-item" role="menuitem" href={account.accountHref} onClick={closeAndNavigate}>
+                  <UserRound size={16} aria-hidden="true" />
+                  <span>{t("accountInfo")}</span>
+                </a>
+                {account.settingsHref ? (
+                  <a className="shell-account-menu-item" role="menuitem" href={account.settingsHref} onClick={closeAndNavigate}>
+                    <Settings2 size={16} aria-hidden="true" />
+                    <span>{t("settings")}</span>
+                  </a>
+                ) : null}
+                <button className="shell-account-menu-item shell-account-menu-signout" role="menuitem" type="button" onClick={handleSignOut}>
+                  <LogOut size={16} aria-hidden="true" />
+                  <span>{t("signOut")}</span>
+                </button>
+              </>
+            ) : (
+              <a className="shell-account-menu-item" role="menuitem" href={account.accountHref} onClick={closeAndNavigate}>
+                <LogIn size={16} aria-hidden="true" />
+                <span>{t("signInOrRegister")}</span>
+              </a>
+            )}
+          </div>
+        </div>
+      ) : null}
+      <button
+        ref={triggerRef}
+        className="shell-account-trigger"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        aria-label={open ? t("closeAccountMenu") : t("openAccountMenu")}
+        title={account.displayName}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="shell-account-avatar" aria-hidden="true">{initials}</span>
+        <span className="shell-account-trigger-copy">
+          <strong>{account.displayName}</strong>
+          <small>{detail}</small>
+        </span>
+      </button>
+    </div>
+  );
+}
+
+export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, headerActions, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
@@ -126,6 +234,13 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   const languageIsEnglish = locale === "en";
   const localizedEyebrow = shellText(eyebrow, t);
   const localizedTitle = shellText(title, t);
+  const resolvedAccount: AccountMenuConfig = account ?? {
+    displayName: t("localWorkspace"),
+    detail: t("notSignedIn"),
+    initials: locale === "zh" ? "本" : "LW",
+    authenticated: false,
+    accountHref: "#/account",
+  };
 
   return (
     <div className={`app-shell ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-mobile-open" : ""}`}>
@@ -135,20 +250,17 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
             <span className="brand-mark" aria-hidden="true"><img src={iconSrc} alt="" /></span>
             <span className="brand-copy"><strong>{brand.name}</strong><small>{shellText(brand.subtitle, t)}</small></span>
           </a>
-          <IconButton
+          <button
             className="sidebar-toggle"
-            icon={collapsed ? PanelLeftOpen : PanelLeftClose}
-            label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
+            type="button"
+            aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
             aria-expanded={!collapsed}
             aria-controls="primary-navigation"
             onClick={() => setCollapsed((value) => !value)}
-          />
+          >
+            {collapsed ? <PanelLeftOpen size={17} aria-hidden="true" /> : <PanelLeftClose size={17} aria-hidden="true" />}
+          </button>
           <IconButton ref={sidebarCloseRef} className="sidebar-close" icon={X} label={t("closeNavigation")} aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={closeMobile} />
-        </div>
-
-        <div className="sidebar-context">
-          <span className="context-mark" aria-hidden="true"><Sparkles size={16} /><span /></span>
-          <span className="context-copy"><small>{t("workspace")}</small><strong>{t("readyToBuild")}</strong><em>{t("localControlSurface")}</em></span>
         </div>
 
         <nav className="sidebar-nav">
@@ -166,8 +278,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
         </nav>
 
         <div className="sidebar-footer">
-          <ShieldCheck size={18} aria-hidden="true" />
-          <span><strong>{t("localOnly")}</strong><small>{t("noAutomaticExecution")}</small></span>
+          <SidebarAccountMenu account={resolvedAccount} collapsed={collapsed && !mobileViewport} onNavigate={closeMobile} />
           {footer}
         </div>
       </aside>

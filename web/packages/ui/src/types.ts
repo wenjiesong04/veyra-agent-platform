@@ -19,3 +19,14 @@ export type NavigationGroup = {
   label: string;
   items: NavigationItem[];
 };
+
+/** Sidebar account chip + popover. Local mode stays useful without a remote identity. */
+export type AccountMenuConfig = {
+  displayName: string;
+  detail?: string;
+  initials?: string;
+  authenticated?: boolean;
+  accountHref: string;
+  settingsHref?: string;
+  onSignOut?: () => void;
+};
