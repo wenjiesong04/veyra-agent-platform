@@ -1,0 +1,6 @@
+import { Check, LogIn, ShieldCheck } from "lucide-react";
+import { Button, Panel, SectionHeading, StatusBadge } from "@veyra/ui";
+
+export function CommunityAccountPage() {
+  return <div className="community-page-stack"><div className="community-intro"><div><span className="ui-eyebrow">Community identity</span><h2>Publish when your definition is ready.</h2><p>Browsing and local imports remain available without signing in.</p></div><StatusBadge label="Not connected" tone="neutral" /></div><Panel className="account-connect-panel"><div className="account-connect-mark"><LogIn size={22} /></div><div><h3>Connect a community account</h3><p>Use an account only for publishing, saving, reviews, and lineage. Local source stays on your device.</p><div className="account-benefits"><span><Check size={14} />Publish versions</span><span><Check size={14} />Save entries</span><span><Check size={14} />Fork with lineage</span></div></div><Button icon={LogIn} variant="primary">Connect account</Button></Panel><Panel><SectionHeading eyebrow="Boundary" title="Public catalog, local execution" detail="The Community service stores published metadata and packages. It does not execute downloaded definitions." action={<ShieldCheck size={18} />} /></Panel></div>;
+}
