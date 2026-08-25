@@ -7,7 +7,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from ...accounts.identifiers import normalize_email, normalize_handle
+from ...accounts.identifiers import (
+    normalize_display_name,
+    normalize_email,
+    normalize_handle,
+)
 from ...accounts.profiles import AccountProfile
 
 _SIX_DIGITS = re.compile(r"^\d{6}$")
@@ -50,6 +54,11 @@ class RegisterRequest(EmailRequest):
         if not _SIX_DIGITS.fullmatch(value):
             raise ValueError("verification code must contain six digits")
         return value
+
+    @field_validator("display_name")
+    @classmethod
+    def _normalize_display_name(cls, value: str | None) -> str | None:
+        return normalize_display_name(value) if value is not None else None
 
 
 class LoginRequest(EmailRequest):

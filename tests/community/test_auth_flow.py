@@ -203,6 +203,27 @@ def test_canonical_code_routes_optional_handle_and_me_patch(
     assert invalid_purpose.status_code == 422
 
 
+def test_blank_registration_display_name_is_422_without_consuming_code(
+    community: CommunityHarness,
+) -> None:
+    email = "blank-name@example.com"
+    code = _request_registration_code(community, email)
+    payload = {
+        "email": email,
+        "password": "correct-horse-battery-staple",
+        "verification_code": code,
+        "display_name": "   ",
+    }
+
+    invalid = community.client.post("/api/v1/auth/register", json=payload)
+    assert invalid.status_code == 422
+
+    payload["display_name"] = "Valid Name"
+    registered = community.client.post("/api/v1/auth/register", json=payload)
+    assert registered.status_code == 201
+    assert registered.json()["account"]["display_name"] == "Valid Name"
+
+
 def test_login_has_generic_failures_and_code_requests_do_not_enumerate(
     community: CommunityHarness,
 ) -> None:
