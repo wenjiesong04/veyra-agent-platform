@@ -1,7 +1,7 @@
 import { Compass, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { communityRoutePaths } from "@veyra/api-contracts";
-import { ApplicationShell, LinkButton, ThemeProvider, type NavigationGroup } from "@veyra/ui";
+import { ApplicationShell, LinkButton, ThemeProvider, useLocale, type NavigationGroup } from "@veyra/ui";
 import { CatalogPage } from "./pages/catalog";
 import { CommunityAccountPage } from "./pages/account";
 import { EntryDetailPage } from "./pages/detail";
@@ -43,12 +43,14 @@ function parseCommunityRoute(path: string): CommunityLocation {
 }
 
 function CommunityWorkspace() {
+  const { locale } = useLocale();
   const location = parseCommunityRoute(useHashPath());
   const title = location.kind === "account" ? "Account" : location.kind === "entry" ? "Entry detail" : location.kind === "not-found" ? "Route not found" : "Community";
   const activeHref = location.kind === "account" ? "#/account" : communityRoutePaths.catalog;
+  const browseLabel = locale === "zh" ? "浏览目录" : "Browse catalog";
 
   const content = location.kind === "account" ? <CommunityAccountPage /> : location.kind === "entry" ? <EntryDetailPage owner={location.owner} slug={location.slug} versionId={location.versionId} /> : location.kind === "not-found" ? <CommunityNotFoundPage /> : <CatalogPage />;
-  return <ApplicationShell brand={{ name: "Veyra", subtitle: "Community", mark: "V" }} navigation={navigation} activeHref={activeHref} eyebrow="Version-aware catalog" title={title} headerActions={<LinkButton href={communityRoutePaths.catalog} icon={Compass} variant="primary">Browse catalog</LinkButton>}><div className="community-content">{content}</div></ApplicationShell>;
+  return <ApplicationShell brand={{ name: "Veyra", subtitle: "Community", mark: "V" }} navigation={navigation} activeHref={activeHref} eyebrow="Version-aware catalog" title={title} headerActions={<LinkButton href={communityRoutePaths.catalog} icon={Compass} variant="primary">{browseLabel}</LinkButton>}><div className="community-content">{content}</div></ApplicationShell>;
 }
 
 export function CommunityApp() {
