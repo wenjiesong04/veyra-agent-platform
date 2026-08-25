@@ -1,12 +1,12 @@
 # Veyra Agent Platform — Canonical Development Design
 
 > Status: **ONLY CURRENT PRODUCT AND ENGINEERING AUTHORITY**
-> Revision: 1.1
+> Revision: 1.2
 > Date: 2026-08-25
 > Repository: `/Users/spectre/PycharmProjects/veyra-agent-platform`
 > Development branch: `codex/agent-platform`
 > Legacy source: `/Users/spectre/PycharmProjects/veyra @ 1ffb4cdd45c798556390c20e53fc2d265cd56471`
-> Implementation status: greenfield repository bootstrap; product features are not implemented yet
+> Implementation status: W0 environment, contracts, dual web shells, and CI baseline implemented; V1 product services remain in development
 
 This document starts from a new, independent project. It does not assume that the old Veyra repository will be cleaned, merged, or used as a runtime dependency. The old repository is read-only migration evidence. Every extracted behavior must be re-namespaced, simplified, tested, and recorded in this document or a later migration ledger.
 
@@ -315,8 +315,8 @@ That combination is the product. No single individual feature is the moat.
 
 #### Veyra Community
 
-- optional account
-- Agent and Component publishing
+- email-verified account and public creator profile
+- Agent and template publishing
 - immutable versions
 - download/import
 - Fork lineage
@@ -377,15 +377,38 @@ Optional Community Server
 
 ---
 
-## 5. Agent and Component Formats
+## 5. Project, Agent, and Component Formats
+
+### 5.0 Project directory
+
+A Project is a user-owned directory and the primary Studio, Library, Runtime,
+and Orchestrator scope. It contains one manifest and any number of Agent
+directories:
+
+```text
+<Project>/
+  project.vproject.yaml
+  agents/
+    <agent-slug>/
+      agent.vagent.yaml
+      README.md
+      tests/
+  resources/
+  tests/
+```
+
+The manifest contains a stable UUIDv7 `project_id`, Project name, listed Agent
+UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
+Run state, account tokens, secrets, caches, and event history never enter the
+Project directory.
 
 ### 5.1 Source and package files
 
 ```text
 Agent source       *.vagent.yaml
 Agent package      *.vagent
-Component source   *.vcomponent.yaml
-Component package  *.vcomponent
+Component source   *.vcomponent.yaml (platform-owned in V1)
+Component package  *.vcomponent (publishing deferred)
 ```
 
 Source is human-readable and Git-friendly. Package is an immutable archive containing canonical source, lock data, documentation, icons, test fixtures, and signatures.
@@ -409,10 +432,12 @@ Published versions expose a versioned discovery and provenance record.
 ### 5.3 Agent source example
 
 ```yaml
+schema_version: "1.0"
 agentspec_version: "26.1"
 component_type: Flow
 
-id: github-bug-triage
+agent_id: 01a03795-a5b0-7234-ba76-5c5f0e029334
+slug: github-bug-triage
 name: GitHub Bug Triage
 description: Analyze new bug reports and prepare a verified response.
 
@@ -877,7 +902,7 @@ Trash retention defaults to 30 days. Published or referenced versions are yanked
 
 ## 11. SQLite Data Model
 
-Use application-generated UUIDv7/ULID text IDs, UTC timestamps, foreign keys, WAL, and forward-only migrations.
+Use application-generated UUIDv7 text IDs, UTC timestamps, foreign keys, WAL, and forward-only migrations.
 
 ### 11.1 Agent graph
 
@@ -949,7 +974,7 @@ Logout does not delete or change local Agent IDs, versions, or Runs.
 
 Local Guest Mode provides Studio, Runtime, Orchestrator, Monitor, Library, and Files without login.
 
-Cloud Account Mode adds:
+Connected Account Mode adds:
 
 - publish
 - download/import
@@ -962,32 +987,35 @@ Cloud Account Mode adds:
 
 ### 12.2 Authentication
 
-First choice: GitHub OAuth/OIDC with PKCE/device flow.
-
-Email/password may be added with:
+V1 registration verifies an email code and then sets a password. Subsequent
+login uses normalized email plus password. Password recovery verifies a new
+email challenge. The implementation requires:
 
 - Argon2id
-- email verification
+- CSPRNG six-digit codes stored only as HMAC digests
+- challenge purpose, expiry, resend, attempt, and consumed state
 - opaque server sessions
-- hashed refresh/session tokens
+- hashed rotating refresh/session tokens and reuse detection
 - CSRF/Origin/SameSite/secure cookie
 - password reset
-- rate limit
+- email/IP/device rate limits and anti-enumeration responses
 - device/session revoke
 
-Tokens live in Keychain, not local SQLite plaintext.
+Desktop tokens live in Keychain, not local SQLite plaintext. SMTP credentials
+come from explicitly supplied process environment variables; the services never
+auto-load a Project-directory `.env`.
 
 ### 12.3 Community service
 
 Community is a separate FastAPI deployment. Never expose the local desktop service publicly.
 
-Closed single-instance alpha may use SQLite WAL. Public multi-user launch uses PostgreSQL plus object storage.
+The public V1 beta uses PostgreSQL plus S3-compatible object storage. SQLite is
+permitted only for isolated development and tests.
 
 Community data:
 
-- users/profiles/oauth/sessions
+- users/profiles/email challenges/sessions/devices
 - Agents and immutable versions
-- Components and immutable versions
 - version/Fork edges
 - Stars
 - version-bound Reviews
@@ -1015,7 +1043,7 @@ Downloaded content is not automatically installed or run. Import again validates
 
 ### 12.5 Community UI
 
-Agent/Component detail includes:
+Agent/template detail includes:
 
 - source and behavior hashes
 - author/organization
@@ -1043,18 +1071,21 @@ Star does not mean safe or effective.
 - `GET /api/v1/runtime/capabilities`
 - `GET /api/v1/factory/status`
 
-### Agents
+### Projects and Agents
 
-- `GET/POST /api/v1/agents`
-- `GET /api/v1/agents/{id}`
-- `GET/PATCH /api/v1/agents/{id}/draft`
-- `POST /api/v1/agents/{id}/generate`
-- `POST /api/v1/agents/{id}/validate`
-- `POST /api/v1/agents/{id}/commit`
-- `GET /api/v1/agents/{id}/versions`
-- `POST /api/v1/agents/{id}/fork`
+- `GET/POST /api/v1/projects`
+- `POST /api/v1/projects/open`
+- `GET /api/v1/projects/{project_id}`
+- `GET/POST /api/v1/projects/{project_id}/agents`
+- `GET /api/v1/projects/{project_id}/agents/{agent_id}`
+- `GET/PATCH /api/v1/projects/{project_id}/agents/{agent_id}/draft`
+- `POST /api/v1/projects/{project_id}/agents/{agent_id}/generate`
+- `POST /api/v1/projects/{project_id}/agents/{agent_id}/validate`
+- `POST /api/v1/projects/{project_id}/agents/{agent_id}/commit`
+- `GET /api/v1/projects/{project_id}/agents/{agent_id}/versions`
+- `POST /api/v1/projects/{project_id}/agents/{agent_id}/fork`
 - `POST /api/v1/import`
-- `GET /api/v1/agents/{id}/export`
+- `GET /api/v1/projects/{project_id}/agents/{agent_id}/export`
 
 ### Components and files
 
@@ -1068,7 +1099,7 @@ Star does not mean safe or effective.
 
 ### Runtime
 
-- `POST /api/v1/agents/{id}/run`
+- `POST /api/v1/projects/{project_id}/agents/{agent_id}/run`
 - `GET /api/v1/runs`
 - `GET /api/v1/runs/{id}`
 - `GET /api/v1/runs/{id}/events?after_seq=N`
@@ -1089,11 +1120,17 @@ Star does not mean safe or effective.
 - `GET /api/v1/orchestrator/status`
 - `GET /api/v1/orchestrator/stream`
 
-### Account/community proxy
+### Account and Community
 
-- `GET /api/v1/account`
-- `POST /api/v1/account/login/start`
-- `POST /api/v1/account/logout`
+- `POST /api/v1/auth/verification-codes`
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `POST /api/v1/auth/password-reset/request`
+- `POST /api/v1/auth/password-reset/confirm`
+- `GET/PATCH /api/v1/account/me`
+- `GET/DELETE /api/v1/account/sessions/{id}`
 - `GET /api/v1/community/catalog`
 - `POST /api/v1/community/publish`
 - `POST /api/v1/community/forks`
@@ -1308,7 +1345,7 @@ Historical smoke counts are not a quality goal.
 - email verification, password login, recovery, and session management
 - PostgreSQL Community database and object storage
 - upload quarantine
-- Agent/Component versions
+- Agent/template versions
 - download/import/Fork/Star/Review/Report
 - Community UI
 
