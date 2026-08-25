@@ -39,6 +39,7 @@ def build_router() -> APIRouter:
         return MeResponse(account=AccountResponse.from_profile(profile))
 
     @router.patch("/profile", response_model=MeResponse)
+    @router.patch("/me", response_model=MeResponse)
     def update_profile(payload: ProfileUpdateRequest, request: Request) -> MeResponse:
         authenticated = authenticate_request(request)
         require_csrf(request, authenticated, get_settings(request))

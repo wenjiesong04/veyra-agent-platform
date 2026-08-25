@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from ...auth.errors import (
     AuthenticationFailure,
+    CsrfFailure,
     RegistrationUnavailable,
     VerificationCodeFailure,
 )
@@ -21,15 +22,14 @@ from .schemas import (
     PasswordResetConfirmRequest,
     RegisterRequest,
     ResetCompleteResponse,
+    VerificationCodeRequest,
 )
 from .security import (
-    REFRESH_COOKIE,
-    authenticate_request,
+    auth_cookie_names,
     clear_auth_cookies,
     get_settings,
     get_workflows,
     request_context,
-    require_csrf,
     require_refresh_csrf,
     require_trusted_origin,
     set_auth_cookies,
@@ -40,6 +40,22 @@ def build_router() -> APIRouter:
     """Build only the versioned public Community authentication router."""
 
     router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+    @router.post(
+        "/verification-codes",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=AcceptedResponse,
+    )
+    def request_verification_code(
+        payload: VerificationCodeRequest, request: Request
+    ) -> AcceptedResponse:
+        require_trusted_origin(request, get_settings(request))
+        context = request_context(request, payload.device_name)
+        if payload.purpose == "registration":
+            get_workflows(request).request_registration_code(payload.email, context)
+        else:
+            get_workflows(request).request_password_reset_code(payload.email, context)
+        return AcceptedResponse()
 
     @router.post(
         "/registration-code",
@@ -117,7 +133,7 @@ def build_router() -> APIRouter:
     def refresh(request: Request) -> JSONResponse:
         settings = get_settings(request)
         csrf_token = require_refresh_csrf(request, settings)
-        refresh_token = request.cookies.get(REFRESH_COOKIE)
+        refresh_token = request.cookies.get(auth_cookie_names(settings).refresh)
         if refresh_token is None:
             return _invalid_refresh_response(settings)
         try:
@@ -127,6 +143,10 @@ def build_router() -> APIRouter:
                 context=request_context(request, None),
             )
             profile = request.app.state.account_profiles.get(issue.user_id)
+        except CsrfFailure as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="csrf_failed"
+            ) from error
         except AuthenticationFailure:
             return _invalid_refresh_response(settings)
         if profile is None:
@@ -143,12 +163,22 @@ def build_router() -> APIRouter:
     def logout(request: Request) -> Response:
         settings = get_settings(request)
         response = Response(status_code=status.HTTP_204_NO_CONTENT)
-        if request.cookies.get(REFRESH_COOKIE) is None:
+        require_trusted_origin(request, settings)
+        refresh_token = request.cookies.get(auth_cookie_names(settings).refresh)
+        if refresh_token is None:
             clear_auth_cookies(response, settings)
             return response
-        authenticated = authenticate_request(request)
-        require_csrf(request, authenticated, settings)
-        get_workflows(request).sessions.revoke_current(authenticated, "logout")
+        csrf_token = require_refresh_csrf(request, settings)
+        try:
+            get_workflows(request).sessions.revoke_refresh_family(
+                refresh_token=refresh_token,
+                csrf_token=csrf_token,
+                reason="logout",
+            )
+        except CsrfFailure as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="csrf_failed"
+            ) from error
         clear_auth_cookies(response, settings)
         return response
 

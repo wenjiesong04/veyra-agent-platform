@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -13,6 +16,7 @@ from veyra_agent_platform.community.api.auth.security import (
 )
 from veyra_agent_platform.community.auth.errors import AuthenticationFailure
 from veyra_agent_platform.community.auth.sessions import ClientContext
+from veyra_agent_platform.community.storage.identifiers import utc_now
 from veyra_agent_platform.community.storage.schema import (
     CommunityMailOutbox,
     CommunitySession,
@@ -147,6 +151,58 @@ def test_registration_hmac_code_storage_and_account_profile(
     assert "ip" not in sessions.json()["sessions"][0]
 
 
+def test_canonical_code_routes_optional_handle_and_me_patch(
+    community: CommunityHarness,
+) -> None:
+    email = "private.owner@example.com"
+    code_response = community.client.post(
+        "/api/v1/auth/verification-codes",
+        json={
+            "email": email,
+            "purpose": "registration",
+            "device_name": "Owner phone",
+        },
+    )
+    assert code_response.status_code == 202
+    code = community.mail.messages[-1].verification_code
+
+    registered = community.client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": "correct-horse-battery-staple",
+            "verification_code": code,
+            "display_name": "Original Name",
+        },
+    )
+    assert registered.status_code == 201
+    account = registered.json()["account"]
+    assert re.fullmatch(r"veyra-[a-f0-9]{16}", account["handle"])
+    assert "private" not in account["handle"]
+    assert account["display_name"] == "Original Name"
+
+    updated = community.client.patch(
+        "/api/v1/account/me",
+        json={"display_name": "Changed Name"},
+        headers=_csrf_headers(community),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["account"]["display_name"] == "Changed Name"
+
+    reset_request = community.client.post(
+        "/api/v1/auth/verification-codes",
+        json={"email": email, "purpose": "password_reset"},
+    )
+    assert reset_request.status_code == 202
+    assert community.mail.messages[-1].purpose.value == "password_reset"
+
+    invalid_purpose = community.client.post(
+        "/api/v1/auth/verification-codes",
+        json={"email": email, "purpose": "login"},
+    )
+    assert invalid_purpose.status_code == 422
+
+
 def test_login_has_generic_failures_and_code_requests_do_not_enumerate(
     community: CommunityHarness,
 ) -> None:
@@ -236,6 +292,69 @@ def test_logout_then_login_and_refresh_smoke(community: CommunityHarness) -> Non
     )
     assert refreshed.status_code == 200
     assert refreshed.json()["authenticated"] is True
+
+
+def test_logout_with_expired_access_uses_refresh_lineage(
+    community: CommunityHarness,
+) -> None:
+    _register(community)
+    with community.database.transaction() as session:
+        record = session.scalar(select(CommunitySession))
+        assert record is not None
+        record.session_expires_at = utc_now() - timedelta(seconds=1)
+
+    assert community.client.get("/api/v1/account/me").status_code == 401
+    logout = community.client.post(
+        "/api/v1/auth/logout",
+        headers={**_csrf_headers(community), "Origin": "http://testserver"},
+    )
+    assert logout.status_code == 204
+    assert community.client.cookies.get(SESSION_COOKIE) is None
+    assert community.client.cookies.get(REFRESH_COOKIE) is None
+    assert community.client.cookies.get(CSRF_COOKIE) is None
+
+    with community.database.transaction() as session:
+        record = session.scalar(select(CommunitySession))
+        assert record is not None
+        assert record.revoked_at is not None
+        assert record.revoke_reason == "logout"
+
+
+def test_refresh_server_csrf_mismatch_is_forbidden_not_internal_error(
+    community: CommunityHarness,
+) -> None:
+    _register(community)
+    bad_csrf = "csrf-not-bound-to-this-session"
+    community.client.cookies.set(
+        CSRF_COOKIE,
+        bad_csrf,
+        domain="testserver.local",
+        path="/",
+    )
+    response = community.client.post(
+        "/api/v1/auth/refresh", headers={CSRF_HEADER: bad_csrf}
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "csrf_failed"}
+
+
+def test_logout_with_invalid_refresh_still_clears_local_cookies(
+    community: CommunityHarness,
+) -> None:
+    _register(community)
+    csrf = community.client.cookies.get(CSRF_COOKIE)
+    assert csrf is not None
+    community.client.cookies.set(
+        REFRESH_COOKIE,
+        "invalid-refresh-token",
+        domain="testserver.local",
+        path="/",
+    )
+    response = community.client.post("/api/v1/auth/logout", headers={CSRF_HEADER: csrf})
+    assert response.status_code == 204
+    assert community.client.cookies.get(SESSION_COOKIE) is None
+    assert community.client.cookies.get(REFRESH_COOKIE) is None
+    assert community.client.cookies.get(CSRF_COOKIE) is None
 
 
 def test_password_reset_is_anti_enumeration_and_revokes_existing_sessions(

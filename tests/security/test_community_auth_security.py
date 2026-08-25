@@ -5,7 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi import Response
 
+from veyra_agent_platform.community.api.auth.security import (
+    DEVELOPMENT_AUTH_COOKIE_NAMES,
+    PRODUCTION_AUTH_COOKIE_NAMES,
+    auth_cookie_names,
+    clear_auth_cookies,
+    set_auth_cookies,
+)
+from veyra_agent_platform.community.auth.sessions import SessionIssue
+from veyra_agent_platform.community.auth.tokens import SessionSecrets
+from veyra_agent_platform.community.config import CommunitySettings
 from veyra_agent_platform.community.mail.config import MailSettings
 
 
@@ -79,3 +90,52 @@ def test_mail_settings_do_not_auto_load_cwd_dotenv(
 
     settings = MailSettings()
     assert settings.is_configured is False
+
+
+def test_cookie_names_and_secure_flags_follow_deployment_mode() -> None:
+    issue = SessionIssue(
+        user_id="user-id",
+        session_id="session-id",
+        secrets=SessionSecrets(
+            session_token="session-token",
+            refresh_token="refresh-token",
+            csrf_token="csrf-token",
+        ),
+    )
+    development = CommunitySettings(
+        mode="development",
+        auth_hmac_secret="development-auth-secret-that-is-long-enough",
+    )
+    test_mode = CommunitySettings(
+        mode="test",
+        auth_hmac_secret="test-auth-secret-that-is-long-enough-for-tests",
+    )
+    production = CommunitySettings(
+        mode="production",
+        database_url="postgresql+psycopg://veyra@db/community",
+        build_sha="0123456789abcdef",
+        auth_hmac_secret="production-auth-secret-that-is-long-enough",
+        public_origin="https://community.example.test",
+    )
+
+    assert auth_cookie_names(development) == DEVELOPMENT_AUTH_COOKIE_NAMES
+    assert auth_cookie_names(test_mode) == DEVELOPMENT_AUTH_COOKIE_NAMES
+    assert auth_cookie_names(production) == PRODUCTION_AUTH_COOKIE_NAMES
+
+    development_response = Response()
+    set_auth_cookies(development_response, issue, development)
+    development_headers = development_response.headers.getlist("set-cookie")
+    assert all("__Host-" not in header for header in development_headers)
+    assert all("; Secure" not in header for header in development_headers)
+
+    production_response = Response()
+    set_auth_cookies(production_response, issue, production)
+    production_headers = production_response.headers.getlist("set-cookie")
+    assert all("__Host-veyra-" in header for header in production_headers)
+    assert all("; Secure" in header for header in production_headers)
+
+    clear_response = Response()
+    clear_auth_cookies(clear_response, production)
+    clear_headers = clear_response.headers.getlist("set-cookie")
+    assert all("__Host-veyra-" in header for header in clear_headers)
+    assert all("; Secure" in header for header in clear_headers)

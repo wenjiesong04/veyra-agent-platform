@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import cast
 from urllib.parse import urlsplit
@@ -14,10 +15,48 @@ from ...auth.sessions import AuthenticatedSession, ClientContext, SessionIssue
 from ...auth.workflows import CommunityAuthWorkflows
 from ...config import CommunitySettings
 
-SESSION_COOKIE = "__Host-veyra-session"
-REFRESH_COOKIE = "__Host-veyra-refresh"
-CSRF_COOKIE = "__Host-veyra-csrf"
+DEVELOPMENT_SESSION_COOKIE = "veyra-session"
+DEVELOPMENT_REFRESH_COOKIE = "veyra-refresh"
+DEVELOPMENT_CSRF_COOKIE = "veyra-csrf"
+PRODUCTION_SESSION_COOKIE = "__Host-veyra-session"
+PRODUCTION_REFRESH_COOKIE = "__Host-veyra-refresh"
+PRODUCTION_CSRF_COOKIE = "__Host-veyra-csrf"
+
+# Compatibility aliases describe the local browser contract. Runtime code must
+# always resolve names from CommunitySettings through auth_cookie_names().
+SESSION_COOKIE = DEVELOPMENT_SESSION_COOKIE
+REFRESH_COOKIE = DEVELOPMENT_REFRESH_COOKIE
+CSRF_COOKIE = DEVELOPMENT_CSRF_COOKIE
 CSRF_HEADER = "X-CSRF-Token"
+
+
+@dataclass(frozen=True)
+class AuthCookieNames:
+    """Mode-specific browser cookie names exported for clients and tests."""
+
+    session: str
+    refresh: str
+    csrf: str
+
+
+DEVELOPMENT_AUTH_COOKIE_NAMES = AuthCookieNames(
+    session=DEVELOPMENT_SESSION_COOKIE,
+    refresh=DEVELOPMENT_REFRESH_COOKIE,
+    csrf=DEVELOPMENT_CSRF_COOKIE,
+)
+PRODUCTION_AUTH_COOKIE_NAMES = AuthCookieNames(
+    session=PRODUCTION_SESSION_COOKIE,
+    refresh=PRODUCTION_REFRESH_COOKIE,
+    csrf=PRODUCTION_CSRF_COOKIE,
+)
+
+
+def auth_cookie_names(settings: CommunitySettings) -> AuthCookieNames:
+    """Return the only cookie-name set valid for this deployment mode."""
+
+    if settings.secure_cookies:
+        return PRODUCTION_AUTH_COOKIE_NAMES
+    return DEVELOPMENT_AUTH_COOKIE_NAMES
 
 
 def get_workflows(request: Request) -> CommunityAuthWorkflows:
@@ -53,7 +92,8 @@ def request_context(request: Request, device_name: str | None) -> ClientContext:
 def authenticate_request(request: Request) -> AuthenticatedSession:
     """Authenticate only the opaque HttpOnly session cookie."""
 
-    session_token = request.cookies.get(SESSION_COOKIE)
+    names = auth_cookie_names(get_settings(request))
+    session_token = request.cookies.get(names.session)
     if session_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -76,7 +116,7 @@ def require_csrf(
     """Protect an authenticated unsafe request with origin and double-submit CSRF."""
 
     require_trusted_origin(request, settings)
-    cookie_token = request.cookies.get(CSRF_COOKIE)
+    cookie_token = request.cookies.get(auth_cookie_names(settings).csrf)
     header_token = request.headers.get(CSRF_HEADER)
     if (
         cookie_token is None
@@ -96,7 +136,7 @@ def require_refresh_csrf(request: Request, settings: CommunitySettings) -> str:
     """Check browser CSRF evidence before a refresh-cookie rotation request."""
 
     require_trusted_origin(request, settings)
-    cookie_token = request.cookies.get(CSRF_COOKIE)
+    cookie_token = request.cookies.get(auth_cookie_names(settings).csrf)
     header_token = request.headers.get(CSRF_HEADER)
     if (
         cookie_token is None
@@ -135,8 +175,9 @@ def set_auth_cookies(
     """Set HttpOnly access/refresh cookies and a session-bound CSRF cookie."""
 
     secure = settings.secure_cookies
+    names = auth_cookie_names(settings)
     response.set_cookie(
-        SESSION_COOKIE,
+        names.session,
         issue.secrets.session_token,
         max_age=_seconds(settings.session_ttl_minutes, "minutes"),
         httponly=True,
@@ -145,7 +186,7 @@ def set_auth_cookies(
         path="/",
     )
     response.set_cookie(
-        REFRESH_COOKIE,
+        names.refresh,
         issue.secrets.refresh_token,
         max_age=_seconds(settings.refresh_ttl_days, "days"),
         httponly=True,
@@ -154,7 +195,7 @@ def set_auth_cookies(
         path="/",
     )
     response.set_cookie(
-        CSRF_COOKIE,
+        names.csrf,
         issue.secrets.csrf_token,
         max_age=_seconds(settings.refresh_ttl_days, "days"),
         httponly=False,
@@ -167,7 +208,8 @@ def set_auth_cookies(
 def clear_auth_cookies(response: Response, settings: CommunitySettings) -> None:
     """Expire every cookie used for Community account authentication."""
 
-    for cookie_name in (SESSION_COOKIE, REFRESH_COOKIE, CSRF_COOKIE):
+    names = auth_cookie_names(settings)
+    for cookie_name in (names.session, names.refresh, names.csrf):
         response.delete_cookie(
             cookie_name,
             path="/",

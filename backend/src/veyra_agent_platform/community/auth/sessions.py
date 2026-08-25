@@ -190,6 +190,29 @@ class SessionManager:
             if record is not None and record.user_id == authenticated.user_id:
                 self._sessions.revoke(session, record, now=utc_now(), reason=reason)
 
+    def revoke_refresh_family(
+        self, *, refresh_token: str, csrf_token: str, reason: str
+    ) -> bool:
+        """Revoke a refresh lineage even when its short-lived access has expired."""
+
+        refresh_hash = self._digester.opaque_token_digest("refresh", refresh_token)
+        csrf_hash = self._digester.opaque_token_digest("csrf", csrf_token)
+        with self._database.transaction() as session:
+            record = self._sessions.find_by_refresh_hash(
+                session, refresh_hash, lock=True
+            )
+            if record is None:
+                return False
+            if not hmac.compare_digest(record.csrf_token_hash, csrf_hash):
+                raise CsrfFailure()
+            self._sessions.revoke_family(
+                session,
+                family_id=record.family_id,
+                now=utc_now(),
+                reason=reason,
+            )
+            return True
+
     def revoke_user_sessions(self, user_id: str, reason: str) -> None:
         """Revoke all sessions after a password reset or account safety event."""
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -100,7 +101,7 @@ class CommunityAuthWorkflows:
         self,
         *,
         email: str,
-        handle: str,
+        handle: str | None,
         password: str,
         verification_code: str,
         display_name: str | None,
@@ -109,15 +110,17 @@ class CommunityAuthWorkflows:
         """Consume a registration code, create an account, and issue a session."""
 
         normalized_email = normalize_email(email)
-        normalized_handle = normalize_handle(handle)
+        requested_handle = normalize_handle(handle) if handle is not None else None
         normalized_display_name = (
             normalize_display_name(display_name) if display_name is not None else None
         )
         password_hash = self._passwords.hash_new_password(password)
         user_id: str | None = None
+        registered_handle: str | None = None
         try:
             with self._database.transaction() as session:
                 now = utc_now()
+                resolved_handle: str | None = None
                 allowed = self._rates.record_attempt(
                     session,
                     code_attempt_targets(
@@ -144,36 +147,49 @@ class CommunityAuthWorkflows:
                     existing_email = self._users.find_by_email(
                         session, normalized_email
                     )
+                    resolved_handle = requested_handle or self._available_handle(
+                        session
+                    )
                     existing_handle = self._users.find_by_handle(
-                        session, normalized_handle
+                        session, resolved_handle
                     )
                     continue_registration = (
                         existing_email is None and existing_handle is None
                     )
-                if continue_registration:
+                if continue_registration and resolved_handle is not None:
                     user = self._users.create(
                         session,
                         email_normalized=normalized_email,
-                        handle=normalized_handle,
+                        handle=resolved_handle,
                         password_hash=password_hash,
                         display_name=normalized_display_name,
                         now=now,
                     )
                     user_id = user.id
+                    registered_handle = resolved_handle
         except IntegrityError as error:
             raise RegistrationUnavailable() from error
-        if user_id is None:
+        if user_id is None or registered_handle is None:
             raise RegistrationUnavailable()
         session_issue = self.sessions.issue(user_id, context)
         return AuthenticatedAccount(
             profile=AccountProfile(
                 id=user_id,
                 email=normalized_email,
-                handle=normalized_handle,
+                handle=registered_handle,
                 display_name=normalized_display_name,
             ),
             session=session_issue,
         )
+
+    def _available_handle(self, session: Session) -> str:
+        """Generate a public handle with no data derived from the private email."""
+
+        for _ in range(16):
+            candidate = f"veyra-{secrets.token_hex(8)}"
+            if self._users.find_by_handle(session, candidate) is None:
+                return candidate
+        raise RegistrationUnavailable()
 
     def login(
         self, *, email: str, password: str, context: ClientContext

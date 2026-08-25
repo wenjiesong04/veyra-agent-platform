@@ -29,16 +29,20 @@ class EmailRequest(ApiModel):
         return normalize_email(value)
 
 
+class VerificationCodeRequest(EmailRequest):
+    purpose: Literal["registration", "password_reset"]
+
+
 class RegisterRequest(EmailRequest):
-    handle: str
+    handle: str | None = None
     password: str
     verification_code: str
     display_name: str | None = None
 
     @field_validator("handle")
     @classmethod
-    def _normalize_handle(cls, value: str) -> str:
-        return normalize_handle(value)
+    def _normalize_handle(cls, value: str | None) -> str | None:
+        return normalize_handle(value) if value is not None else None
 
     @field_validator("verification_code")
     @classmethod
