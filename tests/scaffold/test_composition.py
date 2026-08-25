@@ -56,6 +56,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
     }
     assert local_paths == expected_local_paths
     assert community_paths == shared_paths | {
+        "/api/v1/auth/verification-codes",
         "/api/v1/auth/registration-code",
         "/api/v1/auth/register",
         "/api/v1/auth/login",
