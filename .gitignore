@@ -38,12 +38,12 @@ target/
 apps/desktop/src-tauri/target/
 
 # Runtime data
-data/
-state/
-runs/
-logs/
-objects/
-workspaces/
+/data/
+/state/
+/runs/
+/logs/
+/objects/
+/workspaces/
 *.sqlite
 *.sqlite3
 *.db
@@ -57,4 +57,3 @@ workspaces/
 *.tmp
 *.swp
 *.bak
-
