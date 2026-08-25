@@ -1,0 +1,4 @@
+# Build tooling is locked with both runtime and dev environments so editable
+# installation can run with --no-build-isolation and no unpinned fallback.
+setuptools==80.9.0
+wheel==0.48.0

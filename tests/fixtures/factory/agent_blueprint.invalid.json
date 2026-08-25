@@ -1,0 +1,18 @@
+{
+  "schema_version": "factory.agent_blueprint.v1",
+  "goal": "",
+  "inputs": {},
+  "nodes": [
+    {
+      "id": "Start",
+      "kind": "unknown"
+    }
+  ],
+  "transitions": [],
+  "approval_points": [],
+  "verification": {
+    "required": true,
+    "checks": []
+  },
+  "untrusted_code": "must be rejected"
+}

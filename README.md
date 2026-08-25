@@ -23,3 +23,18 @@ read-only migration evidence and is never a runtime dependency.
 The canonical product and engineering requirements are in
 `docs/PROJECT_DESIGN.md`.
 
+## Backend development
+
+Activate the dedicated Conda environment before local work:
+
+```sh
+conda activate veyra-agent-platform
+make install
+make check
+```
+
+`make install` installs the hashed dev lock with `--require-hashes`, then
+installs the local package with `--no-deps --no-build-isolation`. Runtime-only
+environments use `make install-runtime`. The runtime and dev lock files are the
+only committed dependency locks. Refresh both generated locks deterministically
+with `make lock-refresh`; the lock files pin versions and artifact hashes.

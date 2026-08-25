@@ -14,11 +14,17 @@ def create_app(settings: LocalSettings | None = None) -> FastAPI:
     resolved_settings = settings or LocalSettings()
     application = FastAPI(
         title="Veyra Agent Platform Local",
-        version="0.1.0",
+        version=resolved_settings.app_version,
     )
     application.state.settings = resolved_settings
 
-    application.include_router(build_router(resolved_settings.service_name))
+    application.include_router(
+        build_router(
+            service_name=resolved_settings.service_name,
+            app_version=resolved_settings.app_version,
+            build_sha=resolved_settings.build_sha,
+        )
+    )
 
     return application
 

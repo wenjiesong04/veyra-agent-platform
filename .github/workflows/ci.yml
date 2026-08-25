@@ -21,13 +21,17 @@ jobs:
         with:
           python-version: "3.11.15"
           cache: pip
-          cache-dependency-path: requirements/constraints-py311.txt
+          cache-dependency-path: |
+            requirements/runtime-py311.txt
+            requirements/dev-py311.txt
 
       - name: Install locked backend dependencies
-        run: python -m pip install --constraint requirements/constraints-py311.txt --editable '.[dev]'
+        run: |
+          python -m pip install --require-hashes --requirement requirements/dev-py311.txt
+          python -m pip install --no-deps --no-build-isolation --editable .
 
       - name: Verify dependency consistency
-        run: make dependency-check PYTHON=python
+        run: make dependency-check dependency-lock-check PYTHON=python LOCKFILE=requirements/dev-py311.txt
 
       - name: Run formatting, lint, typing, and tests
         run: make check PYTHON=python

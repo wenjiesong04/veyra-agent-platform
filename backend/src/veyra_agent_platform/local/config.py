@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from platformdirs import user_data_dir
-from pydantic import Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +24,7 @@ class LocalSettings(BaseSettings):
         env_prefix="VEYRA_LOCAL_",
         env_file=".env",
         env_ignore_empty=True,
+        populate_by_name=True,
         extra="ignore",
     )
 
@@ -34,3 +35,25 @@ class LocalSettings(BaseSettings):
         "info"
     )
     database_url: str = Field(default_factory=_default_database_url)
+    app_version: str = Field(
+        default="0.1.0",
+        validation_alias=AliasChoices(
+            "VEYRA_APP_VERSION",
+            "VEYRA_LOCAL_APP_VERSION",
+        ),
+    )
+    build_sha: str = Field(
+        default="unknown",
+        validation_alias=AliasChoices(
+            "VEYRA_BUILD_SHA",
+            "VEYRA_LOCAL_BUILD_SHA",
+        ),
+    )
+
+    @field_validator("host")
+    @classmethod
+    def _validate_loopback_host(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"127.0.0.1", "::1", "localhost"}:
+            raise ValueError("local service host must be 127.0.0.1, ::1, or localhost")
+        return normalized
