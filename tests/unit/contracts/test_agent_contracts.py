@@ -5,7 +5,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
-from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource, ProjectManifest
+from veyra_agent_platform.contracts.agent import HARD_MAX_NODES, HARD_MAX_TRANSITIONS, AgentBlueprint, AgentSource, ProjectManifest
 from veyra_agent_platform.contracts.canonical import file_hash
 from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.domain.agent_definition import compile_agent_definition
@@ -20,9 +20,25 @@ def read_json_yaml(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def blueprint_data_from_source(source: dict[str, object]) -> dict[str, object]:
+    nodes = source["nodes"]  # type: ignore[assignment]
+    return {
+        "schema_version": source["schema_version"], "goal": source["description"],
+        "inputs": source["inputs"], "outputs": source["outputs"], "nodes": nodes,
+        "transitions": source["transitions"],
+        "required_capabilities": {
+            "component_types": list(dict.fromkeys(node["component_type"] for node in nodes)),  # type: ignore[union-attr]
+            "tool_refs": [node["uses"] for node in nodes if node["component_type"] == "Tool"],  # type: ignore[union-attr]
+        },
+        "requested_permissions": source["extensions"]["veyra"]["permissions"],  # type: ignore[index]
+        "verification": source["extensions"]["veyra"]["verification"],  # type: ignore[index]
+        "ui_suggestions": source["ui"],
+    }
+
+
 class AgentContractTests(unittest.TestCase):
     def test_project_manifest_has_stable_uuid_and_multiple_agents(self) -> None:
-        manifest = ProjectManifest.from_dict(read_json_yaml(FIXTURES / "project.vproject.yaml"))
+        manifest = ProjectManifest.from_dict(read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml"))
         self.assertEqual(manifest.project_id, "01a03795-a5b0-7234-ba76-5c5f0e029334")
         self.assertEqual(len(manifest.agents), 3)
         self.assertEqual(manifest.agents[0].slug, "github-triage")
@@ -63,6 +79,16 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(original.behavior_hash, moved.behavior_hash)
         self.assertEqual(original.lock_hash, moved.lock_hash)
 
+    def test_behavior_hash_excludes_local_identity_and_presentation(self) -> None:
+        source = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
+        original = AgentSource.from_dict(source)
+        remapped = deepcopy(source)
+        remapped["agent_id"] = "01a03795-a5b0-7f0b-896f-7b80026c5bbd"
+        remapped["slug"] = "github-triage-fork"
+        forked = AgentSource.from_dict(remapped)
+        self.assertNotEqual(original.source_hash, forked.source_hash)
+        self.assertEqual(original.behavior_hash, forked.behavior_hash)
+
     def test_raw_file_hash_is_text_based_and_separate_from_semantic_hashes(self) -> None:
         original_text = '{"description":"Résumé"}\r\n'
         changed_text = '{"description":"Résumé updated"}\n'
@@ -95,18 +121,10 @@ class AgentContractTests(unittest.TestCase):
 
     def test_blueprint_compile_preserves_requested_permissions_without_expansion(self) -> None:
         source_data = read_json_yaml(FIXTURES / "valid" / "approval-gate.vagent.yaml")
-        blueprint = AgentBlueprint.from_dict({
-            "schema_version": source_data["schema_version"],
-            "goal": source_data["description"],
-            "inputs": source_data["inputs"],
-            "outputs": source_data["outputs"],
-            "nodes": source_data["nodes"],
-            "transitions": source_data["transitions"],
-            "requested_permissions": source_data["extensions"]["veyra"]["permissions"],  # type: ignore[index]
-            "verification": source_data["extensions"]["veyra"]["verification"],  # type: ignore[index]
-        })
-        definition = compile_agent_definition(blueprint, agent_id=source_data["agent_id"], slug=source_data["slug"], name="Approval Gate", description="A gate.", runtime_profile="veyra-runtime-profile/1", secret_refs=[], lock=source_data["lock"], ui=source_data["ui"])  # type: ignore[arg-type]
+        blueprint = AgentBlueprint.from_dict(blueprint_data_from_source(source_data))
+        definition = compile_agent_definition(blueprint, agent_id=source_data["agent_id"], slug=source_data["slug"], name="Approval Gate", description="A gate.", runtime_profile="veyra-runtime-profile/1", secret_refs=[], lock=source_data["lock"])  # type: ignore[arg-type]
         self.assertEqual(definition.source.permissions, blueprint.requested_permissions)
+        self.assertEqual(definition.source.ui, blueprint.ui_suggestions)
         self.assertEqual(definition.source_hash, definition.source.source_hash)
 
     def test_adversarial_agent_fixtures_fail_closed(self) -> None:
@@ -120,15 +138,15 @@ class AgentContractTests(unittest.TestCase):
         with self.assertRaises(ContractValidationError):
             AgentSource.from_dict(source)
         for path in ("agents/not-approval-gate", "agents\\approval-gate", "agents/approval-gate/extra", "agents/../approval-gate"):
-            manifest = read_json_yaml(FIXTURES / "project.vproject.yaml")
+            manifest = read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml")
             manifest["agents"][2]["path"] = path  # type: ignore[index]
             with self.subTest(path=path), self.assertRaises(ContractValidationError):
                 ProjectManifest.from_dict(manifest)
-        manifest = read_json_yaml(FIXTURES / "project.vproject.yaml")
+        manifest = read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml")
         manifest["default_agent_id"] = "01a03795-a5b0-7f0b-896f-7b80026c5bbd"
         with self.assertRaises(ContractValidationError):
             ProjectManifest.from_dict(manifest)
-        manifest = read_json_yaml(FIXTURES / "project.vproject.yaml")
+        manifest = read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml")
         manifest["resource_policy"]["max_nodes_per_run"] = 0  # type: ignore[index]
         with self.assertRaises(ContractValidationError):
             ProjectManifest.from_dict(manifest)
@@ -138,7 +156,7 @@ class AgentContractTests(unittest.TestCase):
         draft = {
             "schema_version": "1.0", "draft_id": "01a03795-a5b0-7a2a-8e4a-9795e831e9ec",
             "project_id": "01a03795-a5b0-7234-ba76-5c5f0e029334", "agent_id": "approval-gate", "revision": 0,
-            "blueprint": {"schema_version": "1.0", "goal": source["description"], "inputs": source["inputs"], "outputs": source["outputs"], "nodes": source["nodes"], "transitions": source["transitions"], "requested_permissions": source["extensions"]["veyra"]["permissions"], "verification": source["extensions"]["veyra"]["verification"]},  # type: ignore[index]
+            "blueprint": blueprint_data_from_source(source),
         }
         from veyra_agent_platform.contracts.agent import AgentDraft
         with self.assertRaises(ContractValidationError):
@@ -160,6 +178,8 @@ class AgentContractTests(unittest.TestCase):
                 {"from": "transform", "port": "next", "to": "condition"},
             ],
             "requested_permissions": {"network_hosts": [], "tools": []}, "verification": {"required": False, "checks": []},
+            "required_capabilities": {"component_types": ["Start", "Condition", "Transform", "Output"], "tool_refs": []},
+            "ui_suggestions": {"positions": {}},
         }
         with self.assertRaises(ContractValidationError):
             AgentBlueprint.from_dict(cyclic_blueprint)
@@ -189,3 +209,61 @@ class AgentContractTests(unittest.TestCase):
         mismatch["lock"] = {"veyra.github.issue_search@2.0.0": "d" * 64}
         with self.assertRaises(ContractValidationError):
             AgentSource.from_dict(mismatch)
+
+    def test_outputs_must_be_declared_complete_and_single_producer(self) -> None:
+        source = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
+        undeclared = deepcopy(source)
+        undeclared["nodes"][-1]["output_name"] = "missing"  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            AgentSource.from_dict(undeclared)
+        incomplete = deepcopy(source)
+        incomplete["outputs"]["not_produced"] = "string"  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            AgentSource.from_dict(incomplete)
+        duplicate = deepcopy(source)
+        duplicate["nodes"][-1]["output_name"] = "result"  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            AgentSource.from_dict(duplicate)
+
+    def test_blueprint_requires_capabilities_and_valid_ui_node_references(self) -> None:
+        source = read_json_yaml(FIXTURES / "valid" / "approval-gate.vagent.yaml")
+        blueprint = blueprint_data_from_source(source)
+        blueprint.pop("required_capabilities")
+        with self.assertRaises(ContractValidationError):
+            AgentBlueprint.from_dict(blueprint)
+        blueprint = blueprint_data_from_source(source)
+        blueprint["required_capabilities"]["component_types"] = ["Start", "Output"]  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            AgentBlueprint.from_dict(blueprint)
+        blueprint = blueprint_data_from_source(source)
+        blueprint["ui_suggestions"]["positions"]["unknown_node"] = {"x": 0, "y": 0}  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            AgentBlueprint.from_dict(blueprint)
+
+    def test_transform_mapping_and_graph_resource_bounds_fail_closed(self) -> None:
+        source = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
+        transform = deepcopy(source)
+        transform["nodes"][4]["mapping"]["summary"] = ""  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            AgentSource.from_dict(transform)
+        oversized = {
+            "schema_version": "1.0", "goal": "Bound test", "inputs": {"value": "string"}, "outputs": {"result": "string"},
+            "nodes": [{"id": f"node_{index}", "component_type": "Start"} for index in range(HARD_MAX_NODES + 1)],
+            "transitions": [], "required_capabilities": {"component_types": ["Start"], "tool_refs": []},
+            "requested_permissions": {"network_hosts": [], "tools": []}, "verification": {"required": False, "checks": []}, "ui_suggestions": {"positions": {}},
+        }
+        with self.assertRaises(ContractValidationError):
+            AgentBlueprint.from_dict(oversized)
+        transitions = [{"from": "start", "port": "next", "to": "output"} for _ in range(HARD_MAX_TRANSITIONS + 1)]
+        bounded = {
+            "schema_version": "1.0", "goal": "Transition bound", "inputs": {"value": "string"}, "outputs": {"result": "string"},
+            "nodes": [{"id": "start", "component_type": "Start"}, {"id": "output", "component_type": "Output", "output_name": "result"}],
+            "transitions": transitions, "required_capabilities": {"component_types": ["Start", "Output"], "tool_refs": []},
+            "requested_permissions": {"network_hosts": [], "tools": []}, "verification": {"required": False, "checks": []}, "ui_suggestions": {"positions": {}},
+        }
+        with self.assertRaises(ContractValidationError):
+            AgentBlueprint.from_dict(bounded)
+        manifest = read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml")
+        manifest["resource_policy"]["max_nodes_per_run"] = HARD_MAX_NODES + 1  # type: ignore[index]
+        with self.assertRaises(ContractValidationError):
+            ProjectManifest.from_dict(manifest)

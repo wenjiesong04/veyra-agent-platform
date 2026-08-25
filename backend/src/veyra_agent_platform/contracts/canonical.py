@@ -39,8 +39,6 @@ def behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "agentspec_version": source["agentspec_version"],
         "component_type": source["component_type"],
-        "agent_id": source["agent_id"],
-        "slug": source["slug"],
         "inputs": source["inputs"],
         "outputs": source["outputs"],
         "nodes": source["nodes"],

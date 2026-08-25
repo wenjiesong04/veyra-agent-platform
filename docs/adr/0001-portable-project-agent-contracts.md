@@ -22,6 +22,12 @@ Accepted — V1.
   text. Only enumerated run-level events may carry `node_id: null`.
 - Graphs are DAGs in V1. Every component declares exactly one edge per supported
   output port; required verifier checks and Verifier-node checks are identical.
+- Execution behavior hashes exclude Agent UUID/slug and presentation data so
+  import and Fork remapping is behavior-stable. Outputs are a one-to-one
+  declaration-to-Output-node mapping, and graph input is bounded to 128 nodes
+  and 256 transitions before semantic traversal.
+- Factory Blueprints require closed capability and UI-suggestion objects. Their
+  single-file JSON Schema contains only internal references for structured output.
 - Project manifests set a listed default Agent UUID and bounded resource policy.
   Parsed contract maps/lists are recursively frozen; Tool node references must
   appear by exact version in the lock; event timestamps are UTC RFC 3339 `Z`.

@@ -7,13 +7,13 @@
   "name": "Approval Gate",
   "description": "A minimal human approval and verifier flow.",
   "inputs": {"request": "string"},
-  "outputs": {"decision": "string"},
+  "outputs": {"decision": "string", "rejected": "string"},
   "nodes": [
     {"id": "start", "component_type": "Start"},
     {"id": "approval", "component_type": "HumanApproval", "prompt": "Allow this request?"},
     {"id": "verify", "component_type": "Verifier", "checks": ["human.approval.recorded"]},
     {"id": "approved", "component_type": "Output", "output_name": "decision"},
-    {"id": "rejected", "component_type": "Output", "output_name": "decision"}
+    {"id": "rejected", "component_type": "Output", "output_name": "rejected"}
   ],
   "transitions": [
     {"from": "start", "port": "next", "to": "approval"},

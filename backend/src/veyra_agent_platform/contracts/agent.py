@@ -30,6 +30,10 @@ _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]*@[0-9]+\.[0-9]+\.[0-9]+$")
 _HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 _SECRET_REF = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+HARD_MAX_NODES = 128
+HARD_MAX_TRANSITIONS = 256
+HARD_MAX_CONCURRENT_RUNS = 16
+HARD_MAX_RUN_SECONDS = 86_400
 
 
 class ComponentType(StrEnum):
@@ -179,7 +183,7 @@ class FlowNode:
         mapping: Mapping[str, str] | None = None
         if "mapping" in present:
             raw_mapping = require_mapping(item["mapping"], "node.mapping")
-            if not raw_mapping or not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_mapping.items()):
+            if not raw_mapping or not all(isinstance(key, str) and isinstance(value, str) and value for key, value in raw_mapping.items()):
                 raise ContractValidationError("node.mapping must be a non-empty string map")
             mapping = freeze_json(dict(raw_mapping))
         checks = _strict_str_list(item["checks"], "node.checks") if "checks" in present else None
@@ -294,6 +298,8 @@ class ResourcePolicy:
         values = {key: item[key] for key in required}
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in values.values()):
             raise ContractValidationError("resource_policy limits must be positive integers")
+        if values["max_concurrent_runs"] > HARD_MAX_CONCURRENT_RUNS or values["max_nodes_per_run"] > HARD_MAX_NODES or values["max_run_seconds"] > HARD_MAX_RUN_SECONDS:
+            raise ContractValidationError("resource_policy exceeds a platform hard limit")
         return cls(**values)
 
     def to_dict(self) -> dict[str, int]:
@@ -308,32 +314,69 @@ class AgentBlueprint:
     outputs: Mapping[str, str]
     nodes: tuple[FlowNode, ...]
     transitions: tuple[Transition, ...]
+    required_capabilities: "RequiredCapabilities"
     requested_permissions: PermissionContract
     verification: VerifierContract
+    ui_suggestions: Mapping[str, Any]
 
     @classmethod
     def from_dict(cls, data: Any) -> "AgentBlueprint":
         item = require_mapping(data, "agent blueprint")
-        required = {"schema_version", "goal", "inputs", "outputs", "nodes", "transitions", "requested_permissions", "verification"}
+        required = {"schema_version", "goal", "inputs", "outputs", "nodes", "transitions", "required_capabilities", "requested_permissions", "verification", "ui_suggestions"}
         require_keys(item, allowed=required, required=required)
         require_schema_version(item)
-        return cls(
+        blueprint = cls(
             schema_version=SCHEMA_VERSION,
             goal=require_string(item["goal"], "goal"),
             inputs=_typed_fields(item["inputs"], "inputs"),
             outputs=_typed_fields(item["outputs"], "outputs"),
             nodes=tuple(FlowNode.from_dict(value) for value in require_list(item["nodes"], "nodes")),
             transitions=tuple(Transition.from_dict(value) for value in require_list(item["transitions"], "transitions")),
+            required_capabilities=RequiredCapabilities.from_dict(item["required_capabilities"]),
             requested_permissions=PermissionContract.from_dict(item["requested_permissions"]),
             verification=VerifierContract.from_dict(item["verification"]),
-        ).validated()
+            ui_suggestions=_ui_layout(item["ui_suggestions"]),
+        )
+        return blueprint.validated()
 
     def validated(self) -> "AgentBlueprint":
-        _validate_graph(self.nodes, self.transitions, self.verification)
+        _validate_graph(self.nodes, self.transitions, self.outputs, self.verification)
+        self.required_capabilities.validate_nodes(self.nodes)
+        _validate_ui_node_references(self.ui_suggestions, self.nodes, "ui_suggestions")
         return self
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "goal": self.goal, "inputs": dict(self.inputs), "outputs": dict(self.outputs), "nodes": [node.to_dict() for node in self.nodes], "transitions": [transition.to_dict() for transition in self.transitions], "requested_permissions": self.requested_permissions.to_dict(), "verification": self.verification.to_dict()}
+        return {"schema_version": self.schema_version, "goal": self.goal, "inputs": thaw_json(self.inputs), "outputs": thaw_json(self.outputs), "nodes": [node.to_dict() for node in self.nodes], "transitions": [transition.to_dict() for transition in self.transitions], "required_capabilities": self.required_capabilities.to_dict(), "requested_permissions": self.requested_permissions.to_dict(), "verification": self.verification.to_dict(), "ui_suggestions": thaw_json(self.ui_suggestions)}
+
+
+@dataclass(frozen=True)
+class RequiredCapabilities:
+    component_types: tuple[ComponentType, ...]
+    tool_refs: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "RequiredCapabilities":
+        item = require_mapping(data, "required_capabilities")
+        require_keys(item, allowed={"component_types", "tool_refs"}, required={"component_types", "tool_refs"})
+        raw_types = require_list(item["component_types"], "required_capabilities.component_types")
+        try:
+            component_types = tuple(ComponentType(value) for value in raw_types)
+        except (TypeError, ValueError) as exc:
+            raise ContractValidationError("required_capabilities.component_types must use built-in component types") from exc
+        if not component_types or len(set(component_types)) != len(component_types):
+            raise ContractValidationError("required_capabilities.component_types must be non-empty and unique")
+        return cls(component_types, _strict_str_list(item["tool_refs"], "required_capabilities.tool_refs", pattern=_REFERENCE))
+
+    def validate_nodes(self, nodes: tuple[FlowNode, ...]) -> None:
+        node_types = {node.component_type for node in nodes}
+        node_tools = {node.uses for node in nodes if node.uses is not None}
+        if node_types != set(self.component_types):
+            raise ContractValidationError("required_capabilities.component_types must exactly match graph nodes")
+        if node_tools != set(self.tool_refs):
+            raise ContractValidationError("required_capabilities.tool_refs must exactly match Tool node references")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"component_types": [component_type.value for component_type in self.component_types], "tool_refs": list(self.tool_refs)}
 
 
 def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
@@ -410,7 +453,8 @@ class AgentSource:
             permissions=PermissionContract.from_dict(veyra["permissions"]), verification=VerifierContract.from_dict(veyra["verification"]),
             ui=ui, lock=freeze_json(dict(lock)),
         )
-        _validate_graph(source.nodes, source.transitions, source.verification)
+        _validate_graph(source.nodes, source.transitions, source.outputs, source.verification)
+        _validate_ui_node_references(source.ui, source.nodes, "ui")
         tool_references = {node.uses.rsplit("@", 1)[0] for node in source.nodes if node.uses}
         if not tool_references.issubset(set(source.permissions.tools)):
             raise ContractValidationError("every Tool node must be included in permissions.tools")
@@ -456,7 +500,18 @@ class AgentDraft:
         return cls(SCHEMA_VERSION, require_uuid7(item["draft_id"], "draft_id"), require_uuid7(item["project_id"], "project_id"), require_uuid7(item["agent_id"], "agent_id"), revision, AgentBlueprint.from_dict(item["blueprint"]))
 
 
-def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, ...], verification: VerifierContract) -> None:
+def _validate_ui_node_references(ui: Mapping[str, Any], nodes: tuple[FlowNode, ...], field: str) -> None:
+    positions = ui["positions"]
+    unknown = set(positions) - {node.id for node in nodes}
+    if unknown:
+        raise ContractValidationError(f"{field}.positions references unknown node(s): {', '.join(sorted(unknown))}")
+
+
+def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, ...], outputs: Mapping[str, str], verification: VerifierContract) -> None:
+    if len(nodes) > HARD_MAX_NODES:
+        raise ContractValidationError(f"Flow graph exceeds the {HARD_MAX_NODES}-node platform limit")
+    if len(transitions) > HARD_MAX_TRANSITIONS:
+        raise ContractValidationError(f"Flow graph exceeds the {HARD_MAX_TRANSITIONS}-transition platform limit")
     if not nodes or len({node.id for node in nodes}) != len(nodes):
         raise ContractValidationError("nodes must be non-empty with unique IDs")
     types = {node.id: node.component_type for node in nodes}
@@ -464,6 +519,9 @@ def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, 
         raise ContractValidationError("a Flow needs exactly one Start node")
     if not any(node.component_type is ComponentType.OUTPUT for node in nodes):
         raise ContractValidationError("a Flow needs at least one Output node")
+    output_names = [node.output_name for node in nodes if node.component_type is ComponentType.OUTPUT]
+    if set(output_names) != set(outputs) or len(output_names) != len(set(output_names)):
+        raise ContractValidationError("every declared output must have exactly one matching Output node")
     if verification.required and not any(node.component_type is ComponentType.VERIFIER for node in nodes):
         raise ContractValidationError("required verification needs a Verifier node")
     verifier_checks = {
@@ -506,18 +564,18 @@ def _validate_graph(nodes: tuple[FlowNode, ...], transitions: tuple[Transition, 
         todo.extend(edge.to_node for edge in outgoing[node_id])
     if set(types) != reached:
         raise ContractValidationError("every node must be reachable from Start")
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(node_id: str) -> None:
-        if node_id in visiting:
-            raise ContractValidationError("Flow graph must be a DAG; Loop is not a V1 component")
-        if node_id in visited:
-            return
-        visiting.add(node_id)
+    indegree = {node.id: 0 for node in nodes}
+    for edges in outgoing.values():
+        for edge in edges:
+            indegree[edge.to_node] += 1
+    zero_indegree = [node_id for node_id, degree in indegree.items() if degree == 0]
+    processed = 0
+    while zero_indegree:
+        node_id = zero_indegree.pop()
+        processed += 1
         for edge in outgoing[node_id]:
-            visit(edge.to_node)
-        visiting.remove(node_id)
-        visited.add(node_id)
-
-    visit(start)
+            indegree[edge.to_node] -= 1
+            if indegree[edge.to_node] == 0:
+                zero_indegree.append(edge.to_node)
+    if processed != len(nodes):
+        raise ContractValidationError("Flow graph must be a DAG; Loop is not a V1 component")

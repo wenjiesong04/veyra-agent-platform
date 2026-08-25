@@ -7,7 +7,7 @@
   "name": "GitHub Triage",
   "description": "Classifies issues and requires independent verification.",
   "inputs": {"repository": "string", "issue": "string"},
-  "outputs": {"result": "object"},
+  "outputs": {"result": "object", "rejected": "object"},
   "nodes": [
     {"id": "start", "component_type": "Start"},
     {"id": "analyze", "component_type": "Agent", "model_ref": "model.primary", "system_prompt": "Classify the reported issue."},
@@ -17,7 +17,7 @@
     {"id": "approval", "component_type": "HumanApproval", "prompt": "Approve the triage result?"},
     {"id": "verify", "component_type": "Verifier", "checks": ["github.issue.exists"]},
     {"id": "output", "component_type": "Output", "output_name": "result"},
-    {"id": "no_action", "component_type": "Output", "output_name": "result"}
+    {"id": "no_action", "component_type": "Output", "output_name": "rejected"}
   ],
   "transitions": [
     {"from": "start", "port": "next", "to": "analyze"},

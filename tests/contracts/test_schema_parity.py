@@ -49,6 +49,7 @@ class SchemaParityTests(unittest.TestCase):
         )
         self.assertIn("pattern", definitions["uuid7"])
         self.assertEqual(definitions["transition"]["properties"]["port"]["enum"], ["next", "true", "false", "approved", "rejected", "passed", "failed"])
+        self.assertEqual(definitions["verification"]["allOf"][0]["then"]["properties"]["checks"]["minItems"], 1)
 
     def test_handwritten_fixture_components_are_schema_declared(self) -> None:
         schema = json.loads((SCHEMAS / "agent-source.schema.json").read_text())

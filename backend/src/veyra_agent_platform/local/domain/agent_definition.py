@@ -29,7 +29,6 @@ def compile_agent_definition(
     runtime_profile: str,
     secret_refs: list[str],
     lock: Mapping[str, str],
-    ui: Mapping[str, object],
 ) -> AgentDefinition:
     """Compile only known typed structures; no code or permission expansion occurs."""
     source = AgentSource.from_dict(
@@ -46,7 +45,7 @@ def compile_agent_definition(
             "nodes": [node.to_dict() for node in blueprint.nodes],
             "transitions": [transition.to_dict() for transition in blueprint.transitions],
             "extensions": {"veyra": {"runtime_profile": runtime_profile, "secret_refs": secret_refs, "permissions": blueprint.requested_permissions.to_dict(), "verification": blueprint.verification.to_dict()}},
-            "ui": dict(ui),
+            "ui": blueprint.ui_suggestions,
             "lock": dict(lock),
         }
     )
