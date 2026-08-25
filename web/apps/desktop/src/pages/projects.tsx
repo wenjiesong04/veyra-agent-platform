@@ -13,6 +13,10 @@ export const agents: AgentSummary[] = [
   { id: "workspace-guide", projectId: "signal-review", name: "Workspace Guide", description: "Explain the next safe action for a project workspace.", state: "draft", version: "Draft", componentCount: 3, lastRun: "Not run" },
 ];
 
+export function defaultAgentForProject(projectId: string): AgentSummary | undefined {
+  return agents.find((agent) => agent.projectId === projectId);
+}
+
 const toneForState = (state: ProjectSummary["state"] | AgentSummary["state"]) => state === "active" || state === "ready" ? "good" : state === "running" ? "warn" : "neutral";
 
 export function ProjectsPage() {

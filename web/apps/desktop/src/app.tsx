@@ -109,6 +109,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
 
 function DesktopWorkspace() {
   const route = useHashRoute();
+  const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run" ? route.projectId : undefined;
   const activeHref = route.kind === "projects" || route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
     ? desktopRoutePaths.projects
     : route.kind === "component" || route.kind === "components" ? desktopRoutePaths.components
@@ -135,7 +136,7 @@ function DesktopWorkspace() {
       activeHref={activeHref}
       eyebrow={meta.eyebrow}
       title={meta.title}
-      headerActions={<LinkButton href={projectRoutePaths.factory("signal-review")} variant="primary">Create agent</LinkButton>}
+      headerActions={scopedProjectId ? <LinkButton href={projectRoutePaths.factory(scopedProjectId)} variant="primary">Create agent</LinkButton> : undefined}
     >
       <PageContent route={route} />
     </ApplicationShell>

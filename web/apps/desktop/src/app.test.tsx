@@ -39,6 +39,20 @@ describe("desktop workspace", () => {
     expect(screen.getByRole("link", { name: /Review Companion/ })).toHaveAttribute("href", projectRoutePaths.agentDesign("signal-review", "reviewer"));
   });
 
+  it("keeps the second Project Factory and header action inside its Project boundary", async () => {
+    const user = userEvent.setup();
+    window.location.hash = projectRoutePaths.factory("release-room");
+    render(<DesktopApp />);
+    expect(screen.getByRole("link", { name: "Create agent" })).toHaveAttribute("href", projectRoutePaths.factory("release-room"));
+    await user.click(screen.getByRole("button", { name: "Generate draft" }));
+    await waitFor(() => expect(screen.getByText("Release Check")).toBeInTheDocument());
+    const openStudio = screen.getByRole("link", { name: "Open Studio" });
+    expect(openStudio).toHaveAttribute("href", projectRoutePaths.agentDesign("release-room", "release-check"));
+    await user.click(openStudio);
+    expect(await screen.findByRole("heading", { name: "Release Check" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Run" })).toHaveAttribute("href", projectRoutePaths.agentRun("release-room", "release-check"));
+  });
+
   it("renders nested Project, Factory, Design, Run, list, detail, and version routes", () => {
     window.location.hash = projectRoutePaths.project("signal-review");
     const { unmount } = render(<DesktopApp />);
