@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from .api.health import build_router
-from .api.projects import build_router as build_projects_router
+from .api.projects import (
+    TypedApiError,
+    typed_error_response,
+)
+from .api.projects import (
+    build_router as build_projects_router,
+)
 from .config import LocalSettings
 from .library import LibraryService
 from .projects import ProjectService
-from .storage import LocalRepository
+from .storage import LocalRepository, migrate_local_database
 
 
 def _sqlite_database_path(database_url: str) -> Path:
@@ -25,6 +33,8 @@ def _sqlite_database_path(database_url: str) -> Path:
         raw_path = database_url.removeprefix(plain_prefix)
     else:
         raise ValueError("local Project persistence requires a SQLite database URL")
+    if raw_path == ":memory:":
+        return Path(tempfile.mkdtemp(prefix="veyra-local-db-")) / "app.sqlite3"
     return Path(raw_path)
 
 
@@ -32,22 +42,33 @@ def create_app(settings: LocalSettings | None = None) -> FastAPI:
     """Create the local service application without starting a server."""
 
     resolved_settings = settings or LocalSettings()
+    database_path = _sqlite_database_path(resolved_settings.database_url)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        migrate_local_database(database_path)
+        repository = LocalRepository(database_path)
+        object_root = database_path.parent.parent / "objects"
+        projects = ProjectService(repository, object_root)
+        application.state.repository = repository
+        application.state.projects = projects
+        application.state.library = LibraryService(repository, projects)
+        application.state.database_revision = "local_0003_project_integrity"
+        application.state.database_ready = True
+        try:
+            yield
+        finally:
+            application.state.database_ready = False
+
     application = FastAPI(
         title="Veyra Agent Platform Local",
         version=resolved_settings.app_version,
+        lifespan=lifespan,
     )
     application.state.settings = resolved_settings
-    database_path = _sqlite_database_path(resolved_settings.database_url)
-    repository = LocalRepository(database_path)
-    object_root = (
-        database_path.parent.parent / "objects"
-        if database_path != Path(":memory:")
-        else Path(tempfile.mkdtemp(prefix="veyra-local-objects-"))
-    )
-    projects = ProjectService(repository, object_root)
-    application.state.repository = repository
-    application.state.projects = projects
-    application.state.library = LibraryService(repository, projects)
+    application.state.database_ready = False
+    application.state.database_revision = None
+    application.add_exception_handler(TypedApiError, typed_error_response)
 
     application.include_router(
         build_router(
@@ -56,13 +77,13 @@ def create_app(settings: LocalSettings | None = None) -> FastAPI:
             build_sha=resolved_settings.build_sha,
         )
     )
-    application.include_router(
-        build_projects_router(projects, application.state.library)
-    )
+    application.include_router(build_projects_router())
 
     return application
 
 
+# Factory construction only defines routes and a lifespan; it performs no
+# filesystem or database work until the ASGI server enters that lifespan.
 app = create_app()
 
 
@@ -73,7 +94,7 @@ def main() -> None:
 
     settings = LocalSettings()
     uvicorn.run(
-        app,
+        create_app(settings),
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level,

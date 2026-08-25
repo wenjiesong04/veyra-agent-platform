@@ -1,5 +1,5 @@
 """Nested Project and Project-Agent API routes."""
 
-from .routes import build_router
+from .routes import TypedApiError, build_router, typed_error_response
 
-__all__ = ["build_router"]
+__all__ = ["TypedApiError", "build_router", "typed_error_response"]

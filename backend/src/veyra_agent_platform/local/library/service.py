@@ -1,4 +1,4 @@
-"""Draft editing and immutable Agent-version lifecycle."""
+"""Draft editing, recovery, and immutable Agent-version lifecycle."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource
-from veyra_agent_platform.contracts.canonical import file_hash
+from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import (
     SCHEMA_VERSION,
     IdempotencyKey,
@@ -31,6 +31,21 @@ class LibraryService:
     def __init__(self, repository: LocalRepository, projects: ProjectService) -> None:
         self.repository = repository
         self.projects = projects
+        self.recover_pending_writes()
+
+    def recover_pending_writes(self) -> None:
+        """Roll back an interrupted file write before serving its stale database row."""
+        for intent in self.repository.write_intents():
+            agent = self.repository.agent(intent["agent_id"])
+            if agent is not None:
+                project = self.repository.project(agent["project_id"])
+                if project is not None:
+                    root = self.projects._existing_root(project["root_path"])
+                    path = self.projects._safe_file(root, Path(agent["source_path"]))
+                    if self.projects._read_text(path) == intent["intended_source_text"]:
+                        self.projects.atomic_write(path, intent["previous_source_text"])
+            with self.repository.transaction() as connection:
+                self.repository.remove_write_intent(connection, intent["intent_id"])
 
     def draft(self, project_id: str, agent_id: str) -> dict[str, Any]:
         self._agent_in_project(project_id, agent_id)
@@ -40,6 +55,50 @@ class LibraryService:
         self._ensure_disk_matches_draft(project_id, agent_id, draft["source_file_hash"])
         return self._draft_payload(draft)
 
+    def reload_from_disk(self, project_id: str, agent_id: str) -> dict[str, Any]:
+        """Explicitly accept an external source edit as the next mutable draft."""
+        agent = self._agent_in_project(project_id, agent_id)
+        source_path = self._source_path(project_id, agent)
+        source_text = self.projects._read_text(source_path)
+        source = AgentSource.from_dict(
+            self.projects._parse_yaml(source_text, agent["slug"])
+        )
+        if source.agent_id != agent_id or source.slug != agent["slug"]:
+            raise ProjectError("disk source identity must match its Project Agent")
+        digest = file_hash(source_text)
+        with self.repository.transaction() as connection:
+            draft = connection.execute(
+                "SELECT * FROM agent_drafts WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if draft is None:
+                raise ProjectError("Agent has not been indexed")
+            revision = draft["revision"] + 1
+            etag = _etag(revision, digest)
+            connection.execute(
+                """UPDATE agent_drafts SET revision = ?, source_json = ?,
+                   source_file_hash = ?, etag = ? WHERE agent_id = ?""",
+                (
+                    revision,
+                    json.dumps(source.to_dict(), sort_keys=True, separators=(",", ":")),
+                    digest,
+                    etag,
+                    agent_id,
+                ),
+            )
+            connection.execute(
+                "UPDATE agents SET source_file_hash = ? WHERE agent_id = ?",
+                (digest, agent_id),
+            )
+            self.projects._index_file(
+                connection,
+                project_id,
+                self._project_root(project_id),
+                source_path,
+                source_text.encode("utf-8"),
+                _utc_now(),
+            )
+        return self.draft(project_id, agent_id)
+
     def replace_draft(
         self,
         *,
@@ -47,7 +106,7 @@ class LibraryService:
         agent_id: str,
         source: dict[str, Any],
         expected_revision: int,
-        expected_etag: str | None,
+        expected_etag: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
@@ -60,12 +119,20 @@ class LibraryService:
         ):
             raise ProjectError("expected_revision must be an integer")
         scope = f"draft:{project_id}:{agent_id}"
+        request_digest = sha256_digest(
+            {
+                "source": parsed.to_dict(),
+                "revision": expected_revision,
+                "etag": expected_etag,
+            }
+        )
         source_path = self._source_path(project_id, agent)
+        previous_text = self.projects._read_text(source_path)
+        current_disk_hash = file_hash(previous_text)
         canonical_text = self.projects._canonical_source(parsed.to_dict())
-        current_disk_hash = file_hash(self.projects._read_text(source_path))
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
-                connection, scope, idempotency_key
+                connection, scope, idempotency_key, request_digest
             )
             if replay is not None:
                 return replay
@@ -75,47 +142,60 @@ class LibraryService:
             if draft is None:
                 raise ProjectError("Agent has not been indexed")
             if draft["source_file_hash"] != current_disk_hash:
-                raise DraftConflict(
-                    "source changed outside Studio; re-index or reload it"
-                )
-            if expected_etag is not None and expected_etag != draft["etag"]:
+                raise DraftConflict("source changed outside Studio; reload it")
+            if expected_etag != draft["etag"]:
                 raise DraftConflict("draft ETag does not match")
             if draft["revision"] != expected_revision:
                 raise DraftConflict("draft revision does not match")
-            self.projects.atomic_write(source_path, canonical_text)
-            updated_hash = file_hash(canonical_text)
-            self.projects._index_file(
-                connection,
-                project_id,
-                self._project_root(project_id),
-                source_path,
-                canonical_text.encode("utf-8"),
-                _utc_now(),
-            )
-            next_revision = expected_revision + 1
-            etag = _etag(next_revision, updated_hash)
-            if not self.repository.update_draft(
+            intent_id = self.repository.create_write_intent(
                 connection,
                 agent_id=agent_id,
-                expected_revision=expected_revision,
-                source=parsed.to_dict(),
-                source_file_hash=updated_hash,
-                etag=etag,
-            ):
-                raise DraftConflict("draft changed concurrently")
-            connection.execute(
-                "UPDATE agents SET source_file_hash = ? WHERE agent_id = ?",
-                (updated_hash, agent_id),
+                previous_source_text=previous_text,
+                intended_source_text=canonical_text,
             )
+        try:
+            self.projects.atomic_write(source_path, canonical_text)
+            updated_hash = file_hash(canonical_text)
+            next_revision = expected_revision + 1
+            etag = _etag(next_revision, updated_hash)
             result = {
+                "schema_version": SCHEMA_VERSION,
                 "revision": next_revision,
                 "etag": etag,
                 "source": parsed.to_dict(),
             }
-            self.repository.remember_response(
-                connection, scope, idempotency_key, result
-            )
+            with self.repository.transaction() as connection:
+                if not self.repository.update_draft(
+                    connection,
+                    agent_id=agent_id,
+                    expected_revision=expected_revision,
+                    source=parsed.to_dict(),
+                    source_file_hash=updated_hash,
+                    etag=etag,
+                ):
+                    raise DraftConflict("draft changed concurrently")
+                connection.execute(
+                    "UPDATE agents SET source_file_hash = ? WHERE agent_id = ?",
+                    (updated_hash, agent_id),
+                )
+                self.projects._index_file(
+                    connection,
+                    project_id,
+                    self._project_root(project_id),
+                    source_path,
+                    canonical_text.encode("utf-8"),
+                    _utc_now(),
+                )
+                self.repository.remember_response(
+                    connection, scope, idempotency_key, request_digest, result
+                )
+                self.repository.remove_write_intent(connection, intent_id)
             return result
+        except BaseException:
+            self.projects.atomic_write(source_path, previous_text)
+            with self.repository.transaction() as connection:
+                self.repository.remove_write_intent(connection, intent_id)
+            raise
 
     def validate(self, project_id: str, agent_id: str) -> dict[str, Any]:
         draft = self.draft(project_id, agent_id)
@@ -130,7 +210,11 @@ class LibraryService:
         }
 
     def commit(
-        self, *, project_id: str, agent_id: str, idempotency_key: str
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         agent = self._agent_in_project(project_id, agent_id)
@@ -141,9 +225,10 @@ class LibraryService:
             self.projects._parse_yaml(source_text, agent["slug"])
         )
         current_file_hash = file_hash(source_text)
+        request_digest = sha256_digest({"file_hash": current_file_hash})
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
-                connection, scope, idempotency_key
+                connection, scope, idempotency_key, request_digest
             )
             if replay is not None:
                 return replay
@@ -151,9 +236,7 @@ class LibraryService:
                 "SELECT * FROM agent_drafts WHERE agent_id = ?", (agent_id,)
             ).fetchone()
             if draft is None or draft["source_file_hash"] != current_file_hash:
-                raise DraftConflict(
-                    "source changed outside Studio; re-index or reload it"
-                )
+                raise DraftConflict("source changed outside Studio; reload it")
             existing = self.repository.version_by_fingerprint(
                 connection, agent_id, current_file_hash
             )
@@ -184,6 +267,7 @@ class LibraryService:
                 relative_path=agent["source_path"],
             )
             result = {
+                "schema_version": SCHEMA_VERSION,
                 "version_id": version_id,
                 "agent_id": agent_id,
                 "source_hash": source.source_hash,
@@ -192,7 +276,7 @@ class LibraryService:
                 "file_hash": current_file_hash,
             }
             self.repository.remember_response(
-                connection, scope, idempotency_key, result
+                connection, scope, idempotency_key, request_digest, result
             )
             return result
 
@@ -217,8 +301,9 @@ class LibraryService:
         return agent
 
     def _source_path(self, project_id: str, agent: Any) -> Path:
-        root = self._project_root(project_id)
-        return self.projects._safe_child(root, Path(agent["source_path"]))
+        return self.projects._safe_file(
+            self._project_root(project_id), Path(agent["source_path"])
+        )
 
     def _project_root(self, project_id: str) -> Path:
         project = self.repository.project(project_id)
@@ -234,11 +319,12 @@ class LibraryService:
             self.projects._read_text(self._source_path(project_id, agent))
         )
         if current != draft_hash:
-            raise DraftConflict("source changed outside Studio; re-index or reload it")
+            raise DraftConflict("source changed outside Studio; reload it")
 
     @staticmethod
     def _draft_payload(draft: Any) -> dict[str, Any]:
         return {
+            "schema_version": SCHEMA_VERSION,
             "draft_id": draft["draft_id"],
             "revision": draft["revision"],
             "etag": draft["etag"],

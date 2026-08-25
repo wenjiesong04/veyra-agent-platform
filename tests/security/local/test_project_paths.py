@@ -8,7 +8,7 @@ import pytest
 
 from veyra_agent_platform.local.projects import ProjectService
 from veyra_agent_platform.local.projects.service import ProjectError
-from veyra_agent_platform.local.storage import LocalRepository
+from veyra_agent_platform.local.storage import LocalRepository, migrate_local_database
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -29,9 +29,9 @@ def test_index_rejects_symlinked_agent_source(tmp_path: Path) -> None:
     target = root / "agents" / "github-triage"
     target.mkdir(parents=True)
     os.symlink(outside, target / "agent.vagent.yaml")
-    projects = ProjectService(
-        LocalRepository(tmp_path / "app.sqlite3"), tmp_path / "objects"
-    )
+    database_path = tmp_path / "app.sqlite3"
+    migrate_local_database(database_path)
+    projects = ProjectService(LocalRepository(database_path), tmp_path / "objects")
 
     with pytest.raises(ProjectError, match="symlink"):
         projects.index(root)

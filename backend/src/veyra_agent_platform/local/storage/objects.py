@@ -14,6 +14,12 @@ def write_object(object_root: Path, contents: bytes) -> tuple[str, Path]:
     destination = object_root / "sha256" / digest
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
+        existing = destination.read_bytes()
+        if (
+            len(existing) != len(contents)
+            or hashlib.sha256(existing).hexdigest() != digest
+        ):
+            raise ValueError("content-addressed object verification failed")
         return digest, destination
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".veyra-", dir=destination.parent

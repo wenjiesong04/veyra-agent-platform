@@ -27,8 +27,13 @@ def test_local_and_community_have_distinct_app_factories() -> None:
     assert community_app.state.settings.service_name == "community"
 
 
-def test_each_app_exposes_its_versioned_routes() -> None:
-    local_paths = {route.path for route in create_local_app().routes}
+def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
+    local_paths = {
+        route.path
+        for route in create_local_app(
+            LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+        ).routes
+    }
     community_paths = {route.path for route in create_community_app().routes}
 
     expected_shared_paths = {
@@ -44,6 +49,7 @@ def test_each_app_exposes_its_versioned_routes() -> None:
         "/api/v1/projects/{project_id}",
         "/api/v1/projects/{project_id}/agents",
         "/api/v1/projects/{project_id}/agents/{agent_id}/draft",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/draft/reload",
         "/api/v1/projects/{project_id}/agents/{agent_id}/validate",
         "/api/v1/projects/{project_id}/agents/{agent_id}/commit",
         "/api/v1/projects/{project_id}/agents/{agent_id}/export",
@@ -64,7 +70,7 @@ def test_local_health_reports_identity_and_database_placeholder() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "schema_version": "health.v1",
-        "status": "ok",
+        "status": "starting",
         "service": "local",
         "app_version": "0.2.0",
         "build_sha": "local-test-sha",

@@ -18,6 +18,9 @@ if config.config_file_name is not None:
 
 
 def _database_url() -> str:
+    configured_url = config.get_main_option("sqlalchemy.url")
+    if configured_url and configured_url != "sqlite://":
+        return configured_url
     return LocalSettings().database_url.replace("+aiosqlite", "")
 
 

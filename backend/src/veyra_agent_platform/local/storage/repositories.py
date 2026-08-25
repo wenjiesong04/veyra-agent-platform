@@ -14,28 +14,29 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
+from veyra_agent_platform.contracts.common import new_uuid7
+
+from .bootstrap import require_schema_head
+
+
+class IdempotencyConflict(ValueError):
+    """An idempotency key was reused for a different request."""
+
 
 class LocalRepository:
     """Repository backed by one local SQLite connection per operation."""
 
     def __init__(self, database_path: Path | str) -> None:
         self.database_path = str(database_path)
-        self._memory_uri: str | None = None
-        self._anchor: sqlite3.Connection | None = None
         if self.database_path == ":memory:":
-            self._memory_uri = f"file:veyra-local-{id(self)}?mode=memory&cache=shared"
-            self._anchor = sqlite3.connect(
-                self._memory_uri, uri=True, isolation_level=None
-            )
-        else:
-            Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
-        self._bootstrap_for_embedded_use()
+            raise ValueError("migrate a temporary file-backed SQLite database instead")
+        Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
+        require_schema_head(Path(self.database_path))
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
-            self._memory_uri or self.database_path,
+            self.database_path,
             isolation_level=None,
-            uri=self._memory_uri is not None,
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -56,17 +57,6 @@ class LocalRepository:
         finally:
             connection.close()
 
-    def _bootstrap_for_embedded_use(self) -> None:
-        """Initialize the current local schema for an unopened desktop database.
-
-        The identical DDL is recorded in the forward-only Alembic migration.
-        Keeping this minimal bootstrap here lets the sidecar start before a UI
-        exists to invoke a separate migration command, including for temporary
-        SQLite databases used by tests.
-        """
-        with self._connect() as connection:
-            connection.executescript(_SCHEMA)
-
     def upsert_project(
         self,
         connection: sqlite3.Connection,
@@ -81,9 +71,6 @@ class LocalRepository:
             """
             INSERT INTO projects(project_id, root_path, name, manifest_hash, indexed_at)
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(project_id) DO UPDATE SET
-              root_path=excluded.root_path, name=excluded.name,
-              manifest_hash=excluded.manifest_hash, indexed_at=excluded.indexed_at
             """,
             (project_id, root_path, name, manifest_hash, indexed_at),
         )
@@ -94,6 +81,15 @@ class LocalRepository:
                 sqlite3.Row | None,
                 connection.execute(
                     "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone(),
+            )
+
+    def project_by_root(self, root_path: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM projects WHERE root_path = ?", (root_path,)
                 ).fetchone(),
             )
 
@@ -133,14 +129,63 @@ class LocalRepository:
               agent_id, project_id, slug, source_path, source_file_hash, indexed_at
             )
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(agent_id) DO UPDATE SET
-              project_id=excluded.project_id, slug=excluded.slug,
-              source_path=excluded.source_path,
-              source_file_hash=excluded.source_file_hash,
-              indexed_at=excluded.indexed_at
             """,
             (agent_id, project_id, slug, source_path, source_file_hash, indexed_at),
         )
+
+    def refresh_agent(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        agent_id: str,
+        slug: str,
+        source_path: str,
+        source_file_hash: str,
+        indexed_at: str,
+    ) -> None:
+        connection.execute(
+            """UPDATE agents SET slug = ?, source_path = ?, source_file_hash = ?,
+               indexed_at = ? WHERE agent_id = ?""",
+            (slug, source_path, source_file_hash, indexed_at, agent_id),
+        )
+
+    def delete_agents(
+        self, connection: sqlite3.Connection, agent_ids: set[str]
+    ) -> None:
+        for agent_id in agent_ids:
+            has_versions = connection.execute(
+                "SELECT 1 FROM agent_versions WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if has_versions is not None:
+                raise ValueError("cannot remove an Agent with immutable versions")
+            connection.execute(
+                "DELETE FROM agent_drafts WHERE agent_id = ?", (agent_id,)
+            )
+        connection.executemany(
+            "DELETE FROM agents WHERE agent_id = ?",
+            ((agent_id,) for agent_id in agent_ids),
+        )
+
+    def reconcile_files(
+        self, connection: sqlite3.Connection, project_id: str, kept_paths: set[str]
+    ) -> None:
+        rows = connection.execute(
+            "SELECT file_id, relative_path FROM files WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        stale = [row for row in rows if row["relative_path"] not in kept_paths]
+        for row in stale:
+            linked = connection.execute(
+                "SELECT 1 FROM agent_version_files WHERE file_id = ?", (row["file_id"],)
+            ).fetchone()
+            if linked is not None:
+                raise ValueError(
+                    "cannot remove a file referenced by an immutable version"
+                )
+            connection.execute(
+                "DELETE FROM file_versions WHERE file_id = ?", (row["file_id"],)
+            )
+            connection.execute("DELETE FROM files WHERE file_id = ?", (row["file_id"],))
 
     def draft(self, agent_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:
@@ -268,8 +313,8 @@ class LocalRepository:
                      file_id, project_id, relative_path,
                      current_blob_digest, observed_at
                    )
-                   VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)""",
-                (project_id, relative_path, digest, observed_at),
+                   VALUES (?, ?, ?, ?, ?)""",
+                (new_uuid7(), project_id, relative_path, digest, observed_at),
             )
             row = connection.execute(
                 "SELECT file_id FROM files WHERE project_id = ? AND relative_path = ?",
@@ -308,96 +353,65 @@ class LocalRepository:
             (version_id, row["file_id"]),
         )
 
+    def create_write_intent(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        agent_id: str,
+        previous_source_text: str,
+        intended_source_text: str,
+    ) -> str:
+        intent_id = new_uuid7()
+        connection.execute(
+            """INSERT INTO draft_write_intents(
+                 intent_id, agent_id, previous_source_text, intended_source_text
+               ) VALUES (?, ?, ?, ?)""",
+            (intent_id, agent_id, previous_source_text, intended_source_text),
+        )
+        return intent_id
+
+    def remove_write_intent(
+        self, connection: sqlite3.Connection, intent_id: str
+    ) -> None:
+        connection.execute(
+            "DELETE FROM draft_write_intents WHERE intent_id = ?", (intent_id,)
+        )
+
+    def write_intents(self) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute("SELECT * FROM draft_write_intents").fetchall()
+
     def idempotent_response(
-        self, connection: sqlite3.Connection, scope: str, key: str
+        self, connection: sqlite3.Connection, scope: str, key: str, request_digest: str
     ) -> dict[str, Any] | None:
         row = connection.execute(
-            "SELECT response_json FROM idempotency_records WHERE scope = ? AND key = ?",
+            """SELECT request_digest, response_json FROM idempotency_records
+               WHERE scope = ? AND key = ?""",
             (scope, key),
         ).fetchone()
-        return None if row is None else json.loads(row["response_json"])
+        if row is None:
+            return None
+        if row["request_digest"] != request_digest:
+            raise IdempotencyConflict("idempotency key was reused for another request")
+        return cast(dict[str, Any], json.loads(row["response_json"]))
 
     def remember_response(
         self,
         connection: sqlite3.Connection,
         scope: str,
         key: str,
+        request_digest: str,
         response: dict[str, Any],
     ) -> None:
         connection.execute(
-            """INSERT INTO idempotency_records(scope, key, response_json)
-               VALUES (?, ?, ?)
-               ON CONFLICT(scope, key) DO NOTHING""",
-            (scope, key, json.dumps(response, sort_keys=True, separators=(",", ":"))),
+            """INSERT INTO idempotency_records(
+                 scope, key, request_digest, response_json
+               )
+               VALUES (?, ?, ?, ?)""",
+            (
+                scope,
+                key,
+                request_digest,
+                json.dumps(response, sort_keys=True, separators=(",", ":")),
+            ),
         )
-
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS projects (
-  project_id TEXT PRIMARY KEY,
-  root_path TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  manifest_hash TEXT NOT NULL,
-  indexed_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS agents (
-  agent_id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  slug TEXT NOT NULL,
-  source_path TEXT NOT NULL,
-  source_file_hash TEXT NOT NULL,
-  indexed_at TEXT NOT NULL,
-  UNIQUE(project_id, slug)
-);
-CREATE TABLE IF NOT EXISTS agent_drafts (
-  agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
-  draft_id TEXT NOT NULL UNIQUE,
-  revision INTEGER NOT NULL CHECK(revision >= 0),
-  source_json TEXT NOT NULL,
-  source_file_hash TEXT NOT NULL,
-  etag TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS agent_versions (
-  version_id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
-  source_hash TEXT NOT NULL,
-  behavior_hash TEXT NOT NULL,
-  lock_hash TEXT NOT NULL,
-  file_hash TEXT NOT NULL,
-  source_json TEXT NOT NULL,
-  source_text TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(agent_id, file_hash)
-);
-CREATE TABLE IF NOT EXISTS blobs (
-  digest TEXT PRIMARY KEY,
-  byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
-  object_path TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS files (
-  file_id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  relative_path TEXT NOT NULL,
-  current_blob_digest TEXT NOT NULL REFERENCES blobs(digest),
-  observed_at TEXT NOT NULL,
-  UNIQUE(project_id, relative_path)
-);
-CREATE TABLE IF NOT EXISTS file_versions (
-  file_id TEXT NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
-  blob_digest TEXT NOT NULL REFERENCES blobs(digest),
-  observed_at TEXT NOT NULL,
-  PRIMARY KEY(file_id, blob_digest)
-);
-CREATE TABLE IF NOT EXISTS agent_version_files (
-  version_id TEXT NOT NULL REFERENCES agent_versions(version_id) ON DELETE CASCADE,
-  file_id TEXT NOT NULL REFERENCES files(file_id) ON DELETE RESTRICT,
-  PRIMARY KEY(version_id, file_id)
-);
-CREATE TABLE IF NOT EXISTS idempotency_records (
-  scope TEXT NOT NULL,
-  key TEXT NOT NULL,
-  response_json TEXT NOT NULL,
-  PRIMARY KEY(scope, key)
-);
-"""

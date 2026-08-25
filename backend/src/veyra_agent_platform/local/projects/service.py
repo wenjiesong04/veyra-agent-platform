@@ -1,10 +1,11 @@
-"""Safe creation and indexing of user-selected Project directories."""
+"""Safe creation and bounded indexing of user-selected Project directories."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,13 +19,19 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.storage.objects import write_object
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
+MAX_INDEXED_FILE_BYTES = 1_000_000
+MAX_INDEXED_TOTAL_BYTES = 10_000_000
+_EXCLUDED_DIRECTORIES = {".git", "node_modules", "build", "cache", "runtime"}
+_FORBIDDEN_SECRET_NAMES = {".env", "id_rsa", "credentials.json"}
+_FORBIDDEN_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".token"}
+
 
 class ProjectError(ValueError):
     """A selected Project is unsafe, invalid, or unavailable."""
 
 
 class ProjectService:
-    """Treat portable files as truth and SQLite as a reconstructable index."""
+    """Keep source files authoritative; SQLite is a bounded, rebuildable index."""
 
     def __init__(self, repository: LocalRepository, object_root: Path) -> None:
         self.repository = repository
@@ -34,113 +41,139 @@ class ProjectService:
         self, *, root_path: str | Path, name: str, sources: list[dict[str, Any]]
     ) -> dict[str, Any]:
         root = self._new_root(root_path)
-        parsed_sources = [AgentSource.from_dict(source) for source in sources]
-        if not parsed_sources:
-            raise ProjectError("a Project needs at least one Agent source")
-        if len({source.agent_id for source in parsed_sources}) != len(parsed_sources):
-            raise ProjectError("Project Agent IDs must be unique")
-        if len({source.slug for source in parsed_sources}) != len(parsed_sources):
-            raise ProjectError("Project Agent slugs must be unique")
         if not isinstance(name, str) or not name.strip():
             raise ProjectError("Project name must be non-empty")
-        manifest = {
-            "schema_version": "1.0",
-            "project_version": "1",
-            "project_id": new_uuid7(),
-            "name": name.strip(),
-            "agents": [
-                {
-                    "agent_id": source.agent_id,
-                    "slug": source.slug,
-                    "path": f"agents/{source.slug}",
-                }
-                for source in parsed_sources
-            ],
-            "default_agent_id": parsed_sources[0].agent_id,
-            "resource_policy": {
-                "max_concurrent_runs": 1,
-                "max_nodes_per_run": 128,
-                "max_run_seconds": 3600,
-            },
-        }
-        ProjectManifest.from_dict(manifest)
-        root.mkdir(parents=True, exist_ok=False)
+        templates = [AgentSource.from_dict(source) for source in sources]
+        if not templates:
+            raise ProjectError("a Project needs at least one Agent source")
+        forked_sources = [self._fork_template(source) for source in templates]
+        if len({source.slug for source in forked_sources}) != len(forked_sources):
+            raise ProjectError("Project Agent slugs must be unique")
+        manifest = self._manifest(name.strip(), forked_sources)
+        staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
         try:
-            (root / "resources").mkdir()
-            (root / "tests").mkdir()
-            for source in parsed_sources:
-                agent_root = root / "agents" / source.slug
+            staging.mkdir(mode=0o700)
+            (staging / "resources").mkdir()
+            (staging / "tests").mkdir()
+            for source in forked_sources:
+                agent_root = staging / "agents" / source.slug
                 agent_root.mkdir(parents=True)
+                (agent_root / "tests").mkdir()
                 self.atomic_write(
                     agent_root / "agent.vagent.yaml",
                     self._canonical_source(source.to_dict()),
                 )
+                self.atomic_write(agent_root / "README.md", f"# {source.name}\n")
             self.atomic_write(
-                root / "project.vproject.yaml", self._canonical_source(manifest)
+                staging / "project.vproject.yaml", self._canonical_source(manifest)
             )
+            self._fsync_tree(staging)
+            if root.exists():
+                raise ProjectError("selected Project directory already exists")
+            os.replace(staging, root)
+            self._fsync_directory(root.parent)
         except BaseException:
-            # A partially created user location must not be silently removed.
-            # It is small and visible, so callers can safely repair or discard it.
+            if staging.exists():
+                shutil.rmtree(staging)
             raise
         return self.index(root)
 
     def index(self, root_path: str | Path) -> dict[str, Any]:
         root = self._existing_root(root_path)
-        manifest_path = self._safe_child(root, Path("project.vproject.yaml"))
+        self._scan_for_forbidden_names(root)
+        manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
         manifest_text = self._read_text(manifest_path)
         manifest = ProjectManifest.from_dict(
-            self._parse_yaml(manifest_text, "manifest")
+            self._parse_yaml(manifest_text, "Project manifest")
         )
-        source_records: list[tuple[AgentSource, Path, str]] = []
-        for entry in manifest.agents:
-            source_path = self._safe_child(root, Path(entry.path) / "agent.vagent.yaml")
-            source_text = self._read_text(source_path)
-            source = AgentSource.from_dict(self._parse_yaml(source_text, entry.slug))
-            if source.agent_id != entry.agent_id or source.slug != entry.slug:
-                raise ProjectError(
-                    "Project manifest Agent identity does not match source"
-                )
-            source_records.append((source, source_path, source_text))
-
+        records, indexed_files = self._collect_allowed_files(
+            root, manifest, manifest_path
+        )
         now = _utc_now()
         root_text = str(root)
         with self.repository.transaction() as connection:
-            self.repository.upsert_project(
-                connection,
-                project_id=manifest.project_id,
-                root_path=root_text,
-                name=manifest.name,
-                manifest_hash=hashlib.sha256(manifest_text.encode("utf-8")).hexdigest(),
-                indexed_at=now,
-            )
-            self._index_file(
-                connection,
-                manifest.project_id,
-                root,
-                manifest_path,
-                manifest_text.encode("utf-8"),
-                now,
-            )
-            for source, source_path, source_text in source_records:
-                current_hash = file_hash(source_text)
-                relative = source_path.relative_to(root).as_posix()
-                self.repository.upsert_agent(
+            bound_project = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (manifest.project_id,)
+            ).fetchone()
+            bound_root = connection.execute(
+                "SELECT * FROM projects WHERE root_path = ?", (root_text,)
+            ).fetchone()
+            if bound_project is not None and bound_project["root_path"] != root_text:
+                raise ProjectError("duplicate Project ID; use explicit Fork/import")
+            if (
+                bound_root is not None
+                and bound_root["project_id"] != manifest.project_id
+            ):
+                raise ProjectError("selected root is already bound to another Project")
+            manifest_hash = hashlib.sha256(manifest_text.encode("utf-8")).hexdigest()
+            if bound_project is None:
+                self.repository.upsert_project(
                     connection,
-                    agent_id=source.agent_id,
                     project_id=manifest.project_id,
-                    slug=source.slug,
-                    source_path=relative,
-                    source_file_hash=current_hash,
+                    root_path=root_text,
+                    name=manifest.name,
+                    manifest_hash=manifest_hash,
                     indexed_at=now,
                 )
-                self._index_file(
-                    connection,
-                    manifest.project_id,
-                    root,
-                    source_path,
-                    source_text.encode("utf-8"),
-                    now,
+            else:
+                connection.execute(
+                    """UPDATE projects SET name = ?, manifest_hash = ?, indexed_at = ?
+                       WHERE project_id = ?""",
+                    (manifest.name, manifest_hash, now, manifest.project_id),
                 )
+            manifest_agent_ids = {source.agent_id for source, _, _ in records}
+            existing_agents = connection.execute(
+                "SELECT * FROM agents WHERE project_id = ?", (manifest.project_id,)
+            ).fetchall()
+            stale_agents = {
+                row["agent_id"]
+                for row in existing_agents
+                if row["agent_id"] not in manifest_agent_ids
+            }
+            for agent_id in stale_agents:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM agent_versions WHERE agent_id = ?", (agent_id,)
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ProjectError("cannot remove an Agent with immutable versions")
+            self.repository.delete_agents(connection, stale_agents)
+            self.repository.reconcile_files(
+                connection,
+                manifest.project_id,
+                {path.relative_to(root).as_posix() for path in indexed_files},
+            )
+            for source, source_path, source_text in records:
+                current_hash = file_hash(source_text)
+                existing = connection.execute(
+                    "SELECT * FROM agents WHERE agent_id = ?", (source.agent_id,)
+                ).fetchone()
+                relative = source_path.relative_to(root).as_posix()
+                if (
+                    existing is not None
+                    and existing["project_id"] != manifest.project_id
+                ):
+                    raise ProjectError("duplicate Agent ID; use explicit Fork/import")
+                if existing is None:
+                    self.repository.upsert_agent(
+                        connection,
+                        agent_id=source.agent_id,
+                        project_id=manifest.project_id,
+                        slug=source.slug,
+                        source_path=relative,
+                        source_file_hash=current_hash,
+                        indexed_at=now,
+                    )
+                else:
+                    self.repository.refresh_agent(
+                        connection,
+                        agent_id=source.agent_id,
+                        slug=source.slug,
+                        source_path=relative,
+                        source_file_hash=current_hash,
+                        indexed_at=now,
+                    )
                 if self.repository.draft(source.agent_id) is None:
                     self.repository.insert_draft(
                         connection,
@@ -151,22 +184,15 @@ class ProjectService:
                         source_file_hash=current_hash,
                         etag=_etag(0, current_hash),
                     )
-            for path in root.rglob("*"):
-                if path.is_symlink():
-                    raise ProjectError("Project directories may not contain symlinks")
-                if path.is_file():
-                    if path.name == ".env" or path.suffix.lower() in {".key", ".pem"}:
-                        raise ProjectError(
-                            "secrets must not be stored in a Project directory"
-                        )
-                    self._index_file(
-                        connection,
-                        manifest.project_id,
-                        root,
-                        path,
-                        path.read_bytes(),
-                        now,
-                    )
+            for path in indexed_files:
+                self._index_file(
+                    connection,
+                    manifest.project_id,
+                    root,
+                    path,
+                    path.read_bytes(),
+                    now,
+                )
         return self.project_summary(manifest.project_id)
 
     def project_summary(self, project_id: str) -> dict[str, Any]:
@@ -174,6 +200,7 @@ class ProjectService:
         if project is None:
             raise ProjectError("unknown Project")
         return {
+            "schema_version": "1.0",
             "project_id": project["project_id"],
             "root_path": project["root_path"],
             "name": project["name"],
@@ -188,6 +215,65 @@ class ProjectService:
                 for agent in self.repository.agents(project_id)
             ],
         }
+
+    def _collect_allowed_files(
+        self, root: Path, manifest: ProjectManifest, manifest_path: Path
+    ) -> tuple[list[tuple[AgentSource, Path, str]], list[Path]]:
+        files = [manifest_path]
+        records: list[tuple[AgentSource, Path, str]] = []
+        for entry in manifest.agents:
+            agent_dir = self._safe_directory(root, Path(entry.path))
+            source_path = self._safe_file(root, Path(entry.path) / "agent.vagent.yaml")
+            readme_path = self._safe_file(root, Path(entry.path) / "README.md")
+            test_dir = self._safe_directory(root, Path(entry.path) / "tests")
+            source_text = self._read_text(source_path)
+            source = AgentSource.from_dict(self._parse_yaml(source_text, entry.slug))
+            if source.agent_id != entry.agent_id or source.slug != entry.slug:
+                raise ProjectError(
+                    "Project manifest Agent identity does not match source"
+                )
+            records.append((source, source_path, source_text))
+            files.extend([source_path, readme_path])
+            files.extend(self._files_below(test_dir))
+            if agent_dir.is_symlink():
+                raise ProjectError("Project path or symlink escapes its root")
+        files.extend(self._files_below(self._safe_directory(root, Path("resources"))))
+        files.extend(self._files_below(self._safe_directory(root, Path("tests"))))
+        unique = sorted(set(files))
+        total = 0
+        for path in unique:
+            if path.is_symlink():
+                raise ProjectError("Project files may not be symlinks")
+            size = path.stat().st_size
+            if size > MAX_INDEXED_FILE_BYTES:
+                raise ProjectError("Project file exceeds the indexing size limit")
+            total += size
+        if total > MAX_INDEXED_TOTAL_BYTES:
+            raise ProjectError("Project exceeds the indexing total size limit")
+        return records, unique
+
+    def _files_below(self, directory: Path) -> list[Path]:
+        files: list[Path] = []
+        for path in directory.rglob("*"):
+            if path.is_symlink():
+                raise ProjectError("Project files may not be symlinks")
+            if path.is_file():
+                files.append(path)
+        return files
+
+    def _scan_for_forbidden_names(self, root: Path) -> None:
+        for _, child_directories, filenames in os.walk(root, followlinks=False):
+            child_directories[:] = [
+                name for name in child_directories if name not in _EXCLUDED_DIRECTORIES
+            ]
+            for name in filenames:
+                if (
+                    name in _FORBIDDEN_SECRET_NAMES
+                    or Path(name).suffix.lower() in _FORBIDDEN_SECRET_SUFFIXES
+                ):
+                    raise ProjectError(
+                        "secrets must not be stored in a Project directory"
+                    )
 
     def _index_file(
         self,
@@ -211,7 +297,6 @@ class ProjectService:
 
     @staticmethod
     def atomic_write(path: Path, contents: str) -> None:
-        """Write inside a checked Project directory with fsync then replace."""
         descriptor, temporary_name = tempfile.mkstemp(prefix=".veyra-", dir=path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
@@ -219,14 +304,28 @@ class ProjectService:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_name, path)
-            descriptor_dir = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(descriptor_dir)
-            finally:
-                os.close(descriptor_dir)
+            ProjectService._fsync_directory(path.parent)
         finally:
             if os.path.exists(temporary_name):
                 os.unlink(temporary_name)
+
+    @staticmethod
+    def _fsync_directory(directory: Path) -> None:
+        descriptor = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _fsync_tree(cls, root: Path) -> None:
+        for path in sorted(root.rglob("*"), reverse=True):
+            if path.is_file():
+                with path.open("rb") as stream:
+                    os.fsync(stream.fileno())
+            elif path.is_dir():
+                cls._fsync_directory(path)
+        cls._fsync_directory(root)
 
     @staticmethod
     def _canonical_source(value: dict[str, Any]) -> str:
@@ -256,8 +355,13 @@ class ProjectService:
         root = Path(value).expanduser().absolute()
         if root.exists():
             raise ProjectError("selected Project directory already exists")
-        if root.parent.is_symlink():
-            raise ProjectError("Project parent must not be a symlink")
+        current = root.parent
+        while True:
+            if current.exists() and current.is_symlink():
+                raise ProjectError("Project ancestor must not be a symlink")
+            if current == current.parent:
+                break
+            current = current.parent
         return root
 
     @staticmethod
@@ -268,7 +372,21 @@ class ProjectService:
         return root.resolve(strict=True)
 
     @staticmethod
-    def _safe_child(root: Path, relative: Path) -> Path:
+    def _safe_file(root: Path, relative: Path) -> Path:
+        path = ProjectService._safe_path(root, relative)
+        if not path.is_file():
+            raise ProjectError("required Project file is absent")
+        return path
+
+    @staticmethod
+    def _safe_directory(root: Path, relative: Path) -> Path:
+        path = ProjectService._safe_path(root, relative)
+        if not path.is_dir():
+            raise ProjectError("required Project directory is absent")
+        return path
+
+    @staticmethod
+    def _safe_path(root: Path, relative: Path) -> Path:
         if relative.is_absolute() or ".." in relative.parts:
             raise ProjectError("Project relative path escapes its root")
         candidate = root / relative
@@ -281,6 +399,37 @@ class ProjectService:
         ):
             raise ProjectError("Project path or symlink escapes its root")
         return candidate
+
+    @staticmethod
+    def _fork_template(source: AgentSource) -> AgentSource:
+        forked = source.to_dict()
+        forked["agent_id"] = new_uuid7()
+        return AgentSource.from_dict(forked)
+
+    @staticmethod
+    def _manifest(name: str, sources: list[AgentSource]) -> dict[str, Any]:
+        manifest = {
+            "schema_version": "1.0",
+            "project_version": "1",
+            "project_id": new_uuid7(),
+            "name": name,
+            "agents": [
+                {
+                    "agent_id": source.agent_id,
+                    "slug": source.slug,
+                    "path": f"agents/{source.slug}",
+                }
+                for source in sources
+            ],
+            "default_agent_id": sources[0].agent_id,
+            "resource_policy": {
+                "max_concurrent_runs": 1,
+                "max_nodes_per_run": 128,
+                "max_run_seconds": 3600,
+            },
+        }
+        ProjectManifest.from_dict(manifest)
+        return manifest
 
 
 def _walk_existing_parts(root: Path, relative: Path) -> list[Path]:

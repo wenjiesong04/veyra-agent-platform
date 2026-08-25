@@ -21,35 +21,38 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
         for slug in ("github-triage", "release-summary")
     ]
     settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
-    client = TestClient(create_app(settings))
-    created = client.post(
-        "/api/v1/projects",
-        json={
-            "root_path": str(tmp_path / "project"),
-            "name": "Example",
-            "agents": agents,
-        },
-    )
-    assert created.status_code == 200
-    project = created.json()
-    agent_id = project["agents"][0]["agent_id"]
-    draft = client.get(
-        f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/draft"
-    )
-    assert draft.status_code == 200
-    assert draft.headers["etag"] == draft.json()["etag"]
-    assert (
-        client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/validate"
-        ).json()["valid"]
-        is True
-    )
-    committed = client.post(
-        f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/commit",
-        json={"idempotency_key": new_uuid7()},
-    )
-    assert committed.status_code == 200
-    exported = client.get(
-        f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/export"
-    )
-    assert exported.json()["source"]["agent_id"] == agent_id
+    with TestClient(create_app(settings)) as client:
+        health = client.get("/api/v1/health")
+        assert health.json()["database_ready"] is True
+        assert health.json()["database_revision"] == "local_0003_project_integrity"
+        created = client.post(
+            "/api/v1/projects",
+            json={
+                "root_path": str(tmp_path / "project"),
+                "name": "Example",
+                "agents": agents,
+            },
+        )
+        assert created.status_code == 201
+        project = created.json()
+        agent_id = project["agents"][0]["agent_id"]
+        draft = client.get(
+            f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/draft"
+        )
+        assert draft.status_code == 200
+        assert draft.headers["etag"] == draft.json()["etag"]
+        assert (
+            client.post(
+                f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/validate"
+            ).json()["valid"]
+            is True
+        )
+        committed = client.post(
+            f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/commit",
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert committed.status_code == 200
+        exported = client.get(
+            f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/export"
+        )
+        assert exported.json()["source"]["agent_id"] == agent_id

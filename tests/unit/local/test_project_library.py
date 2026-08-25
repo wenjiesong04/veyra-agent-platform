@@ -10,7 +10,7 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.library import LibraryService
 from veyra_agent_platform.local.library.service import DraftConflict
 from veyra_agent_platform.local.projects import ProjectService
-from veyra_agent_platform.local.storage import LocalRepository
+from veyra_agent_platform.local.storage import LocalRepository, migrate_local_database
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -25,7 +25,9 @@ def _sources() -> list[dict[str, object]]:
 
 
 def _services(tmp_path: Path) -> tuple[ProjectService, LibraryService]:
-    repository = LocalRepository(tmp_path / "app.sqlite3")
+    database_path = tmp_path / "app.sqlite3"
+    migrate_local_database(database_path)
+    repository = LocalRepository(database_path)
     projects = ProjectService(repository, tmp_path / "application-data" / "objects")
     return projects, LibraryService(repository, projects)
 
