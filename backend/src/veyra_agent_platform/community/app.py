@@ -41,7 +41,8 @@ def _database_revision(database: CommunityDatabase) -> str | None:
         return None
     if len(revisions) != 1:
         return None
-    return revisions[0]
+    revision = revisions[0]
+    return revision if isinstance(revision, str) else None
 
 
 def create_app(
