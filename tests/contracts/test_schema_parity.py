@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import unittest
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,7 @@ class SchemaParityTests(unittest.TestCase):
         self.assertEqual(command_kinds, [kind.value for kind in RunCommandKind])
         self.assertEqual(wire["$defs"]["run_state"]["enum"], [state.value for state in RunState])
         self.assertEqual(wire["$defs"]["node_state"]["enum"], [state.value for state in NodeState])
-        self.assertEqual(len(wire["$defs"]["run_event"]["allOf"]), 2)
+        self.assertEqual(len(wire["$defs"]["run_event"]["allOf"]), 4)
         self.assertEqual(len(wire["$defs"]["run_command"]["allOf"]), 2)
         self.assertIn("timestamp", wire["$defs"]["run_event"]["required"])
         self.assertEqual(wire["$defs"]["run_event"]["properties"]["timestamp"]["pattern"], "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$")
@@ -91,4 +92,25 @@ class SchemaParityTests(unittest.TestCase):
         schema_node_events = set(event_conditions[1]["if"]["properties"]["kind"]["enum"])
         self.assertEqual(schema_run_events, {kind.value for kind, required in EVENT_NODE_ID_REQUIRED.items() if not required})
         self.assertEqual(schema_node_events, {kind.value for kind, required in EVENT_NODE_ID_REQUIRED.items() if required})
+        self.assertEqual(wire["$defs"]["run_state_change_payload"]["additionalProperties"], False)
+        self.assertEqual(wire["$defs"]["node_state_change_payload"]["additionalProperties"], False)
         self.assertEqual(project["properties"]["resource_policy"]["additionalProperties"], False)
+
+    @unittest.skipUnless(importlib.util.find_spec("jsonschema"), "jsonschema is installed by the runtime integration")
+    def test_jsonschema_rejects_unknown_or_extra_state_change_payload_fields(self) -> None:
+        import jsonschema
+
+        schema = json.loads((SCHEMAS / "runtime-wire.schema.json").read_text())
+        valid = {
+            "schema_version": "1.0", "event_id": "01a03795-a5b0-7b1c-bad0-e07ac7dda22b",
+            "run_id": "01a03795-a5b0-72d3-8204-6f66a60073db", "timestamp": "2026-08-25T00:00:00Z", "sequence": 1,
+            "kind": "run.state_changed", "node_id": None,
+            "payload": {"previous_state": "created", "state": "running"},
+        }
+        validator = jsonschema.Draft202012Validator(schema)
+        validator.validate(valid)
+        for payload in ({"previous_state": "created", "state": "banana"}, {"previous_state": "created", "state": "running", "extra": "no"}):
+            invalid = dict(valid)
+            invalid["payload"] = payload
+            with self.subTest(payload=payload), self.assertRaises(jsonschema.ValidationError):
+                validator.validate(invalid)

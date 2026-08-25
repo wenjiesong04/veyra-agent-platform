@@ -82,16 +82,40 @@ class RuntimeWireContractTests(unittest.TestCase):
     def test_every_event_kind_has_an_explicit_node_id_classification(self) -> None:
         self.assertEqual(set(EVENT_NODE_ID_REQUIRED), set(RunEventKind))
         for kind, requires_node_id in EVENT_NODE_ID_REQUIRED.items():
+            payload = {}
+            if kind is RunEventKind.RUN_STATE_CHANGED:
+                payload = {"previous_state": "created", "state": "running"}
+            elif kind is RunEventKind.NODE_STATE_CHANGED:
+                payload = {"previous_state": "queued", "state": "running"}
             data = {
                 "schema_version": "1.0", "event_id": "01a03795-a5b0-7b1c-bad0-e07ac7dda22b",
                 "run_id": "01a03795-a5b0-72d3-8204-6f66a60073db", "timestamp": "2026-08-25T00:00:00Z", "sequence": 1,
-                "kind": kind.value, "node_id": "node_1" if requires_node_id else None, "payload": {},
+                "kind": kind.value, "node_id": "node_1" if requires_node_id else None, "payload": payload,
             }
             with self.subTest(kind=kind.value, requires_node_id=requires_node_id):
                 self.assertEqual(RunEvent.from_dict(data).kind, kind)
                 data["node_id"] = None if requires_node_id else "node_1"
                 with self.assertRaises(ContractValidationError):
                     RunEvent.from_dict(data)
+
+    def test_state_changed_events_require_closed_known_state_payloads(self) -> None:
+        run_event = {
+            "schema_version": "1.0", "event_id": "01a03795-a5b0-7b1c-bad0-e07ac7dda22b",
+            "run_id": "01a03795-a5b0-72d3-8204-6f66a60073db", "timestamp": "2026-08-25T00:00:00Z", "sequence": 1,
+            "kind": "run.state_changed", "node_id": None,
+            "payload": {"previous_state": "created", "state": "running", "reason": "validated"},
+        }
+        self.assertEqual(RunEvent.from_dict(run_event).payload["state"], "running")
+        for payload in ({"previous_state": "created", "state": "banana"}, {"previous_state": "created", "state": "running", "extra": "no"}, {"state": "running"}):
+            run_event["payload"] = payload
+            with self.subTest(payload=payload), self.assertRaises(ContractValidationError):
+                RunEvent.from_dict(run_event)
+        node_event = dict(run_event)
+        node_event.update({"kind": "node.state_changed", "node_id": "node_1", "payload": {"previous_state": "queued", "state": "waiting_input"}})
+        self.assertEqual(RunEvent.from_dict(node_event).payload["state"], "waiting_input")
+        node_event["payload"] = {"previous_state": "queued", "state": "banana"}
+        with self.assertRaises(ContractValidationError):
+            RunEvent.from_dict(node_event)
 
     def test_every_command_kind_has_an_explicit_node_id_classification(self) -> None:
         self.assertEqual(set(COMMAND_NODE_ID_REQUIRED), set(RunCommandKind))

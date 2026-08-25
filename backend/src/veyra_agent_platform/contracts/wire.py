@@ -32,6 +32,7 @@ class RunEventKind(StrEnum):
     RUN_FAILED = "run.failed"
     RUN_CANCELLED = "run.cancelled"
     NODE_QUEUED = "node.queued"
+    NODE_STATE_CHANGED = "node.state_changed"
     NODE_STARTED = "node.started"
     NODE_OUTPUT = "node.output"
     NODE_WAITING = "node.waiting"
@@ -107,6 +108,7 @@ EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
     RunEventKind.RUN_FAILED: False,
     RunEventKind.RUN_CANCELLED: False,
     RunEventKind.NODE_QUEUED: True,
+    RunEventKind.NODE_STATE_CHANGED: True,
     RunEventKind.NODE_STARTED: True,
     RunEventKind.NODE_OUTPUT: True,
     RunEventKind.NODE_WAITING: True,
@@ -147,6 +149,20 @@ def _payload(value: Any, field: str) -> Mapping[str, Any]:
     if not _json_data(item):
         raise ContractValidationError(f"{field} must contain JSON data only")
     return freeze_json(item)
+
+
+def _state_change_payload(value: Any, state_type: type[RunState] | type[NodeState]) -> Mapping[str, Any]:
+    item = require_mapping(value, "state-change payload")
+    require_keys(item, allowed={"previous_state", "state", "reason"}, required={"previous_state", "state"})
+    try:
+        previous_state = state_type(item["previous_state"])
+        state = state_type(item["state"])
+    except (TypeError, ValueError) as exc:
+        raise ContractValidationError("state-change payload contains an unknown state") from exc
+    result: dict[str, str] = {"previous_state": previous_state.value, "state": state.value}
+    if "reason" in item:
+        result["reason"] = require_string(item["reason"], "reason")
+    return freeze_json(result)
 
 
 def _json_data(value: Any) -> bool:
@@ -190,7 +206,13 @@ class RunEvent:
             require_node_id(node_id, "node_id")
         elif node_id is not None:
             raise ContractValidationError("run-level events must have null node_id")
-        return cls(SCHEMA_VERSION, require_uuid7(item["event_id"], "event_id"), require_uuid7(item["run_id"], "run_id"), _utc_timestamp(item["timestamp"]), sequence, kind, node_id, _payload(item["payload"], "payload"))
+        if kind is RunEventKind.RUN_STATE_CHANGED:
+            payload = _state_change_payload(item["payload"], RunState)
+        elif kind is RunEventKind.NODE_STATE_CHANGED:
+            payload = _state_change_payload(item["payload"], NodeState)
+        else:
+            payload = _payload(item["payload"], "payload")
+        return cls(SCHEMA_VERSION, require_uuid7(item["event_id"], "event_id"), require_uuid7(item["run_id"], "run_id"), _utc_timestamp(item["timestamp"]), sequence, kind, node_id, payload)
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": self.schema_version, "event_id": self.event_id, "run_id": self.run_id, "timestamp": self.timestamp, "sequence": self.sequence, "kind": self.kind.value, "node_id": self.node_id, "payload": thaw_json(self.payload)}
