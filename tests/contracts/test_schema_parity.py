@@ -8,6 +8,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS = ROOT / "contracts" / "schemas"
 
+from veyra_agent_platform.contracts.wire import NodeState, RunCommandKind, RunEventKind, RunState
+
 
 def visit(schema: Any) -> None:
     """Dependency-free guard against accidentally weakening structural schemas."""
@@ -75,8 +77,10 @@ class SchemaParityTests(unittest.TestCase):
         wire = json.loads((SCHEMAS / "runtime-wire.schema.json").read_text())
         event_kinds = wire["$defs"]["run_event"]["properties"]["kind"]["enum"]
         command_kinds = wire["$defs"]["run_command"]["properties"]["kind"]["enum"]
-        self.assertIn("verifier.result", event_kinds)
-        self.assertEqual(command_kinds, ["run.start", "run.cancel", "run.approve", "run.reject", "run.resume"])
+        self.assertEqual(event_kinds, [kind.value for kind in RunEventKind])
+        self.assertEqual(command_kinds, [kind.value for kind in RunCommandKind])
+        self.assertEqual(wire["$defs"]["run_state"]["enum"], [state.value for state in RunState])
+        self.assertEqual(wire["$defs"]["node_state"]["enum"], [state.value for state in NodeState])
         self.assertEqual(len(wire["$defs"]["run_event"]["allOf"]), 2)
         self.assertEqual(len(wire["$defs"]["run_command"]["allOf"]), 2)
         self.assertIn("timestamp", wire["$defs"]["run_event"]["required"])

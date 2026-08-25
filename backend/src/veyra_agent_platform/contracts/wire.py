@@ -24,34 +24,118 @@ from .common import (
 
 class RunEventKind(StrEnum):
     RUN_CREATED = "run.created"
+    RUN_STATE_CHANGED = "run.state_changed"
     RUN_STARTED = "run.started"
     RUN_COMPLETED = "run.completed"
+    RUN_INTERRUPTED = "run.interrupted"
     RUN_FAILED = "run.failed"
     RUN_CANCELLED = "run.cancelled"
+    NODE_QUEUED = "node.queued"
     NODE_STARTED = "node.started"
     NODE_OUTPUT = "node.output"
     NODE_WAITING = "node.waiting"
-    NODE_FAILED = "node.failed"
     NODE_COMPLETED = "node.completed"
+    NODE_FAILED = "node.failed"
+    NODE_SKIPPED = "node.skipped"
+    NODE_CANCELLED = "node.cancelled"
+    TOOL_REQUESTED = "tool.requested"
+    TOOL_STARTED = "tool.started"
+    TOOL_COMPLETED = "tool.completed"
+    APPROVAL_REQUESTED = "approval.requested"
+    APPROVAL_RESOLVED = "approval.resolved"
+    INPUT_REQUESTED = "input.requested"
+    INPUT_RESOLVED = "input.resolved"
+    ARTIFACT_CREATED = "artifact.created"
+    CHECKPOINT_CREATED = "checkpoint.created"
+    VERIFICATION_COMPLETED = "verification.completed"
     VERIFIER_RESULT = "verifier.result"
 
 
 class RunCommandKind(StrEnum):
     START = "run.start"
     CANCEL = "run.cancel"
+    STOP = "run.stop"
     APPROVE = "run.approve"
     REJECT = "run.reject"
+    REPLY = "run.reply"
+    STEER = "run.steer"
     RESUME = "run.resume"
+    RESUME_CHECKPOINT = "run.resume_checkpoint"
+    RETRY_SAFE_NODE = "run.retry_safe_node"
 
 
-_RUN_LEVEL_EVENTS = frozenset({
-    RunEventKind.RUN_CREATED,
-    RunEventKind.RUN_STARTED,
-    RunEventKind.RUN_COMPLETED,
-    RunEventKind.RUN_FAILED,
-    RunEventKind.RUN_CANCELLED,
-})
-_NODE_COMMANDS = frozenset({RunCommandKind.APPROVE, RunCommandKind.REJECT, RunCommandKind.RESUME})
+class RunState(StrEnum):
+    CREATED = "created"
+    VALIDATING = "validating"
+    QUEUED = "queued"
+    PREPARING = "preparing"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    WAITING_INPUT = "waiting_input"
+    WAITING_EXTERNAL = "waiting_external"
+    VERIFYING = "verifying"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    FAILED = "failed"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
+class NodeState(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING = "waiting"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+    VERIFYING = "verifying"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+
+
+EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
+    RunEventKind.RUN_CREATED: False,
+    RunEventKind.RUN_STATE_CHANGED: False,
+    RunEventKind.RUN_STARTED: False,
+    RunEventKind.RUN_COMPLETED: False,
+    RunEventKind.RUN_INTERRUPTED: False,
+    RunEventKind.RUN_FAILED: False,
+    RunEventKind.RUN_CANCELLED: False,
+    RunEventKind.NODE_QUEUED: True,
+    RunEventKind.NODE_STARTED: True,
+    RunEventKind.NODE_OUTPUT: True,
+    RunEventKind.NODE_WAITING: True,
+    RunEventKind.NODE_COMPLETED: True,
+    RunEventKind.NODE_FAILED: True,
+    RunEventKind.NODE_SKIPPED: True,
+    RunEventKind.NODE_CANCELLED: True,
+    RunEventKind.TOOL_REQUESTED: True,
+    RunEventKind.TOOL_STARTED: True,
+    RunEventKind.TOOL_COMPLETED: True,
+    RunEventKind.APPROVAL_REQUESTED: True,
+    RunEventKind.APPROVAL_RESOLVED: True,
+    RunEventKind.INPUT_REQUESTED: False,
+    RunEventKind.INPUT_RESOLVED: False,
+    RunEventKind.ARTIFACT_CREATED: False,
+    RunEventKind.CHECKPOINT_CREATED: False,
+    RunEventKind.VERIFICATION_COMPLETED: True,
+    RunEventKind.VERIFIER_RESULT: True,
+}
+
+COMMAND_NODE_ID_REQUIRED: Mapping[RunCommandKind, bool] = {
+    RunCommandKind.START: False,
+    RunCommandKind.CANCEL: False,
+    RunCommandKind.STOP: False,
+    RunCommandKind.APPROVE: True,
+    RunCommandKind.REJECT: True,
+    RunCommandKind.REPLY: True,
+    RunCommandKind.STEER: True,
+    RunCommandKind.RESUME: True,
+    RunCommandKind.RESUME_CHECKPOINT: False,
+    RunCommandKind.RETRY_SAFE_NODE: True,
+}
 
 
 def _payload(value: Any, field: str) -> Mapping[str, Any]:
@@ -99,11 +183,10 @@ class RunEvent:
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
             raise ContractValidationError("run event sequence must be a positive integer")
         node_id = item["node_id"]
-        if kind in _RUN_LEVEL_EVENTS:
-            if node_id is not None:
-                raise ContractValidationError("run-level events must have null node_id")
-        else:
+        if EVENT_NODE_ID_REQUIRED[kind]:
             require_node_id(node_id, "node_id")
+        elif node_id is not None:
+            raise ContractValidationError("run-level events must have null node_id")
         return cls(SCHEMA_VERSION, require_uuid7(item["event_id"], "event_id"), require_uuid7(item["run_id"], "run_id"), _utc_timestamp(item["timestamp"]), sequence, kind, node_id, _payload(item["payload"], "payload"))
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,7 +215,7 @@ class RunCommand:
         except (TypeError, ValueError) as exc:
             raise ContractValidationError("run command kind is unknown") from exc
         node_id = item["node_id"]
-        if kind in _NODE_COMMANDS:
+        if COMMAND_NODE_ID_REQUIRED[kind]:
             require_node_id(node_id, "node_id")
         elif node_id is not None:
             raise ContractValidationError("run-level command must have null node_id")
