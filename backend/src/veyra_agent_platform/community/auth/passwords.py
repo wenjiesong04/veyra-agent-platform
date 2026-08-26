@@ -7,7 +7,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from argon2.low_level import Type
 
 _MIN_PASSWORD_LENGTH = 8
-_MAX_PASSWORD_LENGTH = 256
+_MAX_PASSWORD_LENGTH = 64
 _COMMON_PASSWORDS = frozenset(
     {
         "00000000",
@@ -64,7 +64,7 @@ class PasswordManager:
         if not _MIN_PASSWORD_LENGTH <= len(password) <= _MAX_PASSWORD_LENGTH:
             raise PasswordPolicyError(
                 "password must contain "
-                f"{_MIN_PASSWORD_LENGTH}-{_MAX_PASSWORD_LENGTH} characters"
+                f"{_MIN_PASSWORD_LENGTH}–{_MAX_PASSWORD_LENGTH} characters"
             )
         if "\x00" in password:
             raise PasswordPolicyError("password cannot contain a null byte")

@@ -102,12 +102,17 @@ def test_password_policy_rejects_short_and_common_passwords(password: str) -> No
 
 def test_password_policy_accepts_eight_and_max_length_passwords() -> None:
     manager = PasswordManager()
-    for password in ("maplexyz", "x" * 256):
+    for password in ("maplexyz", "密码安全" * 2, "x" * 64):
         password_hash = manager.hash_new_password(password)
         assert manager.verify(password_hash, password)
 
     with pytest.raises(PasswordPolicyError):
-        manager.hash_new_password("x" * 257)
+        manager.hash_new_password("x" * 65)
+
+
+def test_password_policy_rejects_null_bytes() -> None:
+    with pytest.raises(PasswordPolicyError, match="null byte"):
+        PasswordManager.validate_new_password("safe\x00pwd")
 
 
 def test_registration_accepts_eight_character_password_after_policy_failures(
@@ -130,6 +135,11 @@ def test_registration_accepts_eight_character_password_after_policy_failures(
     common = community.client.post("/api/v1/auth/register", json=payload)
     assert common.status_code == 422
     assert common.json() == {"detail": "password_policy_failed"}
+
+    payload["password"] = "x" * 65
+    too_long = community.client.post("/api/v1/auth/register", json=payload)
+    assert too_long.status_code == 422
+    assert too_long.json() == {"detail": "password_policy_failed"}
 
     payload["password"] = "maplexyz"
     accepted = community.client.post("/api/v1/auth/register", json=payload)
@@ -460,6 +470,17 @@ def test_password_reset_is_anti_enumeration_and_revokes_existing_sessions(
     )
     assert blocked_reset.status_code == 422
     assert blocked_reset.json() == {"detail": "password_policy_failed"}
+
+    too_long_reset = community.client.post(
+        "/api/v1/auth/password-reset/confirm",
+        json={
+            "email": "alice@example.com",
+            "verification_code": reset_code,
+            "new_password": "x" * 65,
+        },
+    )
+    assert too_long_reset.status_code == 422
+    assert too_long_reset.json() == {"detail": "password_policy_failed"}
 
     reset = community.client.post(
         "/api/v1/auth/password-reset/confirm",

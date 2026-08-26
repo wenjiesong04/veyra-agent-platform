@@ -67,6 +67,7 @@ describe("Community account flows", () => {
     expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("Email"), "alice@example.com");
     expect(screen.getByLabelText("Password")).toHaveAttribute("minlength", "8");
+    expect(screen.getByLabelText("Password")).not.toHaveAttribute("maxlength");
     await user.type(screen.getByLabelText("Password"), "maplexyz");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     await waitFor(() => expect(window.location.hash).toBe("#/account"));
@@ -97,7 +98,10 @@ describe("Community account flows", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.type(screen.getByLabelText(/Name/), "Alice");
     expect(screen.getByLabelText(/^Password/)).toHaveAttribute("minlength", "8");
-    expect(screen.getByText("At least 8 characters")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Password/)).toHaveAttribute("maxlength", "64");
+    expect(screen.getByLabelText("Confirm password")).toHaveAttribute("minlength", "8");
+    expect(screen.getByLabelText("Confirm password")).toHaveAttribute("maxlength", "64");
+    expect(screen.getByText("8–64 characters")).toBeInTheDocument();
     await user.type(screen.getByLabelText(/^Password/), "maplexyz");
     await user.type(screen.getByLabelText("Confirm password"), "maplexyz");
     await user.click(screen.getByRole("button", { name: "Create account" }));
@@ -128,7 +132,10 @@ describe("Community account flows", () => {
     await user.click(screen.getByRole("button", { name: "Send reset code" }));
     await user.type(await screen.findByLabelText(/Verification code/), "239104");
     expect(screen.getByLabelText(/^New password/)).toHaveAttribute("minlength", "8");
-    expect(screen.getByText("At least 8 characters")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^New password/)).toHaveAttribute("maxlength", "64");
+    expect(screen.getByLabelText("Confirm new password")).toHaveAttribute("minlength", "8");
+    expect(screen.getByLabelText("Confirm new password")).toHaveAttribute("maxlength", "64");
+    expect(screen.getByText("8–64 characters")).toBeInTheDocument();
     await user.type(screen.getByLabelText(/^New password/), "maplexyz");
     await user.type(screen.getByLabelText("Confirm new password"), "maplexyz");
     await user.click(screen.getByRole("button", { name: "Update password" }));
