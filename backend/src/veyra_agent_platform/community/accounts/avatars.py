@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import warnings
+from contextlib import suppress
 from dataclasses import dataclass
 from hashlib import sha256
+from io import BytesIO
+
+from PIL import Image, UnidentifiedImageError
 
 from ..storage.avatar_storage import AvatarStorage
 from ..storage.database import CommunityDatabase
@@ -11,11 +16,13 @@ from ..storage.identifiers import utc_now
 from ..storage.schema import CommunityAvatar
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
-_SIGNATURES = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"RIFF", "image/webp"),
-)
+MAX_AVATAR_DIMENSION = 2048
+MAX_AVATAR_PIXELS = 4_000_000
+_FORMAT_MEDIA_TYPES = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+}
 
 
 class InvalidAvatar(ValueError):
@@ -65,11 +72,14 @@ class AccountAvatarService:
                     previous.byte_size = avatar.byte_size
                     previous.etag = avatar.etag
                     previous.updated_at = now
-            if old_storage_id is not None:
-                self._storage.delete(old_storage_id)
         except BaseException:
             self._storage.delete(storage_id)
             raise
+        if old_storage_id is not None:
+            # The replacement is committed. Retaining a stale object is safer
+            # than deleting the newly referenced object after a cleanup fault.
+            with suppress(Exception):
+                self._storage.delete(old_storage_id)
         return f"/api/v1/avatars/{user_id}"
 
     def get(self, user_id: str) -> tuple[StoredAvatar, bytes] | None:
@@ -99,15 +109,37 @@ class AccountAvatarService:
 
 
 def verify_avatar(content: bytes, claimed_media_type: str | None) -> str:
-    """Accept only bounded PNG, JPEG, or WebP bodies identified by bytes."""
+    """Decode and constrain a single PNG, JPEG, or WebP avatar image."""
 
     if not content or len(content) > MAX_AVATAR_BYTES:
         raise InvalidAvatar("avatar size is invalid")
-    media_type = _media_type(content)
-    if media_type is None:
-        raise InvalidAvatar("avatar signature is not allowed")
-    if media_type == "image/webp" and content[8:12] != b"WEBP":
-        raise InvalidAvatar("avatar signature is not allowed")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as verified:
+                verified.verify()
+            with Image.open(BytesIO(content)) as decoded:
+                media_type = _FORMAT_MEDIA_TYPES.get(decoded.format or "")
+                if media_type is None:
+                    raise InvalidAvatar("avatar format is not allowed")
+                width, height = decoded.size
+                if (
+                    width > MAX_AVATAR_DIMENSION
+                    or height > MAX_AVATAR_DIMENSION
+                    or width * height > MAX_AVATAR_PIXELS
+                ):
+                    raise InvalidAvatar("avatar dimensions are too large")
+                if getattr(decoded, "n_frames", 1) != 1:
+                    raise InvalidAvatar("animated avatars are not allowed")
+                decoded.load()
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        SyntaxError,
+        UnidentifiedImageError,
+    ) as error:
+        raise InvalidAvatar("avatar image data is invalid") from error
     claimed_base_type = (
         claimed_media_type.split(";", 1)[0].strip().lower()
         if claimed_media_type
@@ -116,10 +148,3 @@ def verify_avatar(content: bytes, claimed_media_type: str | None) -> str:
     if claimed_base_type is not None and claimed_base_type != media_type:
         raise InvalidAvatar("avatar content type does not match bytes")
     return media_type
-
-
-def _media_type(content: bytes) -> str | None:
-    for signature, media_type in _SIGNATURES:
-        if content.startswith(signature):
-            return media_type
-    return None

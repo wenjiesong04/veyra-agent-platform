@@ -19,7 +19,11 @@ class ProfileUnavailableError(ValueError):
 
 @dataclass(frozen=True)
 class AccountProfile:
-    """Private account projection returned only to the authenticated user."""
+    """Private account projection with a Community-relative avatar route.
+
+    Community clients resolve ``avatar_url`` against their configured Community
+    API base; it is deliberately not a Desktop (port 5173) same-origin URL.
+    """
 
     id: str
     email: str
@@ -82,5 +86,7 @@ def _to_profile(user: CommunityUser, avatar: CommunityAvatar | None) -> AccountP
         email=user.email_normalized,
         handle=user.handle,
         display_name=user.display_name,
-        avatar_url=f"/api/v1/avatars/{user.id}" if avatar is not None else None,
+        avatar_url=(
+            f"/api/v1/avatars/{user.id}?v={avatar.etag}" if avatar is not None else None
+        ),
     )
