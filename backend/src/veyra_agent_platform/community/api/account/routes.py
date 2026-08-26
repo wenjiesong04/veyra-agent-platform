@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from typing import Annotated
+
+from fastapi import (
+    APIRouter,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
 from ...accounts.identifiers import InvalidPublicHandle
 from ...accounts.profiles import ProfileUnavailableError
@@ -66,6 +76,38 @@ def build_router() -> APIRouter:
             )
         return MeResponse(account=AccountResponse.from_profile(profile))
 
+    @router.post("/avatar", response_model=MeResponse)
+    async def upload_avatar(
+        request: Request, avatar: Annotated[UploadFile, File()]
+    ) -> MeResponse:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        content = await avatar.read(2 * 1024 * 1024 + 1)
+        await avatar.close()
+        try:
+            request.app.state.account_avatars.replace(
+                authenticated.user_id, content, avatar.content_type
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="avatar_invalid",
+            ) from error
+        profile = request.app.state.account_profiles.get(authenticated.user_id)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="authentication_required",
+            )
+        return MeResponse(account=AccountResponse.from_profile(profile))
+
+    @router.delete("/avatar", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_avatar(request: Request) -> Response:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        request.app.state.account_avatars.delete(authenticated.user_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @router.get("/sessions", response_model=SessionListResponse)
     def list_sessions(request: Request) -> SessionListResponse:
         authenticated = authenticate_request(request)
@@ -94,5 +136,32 @@ def build_router() -> APIRouter:
         if session_id == authenticated.session_id:
             clear_auth_cookies(response, settings)
         return response
+
+    return router
+
+
+def build_avatar_router() -> APIRouter:
+    """Build the anonymous display endpoint for persisted profile avatars."""
+
+    router = APIRouter(prefix="/api/v1/avatars", tags=["avatars"])
+
+    @router.get("/{user_id}")
+    def get_avatar(user_id: str, request: Request) -> Response:
+        result = request.app.state.account_avatars.get(user_id)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="not_found"
+            )
+        avatar, content = result
+        etag = f'"{avatar.etag}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag}
+            )
+        return Response(
+            content=content,
+            media_type=avatar.media_type,
+            headers={"Cache-Control": "public, max-age=3600", "ETag": etag},
+        )
 
     return router

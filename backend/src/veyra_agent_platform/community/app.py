@@ -10,8 +10,14 @@ from fastapi import FastAPI
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from .accounts.avatars import AccountAvatarService
 from .accounts.profiles import AccountProfileService
-from .api.account.routes import build_router as build_account_router
+from .api.account.routes import (
+    build_avatar_router,
+)
+from .api.account.routes import (
+    build_router as build_account_router,
+)
 from .api.auth.routes import build_router as build_auth_router
 from .api.health import build_router
 from .auth.workflows import CommunityAuthWorkflows
@@ -20,9 +26,10 @@ from .mail.config import MailSettings
 from .mail.outbox import MailOutboxDispatcher
 from .mail.provider import MailProvider
 from .mail.smtp import QQSmtpMailProvider
+from .storage.avatar_storage import LocalAvatarStorage
 from .storage.database import CommunityDatabase
 
-COMMUNITY_DATABASE_HEAD = "community_0002_accounts_auth_mail"
+COMMUNITY_DATABASE_HEAD = "community_0003_account_avatars"
 
 
 def _database_revision(database: CommunityDatabase) -> str | None:
@@ -84,6 +91,9 @@ def create_app(
     application.state.community_database = resolved_database
     application.state.auth_workflows = auth_workflows
     application.state.account_profiles = AccountProfileService(resolved_database)
+    application.state.account_avatars = AccountAvatarService(
+        resolved_database, LocalAvatarStorage(resolved_settings.avatar_storage_root)
+    )
     application.state.database_revision = None
     application.state.database_ready = False
 
@@ -96,6 +106,7 @@ def create_app(
     )
     application.include_router(build_auth_router())
     application.include_router(build_account_router())
+    application.include_router(build_avatar_router())
 
     return application
 

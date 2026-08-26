@@ -93,6 +93,24 @@ class CommunitySession(CommunityBase):
     ip_hash: Mapped[str] = mapped_column(String(64))
 
 
+class CommunityAvatar(CommunityBase):
+    """Private storage metadata for one user's public avatar."""
+
+    __tablename__ = "community_avatars"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    storage_id: Mapped[str] = mapped_column(String(64), unique=True)
+    media_type: Mapped[str] = mapped_column(String(32))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    etag: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
 class CommunityMailOutbox(CommunityBase):
     """Durable authorization and delivery record for transactional email."""
 

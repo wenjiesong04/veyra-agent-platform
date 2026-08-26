@@ -73,6 +73,7 @@ def _register(
             "email": email.lower(),
             "handle": handle,
             "display_name": "Alice",
+            "avatar_url": None,
         },
     }
 
@@ -192,6 +193,7 @@ def test_registration_hmac_code_storage_and_account_profile(
         "email": "alice@example.com",
         "handle": "alice-maker",
         "display_name": "Alice",
+        "avatar_url": None,
     }
 
     unknown_identity = TestClient(community.app)

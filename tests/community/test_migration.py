@@ -32,4 +32,5 @@ def test_community_migration_creates_auth_and_outbox_tables(
         "community_auth_rate_limits",
         "community_sessions",
         "community_mail_outbox",
+        "community_avatars",
     } <= table_names

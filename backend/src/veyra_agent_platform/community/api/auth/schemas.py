@@ -87,6 +87,7 @@ class AccountResponse(ApiModel):
     email: str
     handle: str
     display_name: str | None
+    avatar_url: str | None
 
     @classmethod
     def from_profile(cls, profile: AccountProfile) -> AccountResponse:
@@ -95,6 +96,7 @@ class AccountResponse(ApiModel):
             email=profile.email,
             handle=profile.handle,
             display_name=profile.display_name,
+            avatar_url=profile.avatar_url,
         )
 
 

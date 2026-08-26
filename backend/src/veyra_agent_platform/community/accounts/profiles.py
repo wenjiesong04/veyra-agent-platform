@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..storage.database import CommunityDatabase
 from ..storage.identifiers import utc_now
-from ..storage.schema import CommunityUser
+from ..storage.schema import CommunityAvatar, CommunityUser
 from ..storage.user_repository import CommunityUserRepository
 from .identifiers import normalize_display_name, normalize_handle
 
@@ -25,6 +25,7 @@ class AccountProfile:
     email: str
     handle: str
     display_name: str | None
+    avatar_url: str | None = None
 
 
 class AccountProfileService:
@@ -37,7 +38,8 @@ class AccountProfileService:
     def get(self, user_id: str) -> AccountProfile | None:
         with self._database.transaction() as session:
             user = self._users.find_by_id(session, user_id)
-            return _to_profile(user) if user is not None else None
+            avatar = session.get(CommunityAvatar, user_id)
+            return _to_profile(user, avatar) if user is not None else None
 
     def update(
         self,
@@ -70,13 +72,15 @@ class AccountProfileService:
                 raise ProfileUnavailableError(
                     "requested handle is unavailable"
                 ) from error
-            return _to_profile(updated)
+            avatar = session.get(CommunityAvatar, user_id)
+            return _to_profile(updated, avatar)
 
 
-def _to_profile(user: CommunityUser) -> AccountProfile:
+def _to_profile(user: CommunityUser, avatar: CommunityAvatar | None) -> AccountProfile:
     return AccountProfile(
         id=user.id,
         email=user.email_normalized,
         handle=user.handle,
         display_name=user.display_name,
+        avatar_url=f"/api/v1/avatars/{user.id}" if avatar is not None else None,
     )

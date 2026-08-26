@@ -23,6 +23,15 @@ def _default_database_url() -> str:
     return f"sqlite:///{data_root / 'app.sqlite3'}"
 
 
+def _default_avatar_storage_root() -> Path:
+    return (
+        Path(user_data_dir("Veyra Agent Platform", appauthor=False))
+        / "v1"
+        / "community"
+        / "avatars"
+    )
+
+
 class CommunitySettings(BaseSettings):
     """Environment-backed settings for the Community service."""
 
@@ -40,6 +49,7 @@ class CommunitySettings(BaseSettings):
         "info"
     )
     database_url: str = Field(default_factory=_default_database_url)
+    avatar_storage_root: Path = Field(default_factory=_default_avatar_storage_root)
     mode: EnvironmentMode = Field(
         default="development",
         validation_alias=AliasChoices(
