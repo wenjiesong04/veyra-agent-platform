@@ -402,6 +402,11 @@ UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
 Run state, account tokens, secrets, caches, and event history never enter the
 Project directory.
 
+V1 permits an empty Project: `agents` may be empty and then
+`default_agent_id` is `null`. When Agents exist, `default_agent_id` identifies
+one listed Agent. Agents remain flat at `agents/<slug>`; a future child-Agent
+hierarchy will use stable-ID references rather than nested Agent directories.
+
 ### 5.1 Source and package files
 
 ```text

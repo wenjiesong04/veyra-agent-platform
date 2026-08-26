@@ -12,6 +12,31 @@ from veyra_agent_platform.local.config import LocalSettings
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -> None:
+    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+    root = tmp_path / "empty-project"
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/v1/projects",
+            json={"root_path": str(root), "name": "Empty"},
+        )
+        assert created.status_code == 201
+        project = created.json()
+        assert project["agents"] == []
+        assert project["agent_count"] == 0
+        assert project["indexed_at"]
+
+        reopened = client.post("/api/v1/projects/open", json={"root_path": str(root)})
+        assert reopened.status_code == 200
+        assert reopened.json()["project_id"] == project["project_id"]
+        listed = client.get("/api/v1/projects")
+        assert listed.status_code == 200
+        assert listed.json()["projects"] == [reopened.json()]
+        fetched = client.get(f"/api/v1/projects/{project['project_id']}")
+        assert fetched.status_code == 200
+        assert fetched.json() == reopened.json()
+
+
 def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     tmp_path: Path,
 ) -> None:

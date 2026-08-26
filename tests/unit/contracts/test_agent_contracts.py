@@ -61,6 +61,23 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(manifest.default_agent_id, manifest.agents[0].agent_id)
         self.assertEqual(manifest.resource_policy.max_concurrent_runs, 2)
 
+    def test_project_manifest_permits_empty_agents_only_with_null_default(self) -> None:
+        manifest = read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml")
+        manifest["agents"] = []
+        manifest["default_agent_id"] = None
+        parsed = ProjectManifest.from_dict(manifest)
+        self.assertEqual(parsed.agents, ())
+        self.assertIsNone(parsed.default_agent_id)
+
+        manifest["default_agent_id"] = "01a03795-a5b0-7234-ba76-5c5f0e029334"
+        with self.assertRaises(ContractValidationError):
+            ProjectManifest.from_dict(manifest)
+
+        manifest = read_json_yaml(PROJECT_FIXTURE / "project.vproject.yaml")
+        manifest["default_agent_id"] = None
+        with self.assertRaises(ContractValidationError):
+            ProjectManifest.from_dict(manifest)
+
     def test_project_fixture_instantiates_agent_directories_and_required_files(
         self,
     ) -> None:

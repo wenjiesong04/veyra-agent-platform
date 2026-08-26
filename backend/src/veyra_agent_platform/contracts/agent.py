@@ -360,7 +360,7 @@ class ProjectManifest:
     project_id: str
     name: str
     agents: tuple[ProjectAgentDirectory, ...]
-    default_agent_id: str
+    default_agent_id: str | None
     resource_policy: ResourcePolicy
 
     @classmethod
@@ -395,16 +395,30 @@ class ProjectManifest:
             for value in require_list(item["agents"], "agents")
         )
         if (
-            not agents
-            or len({agent.agent_id for agent in agents}) != len(agents)
+            len({agent.agent_id for agent in agents}) != len(agents)
             or len({agent.slug for agent in agents}) != len(agents)
             or len({agent.path for agent in agents}) != len(agents)
         ):
             raise ContractValidationError(
-                "project agents must be non-empty with unique IDs, slugs, and paths"
+                "project agents must have unique IDs, slugs, and paths"
             )
-        default_agent_id = require_uuid7(item["default_agent_id"], "default_agent_id")
-        if default_agent_id not in {agent.agent_id for agent in agents}:
+        raw_default_agent_id = item["default_agent_id"]
+        if not agents and raw_default_agent_id is not None:
+            raise ContractValidationError(
+                "default_agent_id must be null when a Project has no Agents"
+            )
+        if agents and raw_default_agent_id is None:
+            raise ContractValidationError(
+                "default_agent_id must identify a listed Project Agent"
+            )
+        default_agent_id = (
+            None
+            if raw_default_agent_id is None
+            else require_uuid7(raw_default_agent_id, "default_agent_id")
+        )
+        if default_agent_id is not None and default_agent_id not in {
+            agent.agent_id for agent in agents
+        }:
             raise ContractValidationError(
                 "default_agent_id must identify a listed Project Agent"
             )

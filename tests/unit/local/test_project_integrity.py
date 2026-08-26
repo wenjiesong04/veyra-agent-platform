@@ -74,6 +74,24 @@ def test_template_projects_fork_agent_identities_and_write_agent_scaffolding(
         assert (root.parent / "tests").is_dir()
 
 
+def test_empty_project_creates_required_layout_and_reopens(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    root = tmp_path / "empty"
+
+    created = projects.create(root_path=root, name="Empty")
+
+    manifest = json.loads((root / "project.vproject.yaml").read_text())
+    assert manifest["agents"] == []
+    assert manifest["default_agent_id"] is None
+    assert (root / "agents").is_dir()
+    assert (root / "resources").is_dir()
+    assert (root / "tests").is_dir()
+    assert created["agent_count"] == 0
+    assert created["agents"] == []
+    assert created["indexed_at"]
+    assert projects.index(root)["project_id"] == created["project_id"]
+
+
 def test_index_reconciles_unversioned_manifest_removal_and_rejects_duplicate_copy(
     tmp_path: Path,
 ) -> None:

@@ -18,6 +18,10 @@ from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.storage.objects import write_object
 from veyra_agent_platform.local.storage.repositories import LocalRepository
+from veyra_agent_platform.local.templates import (
+    AgentTemplateCatalog,
+    AgentTemplateError,
+)
 
 MAX_INDEXED_FILE_BYTES = 1_000_000
 MAX_INDEXED_TOTAL_BYTES = 10_000_000
@@ -33,26 +37,40 @@ class ProjectError(ValueError):
 class ProjectService:
     """Keep source files authoritative; SQLite is a bounded, rebuildable index."""
 
-    def __init__(self, repository: LocalRepository, object_root: Path) -> None:
+    def __init__(
+        self,
+        repository: LocalRepository,
+        object_root: Path,
+        templates: AgentTemplateCatalog | None = None,
+    ) -> None:
         self.repository = repository
         self.object_root = object_root
+        self.templates = templates or AgentTemplateCatalog()
 
     def create(
-        self, *, root_path: str | Path, name: str, sources: list[dict[str, Any]]
+        self,
+        *,
+        root_path: str | Path,
+        name: str,
+        sources: list[dict[str, Any]] | None = None,
+        template_selections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         root = self._new_root(root_path)
         if not isinstance(name, str) or not name.strip():
             raise ProjectError("Project name must be non-empty")
-        templates = [AgentSource.from_dict(source) for source in sources]
-        if not templates:
-            raise ProjectError("a Project needs at least one Agent source")
-        forked_sources = [self._fork_template(source) for source in templates]
+        selected_sources = [AgentSource.from_dict(source) for source in (sources or [])]
+        selected_sources.extend(
+            self._instantiate_template(selection)
+            for selection in (template_selections or [])
+        )
+        forked_sources = [self._fork_template(source) for source in selected_sources]
         if len({source.slug for source in forked_sources}) != len(forked_sources):
             raise ProjectError("Project Agent slugs must be unique")
         manifest = self._manifest(name.strip(), forked_sources)
         staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
         try:
             staging.mkdir(mode=0o700)
+            (staging / "agents").mkdir()
             (staging / "resources").mkdir()
             (staging / "tests").mkdir()
             for source in forked_sources:
@@ -77,6 +95,90 @@ class ProjectService:
                 shutil.rmtree(staging)
             raise
         return self.index(root)
+
+    def add_agent(
+        self, *, project_id: str, template_selection: dict[str, str]
+    ) -> dict[str, Any]:
+        """Atomically add one catalog Agent to an existing Project directory."""
+        project = self.repository.project(project_id)
+        if project is None:
+            raise ProjectError("unknown Project")
+        root = self._existing_root(project["root_path"])
+        manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+        previous_manifest_text = self._read_text(manifest_path)
+        manifest = ProjectManifest.from_dict(
+            self._parse_yaml(previous_manifest_text, "Project manifest")
+        )
+        if manifest.project_id != project_id:
+            raise ProjectError("Project manifest identity does not match its index")
+
+        source = self._instantiate_template(template_selection)
+        source = self._fork_template(source)
+        existing_ids = {entry.agent_id for entry in manifest.agents}
+        existing_slugs = {entry.slug for entry in manifest.agents}
+        if source.agent_id in existing_ids or self.repository.agent(source.agent_id):
+            raise ProjectError("duplicate Agent ID; use explicit Fork/import")
+        if source.slug in existing_slugs:
+            raise ProjectError("Project Agent slugs must be unique")
+
+        agents_root = self._safe_directory(root, Path("agents"))
+        target = agents_root / source.slug
+        if target.exists() or target.is_symlink():
+            raise ProjectError("Project Agent path already exists")
+        staging = agents_root / f".{source.slug}.veyra-staging-{new_uuid7()}"
+        updated_manifest = manifest.to_dict()
+        updated_manifest["agents"].append(
+            {
+                "agent_id": source.agent_id,
+                "slug": source.slug,
+                "path": f"agents/{source.slug}",
+            }
+        )
+        if not manifest.agents:
+            updated_manifest["default_agent_id"] = source.agent_id
+        ProjectManifest.from_dict(updated_manifest)
+
+        installed = False
+        manifest_replaced = False
+        try:
+            staging.mkdir(mode=0o700)
+            (staging / "tests").mkdir()
+            self.atomic_write(
+                staging / "agent.vagent.yaml",
+                self._canonical_source(source.to_dict()),
+            )
+            self.atomic_write(staging / "README.md", f"# {source.name}\n")
+            self._fsync_tree(staging)
+            if target.exists():
+                raise ProjectError("Project Agent path already exists")
+            os.replace(staging, target)
+            installed = True
+            self._fsync_directory(agents_root)
+            self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
+            manifest_replaced = True
+            self.index(root)
+            return self.agent_summary(project_id, source.agent_id)
+        except BaseException as exc:
+            rollback_errors: list[BaseException] = []
+            if manifest_replaced:
+                try:
+                    self.atomic_write(manifest_path, previous_manifest_text)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if installed and target.exists():
+                try:
+                    shutil.rmtree(target)
+                    self._fsync_directory(agents_root)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if staging.exists():
+                try:
+                    shutil.rmtree(staging)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            for rollback_note in rollback_errors:
+                exc.add_note(f"rollback failed: {rollback_note}")
+            raise
 
     def index(self, root_path: str | Path) -> dict[str, Any]:
         root = self._existing_root(root_path)
@@ -204,17 +306,55 @@ class ProjectService:
             "project_id": project["project_id"],
             "root_path": project["root_path"],
             "name": project["name"],
-            "manifest_hash": project["manifest_hash"],
             "agents": [
                 {
                     "agent_id": agent["agent_id"],
                     "slug": agent["slug"],
                     "source_path": agent["source_path"],
-                    "source_file_hash": agent["source_file_hash"],
                 }
                 for agent in self.repository.agents(project_id)
             ],
+            "agent_count": len(self.repository.agents(project_id)),
+            "indexed_at": project["indexed_at"],
         }
+
+    def agent_summary(self, project_id: str, agent_id: str) -> dict[str, Any]:
+        """Return an Agent summary parsed from its authoritative source file."""
+        project = self.repository.project(project_id)
+        agent = self.repository.agent(agent_id)
+        if project is None:
+            raise ProjectError("unknown Project")
+        if agent is None or agent["project_id"] != project_id:
+            raise ProjectError("unknown Agent in Project")
+        root = self._existing_root(project["root_path"])
+        source_path = self._safe_file(root, Path(agent["source_path"]))
+        source_text = self._read_text(source_path)
+        source = AgentSource.from_dict(self._parse_yaml(source_text, agent["slug"]))
+        if source.agent_id != agent_id or source.slug != agent["slug"]:
+            raise ProjectError("Project Agent identity does not match source")
+        return {
+            "schema_version": "1.0",
+            "agent_id": source.agent_id,
+            "slug": source.slug,
+            "name": source.name,
+            "description": source.description,
+            "source_path": agent["source_path"],
+            "source_file_hash": file_hash(source_text),
+            "node_count": len(source.nodes),
+            "transition_count": len(source.transitions),
+            "component_types": sorted(
+                {node.component_type.value for node in source.nodes}
+            ),
+        }
+
+    def template_metadata(self) -> list[dict[str, str]]:
+        return self.templates.metadata()
+
+    def _instantiate_template(self, selection: dict[str, str]) -> AgentSource:
+        try:
+            return self.templates.instantiate(**selection)
+        except (AgentTemplateError, TypeError) as exc:
+            raise ProjectError(str(exc)) from exc
 
     def _collect_allowed_files(
         self, root: Path, manifest: ProjectManifest, manifest_path: Path
@@ -421,7 +561,7 @@ class ProjectService:
                 }
                 for source in sources
             ],
-            "default_agent_id": sources[0].agent_id,
+            "default_agent_id": sources[0].agent_id if sources else None,
             "resource_policy": {
                 "max_concurrent_runs": 1,
                 "max_nodes_per_run": 128,
