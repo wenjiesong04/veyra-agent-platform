@@ -66,8 +66,10 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/auth/password-reset/confirm",
         "/api/v1/account/me",
         "/api/v1/account/profile",
+        "/api/v1/account/avatar",
         "/api/v1/account/sessions",
         "/api/v1/account/sessions/{session_id}",
+        "/api/v1/avatars/{user_id}",
     }
 
 
