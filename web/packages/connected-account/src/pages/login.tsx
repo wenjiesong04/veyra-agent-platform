@@ -14,9 +14,9 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const copy = locale === "zh" ? {
-    eyebrow: "账号登录", title: "欢迎回来", detail: "使用你的邮箱和密码登录 Veyra Community。", email: "邮箱", emailPlaceholder: "name@example.com", password: "密码", showPassword: "显示密码", hidePassword: "隐藏密码", forgot: "忘记密码？", submit: "登录", submitting: "正在登录", noAccount: "还没有账号？", register: "创建账号", signedIn: "你已经登录", signedInDetail: `当前账号：${account?.email ?? ""}`, account: "进入账号设置",
+    eyebrow: "账号登录", title: "欢迎回来", detail: "使用你的邮箱和密码登录 Veyra。", email: "邮箱", emailPlaceholder: "name@example.com", password: "密码", showPassword: "显示密码", hidePassword: "隐藏密码", forgot: "忘记密码？", submit: "登录", submitting: "正在登录", noAccount: "还没有账号？", register: "创建账号", signedIn: "你已经登录", signedInDetail: `当前账号：${account?.email ?? ""}`, account: "进入账号设置",
   } : {
-    eyebrow: "Account sign in", title: "Welcome back", detail: "Sign in to Veyra Community with your email and password.", email: "Email", emailPlaceholder: "name@example.com", password: "Password", showPassword: "Show password", hidePassword: "Hide password", forgot: "Forgot password?", submit: "Sign in", submitting: "Signing in", noAccount: "New to Veyra?", register: "Create an account", signedIn: "You are already signed in", signedInDetail: `Current account: ${account?.email ?? ""}`, account: "Open account settings",
+    eyebrow: "Account sign in", title: "Welcome back", detail: "Sign in to Veyra with your email and password.", email: "Email", emailPlaceholder: "name@example.com", password: "Password", showPassword: "Show password", hidePassword: "Hide password", forgot: "Forgot password?", submit: "Sign in", submitting: "Signing in", noAccount: "New to Veyra?", register: "Create an account", signedIn: "You are already signed in", signedInDetail: `Current account: ${account?.email ?? ""}`, account: "Open account settings",
   };
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {

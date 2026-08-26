@@ -228,6 +228,10 @@ describe("desktop Project workspace", () => {
     render(<DesktopApp api={apiFor()} communityApi={accountApi(fetcher)} />);
 
     expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Veyra" })).toHaveAttribute("href", "#/community");
+    expect(screen.getByText("/ Agent Platform", { selector: "small" })).toBeInTheDocument();
+    expect(screen.queryByText("Veyra Community")).not.toBeInTheDocument();
+    if (hash === "#/login") expect(screen.getByText("Sign in to Veyra with your email and password.")).toBeInTheDocument();
     await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/community-api/api/v1/account/me", expect.objectContaining({ credentials: "include" })));
   });
 
