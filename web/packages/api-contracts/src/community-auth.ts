@@ -5,11 +5,19 @@ export const communityAuthRoutePaths = {
   account: "#/account",
 } as const;
 
+export const communityAccountApiPaths = {
+  me: "/account/me",
+  profile: "/account/profile",
+  sessions: "/account/sessions",
+  avatar: "/account/avatar",
+} as const;
+
 export type CommunityAccount = {
   id: string;
   email: string;
   handle: string;
   display_name: string | null;
+  avatar_url: string | null;
 };
 
 export type CommunityAuthenticatedResponse = {

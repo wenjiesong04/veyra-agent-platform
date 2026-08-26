@@ -2,9 +2,9 @@ import { ArrowLeft, ArrowRight, LoaderCircle, MailCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { communityAuthRoutePaths } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
-import { AuthLayout } from "../auth/auth-layout";
-import { useAuth } from "../auth/auth-context";
-import { AuthCard, FormField, FormNotice, PasswordInput, StepIndicator, authErrorMessage, errorCopy, useCooldown } from "../auth/form-controls";
+import { useAuth } from "../auth-context";
+import { AuthLayout } from "../auth-layout";
+import { AuthCard, FormField, FormNotice, PasswordInput, StepIndicator, authErrorMessage, errorCopy, useCooldown } from "../form-controls";
 
 type RegisterStep = "email" | "code" | "profile";
 
@@ -77,35 +77,9 @@ export function RegisterPage() {
     <AuthLayout>
       <AuthCard eyebrow={copy.eyebrow} title={title} detail={detail} footer={<p>{copy.haveAccount} <a href={communityAuthRoutePaths.login}>{copy.login}</a></p>}>
         <StepIndicator current={stepNumber} total={3} label={copy.step} />
-        {step === "email" ? (
-          <form className="auth-form" onSubmit={onEmailSubmit}>
-            <FormField label={copy.email}><input autoFocus autoComplete="email" inputMode="email" name="email" placeholder={copy.emailPlaceholder} required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></FormField>
-            {error ? <FormNotice>{error}</FormNotice> : null}
-            <Button className="auth-submit" type="submit" variant="primary" disabled={submitting} icon={submitting ? LoaderCircle : MailCheck}>{submitting ? copy.sending : copy.send}</Button>
-          </form>
-        ) : null}
-        {step === "code" ? (
-          <form className="auth-form" onSubmit={onCodeSubmit}>
-            <FormNotice tone="success">{copy.codeSent}</FormNotice>
-            <FormField label={copy.code} hint={copy.codeHint}><input autoFocus className="verification-code-input" autoComplete="one-time-code" inputMode="numeric" maxLength={6} pattern="[0-9]{6}" required value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></FormField>
-            {error ? <FormNotice>{error}</FormNotice> : null}
-            <Button className="auth-submit" type="submit" variant="primary" disabled={code.length !== 6} icon={ArrowRight}>{copy.continue}</Button>
-            <div className="auth-secondary-actions">
-              <Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => { setError(null); setStep("email"); }}>{copy.back}</Button>
-              <Button type="button" variant="ghost" disabled={cooldown.remaining > 0 || submitting} onClick={() => void sendCode()}>{cooldown.remaining > 0 ? `${cooldown.remaining} ${copy.resendIn}` : copy.resend}</Button>
-            </div>
-          </form>
-        ) : null}
-        {step === "profile" ? (
-          <form className="auth-form" onSubmit={onProfileSubmit}>
-            <FormField label={copy.name} hint={copy.nameHint}><input autoFocus autoComplete="name" maxLength={80} name="display-name" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></FormField>
-            <FormField label={copy.password} hint={copy.passwordHint}><PasswordInput autoComplete="new-password" minLength={8} maxLength={64} name="password" required value={password} onChange={(event) => setPassword(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} /></FormField>
-            <FormField label={copy.confirm}><PasswordInput autoComplete="new-password" minLength={8} maxLength={64} name="password-confirmation" required value={confirmation} onChange={(event) => setConfirmation(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} /></FormField>
-            {error ? <FormNotice>{error}</FormNotice> : null}
-            <Button className="auth-submit" type="submit" variant="primary" disabled={submitting} icon={submitting ? LoaderCircle : ArrowRight}>{submitting ? copy.creating : copy.create}</Button>
-            <Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => { setError(null); setStep("code"); }}>{copy.back}</Button>
-          </form>
-        ) : null}
+        {step === "email" ? <form className="auth-form" onSubmit={onEmailSubmit}><FormField label={copy.email}><input autoFocus autoComplete="email" inputMode="email" name="email" placeholder={copy.emailPlaceholder} required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></FormField>{error ? <FormNotice>{error}</FormNotice> : null}<Button className="auth-submit" type="submit" variant="primary" disabled={submitting} icon={submitting ? LoaderCircle : MailCheck}>{submitting ? copy.sending : copy.send}</Button></form> : null}
+        {step === "code" ? <form className="auth-form" onSubmit={onCodeSubmit}><FormNotice tone="success">{copy.codeSent}</FormNotice><FormField label={copy.code} hint={copy.codeHint}><input autoFocus className="verification-code-input" autoComplete="one-time-code" inputMode="numeric" maxLength={6} pattern="[0-9]{6}" required value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></FormField>{error ? <FormNotice>{error}</FormNotice> : null}<Button className="auth-submit" type="submit" variant="primary" disabled={code.length !== 6} icon={ArrowRight}>{copy.continue}</Button><div className="auth-secondary-actions"><Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => { setError(null); setStep("email"); }}>{copy.back}</Button><Button type="button" variant="ghost" disabled={cooldown.remaining > 0 || submitting} onClick={() => void sendCode()}>{cooldown.remaining > 0 ? `${cooldown.remaining} ${copy.resendIn}` : copy.resend}</Button></div></form> : null}
+        {step === "profile" ? <form className="auth-form" onSubmit={onProfileSubmit}><FormField label={copy.name} hint={copy.nameHint}><input autoFocus autoComplete="name" maxLength={80} name="display-name" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></FormField><FormField label={copy.password} hint={copy.passwordHint}><PasswordInput autoComplete="new-password" minLength={8} maxLength={64} name="password" required value={password} onChange={(event) => setPassword(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} /></FormField><FormField label={copy.confirm}><PasswordInput autoComplete="new-password" minLength={8} maxLength={64} name="password-confirmation" required value={confirmation} onChange={(event) => setConfirmation(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} /></FormField>{error ? <FormNotice>{error}</FormNotice> : null}<Button className="auth-submit" type="submit" variant="primary" disabled={submitting} icon={submitting ? LoaderCircle : ArrowRight}>{submitting ? copy.creating : copy.create}</Button><Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => { setError(null); setStep("code"); }}>{copy.back}</Button></form> : null}
       </AuthCard>
     </AuthLayout>
   );

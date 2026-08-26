@@ -6,7 +6,7 @@ import type {
   CommunityProfileUpdate,
   CommunityRegistrationRequest,
 } from "@veyra/api-contracts";
-import { CommunityApiError, communityApi } from "./community-api";
+import { CommunityApiError, createCommunityApi, type CommunityApi } from "./api";
 
 export type AuthStatus = "booting" | "anonymous" | "authenticated";
 export type VerificationPurpose = "registration" | "password_reset";
@@ -23,18 +23,22 @@ type AuthContextValue = {
   updateProfile: (payload: CommunityProfileUpdate) => Promise<CommunityAccount>;
   listSessions: () => Promise<CommunityDeviceSession[]>;
   revokeSession: (sessionId: string) => Promise<void>;
+  uploadAvatar: (file: File) => Promise<string | null>;
+  replaceAvatar: (file: File) => Promise<string | null>;
+  deleteAvatar: () => Promise<string | null>;
 };
 
+const defaultApi = createCommunityApi({ baseUrl: "/api/v1" });
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-async function bootstrapAccount(): Promise<CommunityAccount | null> {
+async function bootstrapAccount(api: CommunityApi): Promise<CommunityAccount | null> {
   try {
-    return await communityApi.me();
+    return await api.me();
   } catch (error) {
     if (!(error instanceof CommunityApiError) || error.status !== 401) throw error;
-    if (!communityApi.hasRefreshEvidence()) return null;
+    if (!api.hasRefreshEvidence()) return null;
     try {
-      return await communityApi.refresh();
+      return await api.refresh();
     } catch (refreshError) {
       if (refreshError instanceof CommunityApiError && [401, 403].includes(refreshError.status)) return null;
       throw refreshError;
@@ -42,16 +46,16 @@ async function bootstrapAccount(): Promise<CommunityAccount | null> {
   }
 }
 
-export function AuthProvider({ children }: PropsWithChildren) {
+export function AuthProvider({ children, api = defaultApi }: PropsWithChildren<{ api?: CommunityApi }>) {
   const [status, setStatus] = useState<AuthStatus>("booting");
   const [account, setAccount] = useState<CommunityAccount | null>(null);
   const [bootstrapError, setBootstrapError] = useState<CommunityApiError | null>(null);
-  const bootstrapRef = useRef<Promise<CommunityAccount | null> | null>(null);
+  const bootstrapRef = useRef<{ api: CommunityApi; promise: Promise<CommunityAccount | null> } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    bootstrapRef.current ??= bootstrapAccount();
-    void bootstrapRef.current.then((nextAccount) => {
+    if (!bootstrapRef.current || bootstrapRef.current.api !== api) bootstrapRef.current = { api, promise: bootstrapAccount(api) };
+    void bootstrapRef.current.promise.then((nextAccount) => {
       if (cancelled) return;
       setAccount(nextAccount);
       setStatus(nextAccount ? "authenticated" : "anonymous");
@@ -65,58 +69,59 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [api]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const nextAccount = await communityApi.login({ email, password });
+    const nextAccount = await api.login({ email, password });
     setAccount(nextAccount);
     setStatus("authenticated");
     setBootstrapError(null);
     return nextAccount;
-  }, []);
+  }, [api]);
 
   const register = useCallback(async (payload: Omit<CommunityRegistrationRequest, "device_name">) => {
-    const nextAccount = await communityApi.register(payload);
+    const nextAccount = await api.register(payload);
     setAccount(nextAccount);
     setStatus("authenticated");
     setBootstrapError(null);
     return nextAccount;
-  }, []);
+  }, [api]);
 
   const requestCode = useCallback(async (email: string, purpose: VerificationPurpose) => {
-    await communityApi.requestVerificationCode(email, purpose);
-  }, []);
+    await api.requestVerificationCode(email, purpose);
+  }, [api]);
 
   const resetPassword = useCallback(async (payload: Omit<CommunityPasswordResetRequest, "device_name">) => {
-    await communityApi.resetPassword(payload);
+    await api.resetPassword(payload);
     setAccount(null);
     setStatus("anonymous");
     setBootstrapError(null);
-  }, []);
+  }, [api]);
 
   const logout = useCallback(async () => {
-    await communityApi.logout();
+    await api.logout();
     setAccount(null);
     setStatus("anonymous");
-  }, []);
+  }, [api]);
 
   const updateProfile = useCallback(async (payload: CommunityProfileUpdate) => {
-    const nextAccount = await communityApi.updateProfile(payload);
+    const nextAccount = await api.updateProfile(payload);
     setAccount(nextAccount);
     return nextAccount;
-  }, []);
+  }, [api]);
 
-  const listSessions = useCallback(() => communityApi.listSessions(), []);
+  const listSessions = useCallback(() => api.listSessions(), [api]);
 
   const revokeSession = useCallback(async (sessionId: string) => {
-    await communityApi.revokeSession(sessionId);
+    await api.revokeSession(sessionId);
     try {
-      const currentAccount = await communityApi.me();
+      const currentAccount = await api.me();
       setAccount((previous) => previous
         && previous.id === currentAccount.id
         && previous.email === currentAccount.email
         && previous.handle === currentAccount.handle
         && previous.display_name === currentAccount.display_name
+        && previous.avatar_url === currentAccount.avatar_url
         ? previous
         : currentAccount);
     } catch (error) {
@@ -124,7 +129,25 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setAccount(null);
       setStatus("anonymous");
     }
-  }, []);
+  }, [api]);
+
+  const uploadAvatar = useCallback(async (file: File) => {
+    const nextAccount = await api.uploadAvatar(file);
+    setAccount(nextAccount);
+    return nextAccount.avatar_url;
+  }, [api]);
+
+  const replaceAvatar = useCallback(async (file: File) => {
+    const nextAccount = await api.replaceAvatar(file);
+    setAccount(nextAccount);
+    return nextAccount.avatar_url;
+  }, [api]);
+
+  const deleteAvatar = useCallback(async () => {
+    await api.deleteAvatar();
+    setAccount((previous) => previous ? { ...previous, avatar_url: null } : previous);
+    return null;
+  }, [api]);
 
   const value = useMemo<AuthContextValue>(() => ({
     status,
@@ -138,7 +161,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
     updateProfile,
     listSessions,
     revokeSession,
-  }), [account, bootstrapError, listSessions, login, logout, register, requestCode, resetPassword, revokeSession, status, updateProfile]);
+    uploadAvatar,
+    replaceAvatar,
+    deleteAvatar,
+  }), [account, bootstrapError, deleteAvatar, listSessions, login, logout, register, requestCode, replaceAvatar, resetPassword, revokeSession, status, updateProfile, uploadAvatar]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

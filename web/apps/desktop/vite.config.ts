@@ -12,6 +12,11 @@ export default defineConfig({
         target: "http://127.0.0.1:8771",
         changeOrigin: false,
       },
+      "/community-api": {
+        target: "http://127.0.0.1:8772",
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/community-api/, ""),
+      },
     },
   },
   build: {

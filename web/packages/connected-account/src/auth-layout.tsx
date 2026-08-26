@@ -1,7 +1,8 @@
 import { Languages, Moon, Sun } from "lucide-react";
+import type { ReactNode } from "react";
 import { useLocale, useTheme } from "@veyra/ui";
 
-export function AuthLayout({ children }: { children: React.ReactNode }) {
+export function AuthLayout({ children }: { children: ReactNode }) {
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const english = locale === "en";

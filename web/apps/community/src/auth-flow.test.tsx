@@ -8,6 +8,7 @@ const account = {
   email: "alice@example.com",
   handle: "veyra-alice",
   display_name: "Alice",
+  avatar_url: null,
 };
 
 const currentSession = {

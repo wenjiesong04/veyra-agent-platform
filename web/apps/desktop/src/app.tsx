@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Activity, Boxes, FileText, FolderKanban, Gauge, Globe2 } from "lucide-react";
 import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
+import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
 import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
@@ -20,6 +21,8 @@ import { ProjectsPage } from "./pages/projects";
 import { RunsPage } from "./pages/runs";
 import { SettingsPage } from "./pages/settings";
 import { StudioPage } from "./pages/studio";
+
+const desktopCommunityApi = createCommunityApi({ baseUrl: "/community-api/api/v1" });
 
 const fixedNavigation: NavigationGroup = {
   label: "Features",
@@ -65,6 +68,9 @@ function useHashRoute(): DesktopRouteLocation {
 function PageContent({ route }: { route: DesktopRouteLocation }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
+  if (route.kind === "login") return <LoginPage />;
+  if (route.kind === "register") return <RegisterPage />;
+  if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   if (route.kind === "projects") return <ProjectsPage />;
   if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
@@ -94,7 +100,11 @@ function DesktopWorkspace() {
   const { locale, t } = useLocale();
   const zh = locale === "zh";
   const route = useHashRoute();
+  const { account, logout } = useAuth();
   const { projects, recentProjects, status, markProjectRecent } = useProjectWorkspace();
+  if (route.kind === "login") return <LoginPage />;
+  if (route.kind === "register") return <RegisterPage />;
+  if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run" ? route.projectId : undefined;
   const activeHref = route.kind === "projects" || route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
     ? desktopRoutePaths.projects
@@ -145,7 +155,17 @@ function DesktopWorkspace() {
       activeHref={activeHref}
       eyebrow={meta.eyebrow}
       title={meta.title}
-      account={{
+      account={account ? {
+        displayName: account.display_name || account.handle,
+        detail: account.email,
+        initials: accountInitials(account.display_name, account.handle),
+        authenticated: true,
+        accountHref: desktopRoutePaths.account,
+        settingsHref: desktopRoutePaths.settings,
+        onSignOut: () => {
+          void logout().catch(() => undefined);
+        },
+      } : {
         displayName: t("localWorkspace"),
         detail: t("notSignedIn"),
         initials: zh ? "本" : "LW",
@@ -161,15 +181,19 @@ function DesktopWorkspace() {
 
 export type DesktopAppProps = {
   api?: LocalProjectApi;
+  communityApi?: CommunityApi;
 };
 
-export function DesktopApp({ api }: DesktopAppProps = {}) {
+export function DesktopApp({ api, communityApi }: DesktopAppProps = {}) {
   const projectApi = React.useMemo(() => api ?? createLocalApiClient(), [api]);
+  const accountApi = React.useMemo(() => communityApi ?? desktopCommunityApi, [communityApi]);
   return (
     <ThemeProvider>
-      <ProjectWorkspaceProvider api={projectApi}>
-        <DesktopWorkspace />
-      </ProjectWorkspaceProvider>
+      <AuthProvider api={accountApi}>
+        <ProjectWorkspaceProvider api={projectApi}>
+          <DesktopWorkspace />
+        </ProjectWorkspaceProvider>
+      </AuthProvider>
     </ThemeProvider>
   );
 }

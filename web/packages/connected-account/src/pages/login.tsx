@@ -2,9 +2,9 @@ import { ArrowRight, LoaderCircle } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { communityAuthRoutePaths } from "@veyra/api-contracts";
 import { Button, LinkButton, useLocale } from "@veyra/ui";
-import { AuthLayout } from "../auth/auth-layout";
-import { useAuth } from "../auth/auth-context";
-import { AuthCard, FormField, FormNotice, PasswordInput, authErrorMessage, errorCopy } from "../auth/form-controls";
+import { useAuth } from "../auth-context";
+import { AuthLayout } from "../auth-layout";
+import { AuthCard, FormField, FormNotice, PasswordInput, authErrorMessage, errorCopy } from "../form-controls";
 
 export function LoginPage() {
   const { locale } = useLocale();
@@ -43,12 +43,8 @@ export function LoginPage() {
       >
         {account ? <LinkButton className="auth-submit" href={communityAuthRoutePaths.account} icon={ArrowRight} variant="primary">{copy.account}</LinkButton> : (
           <form className="auth-form" onSubmit={onSubmit}>
-            <FormField label={copy.email}>
-              <input autoComplete="email" inputMode="email" name="email" placeholder={copy.emailPlaceholder} required type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-            </FormField>
-            <FormField label={copy.password}>
-              <PasswordInput autoComplete="current-password" minLength={8} name="password" required value={password} onChange={(event) => setPassword(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} />
-            </FormField>
+            <FormField label={copy.email}><input autoComplete="email" inputMode="email" name="email" placeholder={copy.emailPlaceholder} required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></FormField>
+            <FormField label={copy.password}><PasswordInput autoComplete="current-password" minLength={8} name="password" required value={password} onChange={(event) => setPassword(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} /></FormField>
             <div className="auth-form-row"><a href={communityAuthRoutePaths.forgotPassword}>{copy.forgot}</a></div>
             {error ? <FormNotice>{error}</FormNotice> : null}
             <Button className="auth-submit" type="submit" variant="primary" disabled={submitting || status === "booting"} icon={submitting ? LoaderCircle : ArrowRight}>{submitting ? copy.submitting : copy.submit}</Button>

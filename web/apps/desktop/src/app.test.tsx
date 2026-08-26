@@ -2,7 +2,8 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderKanban } from "lucide-react";
-import { parseDesktopRoute, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
+import { parseDesktopRoute, projectRoutePaths, type CommunityAccount, type ProjectSummaryResponse } from "@veyra/api-contracts";
+import { createCommunityApi, normalizeCommunityAvatarUrl } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider } from "@veyra/ui";
 import type { LocalProjectApi } from "./api/local-client";
 import { DesktopApp } from "./app";
@@ -32,6 +33,32 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     openProject: vi.fn().mockResolvedValue(project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" })),
     getProject,
   };
+}
+
+const connectedAccount = {
+  id: "account-desktop",
+  email: "alice@example.com",
+  handle: "veyra-alice",
+  display_name: "Alice",
+  avatar_url: null,
+};
+
+const connectedSession = {
+  id: "session-desktop",
+  device_name: "Alice Mac",
+  user_agent: "Test browser",
+  created_at: "2026-08-25T08:00:00Z",
+  last_seen_at: "2026-08-26T08:00:00Z",
+  expires_at: "2026-09-25T08:00:00Z",
+  current: true,
+};
+
+function jsonResponse(status: number, body: object): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function accountApi(fetcher: typeof fetch) {
+  return createCommunityApi({ baseUrl: "/community-api/api/v1", fetcher });
 }
 
 function setViewport(isMobile: boolean) {
@@ -187,6 +214,73 @@ describe("desktop Project workspace", () => {
     expect(await screen.findByText("管理与 Desktop sidecar 连接的真实项目目录。")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "项目" })).toHaveAttribute("href", "#/projects");
   });
+
+  it.each([
+    ["#/login", "Welcome back"],
+    ["#/register", "Verify your email first"],
+    ["#/forgot-password", "Reset your password"],
+  ] as const)("renders the connected auth route %s inside Desktop", async (hash, heading) => {
+    window.location.hash = hash;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      return url.endsWith("/account/me") ? jsonResponse(401, { detail: "authentication_required" }) : jsonResponse(404, { detail: "not_found" });
+    });
+    render(<DesktopApp api={apiFor()} communityApi={accountApi(fetcher)} />);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/community-api/api/v1/account/me", expect.objectContaining({ credentials: "include" })));
+  });
+
+  it("restores a Community session, drives the account menu, and completes avatar lifecycle", async () => {
+    window.location.hash = "#/account";
+    let currentAccount: CommunityAccount = connectedAccount;
+    const requests: Array<{ url: string; method: string; body?: BodyInit | null }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      requests.push({ url, method, body: init?.body });
+      if (url.endsWith("/account/me")) return jsonResponse(200, { schema_version: "community.account.v1", account: currentAccount });
+      if (url.endsWith("/account/sessions")) return jsonResponse(200, { schema_version: "community.account.v1", sessions: [connectedSession] });
+      if (url.endsWith("/account/avatar") && method === "POST") {
+        const body = init?.body as FormData;
+        expect(body.get("avatar")).toBeInstanceOf(File);
+        currentAccount = { ...currentAccount, avatar_url: "/api/v1/avatars/account-desktop" };
+        return jsonResponse(200, { schema_version: "community.account.v1", account: currentAccount });
+      }
+      if (url.endsWith("/account/avatar") && method === "DELETE") {
+        currentAccount = { ...currentAccount, avatar_url: null };
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith("/auth/logout") && method === "POST") return new Response(null, { status: 204 });
+      return jsonResponse(404, { detail: "not_found" });
+    });
+    const user = userEvent.setup();
+    render(<DesktopApp api={apiFor()} communityApi={accountApi(fetcher)} />);
+
+    expect(await screen.findByDisplayValue("alice@example.com")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open account menu" }));
+    expect(screen.getByRole("menuitem", { name: "Account" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
+
+    const avatarInput = screen.getByLabelText("Choose avatar");
+    expect(avatarInput).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
+    const file = new File(["png bytes"], "avatar.png", { type: "image/png" });
+    await user.upload(avatarInput, file);
+    await user.click(screen.getAllByRole("button", { name: "Save changes" })[0]!);
+    expect(await screen.findByText("Avatar updated.")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Avatar preview" })).toHaveAttribute("src", "/community-api/api/v1/avatars/account-desktop");
+    expect(requests.some((request) => request.url.endsWith("/account/avatar") && request.method === "POST")).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Remove avatar" }));
+    expect(await screen.findByText("Avatar removed.")).toBeInTheDocument();
+    expect(requests.some((request) => request.url.endsWith("/account/avatar") && request.method === "DELETE")).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Open account menu" }));
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open account menu" })).toHaveAttribute("title", "Local workspace"));
+    await user.click(screen.getByRole("button", { name: "Open account menu" }));
+    expect(screen.getByRole("menuitem", { name: "Sign in or register" })).toBeInTheDocument();
+  });
 });
 
 describe("shared ApplicationShell account behavior", () => {
@@ -215,6 +309,11 @@ describe("shared ApplicationShell account behavior", () => {
 });
 
 describe("desktop route parser", () => {
+  it("maps Community avatar paths through the configured API proxy", () => {
+    expect(normalizeCommunityAvatarUrl("/api/v1/avatars/account-desktop?v=2", "/community-api/api/v1")).toBe("/community-api/api/v1/avatars/account-desktop?v=2");
+    expect(normalizeCommunityAvatarUrl("/api/v1/avatars/account-desktop", "/api/v1")).toBe("/api/v1/avatars/account-desktop");
+  });
+
   it("covers the typed Project and fixed-feature route matrix", () => {
     expect(parseDesktopRoute("#/projects").kind).toBe("projects");
     expect(parseDesktopRoute(projectRoutePaths.project("p")).kind).toBe("project");
@@ -226,6 +325,9 @@ describe("desktop route parser", () => {
     expect(parseDesktopRoute("#/runs").kind).toBe("runs");
     expect(parseDesktopRoute("#/monitor").kind).toBe("monitor");
     expect(parseDesktopRoute("#/community").kind).toBe("community");
+    expect(parseDesktopRoute("#/login").kind).toBe("login");
+    expect(parseDesktopRoute("#/register").kind).toBe("register");
+    expect(parseDesktopRoute("#/forgot-password").kind).toBe("forgot-password");
     expect(parseDesktopRoute("#/nowhere").kind).toBe("not-found");
   });
 });

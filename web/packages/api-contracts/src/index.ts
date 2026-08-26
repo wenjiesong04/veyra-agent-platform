@@ -34,12 +34,14 @@ export const libraryRoutePaths = {
 
 export type ProjectRouteKind = "project" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-run";
 export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
+export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 
 export type DesktopRouteLocation =
   | { kind: "projects"; path: string }
   | { kind: DesktopRoute; path: string; }
   | { kind: ProjectRouteKind; path: string; projectId: string; agentId?: string; versionId?: string }
   | { kind: DesktopSubrouteKind; path: string; componentId?: string; fileId?: string; owner?: string; slug?: string; versionId?: string }
+  | { kind: DesktopAuthRouteKind; path: string }
   | { kind: "not-found"; path: string };
 
 function encodeRouteSegment(value: string): string {
@@ -74,6 +76,9 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   if (parts.length === 1 && topLevel && topLevel in desktopRoutePaths) {
     return { kind: topLevel, path };
   }
+  if (parts.length === 1 && parts[0] === "login") return { kind: "login", path };
+  if (parts.length === 1 && parts[0] === "register") return { kind: "register", path };
+  if (parts.length === 1 && parts[0] === "forgot-password") return { kind: "forgot-password", path };
 
   if (parts[0] === "components" && parts.length === 2) {
     const componentId = decodeRouteSegment(parts[1]);

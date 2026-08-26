@@ -2,14 +2,12 @@ import { Compass } from "lucide-react";
 import { useEffect, useState } from "react";
 import { communityAuthRoutePaths, communityRoutePaths } from "@veyra/api-contracts";
 import { ApplicationShell, LinkButton, ThemeProvider, useLocale, type NavigationGroup } from "@veyra/ui";
-import { AuthProvider, useAuth } from "./auth/auth-context";
-import { CommunityAccountPage } from "./pages/account";
+import { accountInitials, AuthProvider, ConnectedAccountPage, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth } from "@veyra/connected-account";
 import { CatalogPage } from "./pages/catalog";
 import { EntryDetailPage } from "./pages/detail";
-import { ForgotPasswordPage } from "./pages/forgot-password";
-import { LoginPage } from "./pages/login";
 import { CommunityNotFoundPage } from "./pages/not-found";
-import { RegisterPage } from "./pages/register";
+
+const communityApi = createCommunityApi({ baseUrl: "/api/v1" });
 
 const navigation: NavigationGroup[] = [
   { label: "Explore", items: [{ href: communityRoutePaths.catalog, label: "Catalog", icon: Compass }] },
@@ -51,14 +49,6 @@ function parseCommunityRoute(path: string): CommunityLocation {
   return { kind: "not-found" };
 }
 
-function accountInitials(displayName: string | null, handle: string): string {
-  const value = (displayName || handle).trim();
-  const parts = value.split(/\s+/).filter(Boolean);
-  return parts.length > 1
-    ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase()
-    : value.slice(0, 2).toUpperCase();
-}
-
 function CommunityWorkspace() {
   const { locale } = useLocale();
   const { account, logout } = useAuth();
@@ -73,7 +63,7 @@ function CommunityWorkspace() {
   const activeHref = location.kind === "account" ? communityAuthRoutePaths.account : communityRoutePaths.catalog;
   const browseLabel = zh ? "浏览目录" : "Browse catalog";
   const content = location.kind === "account"
-    ? <CommunityAccountPage />
+    ? <ConnectedAccountPage />
     : location.kind === "entry"
       ? <EntryDetailPage owner={location.owner} slug={location.slug} versionId={location.versionId} />
       : location.kind === "not-found"
@@ -113,5 +103,5 @@ function CommunityWorkspace() {
 }
 
 export function CommunityApp() {
-  return <ThemeProvider><AuthProvider><CommunityWorkspace /></AuthProvider></ThemeProvider>;
+  return <ThemeProvider><AuthProvider api={communityApi}><CommunityWorkspace /></AuthProvider></ThemeProvider>;
 }

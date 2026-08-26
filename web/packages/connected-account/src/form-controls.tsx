@@ -1,6 +1,6 @@
 import { CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { useEffect, useState, type InputHTMLAttributes, type ReactNode } from "react";
-import { CommunityApiError } from "./community-api";
+import { CommunityApiError } from "./api";
 
 export function AuthCard({ eyebrow, title, detail, children, footer }: { eyebrow: string; title: string; detail: string; children: ReactNode; footer?: ReactNode }) {
   return (
@@ -73,6 +73,8 @@ type ErrorCopy = {
   csrf: string;
   rateLimited: string;
   network: string;
+  avatarInvalid: string;
+  avatarTooLarge: string;
   generic: string;
 };
 
@@ -87,6 +89,8 @@ export function authErrorMessage(error: unknown, copy: ErrorCopy): string {
     profile_update_unavailable: copy.profileUnavailable,
     profile_update_invalid: copy.profileInvalid,
     csrf_failed: copy.csrf,
+    avatar_invalid: copy.avatarInvalid,
+    avatar_too_large: copy.avatarTooLarge,
     network_unavailable: copy.network,
   };
   return messages[error.code] ?? (error.validationMessages[0] || copy.generic);
@@ -103,6 +107,8 @@ export const errorCopy = {
     csrf: "安全凭据已过期，请刷新页面后重试。",
     rateLimited: "操作过于频繁，请稍后再试。",
     network: "暂时无法连接社区服务，请确认服务正在运行。",
+    avatarInvalid: "头像必须是有效的图片文件。",
+    avatarTooLarge: "头像文件不能超过 2 MiB。",
     generic: "请求未完成，请稍后重试。",
   },
   en: {
@@ -115,6 +121,8 @@ export const errorCopy = {
     csrf: "Your security session expired. Refresh the page and try again.",
     rateLimited: "Too many attempts. Please wait and try again.",
     network: "The Community service is unavailable. Check that it is running.",
+    avatarInvalid: "Choose a valid image file.",
+    avatarTooLarge: "Avatar files must be 2 MiB or smaller.",
     generic: "The request could not be completed. Please try again.",
   },
 } as const;

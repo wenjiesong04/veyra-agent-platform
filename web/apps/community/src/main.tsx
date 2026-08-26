@@ -4,6 +4,7 @@ import "@veyra/ui/styles/tokens.css";
 import "@veyra/ui/styles/base.css";
 import "@veyra/ui/styles/shell.css";
 import "@veyra/ui/styles/primitives.css";
+import "@veyra/connected-account/styles.css";
 import "./app.css";
 import { CommunityApp } from "./app";
 
