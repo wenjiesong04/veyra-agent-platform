@@ -47,7 +47,7 @@ export function LoginPage() {
               <input autoComplete="email" inputMode="email" name="email" placeholder={copy.emailPlaceholder} required type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
             </FormField>
             <FormField label={copy.password}>
-              <PasswordInput autoComplete="current-password" minLength={12} name="password" required value={password} onChange={(event) => setPassword(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} />
+              <PasswordInput autoComplete="current-password" minLength={8} name="password" required value={password} onChange={(event) => setPassword(event.target.value)} showLabel={copy.showPassword} hideLabel={copy.hidePassword} />
             </FormField>
             <div className="auth-form-row"><a href={communityAuthRoutePaths.forgotPassword}>{copy.forgot}</a></div>
             {error ? <FormNotice>{error}</FormNotice> : null}

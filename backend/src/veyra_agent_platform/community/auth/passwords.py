@@ -6,8 +6,39 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from argon2.low_level import Type
 
-_MIN_PASSWORD_LENGTH = 12
+_MIN_PASSWORD_LENGTH = 8
 _MAX_PASSWORD_LENGTH = 256
+_COMMON_PASSWORDS = frozenset(
+    {
+        "00000000",
+        "11111111",
+        "12345678",
+        "123456789",
+        "1234567890",
+        "abc12345",
+        "admin123",
+        "iloveyou",
+        "letmein1",
+        "password",
+        "password1",
+        "password123",
+        "passw0rd",
+        "qwerty123",
+        "veyra123",
+        "veyra1234",
+        "veyra12345",
+        "veyra2024",
+        "veyra2025",
+        "veyra2026",
+        "veyra-password",
+        "veyra-password1",
+        "veyrapassword",
+        "passwordveyra",
+        "veyraagent",
+        "veyraagent1",
+        "welcome1",
+    }
+)
 
 
 class PasswordPolicyError(ValueError):
@@ -37,6 +68,8 @@ class PasswordManager:
             )
         if "\x00" in password:
             raise PasswordPolicyError("password cannot contain a null byte")
+        if password.casefold() in _COMMON_PASSWORDS:
+            raise PasswordPolicyError("password is too common")
 
     def hash_new_password(self, password: str) -> str:
         self.validate_new_password(password)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -15,6 +16,10 @@ from veyra_agent_platform.community.api.auth.security import (
     SESSION_COOKIE,
 )
 from veyra_agent_platform.community.auth.errors import AuthenticationFailure
+from veyra_agent_platform.community.auth.passwords import (
+    PasswordManager,
+    PasswordPolicyError,
+)
 from veyra_agent_platform.community.auth.sessions import ClientContext
 from veyra_agent_platform.community.storage.identifiers import utc_now
 from veyra_agent_platform.community.storage.schema import (
@@ -76,6 +81,59 @@ def _csrf_headers(community: CommunityHarness) -> dict[str, str]:
     token = community.client.cookies.get(CSRF_COOKIE)
     assert token is not None
     return {CSRF_HEADER: token}
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        "1234567",
+        "12345678",
+        "PASSWORD",
+        "Password1",
+        "QWERTY123",
+        "vEyRa1234",
+        "Veyra-Password1",
+    ],
+)
+def test_password_policy_rejects_short_and_common_passwords(password: str) -> None:
+    with pytest.raises(PasswordPolicyError):
+        PasswordManager.validate_new_password(password)
+
+
+def test_password_policy_accepts_eight_and_max_length_passwords() -> None:
+    manager = PasswordManager()
+    for password in ("maplexyz", "x" * 256):
+        password_hash = manager.hash_new_password(password)
+        assert manager.verify(password_hash, password)
+
+    with pytest.raises(PasswordPolicyError):
+        manager.hash_new_password("x" * 257)
+
+
+def test_registration_accepts_eight_character_password_after_policy_failures(
+    community: CommunityHarness,
+) -> None:
+    email = "password-policy@example.com"
+    code = _request_registration_code(community, email)
+    payload = {
+        "email": email,
+        "handle": "password-policy-user",
+        "password": "1234567",
+        "verification_code": code,
+    }
+
+    too_short = community.client.post("/api/v1/auth/register", json=payload)
+    assert too_short.status_code == 422
+    assert too_short.json() == {"detail": "password_policy_failed"}
+
+    payload["password"] = "PASSWORD1"
+    common = community.client.post("/api/v1/auth/register", json=payload)
+    assert common.status_code == 422
+    assert common.json() == {"detail": "password_policy_failed"}
+
+    payload["password"] = "maplexyz"
+    accepted = community.client.post("/api/v1/auth/register", json=payload)
+    assert accepted.status_code == 201
 
 
 def test_registration_hmac_code_storage_and_account_profile(
@@ -392,12 +450,23 @@ def test_password_reset_is_anti_enumeration_and_revokes_existing_sessions(
     assert existing.json() == nonexistent.json()
 
     reset_code = community.mail.messages[-1].verification_code
+    blocked_reset = community.client.post(
+        "/api/v1/auth/password-reset/confirm",
+        json={
+            "email": "alice@example.com",
+            "verification_code": reset_code,
+            "new_password": "PASSWORD1",
+        },
+    )
+    assert blocked_reset.status_code == 422
+    assert blocked_reset.json() == {"detail": "password_policy_failed"}
+
     reset = community.client.post(
         "/api/v1/auth/password-reset/confirm",
         json={
             "email": "alice@example.com",
             "verification_code": reset_code,
-            "new_password": "even-more-correct-horse-battery-staple",
+            "new_password": "maplexyz",
         },
     )
     assert reset.status_code == 200
@@ -413,7 +482,7 @@ def test_password_reset_is_anti_enumeration_and_revokes_existing_sessions(
         "/api/v1/auth/login",
         json={
             "email": "alice@example.com",
-            "password": "even-more-correct-horse-battery-staple",
+            "password": "maplexyz",
         },
     )
     assert new_password.status_code == 200

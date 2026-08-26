@@ -66,10 +66,11 @@ describe("Community account flows", () => {
     render(<CommunityApp />);
     expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("Email"), "alice@example.com");
-    await user.type(screen.getByLabelText("Password"), "correct-horse-battery-staple");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("minlength", "8");
+    await user.type(screen.getByLabelText("Password"), "maplexyz");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     await waitFor(() => expect(window.location.hash).toBe("#/account"));
-    expect(requests.find((request) => request.url.endsWith("/auth/login"))?.body).toMatchObject({ email: "alice@example.com", password: "correct-horse-battery-staple" });
+    expect(requests.find((request) => request.url.endsWith("/auth/login"))?.body).toMatchObject({ email: "alice@example.com", password: "maplexyz" });
     expect(window.localStorage.getItem("account")).toBeNull();
   });
 
@@ -95,8 +96,10 @@ describe("Community account flows", () => {
     await user.type(screen.getByLabelText(/Verification code/), "482913");
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.type(screen.getByLabelText(/Name/), "Alice");
-    await user.type(screen.getByLabelText(/^Password/), "correct-horse-battery-staple");
-    await user.type(screen.getByLabelText("Confirm password"), "correct-horse-battery-staple");
+    expect(screen.getByLabelText(/^Password/)).toHaveAttribute("minlength", "8");
+    expect(screen.getByText("At least 8 characters")).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/^Password/), "maplexyz");
+    await user.type(screen.getByLabelText("Confirm password"), "maplexyz");
     await user.click(screen.getByRole("button", { name: "Create account" }));
     await waitFor(() => expect(window.location.hash).toBe("#/account"));
 
@@ -124,15 +127,17 @@ describe("Community account flows", () => {
     await user.type(screen.getByLabelText("Email"), "alice@example.com");
     await user.click(screen.getByRole("button", { name: "Send reset code" }));
     await user.type(await screen.findByLabelText(/Verification code/), "239104");
-    await user.type(screen.getByLabelText(/^New password/), "even-more-correct-password");
-    await user.type(screen.getByLabelText("Confirm new password"), "even-more-correct-password");
+    expect(screen.getByLabelText(/^New password/)).toHaveAttribute("minlength", "8");
+    expect(screen.getByText("At least 8 characters")).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/^New password/), "maplexyz");
+    await user.type(screen.getByLabelText("Confirm new password"), "maplexyz");
     await user.click(screen.getByRole("button", { name: "Update password" }));
     expect(await screen.findByRole("heading", { name: "Password updated" })).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Sign in with the new password" }));
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "You are already signed in" })).not.toBeInTheDocument();
     expect(requests.find((request) => request.url.endsWith("/auth/verification-codes"))?.body).toMatchObject({ purpose: "password_reset" });
-    expect(requests.find((request) => request.url.endsWith("/auth/password-reset/confirm"))?.body).toMatchObject({ verification_code: "239104", new_password: "even-more-correct-password" });
+    expect(requests.find((request) => request.url.endsWith("/auth/password-reset/confirm"))?.body).toMatchObject({ verification_code: "239104", new_password: "maplexyz" });
   });
 
   it("loads the account, updates the display name, and revokes a device session", async () => {
