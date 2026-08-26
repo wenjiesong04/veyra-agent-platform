@@ -13,11 +13,18 @@ export type NavigationItem = {
   href: string;
   label: string;
   icon: LucideIcon;
+  active?: boolean;
+  onClick?: () => void;
 };
+
+export type NavigationGroupStatus = "loading" | "empty" | "error";
 
 export type NavigationGroup = {
   label: string;
   items: NavigationItem[];
+  section?: "fixed" | "projects" | "recent";
+  status?: NavigationGroupStatus;
+  statusText?: string;
 };
 
 /** Sidebar account chip + popover. Local mode stays useful without a remote identity. */

@@ -193,4 +193,5 @@ export type AccountSummary = {
   permissions: string[];
 };
 
+export * from "./local";
 export * from "./community-auth";

@@ -1,8 +1,10 @@
 import * as React from "react";
-import { Activity, FolderKanban, Gauge, Globe2 } from "lucide-react";
+import { Activity, Boxes, FileText, FolderKanban, Gauge, Globe2 } from "lucide-react";
 import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
-import { ApplicationShell, LinkButton, ThemeProvider, useLocale } from "@veyra/ui";
+import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
+import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
+import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { AccountPage } from "./pages/account";
 import { AgentRunPage } from "./pages/agent-run";
 import { AgentDetailPage } from "./pages/agent-detail";
@@ -19,32 +21,18 @@ import { RunsPage } from "./pages/runs";
 import { SettingsPage } from "./pages/settings";
 import { StudioPage } from "./pages/studio";
 
-const navigation: NavigationGroup[] = [
-  {
-    label: "Build",
-    items: [
-      { href: desktopRoutePaths.projects, label: "Projects", icon: FolderKanban },
-    ],
-  },
-  {
-    label: "Operate",
-    items: [
-      { href: desktopRoutePaths.runs, label: "Runs", icon: Activity },
-      { href: desktopRoutePaths.monitor, label: "Monitor", icon: Gauge },
-    ],
-  },
-  {
-    label: "Library",
-    items: [
-      { href: desktopRoutePaths.components, label: "Components", icon: FolderKanban },
-      { href: desktopRoutePaths.files, label: "Files", icon: FolderKanban },
-    ],
-  },
-  {
-    label: "Connect",
-    items: [{ href: desktopRoutePaths.community, label: "Community", icon: Globe2 }],
-  },
-];
+const fixedNavigation: NavigationGroup = {
+  label: "Features",
+  section: "fixed",
+  items: [
+    { href: desktopRoutePaths.projects, label: "Projects", icon: FolderKanban },
+    { href: desktopRoutePaths.runs, label: "Runs", icon: Activity },
+    { href: desktopRoutePaths.monitor, label: "Monitor", icon: Gauge },
+    { href: desktopRoutePaths.components, label: "Components", icon: Boxes },
+    { href: desktopRoutePaths.files, label: "Files", icon: FileText },
+    { href: desktopRoutePaths.community, label: "Community", icon: Globe2 },
+  ],
+};
 
 const pageMeta: Record<"projects" | "components" | "files" | "runs" | "monitor" | "community" | "account" | "settings" | "not-found", { eyebrow: string; title: string }> = {
   projects: { eyebrow: "Workspace", title: "Projects" },
@@ -106,6 +94,7 @@ function DesktopWorkspace() {
   const { locale, t } = useLocale();
   const zh = locale === "zh";
   const route = useHashRoute();
+  const { projects, recentProjects, status, markProjectRecent } = useProjectWorkspace();
   const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run" ? route.projectId : undefined;
   const activeHref = route.kind === "projects" || route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
     ? desktopRoutePaths.projects
@@ -113,18 +102,41 @@ function DesktopWorkspace() {
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : desktopRoutePaths[route.kind];
+  const projectName = scopedProjectId ? projects.find((project) => project.project_id === scopedProjectId)?.name ?? scopedProjectId : undefined;
   const meta = route.kind === "projects" || route.kind === "components" || route.kind === "files" || route.kind === "runs" || route.kind === "monitor" || route.kind === "community" || route.kind === "account" || route.kind === "settings" || route.kind === "not-found"
     ? pageMeta[route.kind]
-    : route.kind === "factory" ? { eyebrow: "Create / Project", title: "Factory" }
-      : route.kind === "project" ? { eyebrow: "Project", title: route.projectId }
-        : route.kind === "project-agents" ? { eyebrow: "Project", title: "Agents" }
+    : route.kind === "project" ? { eyebrow: "Project", title: projectName ?? route.projectId }
+      : route.kind === "project-agents" ? { eyebrow: "Project", title: projectName ?? "Agents" }
+        : route.kind === "factory" ? { eyebrow: "Project", title: projectName ?? "Factory" }
           : route.kind === "agent-detail" ? { eyebrow: "Agent / Project", title: route.agentId ?? "Agent" }
             : route.kind === "agent-version" ? { eyebrow: "Version / Project", title: route.versionId ?? "Agent version" }
-        : route.kind === "agent-run" ? { eyebrow: "Run / Project", title: "Agent run" }
-          : route.kind === "component" ? { eyebrow: "Library", title: "Component" }
-            : route.kind === "file" ? { eyebrow: "Library", title: "File" }
-              : route.kind === "community-entry" || route.kind === "community-version" ? { eyebrow: "Community", title: "Entry detail" }
-                : { eyebrow: "Design / Project", title: "Studio" };
+              : route.kind === "agent-run" ? { eyebrow: "Run / Project", title: "Agent run" }
+                : route.kind === "component" ? { eyebrow: "Library", title: "Component" }
+                  : route.kind === "file" ? { eyebrow: "Library", title: "File" }
+                    : route.kind === "community-entry" || route.kind === "community-version" ? { eyebrow: "Community", title: "Entry detail" }
+                      : { eyebrow: "Design / Project", title: "Studio" };
+
+  const projectNavigationItems = projects.map((project) => ({
+    href: projectRoutePaths.project(project.project_id),
+    label: project.name,
+    icon: FolderKanban,
+    active: project.project_id === scopedProjectId,
+    onClick: () => markProjectRecent(project.project_id),
+  }));
+  const recentNavigationItems = recentProjects.map((project) => ({
+    href: projectRoutePaths.project(project.project_id),
+    label: project.name,
+    icon: FolderKanban,
+    active: project.project_id === scopedProjectId,
+    onClick: () => markProjectRecent(project.project_id),
+  }));
+  const projectStatus = status === "ready" && projects.length > 0 ? undefined : status === "ready" ? "empty" : status;
+  const recentStatus = recentProjects.length > 0 ? undefined : status === "error" ? "error" : "empty";
+  const navigation: NavigationGroup[] = [
+    fixedNavigation,
+    { label: "Projects", section: "projects", items: projectNavigationItems, status: projectStatus },
+    { label: "Recent", section: "recent", items: recentNavigationItems, status: recentStatus },
+  ];
 
   return (
     <ApplicationShell
@@ -141,17 +153,23 @@ function DesktopWorkspace() {
         accountHref: desktopRoutePaths.account,
         settingsHref: desktopRoutePaths.settings,
       }}
-      headerActions={scopedProjectId ? <LinkButton href={projectRoutePaths.factory(scopedProjectId)} variant="primary">{zh ? "创建 Agent" : "Create agent"}</LinkButton> : undefined}
     >
       <PageContent route={route} />
     </ApplicationShell>
   );
 }
 
-export function DesktopApp() {
+export type DesktopAppProps = {
+  api?: LocalProjectApi;
+};
+
+export function DesktopApp({ api }: DesktopAppProps = {}) {
+  const projectApi = React.useMemo(() => api ?? createLocalApiClient(), [api]);
   return (
     <ThemeProvider>
-      <DesktopWorkspace />
+      <ProjectWorkspaceProvider api={projectApi}>
+        <DesktopWorkspace />
+      </ProjectWorkspaceProvider>
     </ThemeProvider>
   );
 }

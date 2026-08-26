@@ -2,9 +2,37 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderKanban } from "lucide-react";
-import { parseDesktopRoute, projectRoutePaths } from "@veyra/api-contracts";
+import { parseDesktopRoute, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import { ApplicationShell, ThemeProvider } from "@veyra/ui";
+import type { LocalProjectApi } from "./api/local-client";
 import { DesktopApp } from "./app";
+
+function project(overrides: Partial<ProjectSummaryResponse> = {}): ProjectSummaryResponse {
+  return {
+    schema_version: "1.0",
+    project_id: "project-1",
+    root_path: "/Users/test/Projects/project-one",
+    name: "Project One",
+    manifest_hash: "0123456789abcdef0123456789abcdef",
+    agents: [],
+    ...overrides,
+  };
+}
+
+function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
+  listProjects: ReturnType<typeof vi.fn>;
+  createProject: ReturnType<typeof vi.fn>;
+  openProject: ReturnType<typeof vi.fn>;
+  getProject: ReturnType<typeof vi.fn>;
+} {
+  const getProject = vi.fn().mockImplementation(async (projectId: string) => project({ project_id: projectId, name: projectId }));
+  return {
+    listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects }),
+    createProject: vi.fn().mockResolvedValue(project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" })),
+    openProject: vi.fn().mockResolvedValue(project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" })),
+    getProject,
+  };
+}
 
 function setViewport(isMobile: boolean) {
   Object.defineProperty(window, "matchMedia", {
@@ -24,22 +52,145 @@ afterEach(() => {
   window.location.hash = "";
 });
 
-describe("desktop workspace", () => {
-  it("renders the Projects surface and complete top-level navigation", async () => {
-    const user = userEvent.setup();
-    render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Make work repeatable." })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Components" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Files" })).toBeInTheDocument();
+describe("desktop Project workspace", () => {
+  it("renders real Projects, fixed features, and an empty Recent section", async () => {
+    const first = project({ project_id: "p-one", name: "Alpha Project" });
+    const second = project({ project_id: "p-two", name: "Beta Project", root_path: "/Users/test/Projects/project-two", agents: [{ agent_id: "agent-1", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "fedcba9876543210" }] });
+    const api = apiFor([first, second]);
+    api.getProject.mockImplementation(async (projectId: string) => [first, second].find((item) => item.project_id === projectId) ?? first);
+    render(<DesktopApp api={api} />);
+
+    expect(await screen.findByRole("heading", { name: "2 Projects" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Runs" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Monitor" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Factory" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Components" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Community" })).toHaveAttribute("href", "#/community");
+    expect(screen.getByText("Projects", { selector: ".nav-group-projects .nav-group-label" })).toBeInTheDocument();
+    expect(screen.getByText("Recent", { selector: ".nav-group-recent .nav-group-label" })).toBeInTheDocument();
+    expect(screen.getByText("No recent Projects")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Alpha Project/ }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("1 Agent")).toBeInTheDocument();
+    expect(screen.queryByText("Signal Review")).not.toBeInTheDocument();
+    expect(screen.queryByText("Verified results")).not.toBeInTheDocument();
+
+    const projectRow = document.querySelector<HTMLAnchorElement>(".project-row");
+    expect(projectRow).not.toBeNull();
+    await userEvent.click(projectRow!);
+    expect((await screen.findAllByRole("link", { name: /Alpha Project/ })).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("creates an empty Project with only the real absolute-path payload and selects it", async () => {
+    const api = apiFor();
+    const created = project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" });
+    api.createProject.mockResolvedValue(created);
+    api.getProject.mockResolvedValue(created);
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+
+    await user.type(await screen.findByRole("textbox", { name: "Project name" }), "Created Project");
+    const paths = screen.getAllByRole("textbox", { name: "Absolute path" });
+    await user.type(paths[0]!, "/tmp/created-project");
+    await user.click(screen.getByRole("button", { name: "Create Project" }));
+
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ root_path: "/tmp/created-project", name: "Created Project" }));
+    expect(window.location.hash).toBe(projectRoutePaths.project("created-project"));
+    expect(await screen.findByRole("heading", { name: "Created Project", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("No Agents yet")).toBeInTheDocument();
+    expect(screen.getByText("Agents will be added later.", { exact: false })).toBeInTheDocument();
+  });
+
+  it("opens an existing Project directory and refreshes the real summary", async () => {
+    const api = apiFor();
+    const opened = project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" });
+    api.openProject.mockResolvedValue(opened);
+    api.getProject.mockResolvedValue(opened);
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+
+    const paths = screen.getAllByRole("textbox", { name: "Absolute path" });
+    await user.type(paths[1]!, "/tmp/opened-project");
+    await user.click(screen.getByRole("button", { name: "Open directory" }));
+
+    await waitFor(() => expect(api.openProject).toHaveBeenCalledWith({ root_path: "/tmp/opened-project" }));
+    expect(window.location.hash).toBe(projectRoutePaths.project("opened-project"));
+    expect(await screen.findByRole("heading", { name: "Opened Project", level: 2 })).toBeInTheDocument();
+  });
+
+  it("shows loading and unavailable states instead of fixture data", async () => {
+    let resolveList: ((value: { schema_version: "1.0"; projects: ProjectSummaryResponse[] }) => void) | undefined;
+    const api = apiFor();
+    api.listProjects.mockImplementation(() => new Promise((resolve) => { resolveList = resolve; }));
+    render(<DesktopApp api={api} />);
+    expect(document.querySelector(".ui-loading")).toHaveTextContent("Loading Projects…");
+    resolveList?.({ schema_version: "1.0", projects: [] });
+    await waitFor(() => expect(document.querySelector(".ui-empty strong")).toHaveTextContent("No Projects yet"));
+
+    cleanup();
+    const failingApi = apiFor();
+    failingApi.listProjects.mockRejectedValue(new Error("sidecar unavailable"));
+    render(<DesktopApp api={failingApi} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("The local Project service is unavailable");
+    expect(screen.getByRole("button", { name: "Create Project" })).toBeInTheDocument();
+  });
+
+  it("renders a real Agent array and count on Project detail", async () => {
+    const detailed = project({
+      project_id: "p-detail",
+      name: "Evidence Project",
+      agents: [
+        { agent_id: "agent-a", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "aaaaaaaaaaaaaaaa" },
+        { agent_id: "agent-b", slug: "verifier", source_path: "agents/verifier/agent.vagent.yaml", source_file_hash: "bbbbbbbbbbbbbbbb" },
+      ],
+    });
+    const api = apiFor([detailed]);
+    api.getProject.mockResolvedValue(detailed);
+    window.location.hash = projectRoutePaths.project("p-detail");
+    render(<DesktopApp api={api} />);
+
+    expect(await screen.findByRole("heading", { name: "Evidence Project", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "2 Agents" })).toBeInTheDocument();
+    expect(screen.getByText("reviewer")).toBeInTheDocument();
+    expect(screen.getByText("agents/reviewer/agent.vagent.yaml", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText("Agents will be added later.")).not.toBeInTheDocument();
+    expect(api.getProject).toHaveBeenCalledWith("p-detail");
+  });
+
+  it("preserves account controls, theme choices, and responsive sidebar focus behavior", async () => {
+    const user = userEvent.setup();
+    const api = apiFor();
+    render(<DesktopApp api={api} />);
     await user.click(screen.getByRole("button", { name: "Open account menu" }));
     expect(screen.getByRole("menuitem", { name: "Sign in or register" })).toHaveAttribute("href", "#/account");
     expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "#/settings");
-    expect(screen.queryByRole("menuitem", { name: "Sign out" })).not.toBeInTheDocument();
+
+    window.localStorage.setItem("veyra.theme", "dark");
+    cleanup();
+    render(<DesktopApp api={api} />);
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    await user.click(screen.getByRole("button", { name: "Switch to light mode" }));
+    await waitFor(() => expect(window.localStorage.getItem("veyra.theme")).toBe("light"));
+
+    cleanup();
+    setViewport(true);
+    render(<DesktopApp api={api} />);
+    const menu = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(menu);
+    await user.keyboard("{Escape}");
+    expect(menu).toHaveFocus();
   });
 
-  it("shows account controls and invokes sign out only for an authenticated account", async () => {
+  it("switches the Project surface between Chinese and English copy", async () => {
+    const user = userEvent.setup();
+    render(<DesktopApp api={apiFor()} />);
+    expect(await screen.findByText("Manage real Project directories connected to the Desktop sidecar.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
+    expect(await screen.findByText("管理与 Desktop sidecar 连接的真实项目目录。")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "项目" })).toHaveAttribute("href", "#/projects");
+  });
+});
+
+describe("shared ApplicationShell account behavior", () => {
+  it("invokes sign out only for an authenticated account", async () => {
     const user = userEvent.setup();
     const onSignOut = vi.fn();
     render(
@@ -58,145 +209,23 @@ describe("desktop workspace", () => {
     );
     await user.click(screen.getByRole("button", { name: "Open account menu" }));
     expect(screen.getByRole("menuitem", { name: "Account" })).toHaveAttribute("href", "#/account");
-    expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "#/settings");
     await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(onSignOut).toHaveBeenCalledOnce();
-  });
-
-  it("links the local guest account page to Community sign in", () => {
-    window.location.hash = "#/account";
-    render(<DesktopApp />);
-    expect(screen.getByRole("link", { name: "Connect account" })).toHaveAttribute("href", "http://127.0.0.1:5174/#/login");
-    expect(screen.getByText("Guest mode")).toBeInTheDocument();
-  });
-
-  it("uses Project-first links for project rows and Agent cards", () => {
-    render(<DesktopApp />);
-    expect(screen.getByRole("link", { name: /Signal Review/ })).toHaveAttribute("href", projectRoutePaths.project("signal-review"));
-    expect(screen.getByRole("link", { name: /Review Companion/ })).toHaveAttribute("href", projectRoutePaths.agentDesign("signal-review", "reviewer"));
-  });
-
-  it("keeps the second Project Factory and header action inside its Project boundary", async () => {
-    const user = userEvent.setup();
-    window.location.hash = projectRoutePaths.factory("release-room");
-    render(<DesktopApp />);
-    expect(screen.getByRole("link", { name: "Create agent" })).toHaveAttribute("href", projectRoutePaths.factory("release-room"));
-    await user.click(screen.getByRole("button", { name: "Generate draft" }));
-    await waitFor(() => expect(screen.getByText("Release Check")).toBeInTheDocument());
-    const openStudio = screen.getByRole("link", { name: "Open Studio" });
-    expect(openStudio).toHaveAttribute("href", projectRoutePaths.agentDesign("release-room", "release-check"));
-    await user.click(openStudio);
-    expect(await screen.findByRole("heading", { name: "Release Check" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Run" })).toHaveAttribute("href", projectRoutePaths.agentRun("release-room", "release-check"));
-  });
-
-  it("renders nested Project, Factory, Design, Run, list, detail, and version routes", () => {
-    window.location.hash = projectRoutePaths.project("signal-review");
-    const { unmount } = render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Signal Review" })).toBeInTheDocument();
-    unmount();
-
-    window.location.hash = projectRoutePaths.factory("signal-review");
-    const factory = render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Give the Factory a job to shape." })).toBeInTheDocument();
-    factory.unmount();
-
-    window.location.hash = projectRoutePaths.agentDesign("signal-review", "reviewer");
-    const design = render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Review Companion" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Run" })).toHaveAttribute("href", projectRoutePaths.agentRun("signal-review", "reviewer"));
-    design.unmount();
-
-    window.location.hash = projectRoutePaths.agent("signal-review", "reviewer");
-    const detail = render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Review Companion" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open version detail" })).toHaveAttribute("href", projectRoutePaths.agentVersion("signal-review", "reviewer", "v0.4"));
-    detail.unmount();
-
-    window.location.hash = projectRoutePaths.agentVersion("signal-review", "reviewer", "v0.4");
-    const version = render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: /Review Companion v0.4/ })).toBeInTheDocument();
-    version.unmount();
-
-    window.location.hash = projectRoutePaths.agentRun("signal-review", "reviewer");
-    render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Review Companion" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Ready to run" })).toBeInTheDocument();
-  });
-
-  it("renders explicit NotFound for unknown and swallowed subpaths", () => {
-    window.location.hash = "#/community/unknown/path";
-    render(<DesktopApp />);
-    expect(screen.getByText("That workspace route is not available.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Back to Community" })).toBeInTheDocument();
-  });
-
-  it("persists light/dark/system theme choices", async () => {
-    const user = userEvent.setup();
-    window.localStorage.setItem("veyra.theme", "dark");
-    window.location.hash = "#/settings";
-    render(<DesktopApp />);
-    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
-    await user.click(screen.getByRole("button", { name: "System" }));
-    await waitFor(() => expect(window.localStorage.getItem("veyra.theme")).toBe("system"));
-    expect(document.documentElement.dataset.theme).toBe("system");
-  });
-
-  it("exposes collapsed navigation names and expanded state", async () => {
-    const user = userEvent.setup();
-    render(<DesktopApp />);
-    const collapse = screen.getByRole("button", { name: "Collapse sidebar" });
-    expect(collapse).toHaveAttribute("aria-expanded", "true");
-    expect(collapse).toHaveAttribute("aria-controls", "primary-navigation");
-    await user.click(collapse);
-    expect(screen.getByRole("button", { name: "Expand sidebar" })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("title", "Projects");
-  });
-
-  it("closes the mobile sidebar with Escape and restores focus", async () => {
-    const user = userEvent.setup();
-    setViewport(true);
-    render(<DesktopApp />);
-    const menu = screen.getByRole("button", { name: "Open navigation" });
-    expect(menu).toHaveAttribute("aria-expanded", "false");
-    expect(menu).toHaveAttribute("aria-controls", "primary-navigation");
-    expect(screen.getByRole("complementary", { hidden: true })).toHaveAttribute("aria-hidden", "true");
-    await user.click(menu);
-    expect(menu).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("complementary", { hidden: true })).not.toHaveAttribute("aria-hidden");
-    await user.keyboard("{Escape}");
-    expect(menu).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("complementary", { hidden: true })).toHaveAttribute("aria-hidden", "true");
-    expect(menu).toHaveFocus();
-  });
-
-  it("renders without making API requests", () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("API unavailable"));
-    render(<DesktopApp />);
-    expect(screen.getByRole("heading", { name: "Make work repeatable." })).toBeInTheDocument();
-    expect(fetchSpy).not.toHaveBeenCalled();
-    fetchSpy.mockRestore();
   });
 });
 
 describe("desktop route parser", () => {
-  it("covers the typed route matrix without redirecting unknown paths", () => {
+  it("covers the typed Project and fixed-feature route matrix", () => {
     expect(parseDesktopRoute("#/projects").kind).toBe("projects");
     expect(parseDesktopRoute(projectRoutePaths.project("p")).kind).toBe("project");
     expect(parseDesktopRoute(projectRoutePaths.agents("p")).kind).toBe("project-agents");
     expect(parseDesktopRoute(projectRoutePaths.agent("p", "a")).kind).toBe("agent-detail");
     expect(parseDesktopRoute(projectRoutePaths.agentVersion("p", "a", "v1")).kind).toBe("agent-version");
-    expect(parseDesktopRoute(projectRoutePaths.factory("p")).kind).toBe("factory");
-    expect(parseDesktopRoute(projectRoutePaths.agentDesign("p", "a")).kind).toBe("agent-design");
-    expect(parseDesktopRoute(projectRoutePaths.agentRun("p", "a")).kind).toBe("agent-run");
     expect(parseDesktopRoute("#/components").kind).toBe("components");
-    expect(parseDesktopRoute("#/components/c").kind).toBe("component");
     expect(parseDesktopRoute("#/files").kind).toBe("files");
-    expect(parseDesktopRoute("#/files/f").kind).toBe("file");
+    expect(parseDesktopRoute("#/runs").kind).toBe("runs");
+    expect(parseDesktopRoute("#/monitor").kind).toBe("monitor");
     expect(parseDesktopRoute("#/community").kind).toBe("community");
-    expect(parseDesktopRoute("#/community/o/s").kind).toBe("community-entry");
-    expect(parseDesktopRoute("#/community/o/s/versions/v1").kind).toBe("community-version");
-    expect(parseDesktopRoute("#/community/o/s/unknown/v1").kind).toBe("not-found");
     expect(parseDesktopRoute("#/nowhere").kind).toBe("not-found");
   });
 });

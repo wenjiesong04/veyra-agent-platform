@@ -167,6 +167,40 @@
   border: 0;
 }
 
+.nav-group-list {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.nav-group-list .nav-group-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0 12px 2px;
+  padding: 0;
+  overflow: visible;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  clip: auto;
+  white-space: normal;
+}
+
+.nav-group-state {
+  display: block;
+  margin: 3px 12px 6px;
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-nav a {
   display: flex;
   min-width: 0;
@@ -380,6 +414,15 @@
 .is-collapsed .nav-group-label,
 .is-collapsed .sidebar-nav a span,
 .is-collapsed .shell-account-trigger-copy {
+  display: none;
+}
+
+.is-collapsed .nav-group-list {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.is-collapsed .nav-group-state {
   display: none;
 }
 
@@ -670,6 +713,16 @@
     gap: 3px;
   }
 
+  .nav-group-list {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .nav-group-list .nav-group-label {
+    margin-inline: 12px;
+    font-size: 9px;
+  }
+
   .sidebar-nav a {
     min-height: 44px;
     gap: 12px;
@@ -915,6 +968,10 @@
   .is-collapsed .sidebar-nav a span,
   .is-collapsed .shell-account-trigger-copy {
     display: initial;
+  }
+
+  .is-collapsed .nav-group-list .nav-group-label {
+    margin-inline: 12px;
   }
 
   .is-collapsed .sidebar-nav {

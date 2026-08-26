@@ -42,6 +42,7 @@ function initialsFromName(name: string): string {
 const shellLabelKeys: Record<string, string> = {
   Workspace: "workspace",
   "Agent Platform": "agentPlatform",
+  Features: "features",
   Build: "build",
   Operate: "operate",
   Library: "library",
@@ -64,6 +65,7 @@ const shellLabelKeys: Record<string, string> = {
   File: "file",
   "Entry detail": "entryDetail",
   Projects: "projects",
+  Recent: "recent",
   Runs: "runs",
   Monitor: "monitor",
   Components: "components",
@@ -78,6 +80,13 @@ const shellLabelKeys: Record<string, string> = {
 
 function shellText(value: string, translate: (key: string, fallback?: string) => string): string {
   return translate(shellLabelKeys[value] ?? "", value);
+}
+
+function navigationStatusText(group: NavigationGroup, translate: (key: string, fallback?: string) => string): string {
+  if (group.statusText) return group.statusText;
+  if (group.status === "loading") return translate("loadingProjects");
+  if (group.status === "error") return translate("projectsUnavailable");
+  return group.label === "Recent" ? translate("noRecentProjects") : translate("noProjects");
 }
 
 function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: AccountMenuConfig; collapsed: boolean; onNavigate: () => void }) {
@@ -273,14 +282,15 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
 
         <nav className="sidebar-nav">
           {navigation.map((group) => (
-            <div className="nav-group" key={group.label}>
+            <div className={`nav-group ${group.section === "fixed" || group.section === undefined ? "nav-group-fixed" : "nav-group-list"} nav-group-${group.section ?? "fixed"}`} key={group.label}>
               <span className="nav-group-label">{shellText(group.label, t)}</span>
               {group.items.map((item) => {
                 const Icon = item.icon;
-                const active = item.href === activeHref;
+                const active = item.active ?? item.href === activeHref;
                 const label = shellText(item.label, t);
-                return <a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} key={item.href} onClick={closeMobile}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>;
+                return <a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} key={`${item.href}-${label}`} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>;
               })}
+              {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}
             </div>
           ))}
         </nav>
