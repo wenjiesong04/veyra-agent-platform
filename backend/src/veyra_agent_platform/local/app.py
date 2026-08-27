@@ -53,7 +53,7 @@ def create_app(settings: LocalSettings | None = None) -> FastAPI:
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
-        application.state.database_revision = "local_0003_project_integrity"
+        application.state.database_revision = "local_0004_project_metadata"
         application.state.database_ready = True
         try:
             yield

@@ -37,6 +37,88 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         assert fetched.json() == reopened.json()
 
 
+def test_project_metadata_description_pinning_and_closed_patch_body(
+    tmp_path: Path,
+) -> None:
+    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+    first_root = tmp_path / "first"
+    with TestClient(create_app(settings)) as client:
+        first = client.post(
+            "/api/v1/projects",
+            json={
+                "root_path": str(first_root),
+                "name": "First",
+                "description": "  Cafe\u0301 Project  ",
+            },
+        )
+        assert first.status_code == 201
+        first_project = first.json()
+        assert first_project["description"] == "Café Project"
+        assert first_project["pinned"] is False
+        assert first_project["pinned_at"] is None
+        manifest = json.loads((first_root / "project.vproject.yaml").read_text())
+        assert manifest["description"] == "Café Project"
+
+        second = client.post(
+            "/api/v1/projects",
+            json={"root_path": str(tmp_path / "second"), "name": "Second"},
+        )
+        assert second.status_code == 201
+        pinned = client.patch(
+            f"/api/v1/projects/{first_project['project_id']}", json={"pinned": True}
+        )
+        assert pinned.status_code == 200
+        assert pinned.json()["pinned"] is True
+        assert pinned.json()["pinned_at"]
+        listed = client.get("/api/v1/projects").json()["projects"]
+        assert [item["project_id"] for item in listed] == [
+            first_project["project_id"],
+            second.json()["project_id"],
+        ]
+        unpinned = client.patch(
+            f"/api/v1/projects/{first_project['project_id']}", json={"pinned": False}
+        )
+        assert unpinned.status_code == 200
+        assert unpinned.json()["pinned_at"] is None
+        invalid = client.patch(
+            f"/api/v1/projects/{first_project['project_id']}",
+            json={"pinned": True, "other": True},
+        )
+        assert invalid.status_code == 422
+        repinned = client.patch(
+            f"/api/v1/projects/{first_project['project_id']}", json={"pinned": True}
+        )
+        assert repinned.status_code == 200
+        assert "pinned_at" not in json.loads(
+            (first_root / "project.vproject.yaml").read_text()
+        )
+
+    with TestClient(create_app(settings)) as restarted_client:
+        restarted = restarted_client.get(
+            f"/api/v1/projects/{first_project['project_id']}"
+        )
+    assert restarted.status_code == 200
+    assert restarted.json()["pinned"] is True
+    assert restarted.json()["pinned_at"] == repinned.json()["pinned_at"]
+
+
+def test_project_description_length_returns_typed_contract_error(
+    tmp_path: Path,
+) -> None:
+    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/projects",
+            json={
+                "root_path": str(tmp_path / "too-long"),
+                "name": "Too long",
+                "description": "x" * 501,
+            },
+        )
+    assert response.status_code == 422
+    assert response.json()["code"] == "contract_invalid"
+
+
 def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     tmp_path: Path,
 ) -> None:
@@ -49,7 +131,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
-        assert health.json()["database_revision"] == "local_0003_project_integrity"
+        assert health.json()["database_revision"] == "local_0004_project_metadata"
         created = client.post(
             "/api/v1/projects",
             json={

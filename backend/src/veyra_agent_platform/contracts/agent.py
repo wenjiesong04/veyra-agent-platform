@@ -7,6 +7,7 @@ fail-closed: a new field is rejected until this contract explicitly owns it.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -359,6 +360,7 @@ class ProjectManifest:
     project_version: str
     project_id: str
     name: str
+    description: str
     agents: tuple[ProjectAgentDirectory, ...]
     default_agent_id: str | None
     resource_policy: ResourcePolicy
@@ -373,6 +375,7 @@ class ProjectManifest:
                 "project_version",
                 "project_id",
                 "name",
+                "description",
                 "agents",
                 "default_agent_id",
                 "resource_policy",
@@ -427,6 +430,7 @@ class ProjectManifest:
             "1",
             require_uuid7(item["project_id"], "project_id"),
             require_string(item["name"], "name"),
+            _project_description(item.get("description", "")),
             agents,
             default_agent_id,
             ResourcePolicy.from_dict(item["resource_policy"]),
@@ -438,10 +442,21 @@ class ProjectManifest:
             "project_version": self.project_version,
             "project_id": self.project_id,
             "name": self.name,
+            "description": self.description,
             "agents": [agent.to_dict() for agent in self.agents],
             "default_agent_id": self.default_agent_id,
             "resource_policy": self.resource_policy.to_dict(),
         }
+
+
+def _project_description(value: Any) -> str:
+    """Normalize portable Project metadata without changing its meaning."""
+    if not isinstance(value, str):
+        raise ContractValidationError("description must be a string")
+    description = unicodedata.normalize("NFC", value).strip()
+    if len(description) > 500:
+        raise ContractValidationError("description must not exceed 500 characters")
+    return description
 
 
 @dataclass(frozen=True)

@@ -64,15 +64,17 @@ class LocalRepository:
         project_id: str,
         root_path: str,
         name: str,
+        description: str,
         manifest_hash: str,
         indexed_at: str,
     ) -> None:
         connection.execute(
             """
-            INSERT INTO projects(project_id, root_path, name, manifest_hash, indexed_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO projects(
+              project_id, root_path, name, description, manifest_hash, indexed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (project_id, root_path, name, manifest_hash, indexed_at),
+            (project_id, root_path, name, description, manifest_hash, indexed_at),
         )
 
     def project(self, project_id: str) -> sqlite3.Row | None:
@@ -95,7 +97,28 @@ class LocalRepository:
 
     def projects(self) -> list[sqlite3.Row]:
         with self._connect() as connection:
-            return connection.execute("SELECT * FROM projects ORDER BY name").fetchall()
+            return connection.execute(
+                """SELECT * FROM projects
+                   ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
+                            indexed_at DESC, project_id ASC"""
+            ).fetchall()
+
+    def set_project_pinned(
+        self, project_id: str, pinned_at: str | None
+    ) -> sqlite3.Row | None:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE projects SET pinned_at = ? WHERE project_id = ?",
+                (pinned_at, project_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            return cast(
+                sqlite3.Row,
+                connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone(),
+            )
 
     def agent(self, agent_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:

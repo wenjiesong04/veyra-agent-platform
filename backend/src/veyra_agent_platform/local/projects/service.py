@@ -52,6 +52,7 @@ class ProjectService:
         *,
         root_path: str | Path,
         name: str,
+        description: str = "",
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
@@ -66,7 +67,7 @@ class ProjectService:
         forked_sources = [self._fork_template(source) for source in selected_sources]
         if len({source.slug for source in forked_sources}) != len(forked_sources):
             raise ProjectError("Project Agent slugs must be unique")
-        manifest = self._manifest(name.strip(), forked_sources)
+        manifest = self._manifest(name.strip(), description, forked_sources)
         staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
         try:
             staging.mkdir(mode=0o700)
@@ -214,14 +215,22 @@ class ProjectService:
                     project_id=manifest.project_id,
                     root_path=root_text,
                     name=manifest.name,
+                    description=manifest.description,
                     manifest_hash=manifest_hash,
                     indexed_at=now,
                 )
             else:
                 connection.execute(
-                    """UPDATE projects SET name = ?, manifest_hash = ?, indexed_at = ?
+                    """UPDATE projects
+                       SET name = ?, description = ?, manifest_hash = ?, indexed_at = ?
                        WHERE project_id = ?""",
-                    (manifest.name, manifest_hash, now, manifest.project_id),
+                    (
+                        manifest.name,
+                        manifest.description,
+                        manifest_hash,
+                        now,
+                        manifest.project_id,
+                    ),
                 )
             manifest_agent_ids = {source.agent_id for source, _, _ in records}
             existing_agents = connection.execute(
@@ -306,6 +315,9 @@ class ProjectService:
             "project_id": project["project_id"],
             "root_path": project["root_path"],
             "name": project["name"],
+            "description": project["description"],
+            "pinned": project["pinned_at"] is not None,
+            "pinned_at": project["pinned_at"],
             "agents": [
                 {
                     "agent_id": agent["agent_id"],
@@ -317,6 +329,12 @@ class ProjectService:
             "agent_count": len(self.repository.agents(project_id)),
             "indexed_at": project["indexed_at"],
         }
+
+    def set_pinned(self, project_id: str, *, pinned: bool) -> dict[str, Any]:
+        if self.repository.project(project_id) is None:
+            raise ProjectError("unknown Project")
+        self.repository.set_project_pinned(project_id, _utc_now() if pinned else None)
+        return self.project_summary(project_id)
 
     def agent_summary(self, project_id: str, agent_id: str) -> dict[str, Any]:
         """Return an Agent summary parsed from its authoritative source file."""
@@ -547,12 +565,15 @@ class ProjectService:
         return AgentSource.from_dict(forked)
 
     @staticmethod
-    def _manifest(name: str, sources: list[AgentSource]) -> dict[str, Any]:
+    def _manifest(
+        name: str, description: str, sources: list[AgentSource]
+    ) -> dict[str, Any]:
         manifest = {
             "schema_version": "1.0",
             "project_version": "1",
             "project_id": new_uuid7(),
             "name": name,
+            "description": description,
             "agents": [
                 {
                     "agent_id": source.agent_id,
@@ -568,8 +589,7 @@ class ProjectService:
                 "max_run_seconds": 3600,
             },
         }
-        ProjectManifest.from_dict(manifest)
-        return manifest
+        return ProjectManifest.from_dict(manifest).to_dict()
 
 
 def _walk_existing_parts(root: Path, relative: Path) -> list[Path]:

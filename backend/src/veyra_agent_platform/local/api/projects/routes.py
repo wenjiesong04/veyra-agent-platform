@@ -7,7 +7,7 @@ from typing import Any, TypeVar, cast
 
 from fastapi import APIRouter, Header, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
@@ -24,12 +24,17 @@ class _ClosedModel(BaseModel):
 class CreateProjectRequest(_ClosedModel):
     root_path: str = Field(min_length=1)
     name: str = Field(min_length=1)
+    description: str = ""
     agents: list[dict[str, Any]] = Field(default_factory=list)
     templates: list[dict[str, str]] = Field(default_factory=list)
 
 
 class OpenProjectRequest(_ClosedModel):
     root_path: str = Field(min_length=1)
+
+
+class SetProjectPinnedRequest(_ClosedModel):
+    pinned: StrictBool
 
 
 class ReplaceDraftRequest(_ClosedModel):
@@ -80,6 +85,7 @@ def build_router() -> APIRouter:
             lambda: projects.create(
                 root_path=payload.root_path,
                 name=payload.name,
+                description=payload.description,
                 sources=payload.agents,
                 template_selections=payload.templates,
             )
@@ -94,6 +100,15 @@ def build_router() -> APIRouter:
     def get_project(project_id: str, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(lambda: projects.project_summary(project_id))
+
+    @router.patch("/{project_id}")
+    def set_project_pinned(
+        project_id: str, payload: SetProjectPinnedRequest, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.set_pinned(project_id, pinned=payload.pinned)
+        )
 
     @router.get("/{project_id}/agents")
     def list_agents(project_id: str, request: Request) -> dict[str, Any]:

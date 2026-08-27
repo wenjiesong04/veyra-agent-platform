@@ -92,6 +92,21 @@ def test_empty_project_creates_required_layout_and_reopens(tmp_path: Path) -> No
     assert projects.index(root)["project_id"] == created["project_id"]
 
 
+def test_legacy_manifest_without_description_indexes_as_empty(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    root = tmp_path / "legacy"
+    created = projects.create(root_path=root, name="Legacy", description="Retained")
+    manifest_path = root / "project.vproject.yaml"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["description"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    indexed = projects.index(root)
+
+    assert created["description"] == "Retained"
+    assert indexed["description"] == ""
+
+
 def test_index_reconciles_unversioned_manifest_removal_and_rejects_duplicate_copy(
     tmp_path: Path,
 ) -> None:
