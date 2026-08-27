@@ -178,6 +178,47 @@ def test_atomic_create_failure_leaves_no_target_or_staging(
     assert not list(tmp_path.glob(".target.veyra-staging-*"))
 
 
+def test_create_accepts_existing_empty_directory_and_refuses_nonempty_root(
+    tmp_path: Path,
+) -> None:
+    projects, _ = _services(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    created = projects.create(root_path=empty, name="Empty", sources=_sources())
+
+    assert created["project_id"]
+    assert (empty / "project.vproject.yaml").is_file()
+
+    nonempty = tmp_path / "nonempty"
+    nonempty.mkdir()
+    preserved = nonempty / "not-a-project.txt"
+    preserved.write_text("do not overwrite", encoding="utf-8")
+    with pytest.raises(ProjectError, match="not empty"):
+        projects.create(root_path=nonempty, name="No")
+    assert preserved.read_text(encoding="utf-8") == "do not overwrite"
+
+
+def test_create_failure_restores_preexisting_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+    target = tmp_path / "empty"
+    target.mkdir()
+
+    def fail_index(_: Path) -> dict[str, object]:
+        raise OSError("index unavailable")
+
+    monkeypatch.setattr(projects, "index", fail_index)
+    with pytest.raises(OSError, match="index unavailable"):
+        projects.create(root_path=target, name="One", sources=_sources())
+
+    assert target.is_dir()
+    assert not target.is_symlink()
+    assert list(target.iterdir()) == []
+    assert not list(tmp_path.glob(".empty.veyra-staging-*"))
+
+
 def test_reload_accepts_external_edit_and_divergent_idempotency_conflicts(
     tmp_path: Path,
 ) -> None:

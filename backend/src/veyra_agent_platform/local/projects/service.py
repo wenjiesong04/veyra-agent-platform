@@ -57,6 +57,8 @@ class ProjectService:
         template_selections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         root = self._new_root(root_path)
+        root_preexisted = root.exists()
+        root_mode = root.stat().st_mode & 0o777 if root_preexisted else None
         if not isinstance(name, str) or not name.strip():
             raise ProjectError("Project name must be non-empty")
         selected_sources = [AgentSource.from_dict(source) for source in (sources or [])]
@@ -69,6 +71,7 @@ class ProjectService:
             raise ProjectError("Project Agent slugs must be unique")
         manifest = self._manifest(name.strip(), description, forked_sources)
         staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
+        installed = False
         try:
             staging.mkdir(mode=0o700)
             (staging / "agents").mkdir()
@@ -87,15 +90,32 @@ class ProjectService:
                 staging / "project.vproject.yaml", self._canonical_source(manifest)
             )
             self._fsync_tree(staging)
-            if root.exists():
+            if root_preexisted and any(root.iterdir()):
+                raise ProjectError("selected Project directory is not empty")
+            if not root_preexisted and root.exists():
                 raise ProjectError("selected Project directory already exists")
             os.replace(staging, root)
+            installed = True
             self._fsync_directory(root.parent)
-        except BaseException:
+            return self.index(root)
+        except BaseException as exc:
+            rollback_errors: list[BaseException] = []
+            if installed and root.exists():
+                try:
+                    shutil.rmtree(root)
+                    if root_preexisted:
+                        root.mkdir(mode=root_mode or 0o700)
+                    self._fsync_directory(root.parent)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
             if staging.exists():
-                shutil.rmtree(staging)
+                try:
+                    shutil.rmtree(staging)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            for rollback_note in rollback_errors:
+                exc.add_note(f"rollback failed: {rollback_note}")
             raise
-        return self.index(root)
 
     def add_agent(
         self, *, project_id: str, template_selection: dict[str, str]
@@ -511,8 +531,13 @@ class ProjectService:
     @staticmethod
     def _new_root(value: str | Path) -> Path:
         root = Path(value).expanduser().absolute()
+        if root.is_symlink():
+            raise ProjectError("selected Project directory is absent or a symlink")
         if root.exists():
-            raise ProjectError("selected Project directory already exists")
+            if not root.is_dir() or root.is_symlink():
+                raise ProjectError("selected Project directory is absent or a symlink")
+            if any(root.iterdir()):
+                raise ProjectError("selected Project directory is not empty")
         current = root.parent
         while True:
             if current.exists() and current.is_symlink():

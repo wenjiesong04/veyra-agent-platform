@@ -17,10 +17,12 @@ from .api.projects import (
 from .api.projects import (
     build_router as build_projects_router,
 )
+from .api.system import build_router as build_system_router
 from .config import LocalSettings
 from .library import LibraryService
 from .projects import ProjectService
 from .storage import LocalRepository, migrate_local_database
+from .system import DirectoryPicker, MacOSDirectoryPicker
 
 
 def _sqlite_database_path(database_url: str) -> Path:
@@ -38,10 +40,15 @@ def _sqlite_database_path(database_url: str) -> Path:
     return Path(raw_path)
 
 
-def create_app(settings: LocalSettings | None = None) -> FastAPI:
+def create_app(
+    settings: LocalSettings | None = None,
+    *,
+    directory_picker: DirectoryPicker | None = None,
+) -> FastAPI:
     """Create the local service application without starting a server."""
 
     resolved_settings = settings or LocalSettings()
+    resolved_directory_picker = directory_picker or MacOSDirectoryPicker()
     database_path = _sqlite_database_path(resolved_settings.database_url)
 
     @asynccontextmanager
@@ -78,6 +85,7 @@ def create_app(settings: LocalSettings | None = None) -> FastAPI:
         )
     )
     application.include_router(build_projects_router())
+    application.include_router(build_system_router(resolved_directory_picker))
 
     return application
 
