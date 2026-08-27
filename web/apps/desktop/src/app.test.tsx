@@ -124,7 +124,7 @@ describe("desktop Project workspace", () => {
     await user.type(await screen.findByRole("textbox", { name: "Project name" }), "Created Project");
     expect(screen.queryByRole("textbox", { name: /path/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect project/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Choose a folder for this project.")).toBeInTheDocument();
+    expect(screen.getByText("Choose an empty folder for this project.")).toBeInTheDocument();
     expect(screen.queryByText(/path/i)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Select folder" }));
     expect(await screen.findByText("Selected: created-project")).toBeInTheDocument();
@@ -147,6 +147,7 @@ describe("desktop Project workspace", () => {
 
     await user.click(await screen.findByRole("button", { name: "Project actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Open existing project" }));
+    expect(screen.getByText("Choose an existing Veyra project folder.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Select folder" }));
     await user.click(screen.getByRole("button", { name: "Open project" }));
 
