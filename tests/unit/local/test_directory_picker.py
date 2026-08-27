@@ -38,8 +38,7 @@ def test_macos_picker_invokes_osascript_with_argv_and_validates_result(
         [
             "osascript",
             "-e",
-            "POSIX path of (choose folder with prompt "
-            '\"Choose a Veyra Project folder\")',
+            'POSIX path of (choose folder with prompt "Choose a Veyra Project folder")',
         ],
     )
     assert observed["kwargs"] == {"capture_output": True, "check": False, "text": True}

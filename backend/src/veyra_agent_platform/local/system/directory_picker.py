@@ -53,7 +53,7 @@ class MacOSDirectoryPicker:
                 "osascript",
                 "-e",
                 "POSIX path of (choose folder with prompt "
-                '\"Choose a Veyra Project folder\")',
+                '"Choose a Veyra Project folder")',
             ],
             capture_output=True,
             check=False,
