@@ -11,6 +11,7 @@ type ProjectWorkspaceValue = {
   error: string | null;
   refresh: () => Promise<void>;
   upsertProject: (project: ProjectSummaryResponse) => void;
+  setProjectPinned: (projectId: string, pinned: boolean) => Promise<ProjectSummaryResponse>;
 };
 
 const ProjectWorkspaceContext = createContext<ProjectWorkspaceValue | null>(null);
@@ -50,6 +51,12 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     });
   }, []);
 
+  const setProjectPinned = useCallback(async (projectId: string, pinned: boolean) => {
+    const project = await api.updateProject(projectId, { pinned });
+    upsertProject(project);
+    return project;
+  }, [api, upsertProject]);
+
   const value = useMemo<ProjectWorkspaceValue>(() => ({
     api,
     projects,
@@ -57,7 +64,8 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     error,
     refresh,
     upsertProject,
-  }), [api, projects, status, error, refresh, upsertProject]);
+    setProjectPinned,
+  }), [api, projects, status, error, refresh, upsertProject, setProjectPinned]);
 
   return <ProjectWorkspaceContext.Provider value={value}>{children}</ProjectWorkspaceContext.Provider>;
 }

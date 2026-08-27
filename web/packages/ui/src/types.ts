@@ -16,6 +16,7 @@ export type NavigationItem = {
   icon: LucideIcon;
   active?: boolean;
   onClick?: () => void;
+  trailingAction?: ReactNode;
 };
 
 export type NavigationGroupStatus = "loading" | "empty" | "error";

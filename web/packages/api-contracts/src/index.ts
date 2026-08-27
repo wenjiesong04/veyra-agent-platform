@@ -1,4 +1,5 @@
 export const desktopRoutePaths = {
+  chat: "#/chat",
   projects: "#/projects",
   components: "#/components",
   files: "#/files",

@@ -234,6 +234,38 @@
   white-space: nowrap;
 }
 
+.sidebar-nav-item {
+  position: relative;
+}
+
+.sidebar-nav-item-action {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  z-index: 1;
+  display: inline-flex;
+  transform: translateY(-50%);
+}
+
+.sidebar-nav-item-action button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  color: var(--subtle);
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-nav-item-action button:hover,
+.sidebar-nav-item-action button:focus-visible {
+  color: var(--accent-strong);
+  background: var(--surface-soft);
+  outline: none;
+}
+
 .sidebar-nav a {
   display: flex;
   min-width: 0;
@@ -446,6 +478,7 @@
 
 .is-collapsed .nav-group-label,
 .is-collapsed .nav-group-action,
+.is-collapsed .sidebar-nav-item-action,
 .is-collapsed .sidebar-nav a span,
 .is-collapsed .shell-account-trigger-copy {
   display: none;

@@ -95,8 +95,9 @@ describe("desktop Project workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "2 Projects" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("href", "#/chat");
-    expect(screen.getByRole("link", { name: "Monitor" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Components" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Run workspace" })).toHaveAttribute("href", "#/monitor");
+    expect(screen.getByRole("link", { name: "Resource library" })).toHaveAttribute("href", "#/components");
+    expect(screen.getByRole("link", { name: "Knowledge base" })).toHaveAttribute("href", "#/files");
     expect(screen.getByRole("link", { name: "Community" })).toHaveAttribute("href", "#/community");
     expect(screen.getByText("Projects", { selector: ".nav-group-projects .nav-group-label" })).toBeInTheDocument();
     expect(document.querySelector(".nav-group-recent")).not.toBeInTheDocument();
@@ -201,9 +202,9 @@ describe("desktop Project workspace", () => {
     expect(sidebarLinks).toHaveLength(9);
     expect(sidebarLinks).not.toContain("Project 0");
 
-    window.location.hash = projectRoutePaths.project("project-0");
-    await userEvent.click(await screen.findByRole("button", { name: "Pin Project" }));
-    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("project-0", { pinned: true }));
+    await userEvent.click(screen.getByRole("button", { name: "Unpin Project" }));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("pinned", { pinned: false }));
+    expect(window.location.hash).toBe("#/projects");
   });
 
   it("preserves account controls, theme choices, and responsive sidebar focus behavior", async () => {
@@ -237,6 +238,17 @@ describe("desktop Project workspace", () => {
     await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
     expect(await screen.findByText("在一个真实目录中组织 Agent、文件与后续运行。")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "新聊天" })).toHaveAttribute("href", "#/chat");
+    expect(screen.getByRole("link", { name: "运行工作台" })).toHaveAttribute("href", "#/monitor");
+    expect(screen.getByRole("link", { name: "资源库" })).toHaveAttribute("href", "#/components");
+    expect(screen.getByRole("link", { name: "知识库" })).toHaveAttribute("href", "#/files");
+  });
+
+  it("renders the Factory-phase new chat placeholder instead of a generic route error", async () => {
+    window.location.hash = "#/chat";
+    render(<DesktopApp api={apiFor()} />);
+    expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("Chat and Agent generation will be enabled in the Factory phase.")).toBeInTheDocument();
+    expect(screen.queryByText("Route not found")).not.toBeInTheDocument();
   });
 
   it.each([
@@ -343,6 +355,7 @@ describe("desktop route parser", () => {
   });
 
   it("covers the typed Project and fixed-feature route matrix", () => {
+    expect(parseDesktopRoute("#/chat").kind).toBe("chat");
     expect(parseDesktopRoute("#/projects").kind).toBe("projects");
     expect(parseDesktopRoute(projectRoutePaths.project("p")).kind).toBe("project");
     expect(parseDesktopRoute(projectRoutePaths.agents("p")).kind).toBe("project-agents");

@@ -66,6 +66,9 @@ const shellLabelKeys: Record<string, string> = {
   "Entry detail": "entryDetail",
   Projects: "projects",
   "New chat": "newChat",
+  "Run workspace": "runWorkspace",
+  "Resource library": "resourceLibrary",
+  "Knowledge base": "knowledgeBase",
   Recent: "recent",
   Runs: "runs",
   Monitor: "monitor",
@@ -289,7 +292,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
                 const Icon = item.icon;
                 const active = item.active ?? item.href === activeHref;
                 const label = shellText(item.label, t);
-                return <a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} key={`${item.href}-${label}`} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>;
+                return <div className="sidebar-nav-item" key={`${item.href}-${label}`}><a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>{item.trailingAction ? <span className="sidebar-nav-item-action">{item.trailingAction}</span> : null}</div>;
               })}
               {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}
             </div>

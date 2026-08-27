@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Boxes, FileText, FolderKanban, Gauge, Globe2, MessageCirclePlus, MoreHorizontal, Plus } from "lucide-react";
+import { Boxes, FileText, FolderKanban, Gauge, Globe2, MessageCirclePlus, MoreHorizontal, Pin, PinOff, Plus } from "lucide-react";
 import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
 import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
@@ -15,6 +15,7 @@ import { ComponentsPage } from "./pages/components";
 import { FilesPage } from "./pages/files";
 import { FactoryPage } from "./pages/factory";
 import { MonitorPage } from "./pages/monitor";
+import { NewChatPage } from "./pages/new-chat";
 import { NotFoundPage } from "./pages/not-found";
 import { ProjectDetailPage } from "./pages/project-detail";
 import { ProjectsPage } from "./pages/projects";
@@ -28,15 +29,16 @@ const fixedNavigation: NavigationGroup = {
   label: "Features",
   section: "fixed",
   items: [
-    { href: "#/chat", label: "New chat", icon: MessageCirclePlus },
-    { href: desktopRoutePaths.monitor, label: "Monitor", icon: Gauge },
-    { href: desktopRoutePaths.components, label: "Components", icon: Boxes },
-    { href: desktopRoutePaths.files, label: "Files", icon: FileText },
+    { href: desktopRoutePaths.chat, label: "New chat", icon: MessageCirclePlus },
+    { href: desktopRoutePaths.monitor, label: "Run workspace", icon: Gauge },
+    { href: desktopRoutePaths.components, label: "Resource library", icon: Boxes },
+    { href: desktopRoutePaths.files, label: "Knowledge base", icon: FileText },
     { href: desktopRoutePaths.community, label: "Community", icon: Globe2 },
   ],
 };
 
-const pageMeta: Record<"projects" | "components" | "files" | "runs" | "monitor" | "community" | "account" | "settings" | "not-found", { eyebrow: string; title: string }> = {
+const pageMeta: Record<"chat" | "projects" | "components" | "files" | "runs" | "monitor" | "community" | "account" | "settings" | "not-found", { eyebrow: string; title: string }> = {
+  chat: { eyebrow: "Workspace", title: "New chat" },
   projects: { eyebrow: "Workspace", title: "Projects" },
   components: { eyebrow: "Library", title: "Components" },
   files: { eyebrow: "Library", title: "Files" },
@@ -70,6 +72,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "login") return <LoginPage />;
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
+  if (route.kind === "chat") return <NewChatPage />;
   if (route.kind === "projects") return <ProjectsPage />;
   if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
@@ -100,7 +103,7 @@ function DesktopWorkspace() {
   const zh = locale === "zh";
   const route = useHashRoute();
   const { account, logout } = useAuth();
-  const { projects, status } = useProjectWorkspace();
+  const { projects, status, setProjectPinned } = useProjectWorkspace();
   const [projectsExpanded, setProjectsExpanded] = React.useState(false);
   if (route.kind === "login") return <LoginPage />;
   if (route.kind === "register") return <RegisterPage />;
@@ -113,7 +116,7 @@ function DesktopWorkspace() {
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : desktopRoutePaths[route.kind];
   const projectName = scopedProjectId ? projects.find((project) => project.project_id === scopedProjectId)?.name ?? scopedProjectId : undefined;
-  const meta = route.kind === "projects" || route.kind === "components" || route.kind === "files" || route.kind === "runs" || route.kind === "monitor" || route.kind === "community" || route.kind === "account" || route.kind === "settings" || route.kind === "not-found"
+  const meta = route.kind === "chat" || route.kind === "projects" || route.kind === "components" || route.kind === "files" || route.kind === "runs" || route.kind === "monitor" || route.kind === "community" || route.kind === "account" || route.kind === "settings" || route.kind === "not-found"
     ? pageMeta[route.kind]
     : route.kind === "project" ? { eyebrow: "Project", title: projectName ?? route.projectId }
       : route.kind === "project-agents" ? { eyebrow: "Project", title: projectName ?? "Agents" }
@@ -134,11 +137,13 @@ function DesktopWorkspace() {
   const visibleProjects = projectsExpanded
     ? orderedProjects
     : [...orderedProjects.filter((project) => project.pinned), ...orderedProjects.filter((project) => !project.pinned).slice(0, 8)];
+  const hasProjectOverflow = orderedProjects.filter((project) => !project.pinned).length > 8;
   const projectNavigationItems = visibleProjects.map((project) => ({
     href: projectRoutePaths.project(project.project_id),
     label: project.name,
     icon: FolderKanban,
     active: project.project_id === scopedProjectId,
+    trailingAction: <button type="button" aria-label={project.pinned ? t("unpinProject") : t("pinProject")} title={project.pinned ? t("unpinProject") : t("pinProject")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void setProjectPinned(project.project_id, !project.pinned).catch(() => undefined); }}>{project.pinned ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}</button>,
   }));
   const projectStatus = status === "ready" && projects.length > 0 ? undefined : status === "ready" ? "empty" : status;
   const navigation: NavigationGroup[] = [
@@ -149,7 +154,7 @@ function DesktopWorkspace() {
       items: projectNavigationItems,
       status: projectStatus,
       action: <>
-        {orderedProjects.filter((project) => !project.pinned).length > 8 ? <button className="sidebar-section-button" type="button" onClick={() => setProjectsExpanded((value) => !value)} aria-label={projectsExpanded ? t("collapseProjects") : t("moreProjects")} title={projectsExpanded ? t("collapseProjects") : t("moreProjects")}><MoreHorizontal size={15} aria-hidden="true" /></button> : null}
+        <button className="sidebar-section-button" type="button" onClick={() => { if (hasProjectOverflow) setProjectsExpanded((value) => !value); else window.location.hash = desktopRoutePaths.projects; }} aria-label={hasProjectOverflow ? projectsExpanded ? t("collapseProjects") : t("moreProjects") : t("manageProjects")} title={hasProjectOverflow ? projectsExpanded ? t("collapseProjects") : t("moreProjects") : t("manageProjects")}><MoreHorizontal size={15} aria-hidden="true" /></button>
         <button className="sidebar-section-button" type="button" onClick={() => {
           window.location.hash = desktopRoutePaths.projects;
           window.setTimeout(() => window.dispatchEvent(new CustomEvent("veyra:project-action", { detail: "create" })), 0);
