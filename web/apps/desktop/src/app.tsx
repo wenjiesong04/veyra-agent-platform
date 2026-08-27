@@ -18,7 +18,7 @@ import { MonitorPage } from "./pages/monitor";
 import { NewChatPage } from "./pages/new-chat";
 import { NotFoundPage } from "./pages/not-found";
 import { ProjectDetailPage } from "./pages/project-detail";
-import { ProjectsPage } from "./pages/projects";
+import { ProjectDialog, type ProjectDialogMode } from "./features/projects/project-dialog";
 import { RunsPage } from "./pages/runs";
 import { SettingsPage } from "./pages/settings";
 import { StudioPage } from "./pages/studio";
@@ -73,7 +73,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   if (route.kind === "chat") return <NewChatPage />;
-  if (route.kind === "projects") return <ProjectsPage />;
+  if (route.kind === "projects") return <NewChatPage />;
   if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "agent-detail") return <AgentDetailPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
@@ -105,18 +105,23 @@ function DesktopWorkspace() {
   const { account, logout } = useAuth();
   const { projects, status, setProjectPinned } = useProjectWorkspace();
   const [projectsExpanded, setProjectsExpanded] = React.useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = React.useState(false);
+  const [projectDialogMode, setProjectDialogMode] = React.useState<ProjectDialogMode | null>(null);
   if (route.kind === "login") return <LoginPage />;
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run" ? route.projectId : undefined;
-  const activeHref = route.kind === "projects" || route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
+  const activeHref = route.kind === "projects" || route.kind === "chat"
+    ? desktopRoutePaths.chat
+    : route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
     ? desktopRoutePaths.projects
     : route.kind === "component" || route.kind === "components" ? desktopRoutePaths.components
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : desktopRoutePaths[route.kind];
   const projectName = scopedProjectId ? projects.find((project) => project.project_id === scopedProjectId)?.name ?? scopedProjectId : undefined;
-  const meta = route.kind === "chat" || route.kind === "projects" || route.kind === "components" || route.kind === "files" || route.kind === "runs" || route.kind === "monitor" || route.kind === "community" || route.kind === "account" || route.kind === "settings" || route.kind === "not-found"
+  const meta = route.kind === "projects" ? pageMeta.chat
+    : route.kind === "chat" || route.kind === "components" || route.kind === "files" || route.kind === "runs" || route.kind === "monitor" || route.kind === "community" || route.kind === "account" || route.kind === "settings" || route.kind === "not-found"
     ? pageMeta[route.kind]
     : route.kind === "project" ? { eyebrow: "Project", title: projectName ?? route.projectId }
       : route.kind === "project-agents" ? { eyebrow: "Project", title: projectName ?? "Agents" }
@@ -154,11 +159,14 @@ function DesktopWorkspace() {
       items: projectNavigationItems,
       status: projectStatus,
       action: <>
-        <button className="sidebar-section-button" type="button" onClick={() => { if (hasProjectOverflow) setProjectsExpanded((value) => !value); else window.location.hash = desktopRoutePaths.projects; }} aria-label={hasProjectOverflow ? projectsExpanded ? t("collapseProjects") : t("moreProjects") : t("manageProjects")} title={hasProjectOverflow ? projectsExpanded ? t("collapseProjects") : t("moreProjects") : t("manageProjects")}><MoreHorizontal size={15} aria-hidden="true" /></button>
-        <button className="sidebar-section-button" type="button" onClick={() => {
-          window.location.hash = desktopRoutePaths.projects;
-          window.setTimeout(() => window.dispatchEvent(new CustomEvent("veyra:project-action", { detail: "create" })), 0);
-        }} aria-label={t("createProjectShortcut")} title={t("createProjectShortcut")}><Plus size={15} aria-hidden="true" /></button>
+        <span className="sidebar-project-actions">
+          <button className="sidebar-section-button" type="button" onClick={() => setProjectMenuOpen((value) => !value)} aria-label={t("projectActions")} title={t("projectActions")} aria-haspopup="menu" aria-expanded={projectMenuOpen}><MoreHorizontal size={15} aria-hidden="true" /></button>
+          {projectMenuOpen ? <div className="sidebar-project-menu" role="menu" aria-label={t("projectActions")}>
+            <button type="button" role="menuitem" onClick={() => { setProjectMenuOpen(false); setProjectDialogMode("open"); }}>{t("openExistingProject")}</button>
+            {hasProjectOverflow ? <button type="button" role="menuitem" onClick={() => { setProjectMenuOpen(false); setProjectsExpanded((value) => !value); }}>{projectsExpanded ? t("collapseProjects") : t("moreProjects")}</button> : null}
+          </div> : null}
+        </span>
+        <button className="sidebar-section-button" type="button" onClick={() => setProjectDialogMode("create")} aria-label={t("createProjectShortcut")} title={t("createProjectShortcut")}><Plus size={15} aria-hidden="true" /></button>
       </>,
     },
   ];
@@ -190,6 +198,7 @@ function DesktopWorkspace() {
       }}
     >
       <PageContent route={route} />
+      {projectDialogMode ? <ProjectDialog mode={projectDialogMode} onClose={() => setProjectDialogMode(null)} /> : null}
     </ApplicationShell>
   );
 }

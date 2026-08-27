@@ -42,6 +42,8 @@ export const dictionary: Dictionary = {
   collapseProjects: { zh: "收起项目列表", en: "Collapse Projects" },
   manageProjects: { zh: "管理项目", en: "Manage Projects" },
   createProjectShortcut: { zh: "新建项目", en: "Create Project" },
+  openExistingProject: { zh: "打开已有项目", en: "Open existing project" },
+  projectActions: { zh: "项目操作", en: "Project actions" },
   pinProject: { zh: "置顶项目", en: "Pin Project" },
   unpinProject: { zh: "取消置顶", en: "Unpin Project" },
   recent: { zh: "最近", en: "Recent" },

@@ -13,6 +13,7 @@ import {
   type ProjectSummaryResponse,
   type SaveDraftRequest,
   type SaveDraftResponse,
+  type SelectDirectoryResponse,
   type UpdateProjectRequest,
   type ValidateResponse,
 } from "@veyra/api-contracts";
@@ -60,6 +61,7 @@ export type LocalProjectApi = {
   openProject(input: OpenProjectRequest): Promise<ProjectSummaryResponse>;
   getProject(projectId: string): Promise<ProjectSummaryResponse>;
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse>;
+  selectDirectory(): Promise<SelectDirectoryResponse>;
 };
 
 type RequestOptions = {
@@ -68,6 +70,7 @@ type RequestOptions = {
   ifMatch?: string;
   idempotencyKey?: string;
   requireIdempotencyKey?: boolean;
+  headers?: Record<string, string>;
 };
 
 function configuredBaseUrl(): string {
@@ -205,6 +208,13 @@ function listProjects(value: unknown, status = 502): ListProjectsResponse {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     projects: asArray(record.projects, "projects", status).map((item) => projectSummary(item, status)),
   };
+}
+
+function selectedDirectory(value: unknown, status = 502): SelectDirectoryResponse {
+  const record = schemaRecord(value, status);
+  if (record.status === "selected") return { schema_version: LOCAL_API_SCHEMA_VERSION, status: "selected", root_path: asString(record.root_path, "root_path", status) };
+  if (record.status === "cancelled" && record.root_path === null) return { schema_version: LOCAL_API_SCHEMA_VERSION, status: "cancelled", root_path: null };
+  throw new LocalApiClientError("The local service returned an invalid directory selection.", { status, code: "invalid_response" });
 }
 
 function listAgents(value: unknown, status = 502): ListAgentsResponse {
@@ -355,6 +365,14 @@ export class LocalApiClient {
     });
   }
 
+  selectDirectory(): Promise<SelectDirectoryResponse> {
+    return this.request("system/select-directory", selectedDirectory, {
+      method: "POST",
+      body: {},
+      headers: { "X-Veyra-Desktop-Intent": "select-directory" },
+    });
+  }
+
   getProject(projectId: string): Promise<ProjectSummaryResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}`, projectSummary);
   }
@@ -451,6 +469,7 @@ export class LocalApiClient {
     if (options.requireIdempotencyKey) {
       headers["Idempotency-Key"] = options.idempotencyKey ?? newUuidV7();
     }
+    Object.assign(headers, options.headers);
 
     let response: Response;
     try {

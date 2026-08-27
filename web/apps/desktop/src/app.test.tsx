@@ -28,6 +28,7 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
   listProjects: ReturnType<typeof vi.fn>;
   createProject: ReturnType<typeof vi.fn>;
   openProject: ReturnType<typeof vi.fn>;
+  selectDirectory: ReturnType<typeof vi.fn>;
   getProject: ReturnType<typeof vi.fn>;
   updateProject: ReturnType<typeof vi.fn>;
 } {
@@ -36,6 +37,7 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects }),
     createProject: vi.fn().mockResolvedValue(project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" })),
     openProject: vi.fn().mockResolvedValue(project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" })),
+    selectDirectory: vi.fn().mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/tmp/selected-folder" }),
     getProject,
     updateProject: vi.fn().mockImplementation(async (projectId: string, input: { pinned: boolean }) => project({ project_id: projectId, name: projectId, pinned: input.pinned, pinned_at: input.pinned ? "2026-08-28T00:00:00Z" : null })),
   };
@@ -86,14 +88,14 @@ afterEach(() => {
 });
 
 describe("desktop Project workspace", () => {
-  it("renders fixed navigation and a Project section without Recent", async () => {
+  it("renders the normal New chat surface at #/projects and keeps a compact Project section without Recent", async () => {
     const first = project({ project_id: "p-one", name: "Alpha Project" });
     const second = project({ project_id: "p-two", name: "Beta Project", root_path: "/Users/test/Projects/project-two", agents: [{ agent_id: "agent-1", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "fedcba9876543210" }] });
     const api = apiFor([first, second]);
     api.getProject.mockImplementation(async (projectId: string) => [first, second].find((item) => item.project_id === projectId) ?? first);
     render(<DesktopApp api={api} />);
 
-    expect(await screen.findByRole("heading", { name: "2 Projects" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("href", "#/chat");
     expect(screen.getByRole("link", { name: "Run workspace" })).toHaveAttribute("href", "#/monitor");
     expect(screen.getByRole("link", { name: "Resource library" })).toHaveAttribute("href", "#/components");
@@ -102,69 +104,63 @@ describe("desktop Project workspace", () => {
     expect(screen.getByText("Projects", { selector: ".nav-group-projects .nav-group-label" })).toBeInTheDocument();
     expect(document.querySelector(".nav-group-recent")).not.toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: /Alpha Project/ }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("1 Agent")).toBeInTheDocument();
     expect(screen.queryByText("Signal Review")).not.toBeInTheDocument();
     expect(screen.queryByText("Verified results")).not.toBeInTheDocument();
 
-    const projectRow = document.querySelector<HTMLAnchorElement>(".project-row");
-    expect(projectRow).not.toBeNull();
-    await userEvent.click(projectRow!);
-    expect((await screen.findAllByRole("link", { name: /Alpha Project/ })).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("heading", { name: "Projects", level: 2 })).not.toBeInTheDocument();
   });
 
-  it("creates a Project from the accessible modal and selects it", async () => {
+  it("creates a Project from the global picker dialog without navigating away from the current surface", async () => {
     const api = apiFor();
     const created = project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" });
     api.createProject.mockResolvedValue(created);
-    api.getProject.mockResolvedValue(created);
+    api.selectDirectory.mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/tmp/created-project" });
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect Project" }));
+    await user.click(await screen.findByRole("button", { name: "Create Project" }));
+    expect(screen.getByRole("dialog", { name: "Create project" })).toBeInTheDocument();
     await user.type(await screen.findByRole("textbox", { name: "Project name" }), "Created Project");
-    await user.type(screen.getByRole("textbox", { name: "Absolute path" }), "/tmp/created-project");
-    await user.click(document.querySelector<HTMLDivElement>(".project-modal")!.querySelector<HTMLButtonElement>('button[type="submit"]')!);
+    expect(screen.queryByRole("textbox", { name: /path/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Connect project/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
+    expect(await screen.findByText("Selected: created-project")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ root_path: "/tmp/created-project", name: "Created Project", description: "" }));
-    expect(window.location.hash).toBe(projectRoutePaths.project("created-project"));
-    expect(await screen.findByRole("heading", { name: "Created Project", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText("No Agents yet")).toBeInTheDocument();
-    expect(screen.getByText("Agents will appear here", { exact: false })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/projects");
+    expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
   });
 
-  it("opens an existing Project directory and refreshes the real summary", async () => {
+  it("opens an existing Project from the sidebar ellipsis menu through the same picker", async () => {
     const api = apiFor();
     const opened = project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" });
     api.openProject.mockResolvedValue(opened);
-    api.getProject.mockResolvedValue(opened);
+    api.selectDirectory.mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/tmp/opened-project" });
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect Project" }));
-    await user.click(screen.getByRole("tab", { name: "Open existing" }));
-    await user.type(screen.getByRole("textbox", { name: "Absolute path" }), "/tmp/opened-project");
-    await user.click(screen.getByRole("button", { name: "Open Project" }));
+    await user.click(await screen.findByRole("button", { name: "Project actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open existing project" }));
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
+    await user.click(screen.getByRole("button", { name: "Open project" }));
 
     await waitFor(() => expect(api.openProject).toHaveBeenCalledWith({ root_path: "/tmp/opened-project" }));
-    expect(window.location.hash).toBe(projectRoutePaths.project("opened-project"));
-    expect(await screen.findByRole("heading", { name: "Opened Project", level: 2 })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/projects");
   });
 
-  it("shows loading and unavailable states instead of fixture data", async () => {
-    let resolveList: ((value: { schema_version: "1.0"; projects: ProjectSummaryResponse[] }) => void) | undefined;
+  it("keeps picker cancellation and errors recoverable", async () => {
     const api = apiFor();
-    api.listProjects.mockImplementation(() => new Promise((resolve) => { resolveList = resolve; }));
+    api.selectDirectory.mockResolvedValueOnce({ schema_version: "1.0", status: "cancelled", root_path: null }).mockRejectedValueOnce(new Error("picker unavailable"));
+    const user = userEvent.setup();
     render(<DesktopApp api={api} />);
-    expect(document.querySelector(".ui-loading")).toHaveTextContent("Loading Projects…");
-    resolveList?.({ schema_version: "1.0", projects: [] });
-    await waitFor(() => expect(document.querySelector(".ui-empty strong")).toHaveTextContent("No Projects yet"));
-
-    cleanup();
-    const failingApi = apiFor();
-    failingApi.listProjects.mockRejectedValue(new Error("sidecar unavailable"));
-    render(<DesktopApp api={failingApi} />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("The local Project service is unavailable");
-    expect(screen.getByRole("button", { name: "Connect Project" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Create Project" }));
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
+    expect(screen.queryByText(/^Selected:/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("picker unavailable");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("renders a real Agent array and count on Project detail", async () => {
@@ -231,12 +227,12 @@ describe("desktop Project workspace", () => {
     expect(menu).toHaveFocus();
   });
 
-  it("switches the Project surface between Chinese and English copy", async () => {
+  it("keeps the New chat surface and shell controls bilingual", async () => {
     const user = userEvent.setup();
     render(<DesktopApp api={apiFor()} />);
-    expect(await screen.findByText("Organize Agents, files, and later runs in real directories.")).toBeInTheDocument();
+    expect(await screen.findByText("Chat and Agent generation will be enabled in the Factory phase.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
-    expect(await screen.findByText("在一个真实目录中组织 Agent、文件与后续运行。")).toBeInTheDocument();
+    expect(await screen.findByText("聊天与 Agent 生成会在 Factory 阶段启用。")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "新聊天" })).toHaveAttribute("href", "#/chat");
     expect(screen.getByRole("link", { name: "运行工作台" })).toHaveAttribute("href", "#/monitor");
     expect(screen.getByRole("link", { name: "资源库" })).toHaveAttribute("href", "#/components");

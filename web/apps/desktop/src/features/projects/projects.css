@@ -103,6 +103,30 @@
 
 .project-modal-close:hover { color: var(--ink); background: var(--surface-soft); }
 
+.folder-selection {
+  display: flex;
+  min-height: 132px;
+  align-items: center;
+  gap: 14px;
+  border: 1px dashed var(--line-strong, var(--line));
+  border-radius: 15px;
+  padding: 16px;
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+.folder-selection.is-selected { border-style: solid; border-color: var(--accent); color: var(--ink); }
+.folder-selection > svg { flex: 0 0 auto; color: var(--accent-strong); }
+.folder-selection > div { min-width: 0; flex: 1; }
+.folder-selection strong, .folder-selection p { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-selection strong { color: var(--ink); font-size: 13px; }
+.folder-selection p { margin: 4px 0 0; font-size: 12px; }
+.folder-selection .ui-button { flex: 0 0 auto; }
+
+.sidebar-project-actions { position: relative; display: inline-flex; }
+.sidebar-project-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; display: grid; min-width: 176px; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--soft-shadow); }
+.sidebar-project-menu button { border: 0; border-radius: 7px; padding: 8px 9px; color: var(--ink); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.sidebar-project-menu button:hover { background: var(--surface-soft); }
+
 .project-modal-tabs { display: flex; gap: 5px; margin-top: 20px; }
 .project-modal-tabs button { border: 0; border-radius: 9px; padding: 8px 10px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
 .project-modal-tabs button.active { color: var(--accent-strong); background: var(--accent-soft); }
@@ -315,5 +339,7 @@
   .project-modal { width: 100%; max-height: min(720px, 92dvh); border-radius: 20px 20px 0 0; }
   .project-modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .project-modal-actions .ui-button { justify-content: center; }
+  .folder-selection { align-items: flex-start; flex-wrap: wrap; }
+  .folder-selection .ui-button { width: 100%; justify-content: center; }
   .project-detail-summary { align-items: flex-start; }
 }

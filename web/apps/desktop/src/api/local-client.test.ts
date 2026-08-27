@@ -49,6 +49,18 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ root_path: "/tmp/existing" });
   });
 
+  it("uses the deliberate desktop intent header for the native directory picker", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", status: "selected", root_path: "/tmp/selected" }));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.selectDirectory()).resolves.toEqual({ schema_version: "1.0", status: "selected", root_path: "/tmp/selected" });
+    expect(fetcher).toHaveBeenCalledWith("/api/v1/system/select-directory", expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "X-Veyra-Desktop-Intent": "select-directory" }),
+    }));
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({});
+  });
+
   it("surfaces typed sidecar errors instead of falling back to fixture data", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", code: "project_unavailable", message: "Project root cannot be read", request_id: "request-1" }, 503));
     const client = new LocalApiClient({ fetcher });

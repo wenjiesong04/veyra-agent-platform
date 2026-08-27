@@ -159,6 +159,19 @@ export type OpenProjectRequest = {
   root_path: string;
 };
 
+/** Result of a native desktop directory picker. Paths never come from typed UI input. */
+export type SelectDirectoryResponse =
+  | {
+    schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+    status: "selected";
+    root_path: string;
+  }
+  | {
+    schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+    status: "cancelled";
+    root_path: null;
+  };
+
 export type DraftResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   draft_id: string;
