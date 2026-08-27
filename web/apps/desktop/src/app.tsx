@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Activity, Boxes, FileText, FolderKanban, Gauge, Globe2 } from "lucide-react";
+import { Boxes, FileText, FolderKanban, Gauge, Globe2, MessageCirclePlus, MoreHorizontal, Plus } from "lucide-react";
 import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
 import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
@@ -28,8 +28,7 @@ const fixedNavigation: NavigationGroup = {
   label: "Features",
   section: "fixed",
   items: [
-    { href: desktopRoutePaths.projects, label: "Projects", icon: FolderKanban },
-    { href: desktopRoutePaths.runs, label: "Runs", icon: Activity },
+    { href: "#/chat", label: "New chat", icon: MessageCirclePlus },
     { href: desktopRoutePaths.monitor, label: "Monitor", icon: Gauge },
     { href: desktopRoutePaths.components, label: "Components", icon: Boxes },
     { href: desktopRoutePaths.files, label: "Files", icon: FileText },
@@ -101,7 +100,8 @@ function DesktopWorkspace() {
   const zh = locale === "zh";
   const route = useHashRoute();
   const { account, logout } = useAuth();
-  const { projects, recentProjects, status, markProjectRecent } = useProjectWorkspace();
+  const { projects, status } = useProjectWorkspace();
+  const [projectsExpanded, setProjectsExpanded] = React.useState(false);
   if (route.kind === "login") return <LoginPage />;
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
@@ -126,26 +126,36 @@ function DesktopWorkspace() {
                     : route.kind === "community-entry" || route.kind === "community-version" ? { eyebrow: "Community", title: "Entry detail" }
                       : { eyebrow: "Design / Project", title: "Studio" };
 
-  const projectNavigationItems = projects.map((project) => ({
+  const orderedProjects = [...projects].sort((left, right) => {
+    if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+    if (left.pinned && right.pinned) return (right.pinned_at ?? "").localeCompare(left.pinned_at ?? "");
+    return right.indexed_at.localeCompare(left.indexed_at);
+  });
+  const visibleProjects = projectsExpanded
+    ? orderedProjects
+    : [...orderedProjects.filter((project) => project.pinned), ...orderedProjects.filter((project) => !project.pinned).slice(0, 8)];
+  const projectNavigationItems = visibleProjects.map((project) => ({
     href: projectRoutePaths.project(project.project_id),
     label: project.name,
     icon: FolderKanban,
     active: project.project_id === scopedProjectId,
-    onClick: () => markProjectRecent(project.project_id),
-  }));
-  const recentNavigationItems = recentProjects.map((project) => ({
-    href: projectRoutePaths.project(project.project_id),
-    label: project.name,
-    icon: FolderKanban,
-    active: project.project_id === scopedProjectId,
-    onClick: () => markProjectRecent(project.project_id),
   }));
   const projectStatus = status === "ready" && projects.length > 0 ? undefined : status === "ready" ? "empty" : status;
-  const recentStatus = recentProjects.length > 0 ? undefined : status === "error" ? "error" : "empty";
   const navigation: NavigationGroup[] = [
     fixedNavigation,
-    { label: "Projects", section: "projects", items: projectNavigationItems, status: projectStatus },
-    { label: "Recent", section: "recent", items: recentNavigationItems, status: recentStatus },
+    {
+      label: "Projects",
+      section: "projects",
+      items: projectNavigationItems,
+      status: projectStatus,
+      action: <>
+        {orderedProjects.filter((project) => !project.pinned).length > 8 ? <button className="sidebar-section-button" type="button" onClick={() => setProjectsExpanded((value) => !value)} aria-label={projectsExpanded ? t("collapseProjects") : t("moreProjects")} title={projectsExpanded ? t("collapseProjects") : t("moreProjects")}><MoreHorizontal size={15} aria-hidden="true" /></button> : null}
+        <button className="sidebar-section-button" type="button" onClick={() => {
+          window.location.hash = desktopRoutePaths.projects;
+          window.setTimeout(() => window.dispatchEvent(new CustomEvent("veyra:project-action", { detail: "create" })), 0);
+        }} aria-label={t("createProjectShortcut")} title={t("createProjectShortcut")}><Plus size={15} aria-hidden="true" /></button>
+      </>,
+    },
   ];
 
   return (

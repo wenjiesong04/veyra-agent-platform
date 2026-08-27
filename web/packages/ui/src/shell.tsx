@@ -65,6 +65,7 @@ const shellLabelKeys: Record<string, string> = {
   File: "file",
   "Entry detail": "entryDetail",
   Projects: "projects",
+  "New chat": "newChat",
   Recent: "recent",
   Runs: "runs",
   Monitor: "monitor",
@@ -283,7 +284,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
         <nav className="sidebar-nav">
           {navigation.map((group) => (
             <div className={`nav-group ${group.section === "fixed" || group.section === undefined ? "nav-group-fixed" : "nav-group-list"} nav-group-${group.section ?? "fixed"}`} key={group.label}>
-              <span className="nav-group-label">{shellText(group.label, t)}</span>
+              <div className="nav-group-heading"><span className="nav-group-label">{shellText(group.label, t)}</span>{group.action ? <span className="nav-group-action">{group.action}</span> : null}</div>
               {group.items.map((item) => {
                 const Icon = item.icon;
                 const active = item.active ?? item.href === activeHref;

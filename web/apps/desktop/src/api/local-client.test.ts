@@ -8,6 +8,10 @@ function summary(overrides: Partial<ProjectSummaryResponse> = {}) {
     project_id: "project-1",
     root_path: "/tmp/project-1",
     name: "Project One",
+    description: "",
+    pinned: false,
+    pinned_at: null,
+    indexed_at: "2026-08-28T00:00:00Z",
     manifest_hash: "manifest-hash",
     agents: [],
     ...overrides,
@@ -36,11 +40,11 @@ describe("LocalApiClient Project requests", () => {
       .mockResolvedValueOnce(response(summary({ project_id: "opened", name: "Opened" })));
     const client = new LocalApiClient({ fetcher });
 
-    await client.createProject({ root_path: "/tmp/created", name: "Created" });
+    await client.createProject({ root_path: "/tmp/created", name: "Created", description: "A created Project" });
     await client.openProject({ root_path: "/tmp/existing" });
 
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects");
-    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ root_path: "/tmp/created", name: "Created" });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ root_path: "/tmp/created", name: "Created", description: "A created Project" });
     expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/open");
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ root_path: "/tmp/existing" });
   });

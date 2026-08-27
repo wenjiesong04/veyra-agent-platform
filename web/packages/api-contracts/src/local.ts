@@ -90,6 +90,10 @@ export type ProjectSummaryResponse = {
   project_id: string;
   root_path: string;
   name: string;
+  description: string;
+  pinned: boolean;
+  pinned_at: string | null;
+  indexed_at: string;
   manifest_hash: string;
   agents: ProjectAgentRecord[];
 };
@@ -141,6 +145,12 @@ export type ListAgentsResponse = {
 export type CreateProjectRequest = {
   root_path: string;
   name: string;
+  description: string;
+};
+
+/** Mutable local Project presentation state. The manifest remains authoritative. */
+export type UpdateProjectRequest = {
+  pinned: boolean;
 };
 
 export type CreateAgentRequest = TemplateSelection;

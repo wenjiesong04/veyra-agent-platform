@@ -190,6 +190,39 @@
   white-space: normal;
 }
 
+.nav-group-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.nav-group-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-section-button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--subtle);
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-section-button:hover,
+.sidebar-section-button:focus-visible {
+  color: var(--accent-strong);
+  background: var(--surface-soft);
+  outline: none;
+}
+
 .nav-group-state {
   display: block;
   margin: 3px 12px 6px;
@@ -412,6 +445,7 @@
 }
 
 .is-collapsed .nav-group-label,
+.is-collapsed .nav-group-action,
 .is-collapsed .sidebar-nav a span,
 .is-collapsed .shell-account-trigger-copy {
   display: none;
@@ -723,6 +757,10 @@
     font-size: 9px;
   }
 
+  .nav-group-heading {
+    margin: 0 8px 2px;
+  }
+
   .sidebar-nav a {
     min-height: 44px;
     gap: 12px;
@@ -965,6 +1003,7 @@
   }
 
   .is-collapsed .nav-group-label,
+  .is-collapsed .nav-group-action,
   .is-collapsed .sidebar-nav a span,
   .is-collapsed .shell-account-trigger-copy {
     display: initial;

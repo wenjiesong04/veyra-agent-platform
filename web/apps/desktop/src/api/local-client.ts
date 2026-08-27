@@ -13,6 +13,7 @@ import {
   type ProjectSummaryResponse,
   type SaveDraftRequest,
   type SaveDraftResponse,
+  type UpdateProjectRequest,
   type ValidateResponse,
 } from "@veyra/api-contracts";
 import { newUuidV7 } from "./uuid";
@@ -58,6 +59,7 @@ export type LocalProjectApi = {
   createProject(input: CreateProjectRequest): Promise<ProjectSummaryResponse>;
   openProject(input: OpenProjectRequest): Promise<ProjectSummaryResponse>;
   getProject(projectId: string): Promise<ProjectSummaryResponse>;
+  updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse>;
 };
 
 type RequestOptions = {
@@ -92,6 +94,16 @@ function asRecord(value: unknown, status = 502): Record<string, unknown> {
 
 function asString(value: unknown, field: string, status = 502): string {
   if (typeof value !== "string" || value.length === 0) {
+    throw new LocalApiClientError(`The local service returned an invalid ${field}.`, {
+      status,
+      code: "invalid_response",
+    });
+  }
+  return value;
+}
+
+function asText(value: unknown, field: string, status = 502): string {
+  if (typeof value !== "string") {
     throw new LocalApiClientError(`The local service returned an invalid ${field}.`, {
       status,
       code: "invalid_response",
@@ -178,6 +190,10 @@ function projectSummary(value: unknown, status = 502): ProjectSummaryResponse {
     project_id: asString(record.project_id, "project_id", status),
     root_path: asString(record.root_path, "root_path", status),
     name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    pinned: record.pinned === true,
+    pinned_at: record.pinned_at === null ? null : asString(record.pinned_at, "pinned_at", status),
+    indexed_at: asString(record.indexed_at, "indexed_at", status),
     manifest_hash: asString(record.manifest_hash, "manifest_hash", status),
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
   };
@@ -341,6 +357,13 @@ export class LocalApiClient {
 
   getProject(projectId: string): Promise<ProjectSummaryResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}`, projectSummary);
+  }
+
+  updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}`, projectSummary, {
+      method: "PATCH",
+      body: input,
+    });
   }
 
   listAgents(projectId: string): Promise<ListAgentsResponse> {

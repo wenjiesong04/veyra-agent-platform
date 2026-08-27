@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 export type ThemeChoice = "system" | "light" | "dark";
 
@@ -23,6 +24,7 @@ export type NavigationGroup = {
   label: string;
   items: NavigationItem[];
   section?: "fixed" | "projects" | "recent";
+  action?: ReactNode;
   status?: NavigationGroupStatus;
   statusText?: string;
 };

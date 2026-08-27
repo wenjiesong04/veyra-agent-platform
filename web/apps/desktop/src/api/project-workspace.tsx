@@ -7,11 +7,9 @@ export type ProjectLoadState = "loading" | "ready" | "error";
 type ProjectWorkspaceValue = {
   api: LocalProjectApi;
   projects: ProjectSummaryResponse[];
-  recentProjects: ProjectSummaryResponse[];
   status: ProjectLoadState;
   error: string | null;
   refresh: () => Promise<void>;
-  markProjectRecent: (projectId: string) => void;
   upsertProject: (project: ProjectSummaryResponse) => void;
 };
 
@@ -24,7 +22,6 @@ function errorMessage(error: unknown): string {
 
 export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ api: LocalProjectApi }>) {
   const [projects, setProjects] = useState<ProjectSummaryResponse[]>([]);
-  const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [status, setStatus] = useState<ProjectLoadState>("loading");
   const [error, setError] = useState<string | null>(null);
 
@@ -45,10 +42,6 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     void refresh();
   }, [refresh]);
 
-  const markProjectRecent = useCallback((projectId: string) => {
-    setRecentProjectIds((current) => [projectId, ...current.filter((id) => id !== projectId)].slice(0, 8));
-  }, []);
-
   const upsertProject = useCallback((project: ProjectSummaryResponse) => {
     setProjects((current) => {
       const index = current.findIndex((item) => item.project_id === project.project_id);
@@ -57,23 +50,14 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     });
   }, []);
 
-  const recentProjects = useMemo(
-    () => recentProjectIds
-      .map((projectId) => projects.find((project) => project.project_id === projectId))
-      .filter((project): project is ProjectSummaryResponse => project !== undefined),
-    [projects, recentProjectIds],
-  );
-
   const value = useMemo<ProjectWorkspaceValue>(() => ({
     api,
     projects,
-    recentProjects,
     status,
     error,
     refresh,
-    markProjectRecent,
     upsertProject,
-  }), [api, projects, recentProjects, status, error, refresh, markProjectRecent, upsertProject]);
+  }), [api, projects, status, error, refresh, upsertProject]);
 
   return <ProjectWorkspaceContext.Provider value={value}>{children}</ProjectWorkspaceContext.Provider>;
 }
