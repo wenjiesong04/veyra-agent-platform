@@ -114,6 +114,7 @@ describe("desktop Project workspace", () => {
     const api = apiFor();
     const created = project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" });
     api.createProject.mockResolvedValue(created);
+    api.listProjects.mockResolvedValueOnce({ schema_version: "1.0", projects: [] }).mockRejectedValueOnce(new Error("refresh unavailable"));
     api.selectDirectory.mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/tmp/created-project" });
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
@@ -123,6 +124,8 @@ describe("desktop Project workspace", () => {
     await user.type(await screen.findByRole("textbox", { name: "Project name" }), "Created Project");
     expect(screen.queryByRole("textbox", { name: /path/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect project/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Choose a folder for this project.")).toBeInTheDocument();
+    expect(screen.queryByText(/path/i)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Select folder" }));
     expect(await screen.findByText("Selected: created-project")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create" }));
@@ -130,6 +133,8 @@ describe("desktop Project workspace", () => {
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ root_path: "/tmp/created-project", name: "Created Project", description: "" }));
     expect(window.location.hash).toBe("#/projects");
     expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText("refresh unavailable")).not.toBeInTheDocument();
   });
 
   it("opens an existing Project from the sidebar ellipsis menu through the same picker", async () => {

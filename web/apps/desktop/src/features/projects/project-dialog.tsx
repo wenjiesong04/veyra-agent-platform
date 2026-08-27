@@ -22,9 +22,9 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
   const nameRef = useRef<HTMLInputElement>(null);
   const pickerRef = useRef<HTMLButtonElement>(null);
   const copy = zh ? {
-    title: mode === "create" ? "创建项目" : "打开已有项目", name: "项目名称", description: "描述（可选）", namePlaceholder: "例如：研究工作区", descriptionPlaceholder: "这个项目要完成什么？", select: "选择文件夹", selected: "已选择", selectHint: "选择一个文件夹。Veyra 不会要求你输入路径。", chooseAgain: "重新选择", cancel: "取消", create: "创建", open: "打开项目", close: "关闭对话框", invalidName: "请输入项目名称。", invalidFolder: "请选择文件夹。", pickFailed: "无法打开文件夹选择器，请重试。", createFailed: "创建项目失败。", openFailed: "打开项目失败。"
+    title: mode === "create" ? "创建项目" : "打开已有项目", name: "项目名称", description: "描述（可选）", namePlaceholder: "例如：研究工作区", descriptionPlaceholder: "这个项目要完成什么？", select: "选择文件夹", selected: "已选择", selectHint: "选择一个用于保存项目的文件夹。", chooseAgain: "重新选择", cancel: "取消", create: "创建", open: "打开项目", close: "关闭对话框", invalidName: "请输入项目名称。", invalidFolder: "请选择文件夹。", pickFailed: "无法打开文件夹选择器，请重试。", createFailed: "创建项目失败。", openFailed: "打开项目失败。"
   } : {
-    title: mode === "create" ? "Create project" : "Open existing project", name: "Project name", description: "Description (optional)", namePlaceholder: "For example: Research workspace", descriptionPlaceholder: "What belongs in this Project?", select: "Select folder", selected: "Selected", selectHint: "Choose a folder. Veyra never asks you to type a path.", chooseAgain: "Choose another folder", cancel: "Cancel", create: "Create", open: "Open project", close: "Close dialog", invalidName: "Enter a Project name.", invalidFolder: "Select a folder.", pickFailed: "The folder picker could not be opened. Try again.", createFailed: "The Project could not be created.", openFailed: "The Project could not be opened."
+    title: mode === "create" ? "Create project" : "Open existing project", name: "Project name", description: "Description (optional)", namePlaceholder: "For example: Research workspace", descriptionPlaceholder: "What belongs in this Project?", select: "Select folder", selected: "Selected", selectHint: "Choose a folder for this project.", chooseAgain: "Choose another folder", cancel: "Cancel", create: "Create", open: "Open project", close: "Close dialog", invalidName: "Enter a Project name.", invalidFolder: "Select a folder.", pickFailed: "The folder picker could not be opened. Try again.", createFailed: "The Project could not be created.", openFailed: "The Project could not be opened."
   };
 
   useEffect(() => {
@@ -52,7 +52,7 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
       const project = mode === "create"
         ? await api.createProject({ root_path: selectedPath, name: name.trim(), description: description.trim() })
         : await api.openProject({ root_path: selectedPath });
-      upsertProject(project); await refresh(); onClose();
+      upsertProject(project); onClose(); void refresh().catch(() => undefined);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : mode === "create" ? copy.createFailed : copy.openFailed);
     } finally { setSaving(false); }
@@ -63,10 +63,9 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
       <div className="project-modal-header"><div><span className="ui-eyebrow">Veyra Desktop</span><h2 id="project-modal-title">{copy.title}</h2></div><button type="button" className="project-modal-close" onClick={onClose} aria-label={copy.close} disabled={busy}><X size={18} /></button></div>
       <form className="project-form" onSubmit={submit}>
         {mode === "create" ? <><label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" /></label><label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} /><small>{description.length}/500</small></label></> : null}
-        <section className={`folder-selection ${selectedPath ? "is-selected" : ""}`} aria-label={copy.select}>
+        <button ref={pickerRef} className={`folder-selection ${selectedPath ? "is-selected" : ""}`} type="button" onClick={() => void chooseFolder()} disabled={busy} aria-label={selectedPath ? copy.chooseAgain : copy.select} aria-busy={picking}>
           <FolderOpen size={24} aria-hidden="true" /><div><strong>{selectedPath ? `${copy.selected}: ${folderName(selectedPath)}` : copy.select}</strong><p>{selectedPath ? copy.chooseAgain : copy.selectHint}</p></div>
-          <button ref={pickerRef} className="ui-button secondary md" type="button" onClick={() => void chooseFolder()} disabled={busy}><FolderOpen size={16} aria-hidden="true" />{picking ? "…" : selectedPath ? copy.chooseAgain : copy.select}</button>
-        </section>
+        </button>
         {error ? <p className="project-form-error" role="alert">{error}</p> : null}
         <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={busy}>{copy.cancel}</Button><Button icon={mode === "create" ? FolderPlus : FolderOpen} variant="primary" type="submit" disabled={busy}>{saving ? "…" : mode === "create" ? copy.create : copy.open}</Button></div>
       </form>

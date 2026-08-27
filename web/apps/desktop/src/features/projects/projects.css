@@ -105,6 +105,7 @@
 
 .folder-selection {
   display: flex;
+  width: 100%;
   min-height: 132px;
   align-items: center;
   gap: 14px;
@@ -113,14 +114,19 @@
   padding: 16px;
   color: var(--muted);
   background: var(--surface-soft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
+.folder-selection:hover:not(:disabled) { border-color: var(--accent); }
+.folder-selection:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 18%, transparent); outline-offset: 2px; }
+.folder-selection:disabled { cursor: wait; opacity: .72; }
 .folder-selection.is-selected { border-style: solid; border-color: var(--accent); color: var(--ink); }
 .folder-selection > svg { flex: 0 0 auto; color: var(--accent-strong); }
 .folder-selection > div { min-width: 0; flex: 1; }
 .folder-selection strong, .folder-selection p { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-selection strong { color: var(--ink); font-size: 13px; }
 .folder-selection p { margin: 4px 0 0; font-size: 12px; }
-.folder-selection .ui-button { flex: 0 0 auto; }
 
 .sidebar-project-actions { position: relative; display: inline-flex; }
 .sidebar-project-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; display: grid; min-width: 176px; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--soft-shadow); }
@@ -340,6 +346,5 @@
   .project-modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .project-modal-actions .ui-button { justify-content: center; }
   .folder-selection { align-items: flex-start; flex-wrap: wrap; }
-  .folder-selection .ui-button { width: 100%; justify-content: center; }
   .project-detail-summary { align-items: flex-start; }
 }
