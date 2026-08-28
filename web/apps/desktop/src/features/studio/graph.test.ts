@@ -16,4 +16,13 @@ describe("Studio graph adapter", () => {
   it("blocks persistence for incomplete local graphs", () => {
     expect(graphDiagnostics({ ...source, nodes: [{ id: "agent", component_type: "Agent" }], transitions: [] })).toEqual(expect.arrayContaining(["Exactly one Start node is required.", "An Output node is required.", "agent is missing required Agent fields."]));
   });
+
+  it("serializes a connection from a newly added canvas node and removes a deleted edge", () => {
+    const graph = toCanvas(source);
+    const agent = { id: "agent", type: "agentNode", position: { x: 100, y: 100 }, data: { flow: { id: "agent", component_type: "Agent" as const, model_ref: "model.primary", system_prompt: "Review" } } };
+    const withConnection = sourceWithGraph(source, [...graph.nodes, agent], [...graph.edges, { id: "agent:next:out", source: "agent", target: "out", sourceHandle: "next" }]);
+    expect(withConnection.nodes).toContainEqual(agent.data.flow);
+    expect(withConnection.transitions).toContainEqual({ from: "agent", port: "next", to: "out" });
+    expect(sourceWithGraph(withConnection, toCanvas(withConnection).nodes, []).transitions).toEqual([]);
+  });
 });

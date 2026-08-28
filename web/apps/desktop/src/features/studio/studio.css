@@ -113,6 +113,7 @@
 .inspector-fields input, .inspector-fields textarea, .form-grid input, .form-grid textarea, .source-view textarea { width: 100%; box-sizing: border-box; }
 .studio-alert { display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--muted); font-size: 12px; }
 .studio-alert.bad { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); color: var(--bad); }
+.studio-parse-error { color: var(--bad); font-size: 11px; margin: 0; }
 .studio-run-panel { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 .canvas-grid {

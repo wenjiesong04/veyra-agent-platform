@@ -13,12 +13,13 @@ export function toCanvas(source: AgentSource): { nodes: Node<CanvasNodeData>[]; 
 
 export function sourceWithGraph(source: AgentSource, nodes: Node<CanvasNodeData>[], edges: Edge[]): AgentSource {
   const positions = Object.fromEntries(nodes.map((node) => [node.id, { x: Math.round(node.position.x), y: Math.round(node.position.y) }]));
+  const flowNodes = nodes.map((node) => node.data.flow);
   const transitions: FlowTransition[] = edges.flatMap((edge) => {
-    const from = source.nodes.find((node) => node.id === edge.source);
+    const from = flowNodes.find((node) => node.id === edge.source);
     const port = edge.sourceHandle;
     return from && port && componentFor(from.component_type).ports.includes(port) ? [{ from: edge.source, port: port as FlowTransition["port"], to: edge.target }] : [];
   });
-  return { ...source, transitions, ui: { ...source.ui, positions } };
+  return { ...source, nodes: flowNodes, transitions, ui: { ...source.ui, positions } };
 }
 
 export function graphDiagnostics(source: AgentSource): string[] {
