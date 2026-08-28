@@ -5,6 +5,7 @@
  * Account menu styles are additive and sit in the original footer slot. */
 
 .app-shell {
+  --shell-header-border: color-mix(in srgb, var(--line) 90%, transparent);
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100dvh;
@@ -40,12 +41,16 @@
 
 .sidebar-header {
   display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--header-height);
+  min-height: var(--header-height);
+  flex: 0 0 var(--header-height);
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: var(--header-height);
   padding: 8px 10px 8px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+  border-bottom: 1px solid var(--shell-header-border);
 }
 
 .brand {
@@ -289,6 +294,13 @@
   cursor: pointer;
 }
 
+.sidebar-nav-item-leading-action button:hover,
+.sidebar-nav-item-leading-action button:focus-visible {
+  color: var(--accent-strong);
+  background: var(--surface-soft);
+  outline: none;
+}
+
 .sidebar-nav-item.has-children > .sidebar-nav-item-row > .sidebar-nav-link {
   padding-right: 8px;
   padding-left: 6px;
@@ -368,6 +380,13 @@
 .sidebar-nav-children .sidebar-nav-link:hover {
   color: var(--ink);
   background: var(--surface-soft);
+}
+
+.sidebar-nav-children .sidebar-nav-link:focus-visible {
+  color: var(--ink);
+  background: var(--surface-soft);
+  outline: 2px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  outline-offset: -2px;
 }
 
 .sidebar-nav-link.active {
@@ -560,7 +579,6 @@
 
 .is-collapsed .sidebar-header {
   justify-content: center;
-  min-height: 56px;
   padding-inline: 10px;
 }
 
@@ -645,6 +663,7 @@
   position: relative;
   z-index: 10;
   display: flex;
+  box-sizing: border-box;
   width: 100%;
   height: var(--header-height);
   min-height: var(--header-height);
@@ -654,7 +673,7 @@
   gap: 18px;
   margin: 0;
   padding: 0 32px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 90%, transparent);
+  border-bottom: 1px solid var(--shell-header-border);
   background: color-mix(in srgb, var(--surface) 90%, var(--paper));
   backdrop-filter: blur(18px) saturate(1.1);
 }
@@ -778,9 +797,7 @@
     inset: 0 auto 0 0;
     width: min(280px, calc(100vw - 54px));
     height: 100dvh;
-    overflow-x: hidden;
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    overflow: hidden;
     visibility: hidden;
     pointer-events: none;
     transform: translateX(-102%);
@@ -824,7 +841,6 @@
 
   .is-collapsed .sidebar-header {
     justify-content: space-between;
-    min-height: var(--header-height);
     padding-inline: 12px 10px;
   }
 
