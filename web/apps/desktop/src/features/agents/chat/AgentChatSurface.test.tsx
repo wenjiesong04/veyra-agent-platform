@@ -11,7 +11,7 @@ const draft: DraftResponse = { schema_version: "1.0", draft_id: "draft-1", revis
 const run: AgentRunResponse = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1", version_id: "version-1", status: "verified", result: { answer: "Reviewed" }, error: null, created_at: "2026-08-28T00:00:00Z", finished_at: "2026-08-28T00:00:01Z" };
 
 function renderSurface(api: LocalProjectApi) { return render(<ThemeProvider storageKey="agent-chat-test-theme"><AgentChatSurface api={api} projectId="project-1" agentId="agent-1" locale="en" /></ThemeProvider>); }
-const resultCode = () => screen.getByText((content, element) => element?.tagName === "CODE" && content.includes("Reviewed"));
+const resultText = () => screen.getByText("Reviewed", { selector: ".agent-chat-bubble.result p" });
 
 describe("AgentChatSurface", () => {
   afterEach(cleanup);
@@ -20,7 +20,7 @@ describe("AgentChatSurface", () => {
     renderSurface({ getDraft: vi.fn().mockResolvedValue(draft), runAgent, getAgentRun } as unknown as LocalProjectApi);
     const user = userEvent.setup(); await user.type(await screen.findByRole("textbox", { name: "request" }), "Check this"); await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(runAgent).toHaveBeenCalledWith("project-1", "agent-1", { inputs: { request: "Check this" } }));
-    await waitFor(() => expect(resultCode()).toBeInTheDocument()); expect(screen.getByText("Verified")).toBeInTheDocument(); expect(getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1");
+    await waitFor(() => expect(resultText()).toBeInTheDocument()); expect(screen.getByText("Verified")).toBeInTheDocument(); expect(getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1");
   });
 
   it("shows that Runtime support is unavailable without inventing an answer", async () => {
@@ -37,8 +37,8 @@ describe("AgentChatSurface", () => {
 
   it("clears submitted input and output instead of retaining a fake chat history", async () => {
     renderSurface({ getDraft: vi.fn().mockResolvedValue(draft), runAgent: vi.fn().mockResolvedValue(run) } as unknown as LocalProjectApi);
-    const user = userEvent.setup(); await user.type(await screen.findByRole("textbox", { name: "request" }), "Reset me"); await user.click(screen.getByRole("button", { name: "Send" })); await waitFor(() => expect(resultCode()).toBeInTheDocument()); await user.click(screen.getByRole("button", { name: "Clear & reset" }));
-    expect(screen.queryByText((content, element) => element?.tagName === "CODE" && content.includes("Reviewed"))).not.toBeInTheDocument(); expect(screen.queryByText((content, element) => element?.tagName === "CODE" && content.includes("Reset me"))).not.toBeInTheDocument(); expect(screen.getByRole("textbox", { name: "request" })).toHaveValue("");
+    const user = userEvent.setup(); await user.type(await screen.findByRole("textbox", { name: "request" }), "Reset me"); await user.click(screen.getByRole("button", { name: "Send" })); await waitFor(() => expect(resultText()).toBeInTheDocument()); await user.click(screen.getByRole("button", { name: "Clear & reset" }));
+    expect(screen.queryByText("Reviewed", { selector: ".agent-chat-bubble.result p" })).not.toBeInTheDocument(); expect(screen.queryByText("Reset me", { selector: ".agent-chat-bubble.user p" })).not.toBeInTheDocument(); expect(screen.getByRole("textbox", { name: "request" })).toHaveValue("");
   });
 
   it("keeps a loading state until the real draft arrives", () => {

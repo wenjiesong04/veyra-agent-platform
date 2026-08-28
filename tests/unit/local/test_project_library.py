@@ -82,12 +82,18 @@ def test_draft_revision_etag_idempotency_and_immutable_versions(tmp_path: Path) 
             idempotency_key=new_uuid7(),
         )
     first_commit = library.commit(
-        project_id=project_id, agent_id=agent_id, expected_revision=saved["revision"],
-        expected_etag=saved["etag"], idempotency_key=new_uuid7()
+        project_id=project_id,
+        agent_id=agent_id,
+        expected_revision=saved["revision"],
+        expected_etag=saved["etag"],
+        idempotency_key=new_uuid7(),
     )
     repeated_commit = library.commit(
-        project_id=project_id, agent_id=agent_id, expected_revision=saved["revision"],
-        expected_etag=saved["etag"], idempotency_key=new_uuid7()
+        project_id=project_id,
+        agent_id=agent_id,
+        expected_revision=saved["revision"],
+        expected_etag=saved["etag"],
+        idempotency_key=new_uuid7(),
     )
     assert saved["revision"] == 1
     assert first_commit["version_id"] == repeated_commit["version_id"]

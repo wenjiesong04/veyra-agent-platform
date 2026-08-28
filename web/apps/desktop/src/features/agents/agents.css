@@ -74,7 +74,8 @@
 .agent-chat-bubble { display: grid; gap: 6px; max-width: min(760px, 92%); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--surface-soft); color: var(--ink); }
 .agent-chat-bubble > span, .agent-chat-bubble > small { color: var(--subtle); font-size: 12px; }
 .agent-chat-bubble.user { justify-self: end; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.agent-chat-bubble.error { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, var(--surface)); }
+.agent-chat-bubble.error { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 9%, var(--surface)); }
+.agent-chat-bubble p { margin: 0; line-height: 1.65; white-space: pre-wrap; }
 .agent-chat-bubble pre { overflow: auto; margin: 0; font-size: 12px; white-space: pre-wrap; }
 .agent-chat-composer { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
 .agent-chat-composer textarea, .agent-chat-input-grid input, .agent-chat-input-grid select { width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px 12px; color: var(--ink); background: var(--surface); font: inherit; }

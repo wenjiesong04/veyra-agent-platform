@@ -21,6 +21,9 @@ export function AgentChatSurface({ api, projectId, agentId, locale }: { api: Loc
   if (loadState === "loading") return <Panel className="agent-chat-panel"><LoadingState label={text.loading} /></Panel>;
   if (loadState === "error" || !source) return <Panel className="agent-chat-panel"><ErrorState message={error || text.unavailable} onRetry={() => void load()} /></Panel>;
   const inputEntries = Object.entries(source.inputs); const singleString = inputEntries.length === 1 && inputEntries[0][1] === "string"; const canStart = Boolean(api.runAgent) && !running;
+  const submittedText = submitted && singleString ? String(submitted[inputEntries[0][0]] ?? "") : null;
+  const resultEntries = run?.result ? Object.entries(run.result) : [];
+  const resultText = resultEntries.length === 1 && typeof resultEntries[0][1] === "string" ? resultEntries[0][1] : null;
   return (
     <div className="page-stack agent-chat-page" data-project-id={projectId} data-agent-id={agentId}>
       <div className="page-intro agent-chat-intro"><div><span className="ui-eyebrow">{text.eyebrow}</span><h2>{source.name}</h2><p>{source.description || text.empty}</p></div><div className="intro-actions"><LinkButton href={projectRoutePaths.agentDesign(projectId, agentId)}>{locale === "zh" ? `打开${text.orchestration}` : `Open ${text.orchestration}`}</LinkButton><LinkButton href={projectRoutePaths.agentAnalysis(projectId, agentId)}>{locale === "zh" ? `打开${text.analysis}` : `Open ${text.analysis}`}</LinkButton></div></div>
@@ -28,10 +31,10 @@ export function AgentChatSurface({ api, projectId, agentId, locale }: { api: Loc
         <SectionHeading eyebrow={text.eyebrow} title={source.slug} detail={text.empty} action={run ? <StatusBadge label={text[run.status]} tone={statusTone(run.status)} /> : undefined} />
         {!api.runAgent ? <ErrorState message={text.runtimeUnavailable} /> : null}
         <div className="agent-chat-transcript" aria-live="polite">
-          {submitted ? <article className="agent-chat-bubble user"><span>{locale === "zh" ? "你" : "You"}</span><pre><code>{JSON.stringify(submitted, null, 2)}</code></pre></article> : null}
+          {submitted ? <article className="agent-chat-bubble user"><span>{locale === "zh" ? "你" : "You"}</span>{submittedText !== null ? <p>{submittedText}</p> : <pre><code>{JSON.stringify(submitted, null, 2)}</code></pre>}</article> : null}
           {error ? <article className="agent-chat-bubble error" role="alert"><strong>{text.governedError}</strong><span>{error}</span></article> : null}
           {run?.error ? <article className="agent-chat-bubble error" role="alert"><strong>{text.governedError}</strong><span>{run.error.message}</span><small>{run.error.code}</small></article> : null}
-          {run?.result ? <article className="agent-chat-bubble result"><span>{text.result}</span><pre><code>{JSON.stringify(run.result, null, 2)}</code></pre></article> : null}
+          {run?.result ? <article className="agent-chat-bubble result"><span>{text.result}</span>{resultText !== null ? <p>{resultText}</p> : <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre>}</article> : null}
           {!submitted && !error && !run ? <p className="agent-chat-empty">{text.empty}</p> : null}
         </div>
         <form className="agent-chat-composer" onSubmit={(event) => { event.preventDefault(); void start(); }}>
