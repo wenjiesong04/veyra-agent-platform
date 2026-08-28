@@ -337,7 +337,7 @@
 }
 
 .sidebar-nav-child-row.has-action > .sidebar-nav-link {
-  padding-right: 8px;
+  padding-right: 36px;
 }
 
 .sidebar-nav .sidebar-nav-children .sidebar-nav-link {
@@ -355,23 +355,18 @@
   position: absolute;
   z-index: 2;
   top: 50%;
-  right: 2px;
+  right: 3px;
   display: inline-flex;
-  width: 48px;
+  width: 28px;
   min-height: 26px;
   align-items: center;
   justify-content: flex-end;
   margin: 0;
   border-radius: 7px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--surface-soft) 94%, var(--surface)) 32%);
+  background: transparent;
   opacity: 0;
   pointer-events: none;
   transform: translateY(-50%);
-  transition: opacity 120ms ease;
-}
-
-.sidebar-nav-child-row.has-action:has(> .sidebar-nav-link.active) > .sidebar-nav-child-action {
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--nav-active) 92%, var(--surface)) 32%);
 }
 
 .sidebar-nav-child-row.has-action:hover > .sidebar-nav-child-action,

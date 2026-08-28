@@ -69,7 +69,7 @@ def create_app(
         application.state.runtime = RuntimeService(
             repository, projects, application.state.library
         )
-        application.state.database_revision = "local_0006_runtime_runs"
+        application.state.database_revision = "local_0007_agent_lifecycle"
         application.state.database_ready = True
         try:
             yield

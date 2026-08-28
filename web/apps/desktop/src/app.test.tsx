@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderKanban } from "lucide-react";
-import { parseDesktopRoute, projectRoutePaths, type CommunityAccount, type ProjectSummaryResponse } from "@veyra/api-contracts";
+import { parseDesktopRoute, projectRoutePaths, type CommunityAccount, type ProjectSummaryResponse, type SaveDraftRequest, type SaveDraftResponse } from "@veyra/api-contracts";
 import { createCommunityApi, normalizeCommunityAvatarUrl } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "./api/local-client";
@@ -19,6 +19,8 @@ function project(overrides: Partial<ProjectSummaryResponse> = {}): ProjectSummar
     pinned_at: null,
     indexed_at: "2026-08-28T00:00:00Z",
     manifest_hash: "0123456789abcdef0123456789abcdef",
+    default_agent_id: null,
+    agent_count: 0,
     agents: [],
     ...overrides,
   };
@@ -32,7 +34,10 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
   getProject: ReturnType<typeof vi.fn>;
   updateProject: ReturnType<typeof vi.fn>;
   deleteProject: ReturnType<typeof vi.fn>;
+  updateAgent: ReturnType<typeof vi.fn>;
+  deleteAgent: ReturnType<typeof vi.fn>;
   getDraft: ReturnType<typeof vi.fn>;
+  saveDraft: ReturnType<typeof vi.fn>;
   listAgentTemplates: ReturnType<typeof vi.fn>;
   createAgent: ReturnType<typeof vi.fn>;
   importAgent: ReturnType<typeof vi.fn>;
@@ -47,11 +52,14 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     getProject,
     updateProject: vi.fn().mockImplementation(async (projectId: string, input: { pinned?: boolean; name?: string; description?: string }) => project({ project_id: projectId, name: input.name ?? projectId, description: input.description ?? "", pinned: input.pinned ?? false, pinned_at: input.pinned ? "2026-08-28T00:00:00Z" : null })),
     deleteProject: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z" }),
+    updateAgent: vi.fn().mockImplementation(async (projectId: string, agentId: string) => project({ project_id: projectId, agents: [{ agent_id: agentId, slug: "agent", name: "Agent", description: "", pinned: true, source_path: "agents/agent/agent.vagent.yaml", source_file_hash: "agent-hash" }], default_agent_id: agentId, agent_count: 1 })),
+    deleteAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z", project: project() }),
     listAgentTemplates: vi.fn().mockResolvedValue({ schema_version: "1.0", templates: [{ template_id: "review", name: "Review Agent", description: "Reviews a bounded scope.", default_slug: "review-agent" }] }),
     createAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "created-agent", slug: "created-agent", name: "Created Agent", description: "", source_path: "agents/created-agent/agent.vagent.yaml", source_file_hash: "created-hash" }),
     importAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "imported-agent", slug: "imported-agent", name: "Imported Agent", description: "", source_path: "agents/imported-agent/agent.vagent.yaml", source_file_hash: "imported-hash" }),
     listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [] }),
     getDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "draft-1", revision: 1, etag: "etag-1", source_file_hash: "source-hash", source: { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", inputs: {}, outputs: {}, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: {} }, lock: {} } }),
+    saveDraft: vi.fn().mockImplementation(async (_projectId: string, _agentId: string, input: SaveDraftRequest): Promise<SaveDraftResponse> => ({ schema_version: "1.0", revision: input.expected_revision + 1, etag: "etag-2", source: input.source })),
   };
 }
 
@@ -102,7 +110,7 @@ afterEach(() => {
 describe("desktop Project workspace", () => {
   it("renders the normal New chat surface at #/projects and keeps a compact Project section without Recent", async () => {
     const first = project({ project_id: "p-one", name: "Alpha Project" });
-    const second = project({ project_id: "p-two", name: "Beta Project", root_path: "/Users/test/Projects/project-two", agents: [{ agent_id: "agent-1", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "fedcba9876543210" }] });
+    const second = project({ project_id: "p-two", name: "Beta Project", root_path: "/Users/test/Projects/project-two", agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "fedcba9876543210" }], agent_count: 1 });
     const api = apiFor([first, second]);
     api.getProject.mockImplementation(async (projectId: string) => [first, second].find((item) => item.project_id === projectId) ?? first);
     render(<DesktopApp api={api} />);
@@ -198,8 +206,8 @@ describe("desktop Project workspace", () => {
       project_id: "p-detail",
       name: "Evidence Project",
       agents: [
-        { agent_id: "agent-a", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "aaaaaaaaaaaaaaaa" },
-        { agent_id: "agent-b", slug: "verifier", source_path: "agents/verifier/agent.vagent.yaml", source_file_hash: "bbbbbbbbbbbbbbbb" },
+        { agent_id: "agent-a", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "aaaaaaaaaaaaaaaa" },
+        { agent_id: "agent-b", slug: "verifier", name: "Verifier", description: "", pinned: false, source_path: "agents/verifier/agent.vagent.yaml", source_file_hash: "bbbbbbbbbbbbbbbb" },
       ],
     });
     const api = apiFor([detailed]);
@@ -209,7 +217,8 @@ describe("desktop Project workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "Evidence Project", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "2 Agents" })).toBeInTheDocument();
-    expect(screen.getAllByText("reviewer")).toHaveLength(2);
+    expect(screen.getByText("Reviewer")).toBeInTheDocument();
+    expect(screen.getByText("reviewer")).toBeInTheDocument();
     expect(screen.getByText("agents/reviewer/agent.vagent.yaml", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("Agents will be added later.")).not.toBeInTheDocument();
     expect(api.getProject).toHaveBeenCalledWith("p-detail");
@@ -236,12 +245,14 @@ describe("desktop Project workspace", () => {
   });
 
   it("expands a Project tree into selected Agent links and keeps the per-Project menu to three actions", async () => {
-    const tree = project({ project_id: "tree", name: "Tree Project", agents: [{ agent_id: "agent-tree", slug: "tree-agent", source_path: "agents/tree/agent.vagent.yaml", source_file_hash: "tree-hash" }] });
+    const tree = project({ project_id: "tree", name: "Tree Project", agents: [{ agent_id: "agent-tree", slug: "tree-agent", name: "Tree Agent", description: "", pinned: false, source_path: "agents/tree/agent.vagent.yaml", source_file_hash: "tree-hash" }], agent_count: 1 });
     const user = userEvent.setup();
-    render(<DesktopApp api={apiFor([tree])} />);
+    const api = apiFor([tree]);
+    api.updateAgent.mockResolvedValue(tree);
+    render(<DesktopApp api={api} />);
 
     await user.click(await screen.findByRole("button", { name: "Expand Project: Tree Project" }));
-    const agentLink = screen.getByRole("link", { name: "tree-agent" });
+    const agentLink = screen.getByRole("link", { name: "Tree Agent" });
     expect(agentLink).toHaveAttribute("href", projectRoutePaths.agentDesign("tree", "agent-tree"));
     const projectRow = document.querySelector(`.nav-group-projects .sidebar-nav-item-row`);
     const projectLink = projectRow?.querySelector(`a[href="${projectRoutePaths.project("tree")}"]`);
@@ -251,11 +262,15 @@ describe("desktop Project workspace", () => {
     expect(projectRow?.querySelector(".sidebar-nav-item-action")).not.toBeNull();
     expect(projectRow?.querySelector(".sidebar-nav-item-leading-action")).not.toBeNull();
     expect(projectRow?.parentElement?.querySelector(":scope > .sidebar-nav-children")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Agent actions: tree-agent" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Agent actions: tree-agent" }));
-    expect(screen.getByRole("menu", { name: "Agent actions: tree-agent" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Open Agent" })).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
-    expect(screen.getByRole("menuitem", { name: "Orchestration" })).toHaveAttribute("href", projectRoutePaths.agentDesign("tree", "agent-tree"));
+    expect(screen.getByRole("button", { name: "Agent actions: Tree Agent" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Agent actions: Tree Agent" }));
+    expect(screen.getByRole("menu", { name: "Agent actions: Tree Agent" })).toBeInTheDocument();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    expect(screen.getByRole("menuitem", { name: "Pin" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Pin" }));
+    await waitFor(() => expect(api.updateAgent).toHaveBeenCalledWith("tree", "agent-tree", { pinned: true }));
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Project actions: Tree Project" }));
     expect(document.querySelector(".sidebar-project-menu")?.parentElement).toBe(document.body);
@@ -311,6 +326,39 @@ describe("desktop Project workspace", () => {
     expect(screen.queryByRole("link", { name: "Allocated edit" })).not.toBeInTheDocument();
   });
 
+  it("edits an Agent draft and moves it to recoverable trash from the same menu", async () => {
+    const agent = { agent_id: "agent-edit", slug: "draft-agent", name: "Draft Agent", description: "Before", pinned: false, source_path: "agents/draft-agent/agent.vagent.yaml", source_file_hash: "draft-hash" };
+    const editable = project({ project_id: "agent-edit-project", name: "Agent Project", agents: [agent], agent_count: 1 });
+    const renamed = { ...agent, name: "Renamed Agent", description: "After" };
+    const afterDelete = project({ project_id: editable.project_id, name: editable.name, agents: [], agent_count: 0 });
+    const api = apiFor([editable]);
+    api.getDraft.mockResolvedValue({ schema_version: "1.0", draft_id: "draft-edit", revision: 3, etag: "etag-edit", source_file_hash: "draft-hash", source: { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: agent.agent_id, slug: agent.slug, name: agent.name, description: agent.description, inputs: {}, outputs: {}, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: {} }, lock: {} } });
+    api.getProject.mockResolvedValue(project({ ...editable, agents: [renamed], agent_count: 1 }));
+    api.deleteAgent.mockResolvedValue({ schema_version: "1.0", project_id: editable.project_id, agent_id: agent.agent_id, disposition: "trashed", removed_at: "2026-08-28T00:00:00Z", project: afterDelete });
+    const user = userEvent.setup();
+    window.location.hash = projectRoutePaths.project(editable.project_id);
+    render(<DesktopApp api={api} />);
+
+    await user.click(await screen.findByRole("button", { name: "Agent actions: Draft Agent" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    await user.clear(await screen.findByRole("textbox", { name: "Agent name" }));
+    await user.type(screen.getByRole("textbox", { name: "Agent name" }), "Renamed Agent");
+    await user.clear(screen.getByRole("textbox", { name: "Description" }));
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "After");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.saveDraft).toHaveBeenCalledWith(editable.project_id, agent.agent_id, expect.objectContaining({ expected_revision: 3, source: expect.objectContaining({ name: "Renamed Agent", description: "After" }) }), { etag: "etag-edit" }));
+    expect(screen.queryByRole("dialog", { name: "Edit Agent" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Agent actions: Renamed Agent" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Agent actions: Renamed Agent" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("dialog", { name: "Delete Agent?" })).toBeInTheDocument();
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Delete Agent" }));
+    await waitFor(() => expect(api.deleteAgent).toHaveBeenCalledWith(editable.project_id, agent.agent_id));
+    expect(screen.queryByRole("button", { name: "Agent actions: Renamed Agent" })).not.toBeInTheDocument();
+  });
+
   it("submits template and file Agent imports with their real request shapes", async () => {
     const source = project({ project_id: "imports", name: "Import Project" });
     const api = apiFor([source]);
@@ -345,7 +393,7 @@ describe("desktop Project workspace", () => {
 
   it("renders title-only root headers and linked nested breadcrumbs at 320px", async () => {
     setViewport(true);
-    const nested = project({ project_id: "crumb", name: "Breadcrumb Project", agents: [{ agent_id: "crumb-agent", slug: "breadcrumb-agent", source_path: "agents/breadcrumb/agent.vagent.yaml", source_file_hash: "crumb-hash" }] });
+    const nested = project({ project_id: "crumb", name: "Breadcrumb Project", agents: [{ agent_id: "crumb-agent", slug: "breadcrumb-agent", name: "Breadcrumb Agent", description: "", pinned: false, source_path: "agents/breadcrumb/agent.vagent.yaml", source_file_hash: "crumb-hash" }], agent_count: 1 });
     const api = apiFor([nested]);
     api.getProject.mockResolvedValue(nested);
     window.location.hash = projectRoutePaths.project("crumb");
@@ -368,7 +416,7 @@ describe("desktop Project workspace", () => {
     const scoped = project({
       project_id: "agent-project",
       name: "Agent Project",
-      agents: [{ agent_id: "agent-one", slug: "review-agent", source_path: "agents/review-agent/agent.vagent.yaml", source_file_hash: "agent-hash" }],
+      agents: [{ agent_id: "agent-one", slug: "review-agent", name: "Review Agent", description: "", pinned: false, source_path: "agents/review-agent/agent.vagent.yaml", source_file_hash: "agent-hash" }],
     });
     window.location.hash = projectRoutePaths.agent(scoped.project_id, "agent-one");
     render(<DesktopApp api={apiFor([scoped])} />);
@@ -396,7 +444,7 @@ describe("desktop Project workspace", () => {
     const scoped = project({
       project_id: "agent-project-zh",
       name: "中文项目",
-      agents: [{ agent_id: "agent-zh", slug: "审阅 Agent", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "agent-hash" }],
+      agents: [{ agent_id: "agent-zh", slug: "审阅 Agent", name: "审阅 Agent", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "agent-hash" }],
     });
     window.location.hash = projectRoutePaths.agentAnalysis(scoped.project_id, "agent-zh");
     render(<DesktopApp api={apiFor([scoped])} />);

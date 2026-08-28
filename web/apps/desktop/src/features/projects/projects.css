@@ -140,21 +140,17 @@
 .project-row-actions { position: relative; display: inline-flex; align-items: center; gap: 0; }
 .project-row-actions > button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 7px; color: var(--subtle); background: transparent; cursor: pointer; }
 .project-row-actions > button:hover, .project-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
-.sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
-.sidebar-project-menu, .sidebar-agent-menu { width: 208px; padding: 5px; }
-.sidebar-action-menu { display: grid; gap: 2px; }
-.sidebar-action-menu button, .sidebar-action-menu a { display: flex; width: 100%; min-height: 34px; box-sizing: border-box; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 0 9px; color: var(--ink); background: transparent; font: inherit; font-size: 12px; text-align: left; text-decoration: none; cursor: pointer; }
-.sidebar-action-menu button:hover, .sidebar-action-menu button:focus-visible, .sidebar-action-menu a:hover, .sidebar-action-menu a:focus-visible { background: var(--surface-soft); outline: none; }
-.sidebar-action-menu svg { flex: 0 0 15px; color: var(--accent-strong); }
-.sidebar-action-menu span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-add-chooser { width: min(232px, calc(100vw - 16px)); padding: 4px; }
-.agent-add-chooser button { display: flex; width: 100%; min-height: 45px; align-items: center; gap: 8px; border: 0; border-radius: 7px; padding: 6px; color: var(--ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
-.agent-add-chooser button + button { border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent); }
-.agent-add-chooser button:hover, .agent-add-chooser button:focus-visible { background: var(--surface-soft); outline: none; }
-.agent-add-chooser-icon { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 7px; color: var(--accent-strong); background: var(--accent-soft); }
-.agent-add-chooser button > span:last-child { display: grid; min-width: 0; gap: 1px; }
-.agent-add-chooser strong { overflow: hidden; font-size: 12px; font-weight: 740; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
-.agent-add-chooser small { overflow: hidden; color: var(--subtle); font-size: 10px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
+.sidebar-project-menu, .sidebar-agent-menu, .agent-add-chooser { width: min(240px, calc(100vw - 16px)); padding: 5px; }
+.sidebar-action-menu { display: grid; gap: 0; }
+.sidebar-popover-item { display: flex; width: 100%; min-height: 45px; box-sizing: border-box; align-items: center; gap: 9px; border: 0; border-radius: 9px; padding: 6px 7px; color: var(--ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.sidebar-popover-item + .sidebar-popover-item { border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent); border-radius: 0 0 9px 9px; }
+.sidebar-popover-item:hover, .sidebar-popover-item:focus-visible { background: var(--surface-soft); outline: none; }
+.sidebar-popover-icon { display: grid; width: 27px; height: 27px; flex: 0 0 27px; place-items: center; border-radius: 8px; color: var(--accent-strong); background: var(--accent-soft); }
+.sidebar-popover-item.is-destructive .sidebar-popover-icon { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--surface-soft)); }
+.sidebar-popover-copy { display: grid; min-width: 0; gap: 2px; }
+.sidebar-popover-copy strong { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 740; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-popover-copy small { overflow: hidden; color: var(--subtle); font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 
 .project-modal-tabs { display: flex; gap: 5px; margin-top: 20px; }
 .project-modal-tabs button { border: 0; border-radius: 9px; padding: 8px 10px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }

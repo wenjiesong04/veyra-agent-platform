@@ -72,6 +72,10 @@ class CreateAgentRequest(_ClosedModel):
         return self
 
 
+class UpdateAgentRequest(_ClosedModel):
+    pinned: Literal[True]
+
+
 class TypedApiError(Exception):
     def __init__(self, status_code: int, code: str, message: str) -> None:
         self.status_code = status_code
@@ -202,6 +206,23 @@ def build_router() -> APIRouter:
                 "agents": projects.project_summary(project_id)["agents"],
             }
         )
+
+    @router.patch("/{project_id}/agents/{agent_id}")
+    def update_agent(
+        project_id: str,
+        agent_id: str,
+        payload: UpdateAgentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(lambda: projects.pin_agent(project_id, agent_id))
+
+    @router.delete("/{project_id}/agents/{agent_id}")
+    def delete_agent(
+        project_id: str, agent_id: str, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(lambda: projects.remove_agent(project_id, agent_id))
 
     @router.get("/{project_id}/agents/{agent_id}/draft")
     def get_draft(

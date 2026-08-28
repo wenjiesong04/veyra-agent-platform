@@ -9,6 +9,7 @@ import {
   type CreatedAgentResponse,
   type CreateProjectRequest,
   type DeleteProjectResponse,
+  type DeleteAgentResponse,
   type DraftResponse,
   type ExportResponse,
   type JsonObject,
@@ -27,6 +28,7 @@ import {
   type SelectDirectoryResponse,
   type StartAgentRunRequest,
   type UpdateProjectRequest,
+  type UpdateAgentRequest,
   type ValidateResponse,
 } from "@veyra/api-contracts";
 import { newUuidV7 } from "./uuid";
@@ -74,6 +76,8 @@ export type LocalProjectApi = {
   getProject(projectId: string): Promise<ProjectSummaryResponse>;
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse>;
   deleteProject(projectId: string): Promise<DeleteProjectResponse>;
+  updateAgent(projectId: string, agentId: string, input: UpdateAgentRequest): Promise<ProjectSummaryResponse>;
+  deleteAgent(projectId: string, agentId: string): Promise<DeleteAgentResponse>;
   listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse>;
   createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string }): Promise<CreatedAgentResponse>;
@@ -223,6 +227,9 @@ function projectAgent(value: unknown, status = 502): ProjectAgentRecord {
   return {
     agent_id: asString(record.agent_id, "agent_id", status),
     slug: asString(record.slug, "slug", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    pinned: record.pinned === true,
     source_path: asString(record.source_path, "source_path", status),
     source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
   };
@@ -240,6 +247,8 @@ function projectSummary(value: unknown, status = 502): ProjectSummaryResponse {
     pinned_at: record.pinned_at === null ? null : asString(record.pinned_at, "pinned_at", status),
     indexed_at: asString(record.indexed_at, "indexed_at", status),
     manifest_hash: asString(record.manifest_hash, "manifest_hash", status),
+    default_agent_id: record.default_agent_id === null ? null : asString(record.default_agent_id, "default_agent_id", status),
+    agent_count: asNumber(record.agent_count, "agent_count", status),
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
   };
 }
@@ -310,6 +319,21 @@ function deletedProject(value: unknown, status = 502): DeleteProjectResponse {
     project_id: asString(record.project_id, "project_id", status),
     disposition,
     removed_at: asString(record.removed_at, "removed_at", status),
+  };
+}
+
+function deletedAgent(value: unknown, status = 502): DeleteAgentResponse {
+  const record = schemaRecord(value, status);
+  if (record.disposition !== "trashed") {
+    throw new LocalApiClientError("The local service returned an invalid Agent deletion result.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    agent_id: asString(record.agent_id, "agent_id", status),
+    disposition: "trashed",
+    removed_at: asString(record.removed_at, "removed_at", status),
+    project: projectSummary(record.project, status),
   };
 }
 
@@ -579,6 +603,21 @@ export class LocalApiClient {
 
   deleteProject(projectId: string): Promise<DeleteProjectResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}`, deletedProject, { method: "DELETE" });
+  }
+
+  updateAgent(projectId: string, agentId: string, input: UpdateAgentRequest): Promise<ProjectSummaryResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}`, projectSummary, {
+      method: "PATCH",
+      body: input,
+    });
+  }
+
+  deleteAgent(projectId: string, agentId: string): Promise<DeleteAgentResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}`,
+      deletedAgent,
+      { method: "DELETE" },
+    );
   }
 
   listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse> {

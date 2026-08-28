@@ -148,14 +148,18 @@ class LocalRepository:
             return cast(
                 sqlite3.Row | None,
                 connection.execute(
-                    "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+                    "SELECT * FROM agents WHERE agent_id = ? AND removed_at IS NULL",
+                    (agent_id,),
                 ).fetchone(),
             )
 
     def agents(self, project_id: str) -> list[sqlite3.Row]:
         with self._connect() as connection:
             return connection.execute(
-                "SELECT * FROM agents WHERE project_id = ? ORDER BY slug", (project_id,)
+                """SELECT * FROM agents
+                   WHERE project_id = ? AND removed_at IS NULL
+                   ORDER BY slug""",
+                (project_id,),
             ).fetchall()
 
     def upsert_agent(
@@ -191,9 +195,27 @@ class LocalRepository:
     ) -> None:
         connection.execute(
             """UPDATE agents SET slug = ?, source_path = ?, source_file_hash = ?,
-               indexed_at = ? WHERE agent_id = ?""",
+               indexed_at = ?, removed_at = NULL WHERE agent_id = ?""",
             (slug, source_path, source_file_hash, indexed_at, agent_id),
         )
+
+    def remove_agent(self, agent_id: str, removed_at: str) -> bool:
+        """Soft-remove one Agent while retaining versions, Runs, and Draft history."""
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE agents SET removed_at = ?
+                   WHERE agent_id = ? AND removed_at IS NULL""",
+                (removed_at, agent_id),
+            )
+            return cursor.rowcount == 1
+
+    def restore_agent(self, agent_id: str) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE agents SET removed_at = NULL WHERE agent_id = ?",
+                (agent_id,),
+            )
+            return cursor.rowcount == 1
 
     def delete_agents(
         self, connection: sqlite3.Connection, agent_ids: set[str]
@@ -225,9 +247,7 @@ class LocalRepository:
                 "SELECT 1 FROM agent_version_files WHERE file_id = ?", (row["file_id"],)
             ).fetchone()
             if linked is not None:
-                raise ValueError(
-                    "cannot remove a file referenced by an immutable version"
-                )
+                continue
             connection.execute(
                 "DELETE FROM file_versions WHERE file_id = ?", (row["file_id"],)
             )

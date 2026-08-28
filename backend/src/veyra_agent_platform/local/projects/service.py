@@ -534,7 +534,9 @@ class ProjectService:
                 )
             manifest_agent_ids = {source.agent_id for source, _, _ in records}
             existing_agents = connection.execute(
-                "SELECT * FROM agents WHERE project_id = ?", (manifest.project_id,)
+                """SELECT * FROM agents
+                   WHERE project_id = ? AND removed_at IS NULL""",
+                (manifest.project_id,),
             ).fetchall()
             stale_agents = {
                 row["agent_id"]
@@ -610,6 +612,41 @@ class ProjectService:
         project = self.repository.project(project_id)
         if project is None:
             raise ProjectError("unknown Project")
+        root = self._existing_root(project["root_path"])
+        manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+        manifest = ProjectManifest.from_dict(
+            self._parse_yaml(self._read_text(manifest_path), "Project manifest")
+        )
+        if manifest.project_id != project_id:
+            raise ProjectError("Project manifest identity does not match its index")
+        entries = sorted(
+            manifest.agents,
+            key=lambda entry: (
+                entry.agent_id != manifest.default_agent_id,
+                entry.slug,
+            ),
+        )
+        agents: list[dict[str, Any]] = []
+        for entry in entries:
+            row = self.repository.agent(entry.agent_id)
+            if row is None:
+                raise ProjectError("Project Agent is missing from its local index")
+            source_path = self._safe_file(root, Path(entry.path) / "agent.vagent.yaml")
+            source_text = self._read_text(source_path)
+            source = AgentSource.from_dict(self._parse_yaml(source_text, entry.slug))
+            if source.agent_id != entry.agent_id or source.slug != entry.slug:
+                raise ProjectError("Project Agent identity does not match source")
+            agents.append(
+                {
+                    "agent_id": source.agent_id,
+                    "slug": source.slug,
+                    "name": source.name,
+                    "description": source.description,
+                    "pinned": source.agent_id == manifest.default_agent_id,
+                    "source_path": row["source_path"],
+                    "source_file_hash": file_hash(source_text),
+                }
+            )
         return {
             "schema_version": "1.0",
             "project_id": project["project_id"],
@@ -619,18 +656,157 @@ class ProjectService:
             "pinned": project["pinned_at"] is not None,
             "pinned_at": project["pinned_at"],
             "manifest_hash": project["manifest_hash"],
-            "agents": [
-                {
-                    "agent_id": agent["agent_id"],
-                    "slug": agent["slug"],
-                    "source_path": agent["source_path"],
-                    "source_file_hash": agent["source_file_hash"],
-                }
-                for agent in self.repository.agents(project_id)
-            ],
-            "agent_count": len(self.repository.agents(project_id)),
+            "default_agent_id": manifest.default_agent_id,
+            "agents": agents,
+            "agent_count": len(agents),
             "indexed_at": project["indexed_at"],
         }
+
+    def pin_agent(self, project_id: str, agent_id: str) -> dict[str, Any]:
+        """Make one listed Agent the Project default and first sidebar entry."""
+        with self._writer_lock:
+            _, root, manifest_path, previous_text, manifest = (
+                self._project_manifest_state(project_id)
+            )
+            selected = next(
+                (entry for entry in manifest.agents if entry.agent_id == agent_id),
+                None,
+            )
+            if selected is None:
+                raise ProjectError("unknown Agent in Project")
+            updated = manifest.to_dict()
+            updated["default_agent_id"] = agent_id
+            updated["agents"] = [
+                selected.to_dict(),
+                *[
+                    entry.to_dict()
+                    for entry in manifest.agents
+                    if entry.agent_id != agent_id
+                ],
+            ]
+            validated = ProjectManifest.from_dict(updated)
+            try:
+                self.atomic_write(
+                    manifest_path, self._canonical_source(validated.to_dict())
+                )
+                return self.index(root)
+            except BaseException as exc:
+                try:
+                    self.atomic_write(manifest_path, previous_text)
+                except BaseException as rollback_exc:
+                    exc.add_note(f"rollback failed: {rollback_exc}")
+                raise
+
+    def _project_manifest_state(
+        self, project_id: str
+    ) -> tuple[Any, Path, Path, str, ProjectManifest]:
+        """Load one active Project and its authoritative, identity-bound manifest."""
+        project = self.repository.project(project_id)
+        if project is None:
+            raise ProjectError("unknown Project")
+        root = self._existing_root(project["root_path"])
+        manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+        manifest_text = self._read_text(manifest_path)
+        manifest = ProjectManifest.from_dict(
+            self._parse_yaml(manifest_text, "Project manifest")
+        )
+        if manifest.project_id != project_id:
+            raise ProjectError("Project manifest identity does not match its index")
+        return project, root, manifest_path, manifest_text, manifest
+
+    def _agent_trash_target(self, project_id: str, agent_id: str) -> Path:
+        """Allocate one non-symlink application trash target for an Agent source."""
+        storage_root = self._managed_storage_root()
+        trash_root = storage_root.parent / "trash" / "agents" / project_id
+        current = trash_root
+        while True:
+            if current.exists() and current.is_symlink():
+                raise ProjectError("managed Agent trash path must not be a symlink")
+            if current == current.parent:
+                break
+            current = current.parent
+        try:
+            trash_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ProjectError("managed Agent trash path is unavailable") from exc
+        if not trash_root.is_dir() or trash_root.is_symlink():
+            raise ProjectError("managed Agent trash path must be a directory")
+        target = trash_root / agent_id
+        if target.exists() or target.is_symlink():
+            raise ProjectError("managed Agent trash target already exists or is unsafe")
+        return target
+
+    def remove_agent(self, project_id: str, agent_id: str) -> dict[str, Any]:
+        """Move an Agent source directory to application trash and retain history."""
+        with self._writer_lock:
+            _, root, manifest_path, previous_text, manifest = (
+                self._project_manifest_state(project_id)
+            )
+            selected = next(
+                (entry for entry in manifest.agents if entry.agent_id == agent_id),
+                None,
+            )
+            if selected is None:
+                raise ProjectError("unknown Agent in Project")
+            remaining = [
+                entry for entry in manifest.agents if entry.agent_id != agent_id
+            ]
+            updated = manifest.to_dict()
+            updated["agents"] = [entry.to_dict() for entry in remaining]
+            updated["default_agent_id"] = (
+                remaining[0].agent_id
+                if manifest.default_agent_id == agent_id and remaining
+                else manifest.default_agent_id
+                if manifest.default_agent_id != agent_id
+                else None
+            )
+            validated = ProjectManifest.from_dict(updated)
+            source = self._safe_directory(root, Path(selected.path))
+            target = self._agent_trash_target(project_id, agent_id)
+            removed_at = _utc_now()
+            moved = False
+            marked = False
+            try:
+                os.replace(source, target)
+                moved = True
+                self._fsync_directory(source.parent)
+                self._fsync_directory(target.parent)
+                self.atomic_write(
+                    manifest_path, self._canonical_source(validated.to_dict())
+                )
+                if not self.repository.remove_agent(agent_id, removed_at):
+                    raise ProjectError("unknown Agent in Project")
+                marked = True
+                project = self.index(root)
+                return {
+                    "schema_version": "1.0",
+                    "project_id": project_id,
+                    "agent_id": agent_id,
+                    "disposition": "trashed",
+                    "removed_at": removed_at,
+                    "project": project,
+                }
+            except BaseException as exc:
+                rollback_errors: list[BaseException] = []
+                if marked:
+                    try:
+                        self.repository.restore_agent(agent_id)
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+                try:
+                    self.atomic_write(manifest_path, previous_text)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+                if moved and target.exists():
+                    try:
+                        os.replace(target, source)
+                        self._fsync_directory(source.parent)
+                        self._fsync_directory(target.parent)
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+                for rollback_error in rollback_errors:
+                    exc.add_note(f"rollback failed: {rollback_error}")
+                raise
 
     def set_pinned(self, project_id: str, *, pinned: bool) -> dict[str, Any]:
         with self._writer_lock:

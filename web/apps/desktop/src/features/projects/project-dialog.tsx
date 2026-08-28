@@ -1,5 +1,5 @@
 import { Box, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
-import type { AgentTemplate, ProjectSummaryResponse } from "@veyra/api-contracts";
+import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectSummaryResponse } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { LocalApiClientError } from "../../api/local-client";
@@ -140,6 +140,84 @@ export function ProjectDeleteDialog({ project, onClose, onDeleted }: { project: 
 
 function Modal({ title, closeLabel, onClose, busy, children }: { title: string; closeLabel: string; onClose: () => void; busy: boolean; children: ReactNode }) {
   return <div className="project-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}><div className="project-modal" role="dialog" aria-modal="true" aria-label={title}><div className="project-modal-header"><h2>{title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={closeLabel} disabled={busy}><X size={18} /></button></div>{children}</div></div>;
+}
+
+export function AgentEditDialog({ project, agent, onClose }: { project: ProjectSummaryResponse; agent: ProjectAgentRecord; onClose: () => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, upsertProject } = useProjectWorkspace();
+  const [source, setSource] = useState<AgentSource | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [etag, setEtag] = useState("");
+  const [name, setName] = useState(agent.name || agent.slug);
+  const [description, setDescription] = useState(agent.description);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const copy = zh ? { title: "编辑 Agent", name: "Agent 名称", description: "描述", loading: "正在加载 Agent…", cancel: "取消", save: "保存", close: "关闭对话框", failed: "无法更新 Agent，请重试。" } : { title: "Edit Agent", name: "Agent name", description: "Description", loading: "Loading Agent…", cancel: "Cancel", save: "Save", close: "Close dialog", failed: "The Agent could not be updated. Try again." };
+
+  useEffect(() => {
+    let current = true;
+    void api.getDraft(project.project_id, agent.agent_id).then((draft) => {
+      if (!current) return;
+      setSource(draft.source);
+      setRevision(draft.revision);
+      setEtag(draft.etag);
+      setName(draft.source.name);
+      setDescription(draft.source.description);
+    }).catch((cause: unknown) => { if (current) setError(cause instanceof Error ? cause.message : copy.failed); }).finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [agent.agent_id, api, copy.failed, project.project_id]);
+
+  useEffect(() => {
+    if (!loading) nameRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [loading, onClose, saving]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!source || !api.saveDraft) return;
+    const nextName = name.trim() || source.name || agent.slug;
+    setSaving(true); setError(null);
+    try {
+      const saved = await api.saveDraft(project.project_id, agent.agent_id, { source: { ...source, name: nextName, description: description.trim() }, expected_revision: revision }, { etag });
+      setRevision(saved.revision);
+      setEtag(saved.etag);
+      try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, agents: project.agents.map((item) => item.agent_id === agent.agent_id ? { ...item, name: saved.source.name, description: saved.source.description } : item) }); }
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : copy.failed);
+    } finally { setSaving(false); }
+  };
+
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={loading || saving}>
+    {loading ? <p className="project-modal-hint">{copy.loading}</p> : source ? <form className="project-form" onSubmit={(event) => void submit(event)}>
+      <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" disabled={saving} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label>
+      {error ? <p className="project-form-error" role="alert">{error}</p> : null}
+      <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button variant="primary" type="submit" disabled={saving || !api.saveDraft}>{saving ? "…" : copy.save}</Button></div>
+    </form> : <p className="project-form-error" role="alert">{error ?? copy.failed}</p>}
+  </Modal>;
+}
+
+export function AgentDeleteDialog({ project, agent, onClose, onDeleted }: { project: ProjectSummaryResponse; agent: ProjectAgentRecord; onClose: () => void; onDeleted?: () => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, upsertProject } = useProjectWorkspace();
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const copy = zh ? { title: "删除 Agent？", detail: `将“${agent.name || agent.slug}”移到 Veyra 回收区，历史版本和运行记录会保留。`, cancel: "取消", remove: "删除 Agent", close: "关闭对话框", failed: "无法删除 Agent，请重试。" } : { title: "Delete Agent?", detail: `Move “${agent.name || agent.slug}” to Veyra Trash. Immutable versions and Runs are retained.`, cancel: "Cancel", remove: "Delete Agent", close: "Close dialog", failed: "The Agent could not be deleted. Try again." };
+  const remove = async () => {
+    setDeleting(true); setError(null);
+    try { const result = await api.deleteAgent(project.project_id, agent.agent_id); upsertProject(result.project); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
+  };
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
+    <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
+    <div className="project-modal-actions"><Button variant="ghost" onClick={onClose} disabled={deleting}>{copy.cancel}</Button><Button icon={Trash2} variant="danger" onClick={() => void remove()} disabled={deleting}>{deleting ? "…" : copy.remove}</Button></div>
+  </Modal>;
 }
 
 export function AgentCreateDialog({ project, mode, onClose, onCreated }: { project: ProjectSummaryResponse; mode: AgentCreateMode; onClose: () => void; onCreated: (projectId: string) => void }) {

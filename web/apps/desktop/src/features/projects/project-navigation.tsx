@@ -1,4 +1,4 @@
-import { Bot, Box, ChevronDown, ChevronRight, FileUp, FolderKanban, FolderOpen, Gauge, GitBranch, MessageCirclePlus, MoreHorizontal, Pencil, Pin, Plus, Trash2 } from "lucide-react";
+import { Bot, Box, ChevronDown, ChevronRight, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, type LucideIcon } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { ProjectAgentRecord } from "@veyra/api-contracts";
 import type { NavigationGroup } from "@veyra/ui";
@@ -6,10 +6,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../../api/project-workspace";
-import { AgentCreateDialog, ProjectDeleteDialog, ProjectDialog, ProjectEditDialog, type AgentCreateMode, type ProjectDialogMode } from "./project-dialog";
+import { AgentCreateDialog, AgentDeleteDialog, AgentEditDialog, ProjectDeleteDialog, ProjectDialog, ProjectEditDialog, type AgentCreateMode, type ProjectDialogMode } from "./project-dialog";
 
 type ProjectNavigationProps = { scopedProjectId?: string; activeAgentId?: string; routeKey?: string };
-type ProjectModal = { kind: "create" | "open" } | { kind: "edit" | "delete" | "agent-create"; project: ProjectSummaryResponse; agentMode?: AgentCreateMode } | null;
+type ProjectModal = { kind: "create" | "open" } | { kind: "edit" | "delete" | "agent-create"; project: ProjectSummaryResponse; agentMode?: AgentCreateMode } | { kind: "agent-edit" | "agent-delete"; project: ProjectSummaryResponse; agent: ProjectAgentRecord } | null;
 type SidebarPopover =
   | { kind: "project-actions" | "agent-chooser"; project: ProjectSummaryResponse; anchor: HTMLButtonElement }
   | { kind: "agent-actions"; project: ProjectSummaryResponse; agent: ProjectAgentRecord; anchor: HTMLButtonElement }
@@ -17,7 +17,7 @@ type SidebarPopover =
 
 export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey }: ProjectNavigationProps): { navigation: NavigationGroup[]; dialogs: ReactNode } {
   const { t, locale } = useLocale();
-  const { projects, status, setProjectPinned } = useProjectWorkspace();
+  const { api, projects, status, setProjectPinned, upsertProject } = useProjectWorkspace();
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set(scopedProjectId ? [scopedProjectId] : []));
   const [popover, setPopover] = useState<SidebarPopover>(null);
   const [modal, setModal] = useState<ProjectModal>(null);
@@ -29,6 +29,10 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
   const normal = useMemo(() => projects.filter((project) => !project.pinned).sort(byIndexedAt), [projects]);
   const statusValue = status === "ready" && projects.length > 0 ? undefined : status === "ready" ? "empty" : status;
   const chooseAgentMode = (project: ProjectSummaryResponse, agentMode: AgentCreateMode) => { setPopover(null); setModal({ kind: "agent-create", project, agentMode }); };
+  const pinAgent = (project: ProjectSummaryResponse, agent: ProjectAgentRecord) => {
+    setPopover(null);
+    void api.updateAgent(project.project_id, agent.agent_id, { pinned: true }).then(upsertProject).catch(() => undefined);
+  };
   const makeGroup = (label: "Projects" | "Pinned", items: ProjectSummaryResponse[], showActions: boolean): NavigationGroup => ({
     label, section: label === "Pinned" ? "pinned" : "projects", status: label === "Projects" ? statusValue : undefined,
     action: showActions ? <span className="sidebar-project-actions"><button className="sidebar-section-button" type="button" onClick={() => setModal({ kind: "open" })} aria-label={t("openExistingProject")} title={t("openExistingProject")}><FolderOpen size={15} aria-hidden="true" /></button><button className="sidebar-section-button" type="button" onClick={() => setModal({ kind: "create" })} aria-label={t("createProjectShortcut")} title={t("createProjectShortcut")}><Plus size={15} aria-hidden="true" /></button></span> : undefined,
@@ -57,37 +61,35 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
       trailingAction: <span className="project-row-actions"><button type="button" aria-label={`${t("projectActions")}: ${project.name}`} title={t("projectActions")} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("project-actions")} onClick={(event) => toggleProjectPopover("project-actions", event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addAgent")}: ${project.name}`} title={`${t("addAgent")}: ${project.name}`} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("agent-chooser")} onClick={(event) => toggleProjectPopover("agent-chooser", event)}><Plus size={15} aria-hidden="true" /></button></span>,
       children: project.agents.length ? project.agents.map((agent) => ({
         href: projectRoutePaths.agentDesign(project.project_id, agent.agent_id),
-        label: agent.slug,
+        label: agent.name || agent.slug,
         icon: Bot,
         active: isScopedProject && agent.agent_id === activeAgentId,
-        trailingAction: <button type="button" aria-label={`${t("agentActions")}: ${agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button>,
+        trailingAction: <button type="button" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button>,
       })) : undefined,
     };
   };
 
   const navigation = [...(pinned.length ? [makeGroup("Pinned", pinned, false)] : []), makeGroup("Projects", normal, true)];
   const dialogs = <>
-    {popover ? <FixedSidebarPopover anchor={popover.anchor} estimatedWidth={popover.kind === "agent-chooser" ? 232 : 208} className={popover.kind === "agent-chooser" ? "agent-add-chooser" : popover.kind === "agent-actions" ? "sidebar-agent-menu" : "sidebar-project-menu"} onClose={() => setPopover(null)}>
-      {popover.kind === "project-actions" ? <ProjectActionsPopover onPin={() => { setPopover(null); void setProjectPinned(popover.project.project_id, !popover.project.pinned).catch(() => undefined); }} onEdit={() => { setPopover(null); setModal({ kind: "edit", project: popover.project }); }} onDelete={() => { setPopover(null); setModal({ kind: "delete", project: popover.project }); }} labels={{ pin: popover.project.pinned ? t("unpinProject") : t("pinProject"), edit: t("editProject"), delete: t("deleteProject"), actions: `${t("projectActions")}: ${popover.project.name}` }} /> : popover.kind === "agent-actions" ? <AgentActionsPopover project={popover.project} agent={popover.agent} labels={{ open: t("openAgent"), orchestration: t("orchestration"), analysis: t("dataAnalysis"), actions: `${t("agentActions")}: ${popover.agent.slug}` }} /> : <AgentChooserPopover project={popover.project} zh={locale === "zh"} onChoose={chooseAgentMode} />}
+    {popover ? <FixedSidebarPopover anchor={popover.anchor} estimatedWidth={240} className={popover.kind === "agent-chooser" ? "agent-add-chooser" : popover.kind === "agent-actions" ? "sidebar-agent-menu" : "sidebar-project-menu"} onClose={() => setPopover(null)}>
+      {popover.kind === "project-actions" ? <ProjectActionsPopover onPin={() => { setPopover(null); void setProjectPinned(popover.project.project_id, !popover.project.pinned).catch(() => undefined); }} onEdit={() => { setPopover(null); setModal({ kind: "edit", project: popover.project }); }} onDelete={() => { setPopover(null); setModal({ kind: "delete", project: popover.project }); }} labels={{ pin: popover.project.pinned ? t("unpinProject") : t("pinProject"), edit: t("editProject"), delete: t("deleteProject"), pinDetail: t("pinProjectDetail"), editDetail: t("editProjectDetail"), deleteDetail: t("deleteProjectDetail"), actions: `${t("projectActions")}: ${popover.project.name}` }} /> : popover.kind === "agent-actions" ? <AgentActionsPopover onPin={() => pinAgent(popover.project, popover.agent)} onEdit={() => { setPopover(null); setModal({ kind: "agent-edit", project: popover.project, agent: popover.agent }); }} onDelete={() => { setPopover(null); setModal({ kind: "agent-delete", project: popover.project, agent: popover.agent }); }} labels={{ pin: t("pinAgent"), edit: t("editAgent"), delete: t("deleteAgent"), pinDetail: t("pinAgentDetail"), editDetail: t("editAgentDetail"), deleteDetail: t("deleteAgentDetail"), actions: `${t("agentActions")}: ${popover.agent.name || popover.agent.slug}` }} /> : <AgentChooserPopover project={popover.project} zh={locale === "zh"} onChoose={chooseAgentMode} />}
     </FixedSidebarPopover> : null}
     {modal?.kind === "create" || modal?.kind === "open" ? <ProjectDialog mode={modal.kind as ProjectDialogMode} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "edit" ? <ProjectEditDialog project={modal.project} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "delete" ? <ProjectDeleteDialog project={modal.project} onClose={() => setModal(null)} onDeleted={modal.project.project_id === scopedProjectId ? () => { window.location.hash = desktopRoutePaths.projects; } : undefined} /> : null}
     {modal?.kind === "agent-create" ? <AgentCreateDialog project={modal.project} mode={modal.agentMode!} onCreated={(projectId) => setExpandedProjectIds((current) => current.has(projectId) ? current : new Set(current).add(projectId))} onClose={() => setModal(null)} /> : null}
+    {modal?.kind === "agent-edit" ? <AgentEditDialog project={modal.project} agent={modal.agent} onClose={() => setModal(null)} /> : null}
+    {modal?.kind === "agent-delete" ? <AgentDeleteDialog project={modal.project} agent={modal.agent} onClose={() => setModal(null)} onDeleted={modal.project.project_id === scopedProjectId && modal.agent.agent_id === activeAgentId ? () => { window.location.hash = projectRoutePaths.project(modal.project.project_id); } : undefined} /> : null}
   </>;
   return { navigation, dialogs };
 }
 
-function ProjectActionsPopover({ labels, onPin, onEdit, onDelete }: { labels: { pin: string; edit: string; delete: string; actions: string }; onPin: () => void; onEdit: () => void; onDelete: () => void }) {
-  return <div className="sidebar-action-menu" role="menu" aria-label={labels.actions}><button type="button" role="menuitem" onClick={onPin}><Pin size={15} aria-hidden="true" /><span>{labels.pin}</span></button><button type="button" role="menuitem" onClick={onEdit}><Pencil size={15} aria-hidden="true" /><span>{labels.edit}</span></button><button type="button" role="menuitem" onClick={onDelete}><Trash2 size={15} aria-hidden="true" /><span>{labels.delete}</span></button></div>;
+function ProjectActionsPopover({ labels, onPin, onEdit, onDelete }: { labels: { pin: string; edit: string; delete: string; pinDetail: string; editDetail: string; deleteDetail: string; actions: string }; onPin: () => void; onEdit: () => void; onDelete: () => void }) {
+  return <div className="sidebar-action-menu" role="menu" aria-label={labels.actions}><SidebarMenuItem icon={Pin} title={labels.pin} detail={labels.pinDetail} onClick={onPin} /><SidebarMenuItem icon={Pencil} title={labels.edit} detail={labels.editDetail} onClick={onEdit} /><SidebarMenuItem icon={Trash2} title={labels.delete} detail={labels.deleteDetail} onClick={onDelete} destructive /></div>;
 }
 
-function AgentActionsPopover({ project, agent, labels }: { project: ProjectSummaryResponse; agent: ProjectAgentRecord; labels: { open: string; orchestration: string; analysis: string; actions: string } }) {
-  return <div className="sidebar-action-menu" role="menu" aria-label={labels.actions}>
-    <a href={projectRoutePaths.agent(project.project_id, agent.agent_id)} role="menuitem"><MessageCirclePlus size={15} aria-hidden="true" /><span>{labels.open}</span></a>
-    <a href={projectRoutePaths.agentDesign(project.project_id, agent.agent_id)} role="menuitem"><GitBranch size={15} aria-hidden="true" /><span>{labels.orchestration}</span></a>
-    <a href={projectRoutePaths.agentAnalysis(project.project_id, agent.agent_id)} role="menuitem"><Gauge size={15} aria-hidden="true" /><span>{labels.analysis}</span></a>
-  </div>;
+function AgentActionsPopover({ labels, onPin, onEdit, onDelete }: { labels: { pin: string; edit: string; delete: string; pinDetail: string; editDetail: string; deleteDetail: string; actions: string }; onPin: () => void; onEdit: () => void; onDelete: () => void }) {
+  return <div className="sidebar-action-menu" role="menu" aria-label={labels.actions}><SidebarMenuItem icon={Pin} title={labels.pin} detail={labels.pinDetail} onClick={onPin} /><SidebarMenuItem icon={Pencil} title={labels.edit} detail={labels.editDetail} onClick={onEdit} /><SidebarMenuItem icon={Trash2} title={labels.delete} detail={labels.deleteDetail} onClick={onDelete} destructive /></div>;
 }
 
 function AgentChooserPopover({ project, zh, onChoose }: { project: ProjectSummaryResponse; zh: boolean; onChoose: (project: ProjectSummaryResponse, mode: AgentCreateMode) => void }) {
@@ -96,7 +98,11 @@ function AgentChooserPopover({ project, zh, onChoose }: { project: ProjectSummar
   ] : [
     { mode: "blank" as const, icon: Plus, title: "Create blank Agent", detail: "Start from an empty definition" }, { mode: "template" as const, icon: Box, title: "Import Agent from template", detail: "Choose a registered template" }, { mode: "file" as const, icon: FileUp, title: "Import Agent file", detail: "Import a .vagent.yaml file" },
   ];
-  return <div role="menu" aria-label={zh ? `添加 Agent：${project.name}` : `Add Agent: ${project.name}`}>{options.map(({ mode, icon: Icon, title, detail }) => <button type="button" role="menuitem" key={mode} onClick={() => onChoose(project, mode)}><span className="agent-add-chooser-icon"><Icon size={14} aria-hidden="true" /></span><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>;
+  return <div className="sidebar-action-menu" role="menu" aria-label={zh ? `添加 Agent：${project.name}` : `Add Agent: ${project.name}`}>{options.map(({ mode, icon: Icon, title, detail }) => <SidebarMenuItem key={mode} icon={Icon} title={title} detail={detail} onClick={() => onChoose(project, mode)} />)}</div>;
+}
+
+function SidebarMenuItem({ icon: Icon, title, detail, onClick, destructive = false }: { icon: LucideIcon; title: string; detail: string; onClick: () => void; destructive?: boolean }) {
+  return <button className={`sidebar-popover-item ${destructive ? "is-destructive" : ""}`} type="button" role="menuitem" aria-label={title} onClick={onClick}><span className="sidebar-popover-icon"><Icon size={15} aria-hidden="true" /></span><span className="sidebar-popover-copy"><strong>{title}</strong><small>{detail}</small></span></button>;
 }
 
 function FixedSidebarPopover({ anchor, estimatedWidth, className, onClose, children }: { anchor: HTMLButtonElement; estimatedWidth: number; className: string; onClose: () => void; children: ReactNode }) {

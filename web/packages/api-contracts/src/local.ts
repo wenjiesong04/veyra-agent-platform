@@ -81,6 +81,9 @@ export type AgentSource = {
 export type ProjectAgentRecord = {
   agent_id: string;
   slug: string;
+  name: string;
+  description: string;
+  pinned: boolean;
   source_path: string;
   source_file_hash: string;
 };
@@ -95,6 +98,8 @@ export type ProjectSummaryResponse = {
   pinned_at: string | null;
   indexed_at: string;
   manifest_hash: string;
+  default_agent_id: string | null;
+  agent_count: number;
   agents: ProjectAgentRecord[];
 };
 
@@ -160,6 +165,20 @@ export type DeleteProjectResponse = {
   project_id: string;
   disposition: "trashed" | "unlinked";
   removed_at: string;
+};
+
+/** Agent presentation mutations are intentionally closed in V1. */
+export type UpdateAgentRequest = {
+  pinned: true;
+};
+
+export type DeleteAgentResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  agent_id: string;
+  disposition: "trashed";
+  removed_at: string;
+  project: ProjectSummaryResponse;
 };
 
 export type CreateAgentRequest =

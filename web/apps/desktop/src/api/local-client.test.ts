@@ -13,6 +13,8 @@ function summary(overrides: Partial<ProjectSummaryResponse> = {}) {
     pinned_at: null,
     indexed_at: "2026-08-28T00:00:00Z",
     manifest_hash: "manifest-hash",
+    default_agent_id: null,
+    agent_count: 0,
     agents: [],
     ...overrides,
   } satisfies ProjectSummaryResponse;
@@ -27,10 +29,10 @@ function response(payload: unknown, status = 200): Response {
 
 describe("LocalApiClient Project requests", () => {
   it("lists and validates real Project summaries", async () => {
-    const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", projects: [summary({ agents: [{ agent_id: "agent-1", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" }] })] }));
+    const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", projects: [summary({ agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" }], agent_count: 1 })] }));
     const client = new LocalApiClient({ fetcher });
 
-    await expect(client.listProjects()).resolves.toEqual({ schema_version: "1.0", projects: [summary({ agents: [{ agent_id: "agent-1", slug: "reviewer", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" }] })] });
+    await expect(client.listProjects()).resolves.toEqual({ schema_version: "1.0", projects: [summary({ agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" }], agent_count: 1 })] });
     expect(fetcher).toHaveBeenCalledWith("/api/v1/projects", expect.objectContaining({ method: "GET", credentials: "include" }));
   });
 
@@ -161,5 +163,21 @@ describe("LocalApiClient Project requests", () => {
       headers: expect.objectContaining({ "If-Match": '"draft-7"', "Idempotency-Key": "019c0000-0000-7000-8000-000000000002" }),
     }));
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ expected_revision: 7 });
+  });
+
+  it("parses Agent pin and recoverable delete responses", async () => {
+    const agent = { agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: true, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" };
+    const updated = summary({ default_agent_id: "agent-1", agent_count: 1, agents: [agent] });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(updated))
+      .mockResolvedValueOnce(response({ schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z", project: summary() }));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.updateAgent("project-1", "agent-1", { pinned: true })).resolves.toEqual(updated);
+    await expect(client.deleteAgent("project-1", "agent-1")).resolves.toMatchObject({ agent_id: "agent-1", disposition: "trashed", project: summary() });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/agents/agent-1");
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: "PATCH" });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ pinned: true });
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
   });
 });

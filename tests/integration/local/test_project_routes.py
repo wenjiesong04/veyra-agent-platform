@@ -229,6 +229,88 @@ def test_project_agent_creation_templates_and_import(tmp_path: Path) -> None:
         assert oversized.json()["code"] == "project_invalid"
 
 
+def test_agent_pin_and_recoverable_delete_keep_sidebar_state_and_history(
+    tmp_path: Path,
+) -> None:
+    source = json.loads(
+        (
+            ROOT / "contracts/fixtures/project/agents/github-triage/agent.vagent.yaml"
+        ).read_text()
+    )
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/v1/projects", json={"name": "Agent lifecycle", "agents": [source]}
+        )
+        assert created.status_code == 201
+        project = created.json()
+        project_id = project["project_id"]
+        first_agent = project["agents"][0]
+        second = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={"mode": "blank", "name": "Review helper"},
+        )
+        assert second.status_code == 201
+        second_agent = second.json()
+        second_base = f"/api/v1/projects/{project_id}/agents/{second_agent['agent_id']}"
+
+        pinned = client.patch(second_base, json={"pinned": True})
+        assert pinned.status_code == 200
+        assert pinned.json()["default_agent_id"] == second_agent["agent_id"]
+        assert pinned.json()["agents"][0]["agent_id"] == second_agent["agent_id"]
+        assert pinned.json()["agents"][0]["pinned"] is True
+        assert pinned.json()["agents"][1]["pinned"] is False
+
+        draft = client.get(second_base + "/draft")
+        assert draft.status_code == 200
+        committed = client.post(
+            second_base + "/commit",
+            json={"expected_revision": draft.json()["revision"]},
+            headers={"If-Match": draft.headers["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert committed.status_code == 200
+
+        removed = client.delete(second_base)
+        assert removed.status_code == 200
+        payload = removed.json()
+        assert payload["disposition"] == "trashed"
+        assert payload["project"]["agent_count"] == 1
+        assert [agent["agent_id"] for agent in payload["project"]["agents"]] == [
+            first_agent["agent_id"]
+        ]
+        assert not (Path(project["root_path"]) / second_agent["source_path"]).exists()
+        trash_path = (
+            managed_root.parent
+            / "trash"
+            / "agents"
+            / project_id
+            / second_agent["agent_id"]
+        )
+        assert trash_path.is_dir()
+        assert client.get(second_base + "/draft").status_code == 422
+        assert (
+            client.get(f"/api/v1/projects/{project_id}").json()["agents"]
+            == payload["project"]["agents"]
+        )
+
+        with client.app.state.repository._connect() as connection:
+            history = connection.execute(
+                "SELECT COUNT(*) FROM agent_versions WHERE agent_id = ?",
+                (second_agent["agent_id"],),
+            ).fetchone()[0]
+        assert history == 1
+
+    with TestClient(create_app(settings)) as restarted_client:
+        restarted = restarted_client.get(f"/api/v1/projects/{project_id}")
+        assert restarted.status_code == 200
+        assert restarted.json()["agent_count"] == 1
+        assert restarted.json()["default_agent_id"] == first_agent["agent_id"]
+
+
 def test_project_names_edit_manifest_and_exclusive_pin(tmp_path: Path) -> None:
     settings = LocalSettings(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
@@ -345,7 +427,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
-        assert health.json()["database_revision"] == "local_0006_runtime_runs"
+        assert health.json()["database_revision"] == "local_0007_agent_lifecycle"
         created = client.post(
             "/api/v1/projects",
             json={
