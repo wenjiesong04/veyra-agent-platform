@@ -1160,7 +1160,6 @@
   }
 
   .header-breadcrumbs { max-width: 36vw; gap: 5px; font-size: 11px; }
-  .breadcrumb-part:nth-of-type(2) { display: none; }
 
   .header-control {
     min-height: 36px;
