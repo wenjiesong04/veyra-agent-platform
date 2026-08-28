@@ -55,8 +55,9 @@ class ProjectService:
         description: str = "",
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
+        require_new_root: bool = False,
     ) -> dict[str, Any]:
-        root = self._new_root(root_path)
+        root = self._new_root(root_path, require_new_root=require_new_root)
         root_preexisted = root.exists()
         root_mode = root.stat().st_mode & 0o777 if root_preexisted else None
         if not isinstance(name, str) or not name.strip():
@@ -116,6 +117,38 @@ class ProjectService:
             for rollback_note in rollback_errors:
                 exc.add_note(f"rollback failed: {rollback_note}")
             raise
+
+    def create_in_parent(
+        self,
+        *,
+        parent_path: str | Path,
+        name: str,
+        description: str = "",
+        sources: list[dict[str, Any]] | None = None,
+        template_selections: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Create a Project in a new child of a user-selected parent directory."""
+        parent = self._existing_root(parent_path)
+        child_name = name.strip()
+        if (
+            not child_name
+            or child_name in {".", ".."}
+            or Path(child_name).is_absolute()
+            or "/" in child_name
+            or "\\" in child_name
+        ):
+            raise ProjectError("Project name must be one folder name")
+        target = parent / child_name
+        if target.exists() or target.is_symlink():
+            raise ProjectError("Project directory already exists")
+        return self.create(
+            root_path=target,
+            name=name,
+            description=description,
+            sources=sources,
+            template_selections=template_selections,
+            require_new_root=True,
+        )
 
     def add_agent(
         self, *, project_id: str, template_selection: dict[str, str]
@@ -529,11 +562,15 @@ class ProjectService:
             raise ProjectError("Project source must be UTF-8") from exc
 
     @staticmethod
-    def _new_root(value: str | Path) -> Path:
+    def _new_root(value: str | Path, *, require_new_root: bool = False) -> Path:
         root = Path(value).expanduser().absolute()
         if root.is_symlink():
+            if require_new_root:
+                raise ProjectError("Project directory already exists")
             raise ProjectError("selected Project directory is absent or a symlink")
         if root.exists():
+            if require_new_root:
+                raise ProjectError("Project directory already exists")
             if not root.is_dir() or root.is_symlink():
                 raise ProjectError("selected Project directory is absent or a symlink")
             if any(root.iterdir()):

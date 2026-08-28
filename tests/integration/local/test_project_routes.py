@@ -14,17 +14,40 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -> None:
     settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
-    root = tmp_path / "empty-project"
+    parent = tmp_path / "Downloads"
+    parent.mkdir()
+    preserved = parent / "existing-download.txt"
+    preserved.write_text("keep", encoding="utf-8")
+    root = parent / "Empty"
     with TestClient(create_app(settings)) as client:
         created = client.post(
             "/api/v1/projects",
-            json={"root_path": str(root), "name": "Empty"},
+            json={"parent_path": str(parent), "name": "Empty"},
         )
         assert created.status_code == 201
         project = created.json()
         assert project["agents"] == []
         assert project["agent_count"] == 0
         assert project["indexed_at"]
+        assert project["root_path"] == str(root)
+        assert preserved.read_text(encoding="utf-8") == "keep"
+
+        occupied = parent / "Taken"
+        occupied.mkdir()
+        occupied_file = occupied / "keep.txt"
+        occupied_file.write_text("do not overwrite", encoding="utf-8")
+        conflict = client.post(
+            "/api/v1/projects",
+            json={"parent_path": str(parent), "name": "Taken"},
+        )
+        assert conflict.status_code == 422
+        assert occupied_file.read_text(encoding="utf-8") == "do not overwrite"
+
+        invalid_name = client.post(
+            "/api/v1/projects",
+            json={"parent_path": str(parent), "name": "../escape"},
+        )
+        assert invalid_name.status_code == 422
 
         reopened = client.post("/api/v1/projects/open", json={"root_path": str(root)})
         assert reopened.status_code == 200
@@ -46,7 +69,7 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
         first = client.post(
             "/api/v1/projects",
             json={
-                "root_path": str(first_root),
+                "parent_path": str(tmp_path),
                 "name": "First",
                 "description": "  Cafe\u0301 Project  ",
             },
@@ -61,7 +84,7 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
 
         second = client.post(
             "/api/v1/projects",
-            json={"root_path": str(tmp_path / "second"), "name": "Second"},
+            json={"parent_path": str(tmp_path), "name": "Second"},
         )
         assert second.status_code == 201
         pinned = client.patch(
@@ -110,7 +133,7 @@ def test_project_description_length_returns_typed_contract_error(
         response = client.post(
             "/api/v1/projects",
             json={
-                "root_path": str(tmp_path / "too-long"),
+                "parent_path": str(tmp_path),
                 "name": "Too long",
                 "description": "x" * 501,
             },
@@ -135,7 +158,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
         created = client.post(
             "/api/v1/projects",
             json={
-                "root_path": str(tmp_path / "project"),
+                "parent_path": str(tmp_path),
                 "name": "Example",
                 "agents": agents,
             },
