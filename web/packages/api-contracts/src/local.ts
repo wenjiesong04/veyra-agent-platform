@@ -162,7 +162,30 @@ export type DeleteProjectResponse = {
   removed_at: string;
 };
 
-export type CreateAgentRequest = TemplateSelection;
+export type CreateAgentRequest =
+  | {
+    mode: "blank";
+    name?: string;
+    description?: string;
+  }
+  | {
+    mode: "template";
+    template_id: string;
+    name?: string;
+    description?: string;
+  };
+
+/** The create and import endpoints return the created Agent's durable identity. */
+export type CreatedAgentResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  agent_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  source_path: string;
+  source_file_hash: string;
+};
 
 export type OpenProjectRequest = {
   root_path: string;

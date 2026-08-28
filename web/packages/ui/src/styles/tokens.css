@@ -28,8 +28,8 @@
   --hero-text: #f7f7f8;
   --hero-muted: #aab3c0;
   --hero-line: #303641;
-  --sidebar-width: clamp(300px, 29vw, 510px);
-  --header-height: 122px;
+  --sidebar-width: 248px;
+  --header-height: 52px;
   --shell-shadow: 0 24px 60px rgba(28, 42, 61, 0.12);
   --soft-shadow: 0 10px 28px rgba(28, 42, 61, 0.07);
   --radius: 18px;

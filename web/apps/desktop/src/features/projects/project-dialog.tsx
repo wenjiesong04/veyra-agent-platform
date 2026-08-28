@@ -1,11 +1,12 @@
-import { FolderOpen, Trash2, X } from "lucide-react";
-import type { ProjectSummaryResponse } from "@veyra/api-contracts";
+import { Box, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
+import type { AgentTemplate, ProjectSummaryResponse } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { LocalApiClientError } from "../../api/local-client";
 import { useProjectWorkspace } from "../../api/project-workspace";
 
 export type ProjectDialogMode = "create" | "open";
+export type AgentCreateMode = "blank" | "template" | "file";
 
 function folderName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).at(-1) || path;
@@ -139,4 +140,83 @@ export function ProjectDeleteDialog({ project, onClose, onDeleted }: { project: 
 
 function Modal({ title, closeLabel, onClose, busy, children }: { title: string; closeLabel: string; onClose: () => void; busy: boolean; children: ReactNode }) {
   return <div className="project-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}><div className="project-modal" role="dialog" aria-modal="true" aria-label={title}><div className="project-modal-header"><h2>{title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={closeLabel} disabled={busy}><X size={18} /></button></div>{children}</div></div>;
+}
+
+export function AgentCreateDialog({ project, mode, onClose, onCreated }: { project: ProjectSummaryResponse; mode: AgentCreateMode; onClose: () => void; onCreated: (projectId: string) => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, refresh, upsertProject } = useProjectWorkspace();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [templates, setTemplates] = useState<AgentTemplate[]>([]);
+  const [templateId, setTemplateId] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [loadingTemplates, setLoadingTemplates] = useState(mode === "template");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const copy = zh ? {
+    title: mode === "blank" ? "创建空白 Agent" : mode === "template" ? "从模板导入 Agent" : "导入 Agent 文件",
+    name: "Agent 名称（可选）", description: "描述（可选）", namePlaceholder: "留空使用默认名称", descriptionPlaceholder: "这个 Agent 要完成什么？", cancel: "取消", close: "关闭对话框", create: "创建 Agent", import: "导入 Agent", template: "选择模板", loading: "正在加载模板…", noTemplates: "尚无可用模板。", file: "选择 Agent 文件", drop: "拖放 .vagent.yaml、.yaml 或 .yml 文件到此处", selected: "已选择", fileRequired: "请选择一个 Agent 文件。", templateRequired: "请选择一个模板。", failed: "无法创建 Agent，请检查输入后重试。",
+  } : {
+    title: mode === "blank" ? "Create blank Agent" : mode === "template" ? "Import Agent from template" : "Import Agent file",
+    name: "Agent name (optional)", description: "Description (optional)", namePlaceholder: "Leave blank for the default name", descriptionPlaceholder: "What should this Agent do?", cancel: "Cancel", close: "Close dialog", create: "Create Agent", import: "Import Agent", template: "Select a template", loading: "Loading templates…", noTemplates: "No registered templates are available.", file: "Choose Agent file", drop: "Drop a .vagent.yaml, .yaml, or .yml file here", selected: "Selected", fileRequired: "Choose an Agent file.", templateRequired: "Select a template.", failed: "The Agent could not be created. Check the input and try again.",
+  };
+
+  useEffect(() => {
+    nameRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose, saving]);
+
+  useEffect(() => {
+    if (mode !== "template") return;
+    let current = true;
+    void api.listAgentTemplates(project.project_id).then((response) => {
+      if (!current) return;
+      setTemplates(response.templates);
+      setTemplateId(response.templates[0]?.template_id ?? "");
+    }).catch((cause: unknown) => { if (current) setError(cause instanceof Error ? cause.message : copy.failed); }).finally(() => { if (current) setLoadingTemplates(false); });
+    return () => { current = false; };
+  }, [api, copy.failed, mode, project.project_id]);
+
+  const chooseFile = (nextFile: File | null) => {
+    setError(null);
+    if (!nextFile) return;
+    if (!/\.(vagent\.yaml|yaml|yml)$/i.test(nextFile.name)) {
+      setFile(null); setError(zh ? "请选择 .vagent.yaml、.yaml 或 .yml 文件。" : "Choose a .vagent.yaml, .yaml, or .yml file."); return;
+    }
+    setFile(nextFile);
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (mode === "template" && !templateId) return setError(copy.templateRequired);
+    if (mode === "file" && !file) return setError(copy.fileRequired);
+    setSaving(true); setError(null);
+    const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}) };
+    try {
+      if (mode === "file") await api.importAgent(project.project_id, { file: file!, ...overrides });
+      else await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
+      const updated = await api.getProject(project.project_id);
+      upsertProject(updated);
+      onCreated(project.project_id);
+      onClose();
+      void refresh().catch(() => undefined);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : copy.failed);
+    } finally { setSaving(false); }
+  };
+
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={saving}>
+    <form className="project-form agent-create-form" onSubmit={(event) => void submit(event)}>
+      {mode === "template" ? <label><span>{copy.template}</span><select aria-label={copy.template} value={templateId} onChange={(event) => setTemplateId(event.target.value)} disabled={loadingTemplates || saving}>{loadingTemplates ? <option>{copy.loading}</option> : templates.length ? templates.map((template) => <option key={template.template_id} value={template.template_id}>{template.name}</option>) : <option value="">{copy.noTemplates}</option>}</select>{templates.find((template) => template.template_id === templateId)?.description ? <small className="agent-template-detail">{templates.find((template) => template.template_id === templateId)?.description}</small> : null}</label> : null}
+      {mode === "file" ? <label className={`agent-file-drop ${file ? "is-selected" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files.item(0)); }}><input type="file" aria-label={copy.file} accept=".vagent.yaml,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)} /><span className="agent-file-icon"><FileUp size={18} aria-hidden="true" /></span><strong>{file ? `${copy.selected}: ${file.name}` : copy.file}</strong><small>{copy.drop}</small></label> : null}
+      <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" disabled={saving} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} disabled={saving} /></label>
+      {error ? <p className="project-form-error" role="alert">{error}</p> : null}
+      <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button icon={mode === "blank" ? Plus : mode === "template" ? Box : FileUp} variant="primary" type="submit" disabled={saving || loadingTemplates || (mode === "template" && templates.length === 0)}>{saving ? "…" : mode === "blank" ? copy.create : copy.import}</Button></div>
+    </form>
+  </Modal>;
 }

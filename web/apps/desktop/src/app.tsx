@@ -105,7 +105,7 @@ function DesktopWorkspace() {
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : desktopRoutePaths[route.kind];
-  const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId });
+  const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId, routeKey: route.path });
   const header = desktopHeader(route, projects);
   const navigation: NavigationGroup[] = [fixedNavigation, ...projectNavigation];
 

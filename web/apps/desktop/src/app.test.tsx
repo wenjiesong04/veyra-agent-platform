@@ -33,6 +33,9 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
   updateProject: ReturnType<typeof vi.fn>;
   deleteProject: ReturnType<typeof vi.fn>;
   getDraft: ReturnType<typeof vi.fn>;
+  listAgentTemplates: ReturnType<typeof vi.fn>;
+  createAgent: ReturnType<typeof vi.fn>;
+  importAgent: ReturnType<typeof vi.fn>;
 } {
   const getProject = vi.fn().mockImplementation(async (projectId: string) => project({ project_id: projectId, name: projectId }));
   return {
@@ -43,6 +46,9 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     getProject,
     updateProject: vi.fn().mockImplementation(async (projectId: string, input: { pinned?: boolean; name?: string; description?: string }) => project({ project_id: projectId, name: input.name ?? projectId, description: input.description ?? "", pinned: input.pinned ?? false, pinned_at: input.pinned ? "2026-08-28T00:00:00Z" : null })),
     deleteProject: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z" }),
+    listAgentTemplates: vi.fn().mockResolvedValue({ schema_version: "1.0", templates: [{ template_id: "review", name: "Review Agent", description: "Reviews a bounded scope.", default_slug: "review-agent" }] }),
+    createAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "created-agent", slug: "created-agent", name: "Created Agent", description: "", source_path: "agents/created-agent/agent.vagent.yaml", source_file_hash: "created-hash" }),
+    importAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "imported-agent", slug: "imported-agent", name: "Imported Agent", description: "", source_path: "agents/imported-agent/agent.vagent.yaml", source_file_hash: "imported-hash" }),
     getDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "draft-1", revision: 1, etag: "etag-1", source_file_hash: "source-hash", source: { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", inputs: {}, outputs: {}, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: {} }, lock: {} } }),
   };
 }
@@ -237,8 +243,17 @@ describe("desktop Project workspace", () => {
     expect(agentLink).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
     await user.click(agentLink);
     await waitFor(() => expect(agentLink).toHaveAttribute("aria-current", "page"));
-    expect(document.querySelector(`.nav-group-projects .sidebar-nav-item > a[href="${projectRoutePaths.project("tree")}"]`)).not.toHaveAttribute("aria-current");
-    await user.click(screen.getByRole("button", { name: "Project actions: tree" }));
+    const projectRow = document.querySelector(`.nav-group-projects .sidebar-nav-item-row`);
+    const projectLink = projectRow?.querySelector(`a[href="${projectRoutePaths.project("tree")}"]`);
+    expect(projectLink).toHaveClass("sidebar-nav-link");
+    expect(projectLink).not.toHaveAttribute("aria-current");
+    expect(projectRow?.querySelector(`button[aria-label="Add Agent: Tree Project"]`)).not.toBeNull();
+    expect(projectRow?.querySelector(".sidebar-nav-item-action")).not.toBeNull();
+    expect(projectRow?.querySelector(".sidebar-nav-item-leading-action")).not.toBeNull();
+    expect(projectRow?.parentElement?.querySelector(":scope > .sidebar-nav-children")).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Project actions: Tree Project" }));
+    expect(document.querySelector(".sidebar-project-menu")?.parentElement).toBe(document.body);
+    expect(document.querySelector(".sidebar-project-menu")).not.toHaveClass("agent-add-chooser");
     expect(screen.getAllByRole("menuitem")).toHaveLength(3);
     expect(screen.getByRole("menuitem", { name: "Pin Project" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
@@ -247,7 +262,7 @@ describe("desktop Project workspace", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("links Add Agent to Factory and sends edit and delete requests only after confirmation", async () => {
+  it("opens Add Agent without navigation, submits blank Agent creation, and retains edit/delete confirmation", async () => {
     const editable = project({ project_id: "editable", name: "Before edit" });
     const api = apiFor([editable]);
     api.updateProject.mockResolvedValue(project({ project_id: "editable", name: "Allocated edit", description: "Updated" }));
@@ -257,7 +272,21 @@ describe("desktop Project workspace", () => {
     window.location.hash = projectRoutePaths.project("editable");
     render(<DesktopApp api={api} />);
 
-    expect((await screen.findByRole("link", { name: "Add Agent: Before edit" }))).toHaveAttribute("href", projectRoutePaths.factory("editable"));
+    await user.click(await screen.findByRole("button", { name: "Collapse Project: Before edit" }));
+    await user.click(screen.getByRole("button", { name: "Add Agent: Before edit" }));
+    expect(window.location.hash).toBe(projectRoutePaths.project("editable"));
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    expect(screen.getByRole("menuitem", { name: /Create blank Agent/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Import Agent from template/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Import Agent file/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: /Create blank Agent/ }));
+    await user.type(screen.getByRole("textbox", { name: "Agent name (optional)" }), "Requested Agent");
+    await user.type(screen.getByRole("textbox", { name: "Description (optional)" }), "Created here");
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => expect(api.createAgent).toHaveBeenCalledWith("editable", { mode: "blank", name: "Requested Agent", description: "Created here" }));
+    expect(window.location.hash).toBe(projectRoutePaths.project("editable"));
+    expect(screen.queryByRole("dialog", { name: "Create blank Agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse Project: Before edit" })).toHaveAttribute("aria-expanded", "true");
     await user.click(screen.getByRole("button", { name: "Project actions: Before edit" }));
     await user.click(screen.getByRole("menuitem", { name: "Edit" }));
     await user.clear(screen.getByRole("textbox", { name: "Project name" }));
@@ -274,6 +303,38 @@ describe("desktop Project workspace", () => {
     await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith("editable"));
     await waitFor(() => expect(window.location.hash).toBe("#/projects"));
     expect(screen.queryByRole("link", { name: "Allocated edit" })).not.toBeInTheDocument();
+  });
+
+  it("submits template and file Agent imports with their real request shapes", async () => {
+    const source = project({ project_id: "imports", name: "Import Project" });
+    const api = apiFor([source]);
+    api.getProject.mockResolvedValue(source);
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+
+    await user.click(await screen.findByRole("button", { name: "Add Agent: Import Project" }));
+    await user.click(screen.getByRole("menuitem", { name: /Import Agent from template/ }));
+    await screen.findByRole("option", { name: "Review Agent" });
+    await user.type(screen.getByRole("textbox", { name: "Agent name (optional)" }), "Template override");
+    await user.click(screen.getByRole("button", { name: "Import Agent" }));
+    await waitFor(() => expect(api.createAgent).toHaveBeenCalledWith("imports", { mode: "template", template_id: "review", name: "Template override" }));
+    expect(window.location.hash).toBe("#/projects");
+
+    await user.click(screen.getByRole("button", { name: "Add Agent: Import Project" }));
+    await user.click(screen.getByRole("menuitem", { name: /Import Agent file/ }));
+    const file = new File(["schema_version: '1.0'"], "review.vagent.yaml", { type: "application/x-yaml" });
+    await user.upload(screen.getByLabelText("Choose Agent file"), file);
+    await user.type(screen.getByRole("textbox", { name: "Description (optional)" }), "Imported file");
+    await user.click(screen.getByRole("button", { name: "Import Agent" }));
+    await waitFor(() => expect(api.importAgent).toHaveBeenCalledWith("imports", { file, description: "Imported file" }));
+    expect(window.location.hash).toBe("#/projects");
+  });
+
+  it("does not render an empty Agent children container when an empty Project is expanded", async () => {
+    const user = userEvent.setup();
+    render(<DesktopApp api={apiFor([project({ project_id: "empty", name: "Empty Project" })])} />);
+    await user.click(await screen.findByRole("button", { name: "Expand Project: Empty Project" }));
+    expect(document.querySelector(".nav-group-projects .sidebar-nav-children")).toBeNull();
   });
 
   it("renders title-only root headers and linked nested breadcrumbs at 320px", async () => {

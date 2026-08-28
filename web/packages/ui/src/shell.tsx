@@ -301,14 +301,16 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
                 const active = item.active ?? item.href === activeHref;
                 const label = shellText(item.label, t);
                 return <div className={`sidebar-nav-item ${item.children ? "has-children" : ""}`} key={`${item.href}-${label}`}>
-                  {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
-                  <a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>
-                  {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
+                  <div className="sidebar-nav-item-row">
+                    {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
+                    <a className={`sidebar-nav-link ${active ? "active" : ""}`} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={16} aria-hidden="true" /><span>{label}</span></a>
+                    {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
+                  </div>
                   {item.children && item.expanded ? <div className="sidebar-nav-children">{item.children.map((child) => {
                     const ChildIcon = child.icon;
                     const childActive = child.active ?? child.href === activeHref;
                     const childLabel = shellText(child.label, t);
-                    return <a className={childActive ? "active" : ""} key={`${child.href}-${childLabel}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={16} aria-hidden="true" /><span>{childLabel}</span></a>;
+                    return <a className={`sidebar-nav-link ${childActive ? "active" : ""}`} key={`${child.href}-${childLabel}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>;
                   })}</div> : null}
                 </div>;
               })}

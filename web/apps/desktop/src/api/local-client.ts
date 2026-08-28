@@ -1,12 +1,16 @@
 import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
+  type AgentTemplate,
   type CommitResponse,
+  type CreateAgentRequest,
+  type CreatedAgentResponse,
   type CreateProjectRequest,
   type DeleteProjectResponse,
   type DraftResponse,
   type ExportResponse,
   type ListAgentsResponse,
+  type ListAgentTemplatesResponse,
   type ListProjectsResponse,
   type LocalErrorEnvelope,
   type OpenProjectRequest,
@@ -63,6 +67,9 @@ export type LocalProjectApi = {
   getProject(projectId: string): Promise<ProjectSummaryResponse>;
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse>;
   deleteProject(projectId: string): Promise<DeleteProjectResponse>;
+  listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse>;
+  createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse>;
+  importAgent(projectId: string, input: { file: File; name?: string; description?: string }): Promise<CreatedAgentResponse>;
   getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
   selectDirectory(): Promise<SelectDirectoryResponse>;
 };
@@ -70,6 +77,7 @@ export type LocalProjectApi = {
 type RequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: object;
+  formData?: FormData;
   ifMatch?: string;
   idempotencyKey?: string;
   requireIdempotencyKey?: boolean;
@@ -225,6 +233,38 @@ function listAgents(value: unknown, status = 502): ListAgentsResponse {
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
+  };
+}
+
+function agentTemplate(value: unknown, status = 502): AgentTemplate {
+  const record = asRecord(value, status);
+  return {
+    template_id: asString(record.template_id, "template_id", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    default_slug: asString(record.default_slug, "default_slug", status),
+  };
+}
+
+function agentTemplates(value: unknown, status = 502): ListAgentTemplatesResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    templates: asArray(record.templates, "templates", status).map((item) => agentTemplate(item, status)),
+  };
+}
+
+function createdAgent(value: unknown, status = 502): CreatedAgentResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    agent_id: asString(record.agent_id, "agent_id", status),
+    slug: asString(record.slug, "slug", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    source_path: asString(record.source_path, "source_path", status),
+    source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
   };
 }
 
@@ -405,6 +445,28 @@ export class LocalApiClient {
     return this.request(`projects/${encodeURIComponent(projectId)}`, deletedProject, { method: "DELETE" });
   }
 
+  listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agent-templates`, agentTemplates);
+  }
+
+  createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents`, createdAgent, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  importAgent(projectId: string, input: { file: File; name?: string; description?: string }): Promise<CreatedAgentResponse> {
+    const formData = new FormData();
+    formData.append("file", input.file);
+    if (input.name) formData.append("name", input.name);
+    if (input.description) formData.append("description", input.description);
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/import`, createdAgent, {
+      method: "POST",
+      formData,
+    });
+  }
+
   listAgents(projectId: string): Promise<ListAgentsResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}/agents`, listAgents);
   }
@@ -497,7 +559,7 @@ export class LocalApiClient {
       response = await this.fetcher(apiUrl(this.baseUrl, path), {
         method,
         headers,
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.formData ? { body: options.formData } : options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         credentials: "include",
       });
     } catch (error) {

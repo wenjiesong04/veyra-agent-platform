@@ -61,6 +61,24 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({});
   });
 
+  it("uses JSON create/template bodies and multipart file import without local Agent parsing", async () => {
+    const created = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "Reviews", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" };
+    const fetcher = vi.fn().mockResolvedValueOnce(response(created, 201)).mockResolvedValueOnce(response(created, 201));
+    const client = new LocalApiClient({ fetcher });
+    const file = new File(["schema_version: '1.0'"], "reviewer.vagent.yaml", { type: "application/x-yaml" });
+
+    await client.createAgent("project-1", { mode: "template", template_id: "review", name: "Review override" });
+    await client.importAgent("project-1", { file, description: "Imported" });
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/agents");
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ mode: "template", template_id: "review", name: "Review override" });
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/agents/import");
+    expect(fetcher.mock.calls[1]?.[1]?.body).toBeInstanceOf(FormData);
+    const body = fetcher.mock.calls[1]?.[1]?.body as FormData;
+    expect(body.get("file")).toBe(file);
+    expect(body.get("description")).toBe("Imported");
+  });
+
   it("surfaces typed sidecar errors instead of falling back to fixture data", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", code: "project_unavailable", message: "Project root cannot be read", request_id: "request-1" }, 503));
     const client = new LocalApiClient({ fetcher });
