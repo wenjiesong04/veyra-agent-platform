@@ -143,13 +143,23 @@ export type ListAgentsResponse = {
 };
 
 export type CreateProjectRequest = {
-  name: string;
+  /** Empty or omitted names are allocated by the local service. */
+  name?: string;
   description: string;
 };
 
 /** Mutable local Project presentation state. The manifest remains authoritative. */
 export type UpdateProjectRequest = {
-  pinned: boolean;
+  name?: string;
+  description?: string;
+  pinned?: boolean;
+};
+
+export type DeleteProjectResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  disposition: "trashed" | "unlinked";
+  removed_at: string;
 };
 
 export type CreateAgentRequest = TemplateSelection;

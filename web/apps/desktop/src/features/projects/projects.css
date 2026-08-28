@@ -129,6 +129,9 @@
 .folder-selection p { margin: 4px 0 0; font-size: 12px; }
 
 .sidebar-project-actions { position: relative; display: inline-flex; }
+.project-row-actions { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.project-row-actions > a, .project-row-actions > button { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 9px; color: var(--subtle); background: transparent; cursor: pointer; }
+.project-row-actions > a:hover, .project-row-actions > button:hover, .project-row-actions > a:focus-visible, .project-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
 .sidebar-project-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; display: grid; min-width: 176px; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--soft-shadow); }
 .sidebar-project-menu button { border: 0; border-radius: 7px; padding: 8px 9px; color: var(--ink); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .sidebar-project-menu button:hover { background: var(--surface-soft); }
@@ -139,6 +142,8 @@
 .project-modal-hint { margin: 12px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .project-modal-actions { justify-content: flex-end; margin-top: 8px; }
 .project-form-error { margin: 0; color: var(--bad); font-size: 12px; }
+.project-form-success { margin: 0; color: var(--good); font-size: 12px; }
+.project-delete-copy { margin-top: 18px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .project-visually-hidden { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
 .project-detail-summary { justify-content: flex-start; }
@@ -300,7 +305,11 @@
   gap: 10px;
   border-bottom: 1px solid var(--line);
   padding: 11px 0;
+  color: inherit;
+  text-decoration: none;
 }
+
+a.project-agent-row:hover { color: var(--accent-strong); background: var(--surface-soft); }
 
 .project-agent-row:last-child {
   border-bottom: 0;

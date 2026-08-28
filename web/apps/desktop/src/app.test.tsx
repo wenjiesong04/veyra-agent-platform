@@ -31,6 +31,8 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
   selectDirectory: ReturnType<typeof vi.fn>;
   getProject: ReturnType<typeof vi.fn>;
   updateProject: ReturnType<typeof vi.fn>;
+  deleteProject: ReturnType<typeof vi.fn>;
+  getDraft: ReturnType<typeof vi.fn>;
 } {
   const getProject = vi.fn().mockImplementation(async (projectId: string) => project({ project_id: projectId, name: projectId }));
   return {
@@ -39,7 +41,9 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     openProject: vi.fn().mockResolvedValue(project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" })),
     selectDirectory: vi.fn().mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/tmp/selected-folder" }),
     getProject,
-    updateProject: vi.fn().mockImplementation(async (projectId: string, input: { pinned: boolean }) => project({ project_id: projectId, name: projectId, pinned: input.pinned, pinned_at: input.pinned ? "2026-08-28T00:00:00Z" : null })),
+    updateProject: vi.fn().mockImplementation(async (projectId: string, input: { pinned?: boolean; name?: string; description?: string }) => project({ project_id: projectId, name: input.name ?? projectId, description: input.description ?? "", pinned: input.pinned ?? false, pinned_at: input.pinned ? "2026-08-28T00:00:00Z" : null })),
+    deleteProject: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z" }),
+    getDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "draft-1", revision: 1, etag: "etag-1", source_file_hash: "source-hash", source: { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", inputs: {}, outputs: {}, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: {} }, lock: {} } }),
   };
 }
 
@@ -110,7 +114,7 @@ describe("desktop Project workspace", () => {
     expect(screen.queryByRole("heading", { name: "Projects", level: 2 })).not.toBeInTheDocument();
   });
 
-  it("creates a Project without rendering or calling the folder picker", async () => {
+  it("creates a Project with an intentionally blank name body and no folder picker", async () => {
     const api = apiFor();
     const created = project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" });
     api.createProject.mockResolvedValue(created);
@@ -120,14 +124,14 @@ describe("desktop Project workspace", () => {
 
     await user.click(await screen.findByRole("button", { name: "Create Project" }));
     expect(screen.getByRole("dialog", { name: "Create project" })).toBeInTheDocument();
-    await user.type(await screen.findByRole("textbox", { name: "Project name" }), "Created Project");
+    expect(await screen.findByRole("textbox", { name: "Project name" })).toHaveValue("");
     expect(screen.queryByRole("textbox", { name: /path/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect project/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/folder|save location|path|downloads/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /folder|save location/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ name: "Created Project", description: "" }));
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ description: "" }));
     expect(api.selectDirectory).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#/projects");
     expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
@@ -135,7 +139,7 @@ describe("desktop Project workspace", () => {
     expect(screen.queryByText("refresh unavailable")).not.toBeInTheDocument();
   });
 
-  it("opens an existing Project from the sidebar ellipsis menu through the same picker", async () => {
+  it("opens an existing Project from its distinct FolderOpen action", async () => {
     const api = apiFor();
     const opened = project({ project_id: "opened-project", name: "Opened Project", root_path: "/tmp/opened-project" });
     api.openProject.mockResolvedValue(opened);
@@ -143,8 +147,7 @@ describe("desktop Project workspace", () => {
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
 
-    await user.click(await screen.findByRole("button", { name: "Project actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Open existing project" }));
+    await user.click(await screen.findByRole("button", { name: "Open existing project" }));
     expect(screen.getByText("Choose an existing Veyra project folder.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Select folder" }));
     await user.click(screen.getByRole("button", { name: "Open project" }));
@@ -173,8 +176,7 @@ describe("desktop Project workspace", () => {
     api.selectDirectory.mockResolvedValueOnce({ schema_version: "1.0", status: "cancelled", root_path: null }).mockRejectedValueOnce(new Error("picker unavailable"));
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
-    await user.click(await screen.findByRole("button", { name: "Project actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Open existing project" }));
+    await user.click(await screen.findByRole("button", { name: "Open existing project" }));
     await user.click(screen.getByRole("button", { name: "Select folder" }));
     expect(screen.queryByText(/^Selected:/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Select folder" }));
@@ -199,28 +201,97 @@ describe("desktop Project workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "Evidence Project", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "2 Agents" })).toBeInTheDocument();
-    expect(screen.getByText("reviewer")).toBeInTheDocument();
+    expect(screen.getAllByText("reviewer")).toHaveLength(2);
     expect(screen.getByText("agents/reviewer/agent.vagent.yaml", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("Agents will be added later.")).not.toBeInTheDocument();
     expect(api.getProject).toHaveBeenCalledWith("p-detail");
   });
 
-  it("keeps pinned Projects first and updates the pin through the local API", async () => {
+  it("renders exactly one Pinned section and moves the previous pin out when another Project is pinned", async () => {
     const pinned = project({ project_id: "pinned", name: "Pinned Project", pinned: true, pinned_at: "2026-08-28T08:00:00Z" });
     const others = Array.from({ length: 10 }, (_, index) => project({ project_id: `project-${index}`, name: `Project ${index}`, indexed_at: `2026-08-28T0${index}:00:00Z` }));
     const api = apiFor([others[0]!, pinned, ...others.slice(1)]);
-    api.getProject.mockResolvedValue(project({ project_id: "project-0", name: "Project 0" }));
+    api.updateProject.mockImplementation(async (projectId: string, input: { pinned?: boolean }) => project({ project_id: projectId, name: projectId === "project-0" ? "Project 0" : "Pinned Project", pinned: input.pinned ?? false, pinned_at: input.pinned ? "2026-08-28T09:00:00Z" : null }));
     render(<DesktopApp api={api} />);
 
     await screen.findByRole("link", { name: "Pinned Project" });
-    const sidebarLinks = [...document.querySelectorAll(".nav-group-projects a")].map((link) => link.getAttribute("aria-label"));
-    expect(sidebarLinks[0]).toBe("Pinned Project");
-    expect(sidebarLinks).toHaveLength(9);
-    expect(sidebarLinks).not.toContain("Project 0");
+    expect(document.querySelectorAll(".nav-group-pinned")).toHaveLength(1);
+    expect(document.querySelector(".nav-group-pinned a")?.getAttribute("aria-label")).toBe("Pinned Project");
+    expect([...document.querySelectorAll(".nav-group-projects a")].map((link) => link.getAttribute("aria-label"))).not.toContain("Pinned Project");
 
-    await userEvent.click(screen.getByRole("button", { name: "Unpin Project" }));
-    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("pinned", { pinned: false }));
+    await userEvent.click(screen.getByRole("button", { name: "Project actions: Project 0" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Pin Project" }));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("project-0", { pinned: true }));
+    await waitFor(() => expect(document.querySelector(".nav-group-pinned a")?.getAttribute("aria-label")).toBe("Project 0"));
+    expect([...document.querySelectorAll(".nav-group-projects a")].map((link) => link.getAttribute("aria-label"))).not.toContain("Project 0");
     expect(window.location.hash).toBe("#/projects");
+  });
+
+  it("expands a Project tree into selected Agent links and keeps the per-Project menu to three actions", async () => {
+    const tree = project({ project_id: "tree", name: "Tree Project", agents: [{ agent_id: "agent-tree", slug: "tree-agent", source_path: "agents/tree/agent.vagent.yaml", source_file_hash: "tree-hash" }] });
+    const user = userEvent.setup();
+    render(<DesktopApp api={apiFor([tree])} />);
+
+    await user.click(await screen.findByRole("button", { name: "Expand Project: Tree Project" }));
+    const agentLink = screen.getByRole("link", { name: "tree-agent" });
+    expect(agentLink).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
+    await user.click(agentLink);
+    await waitFor(() => expect(agentLink).toHaveAttribute("aria-current", "page"));
+    expect(document.querySelector(`.nav-group-projects .sidebar-nav-item > a[href="${projectRoutePaths.project("tree")}"]`)).not.toHaveAttribute("aria-current");
+    await user.click(screen.getByRole("button", { name: "Project actions: tree" }));
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    expect(screen.getByRole("menuitem", { name: "Pin Project" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("links Add Agent to Factory and sends edit and delete requests only after confirmation", async () => {
+    const editable = project({ project_id: "editable", name: "Before edit" });
+    const api = apiFor([editable]);
+    api.updateProject.mockResolvedValue(project({ project_id: "editable", name: "Allocated edit", description: "Updated" }));
+    api.deleteProject.mockResolvedValue({ schema_version: "1.0", project_id: "editable", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z" });
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+
+    expect((await screen.findByRole("link", { name: "Add Agent: Before edit" }))).toHaveAttribute("href", projectRoutePaths.factory("editable"));
+    await user.click(screen.getByRole("button", { name: "Project actions: Before edit" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    await user.clear(screen.getByRole("textbox", { name: "Project name" }));
+    await user.type(screen.getByRole("textbox", { name: "Project name" }), "Requested name");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("editable", { name: "Requested name", description: "" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Server-assigned name: Allocated edit");
+    expect(await screen.findByRole("link", { name: "Allocated edit" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    await user.click(screen.getByRole("button", { name: "Project actions: Allocated edit" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(api.deleteProject).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Delete Project" }));
+    await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith("editable"));
+    expect(screen.queryByRole("link", { name: "Allocated edit" })).not.toBeInTheDocument();
+  });
+
+  it("renders title-only root headers and linked nested breadcrumbs at 320px", async () => {
+    setViewport(true);
+    const nested = project({ project_id: "crumb", name: "Breadcrumb Project", agents: [{ agent_id: "crumb-agent", slug: "breadcrumb-agent", source_path: "agents/breadcrumb/agent.vagent.yaml", source_file_hash: "crumb-hash" }] });
+    const api = apiFor([nested]);
+    api.getProject.mockResolvedValue(nested);
+    window.location.hash = projectRoutePaths.project("crumb");
+    render(<DesktopApp api={api} />);
+
+    expect(await screen.findByLabelText("Breadcrumb")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("href", "#/projects");
+    expect(screen.getByText("Breadcrumb Project", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    cleanup();
+    window.location.hash = "#/projects";
+    render(<DesktopApp api={apiFor()} />);
+    expect(await screen.findByRole("heading", { name: "New chat", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Breadcrumb")).not.toBeInTheDocument();
+    const menu = screen.getByRole("button", { name: "Open navigation" });
+    await userEvent.click(menu);
+    expect(screen.getAllByRole("button", { name: "Close navigation" })).toHaveLength(2);
   });
 
   it("preserves account controls, theme choices, and responsive sidebar focus behavior", async () => {

@@ -3,6 +3,7 @@ import {
   type AgentSource,
   type CommitResponse,
   type CreateProjectRequest,
+  type DeleteProjectResponse,
   type DraftResponse,
   type ExportResponse,
   type ListAgentsResponse,
@@ -61,11 +62,13 @@ export type LocalProjectApi = {
   openProject(input: OpenProjectRequest): Promise<ProjectSummaryResponse>;
   getProject(projectId: string): Promise<ProjectSummaryResponse>;
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse>;
+  deleteProject(projectId: string): Promise<DeleteProjectResponse>;
+  getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
   selectDirectory(): Promise<SelectDirectoryResponse>;
 };
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: object;
   ifMatch?: string;
   idempotencyKey?: string;
@@ -222,6 +225,20 @@ function listAgents(value: unknown, status = 502): ListAgentsResponse {
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
+  };
+}
+
+function deletedProject(value: unknown, status = 502): DeleteProjectResponse {
+  const record = schemaRecord(value, status);
+  const disposition = record.disposition;
+  if (disposition !== "trashed" && disposition !== "unlinked") {
+    throw new LocalApiClientError("The local service returned an invalid project deletion result.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    disposition,
+    removed_at: asString(record.removed_at, "removed_at", status),
   };
 }
 
@@ -382,6 +399,10 @@ export class LocalApiClient {
       method: "PATCH",
       body: input,
     });
+  }
+
+  deleteProject(projectId: string): Promise<DeleteProjectResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}`, deletedProject, { method: "DELETE" });
   }
 
   listAgents(projectId: string): Promise<ListAgentsResponse> {

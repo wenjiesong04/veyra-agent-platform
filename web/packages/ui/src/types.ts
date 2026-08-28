@@ -17,6 +17,9 @@ export type NavigationItem = {
   active?: boolean;
   onClick?: () => void;
   trailingAction?: ReactNode;
+  leadingAction?: ReactNode;
+  children?: NavigationItem[];
+  expanded?: boolean;
 };
 
 export type NavigationGroupStatus = "loading" | "empty" | "error";
@@ -24,7 +27,7 @@ export type NavigationGroupStatus = "loading" | "empty" | "error";
 export type NavigationGroup = {
   label: string;
   items: NavigationItem[];
-  section?: "fixed" | "projects" | "recent";
+  section?: "fixed" | "projects" | "pinned" | "recent";
   action?: ReactNode;
   status?: NavigationGroupStatus;
   statusText?: string;

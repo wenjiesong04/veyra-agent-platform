@@ -11,6 +11,7 @@ type ProjectWorkspaceValue = {
   error: string | null;
   refresh: () => Promise<void>;
   upsertProject: (project: ProjectSummaryResponse) => void;
+  removeProject: (projectId: string) => void;
   setProjectPinned: (projectId: string, pinned: boolean) => Promise<ProjectSummaryResponse>;
 };
 
@@ -45,10 +46,17 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
 
   const upsertProject = useCallback((project: ProjectSummaryResponse) => {
     setProjects((current) => {
-      const index = current.findIndex((item) => item.project_id === project.project_id);
-      if (index < 0) return [...current, project];
-      return current.map((item, itemIndex) => itemIndex === index ? project : item);
+      const normalized = project.pinned
+        ? current.map((item) => item.project_id === project.project_id ? project : { ...item, pinned: false, pinned_at: null })
+        : current;
+      const index = normalized.findIndex((item) => item.project_id === project.project_id);
+      if (index < 0) return [...normalized, project];
+      return normalized.map((item, itemIndex) => itemIndex === index ? project : item);
     });
+  }, []);
+
+  const removeProject = useCallback((projectId: string) => {
+    setProjects((current) => current.filter((project) => project.project_id !== projectId));
   }, []);
 
   const setProjectPinned = useCallback(async (projectId: string, pinned: boolean) => {
@@ -64,8 +72,9 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     error,
     refresh,
     upsertProject,
+    removeProject,
     setProjectPinned,
-  }), [api, projects, status, error, refresh, upsertProject, setProjectPinned]);
+  }), [api, projects, status, error, refresh, upsertProject, removeProject, setProjectPinned]);
 
   return <ProjectWorkspaceContext.Provider value={value}>{children}</ProjectWorkspaceContext.Provider>;
 }

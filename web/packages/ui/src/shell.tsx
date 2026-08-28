@@ -1,4 +1,4 @@
-import { History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, UserRound, X } from "lucide-react";
+import { ArrowLeft, History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, UserRound, X, type LucideIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useLocale } from "./i18n";
 import { IconButton } from "./primitives";
@@ -9,8 +9,10 @@ type ApplicationShellProps = {
   brand: Brand;
   navigation: NavigationGroup[];
   activeHref: string;
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
+  breadcrumbs?: { label: string; href?: string; icon?: LucideIcon }[];
+  backHref?: string;
   headerActions?: ReactNode;
   children: ReactNode;
   account?: AccountMenuConfig;
@@ -65,6 +67,12 @@ const shellLabelKeys: Record<string, string> = {
   File: "file",
   "Entry detail": "entryDetail",
   Projects: "projects",
+  Pinned: "pinned",
+  Home: "home",
+  Agent: "agent",
+  Factory: "factory",
+  Version: "version",
+  Run: "run",
   "New chat": "newChat",
   "Run workspace": "runWorkspace",
   "Resource library": "resourceLibrary",
@@ -200,7 +208,7 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
   );
 }
 
-export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, headerActions, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
+export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, backHref, headerActions, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
@@ -253,7 +261,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
 
   const iconSrc = brand.iconSrc ?? "/veyra-icon.png";
   const languageIsEnglish = locale === "en";
-  const localizedEyebrow = shellText(eyebrow, t);
+  const localizedEyebrow = eyebrow ? shellText(eyebrow, t) : undefined;
   const localizedTitle = shellText(title, t);
   const resolvedAccount: AccountMenuConfig = account ?? {
     displayName: t("localWorkspace"),
@@ -292,7 +300,17 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
                 const Icon = item.icon;
                 const active = item.active ?? item.href === activeHref;
                 const label = shellText(item.label, t);
-                return <div className="sidebar-nav-item" key={`${item.href}-${label}`}><a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>{item.trailingAction ? <span className="sidebar-nav-item-action">{item.trailingAction}</span> : null}</div>;
+                return <div className={`sidebar-nav-item ${item.children ? "has-children" : ""}`} key={`${item.href}-${label}`}>
+                  {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
+                  <a className={active ? "active" : ""} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>
+                  {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
+                  {item.children && item.expanded ? <div className="sidebar-nav-children">{item.children.map((child) => {
+                    const ChildIcon = child.icon;
+                    const childActive = child.active ?? child.href === activeHref;
+                    const childLabel = shellText(child.label, t);
+                    return <a className={childActive ? "active" : ""} key={`${child.href}-${childLabel}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={16} aria-hidden="true" /><span>{childLabel}</span></a>;
+                  })}</div> : null}
+                </div>;
               })}
               {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}
             </div>
@@ -310,7 +328,13 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
       <div className="app-main">
         <header className="app-header">
           <IconButton ref={mobileMenuRef} className="mobile-menu" icon={Menu} label={t("openNavigation")} aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={openMobile} />
-          <div className="header-copy"><span className="ui-eyebrow">{localizedEyebrow}</span><h1>{localizedTitle}</h1></div>
+          <div className={`header-copy ${breadcrumbs ? "has-breadcrumbs" : ""}`}>
+            {breadcrumbs ? <nav className="header-breadcrumbs" aria-label={t("breadcrumb")}>{backHref ? <a className="breadcrumb-back" href={backHref} aria-label={t("back")}><ArrowLeft size={16} aria-hidden="true" /></a> : null}{breadcrumbs.map((crumb, index) => {
+              const Icon = crumb.icon;
+              const current = index === breadcrumbs.length - 1;
+              return <span className="breadcrumb-part" key={`${crumb.label}-${crumb.href ?? index}`}>{index > 0 ? <span className="breadcrumb-separator" aria-hidden="true">/</span> : null}{current ? <span aria-current="page">{Icon ? <Icon size={15} aria-hidden="true" /> : null}{shellText(crumb.label, t)}</span> : <a href={crumb.href}>{Icon ? <Icon size={15} aria-hidden="true" /> : null}{shellText(crumb.label, t)}</a>}</span>;
+            })}</nav> : <>{localizedEyebrow ? <span className="ui-eyebrow">{localizedEyebrow}</span> : null}<h1>{localizedTitle}</h1></>}
+          </div>
           <div className="header-actions">
             {headerActions}
             <button className="header-control history-control" type="button" onClick={onHistoryClick} aria-label={t("history")} title={t("history")}><History size={17} /><span>{t("history")}</span></button>
