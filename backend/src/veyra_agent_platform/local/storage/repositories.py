@@ -608,3 +608,40 @@ class LocalRepository:
                     message="local Runtime restarted before this run finished",
                     finished_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
+                recovered = connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (row["run_id"],)
+                ).fetchone()
+                assert recovered is not None
+                payload = self._run_payload(recovered)
+                for record in connection.execute(
+                    "SELECT scope, key, request_digest, response_json "
+                    "FROM idempotency_records"
+                ).fetchall():
+                    response = json.loads(record["response_json"])
+                    if response.get("run_id") == row["run_id"]:
+                        self.replace_idempotent_response(
+                            connection,
+                            record["scope"],
+                            record["key"],
+                            record["request_digest"],
+                            payload,
+                        )
+
+    @staticmethod
+    def _run_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "run_id": row["run_id"],
+            "project_id": row["project_id"],
+            "agent_id": row["agent_id"],
+            "version_id": row["version_id"],
+            "status": row["status"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "error": (
+                {"code": row["error_code"], "message": row["error_message"]}
+                if row["error_code"]
+                else None
+            ),
+            "created_at": row["created_at"],
+            "finished_at": row["finished_at"],
+        }

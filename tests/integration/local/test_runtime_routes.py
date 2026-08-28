@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -264,6 +265,19 @@ def test_runtime_startup_interrupts_orphan_run(tmp_path: Path) -> None:
             client.app.state.repository.add_run_events(
                 connection, orphan_id, [(None, "run.created", {})]
             )
+            reserved = dict(completed)
+            reserved.update(
+                {
+                    "run_id": orphan_id,
+                    "status": "running",
+                    "result": None,
+                    "error": None,
+                    "finished_at": None,
+                }
+            )
+            client.app.state.repository.remember_response(
+                connection, "run:recovery", "recovery-key", "recovery-digest", reserved
+            )
     with TestClient(create_app(settings)) as restarted:
         detail = restarted.get(url + "s/" + orphan_id).json()
         assert detail["status"] == "interrupted"
@@ -272,6 +286,82 @@ def test_runtime_startup_interrupts_orphan_run(tmp_path: Path) -> None:
             "run.created",
             "run.interrupted",
         ]
+        with restarted.app.state.repository.transaction() as connection:
+            replay = restarted.app.state.repository.idempotent_response(
+                connection, "run:recovery", "recovery-key", "recovery-digest"
+            )
+        assert replay is not None
+        assert replay["status"] == "interrupted"
+        assert replay["error"]["code"] == "run_interrupted"
+
+
+def test_runtime_same_key_concurrency_reserves_one_run(tmp_path: Path) -> None:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {"id": "output", "component_type": "Output", "output_name": "name"},
+        ],
+        [{"from": "start", "port": "next", "to": "output"}],
+        {"name": "string"},
+    )
+    source["outputs"] = {"name": "string"}
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        runtime = client.app.state.runtime
+        execute_started = threading.Event()
+        release_execute = threading.Event()
+        request_barrier = threading.Barrier(3)
+        original_execute = runtime._execute
+
+        def delayed_execute(*args: object) -> object:
+            execute_started.set()
+            assert release_execute.wait(timeout=5)
+            return original_execute(*args)  # type: ignore[arg-type]
+
+        runtime._execute = delayed_execute  # type: ignore[method-assign]
+        responses: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+        replay_returned = threading.Event()
+        key = new_uuid7()
+
+        def request_run() -> None:
+            try:
+                request_barrier.wait(timeout=5)
+                response = runtime.run(
+                    project["project_id"],
+                    agent["agent_id"],
+                    {"name": "Ada"},
+                    key,
+                )
+                responses.append(response)
+                replay_returned.set()
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=request_run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        request_barrier.wait(timeout=5)
+        assert execute_started.wait(timeout=5)
+        assert replay_returned.wait(timeout=5)
+        assert len(responses) == 1
+        assert responses[0]["status"] == "running"
+        assert responses[0]["finished_at"] is None
+        release_execute.set()
+        for thread in threads:
+            thread.join(timeout=5)
+        assert not errors
+        assert len(responses) == 2
+        assert {response["status"] for response in responses} == {
+            "running",
+            "unverified",
+        }
+        assert len(client.app.state.repository.runs(agent["agent_id"])) == 1
 
 
 def test_runtime_rejects_wrong_declared_output_type(tmp_path: Path) -> None:

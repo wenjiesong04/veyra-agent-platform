@@ -13,6 +13,11 @@ HEAD_REVISION = "local_0006_runtime_runs"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 
+def _remove_sqlite_sidecars(database_path: Path) -> None:
+    for suffix in ("-wal", "-shm"):
+        Path(f"{database_path}{suffix}").unlink(missing_ok=True)
+
+
 def migrate_local_database(database_path: Path) -> None:
     """Upgrade an application-owned SQLite file to the only supported schema head."""
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,7 +33,11 @@ def migrate_local_database(database_path: Path) -> None:
         command.upgrade(config, "head")
     except Exception:
         if had_database:
+            _remove_sqlite_sidecars(database_path)
             shutil.copy2(backup_path, database_path)
+        else:
+            database_path.unlink(missing_ok=True)
+        _remove_sqlite_sidecars(database_path)
         raise
     require_schema_head(database_path)
 

@@ -60,6 +60,39 @@ def test_only_alembic_bootstraps_schema_and_fresh_upgrade_is_repeatable(
         migrate_local_database(collision)
 
 
+def test_failed_migration_restores_or_removes_sqlite_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_upgrade(*_: object, **__: object) -> None:
+        raise RuntimeError("upgrade failed")
+
+    existing = tmp_path / "existing.sqlite3"
+    migrate_local_database(existing)
+    with sqlite3.connect(existing) as connection:
+        connection.execute("CREATE TABLE preserved (value TEXT)")
+        connection.execute("INSERT INTO preserved VALUES ('keep')")
+    Path(f"{existing}-wal").write_text("stale")
+    Path(f"{existing}-shm").write_text("stale")
+    monkeypatch.setattr(
+        "veyra_agent_platform.local.storage.bootstrap.command.upgrade", fail_upgrade
+    )
+    with pytest.raises(RuntimeError, match="upgrade failed"):
+        migrate_local_database(existing)
+    assert not Path(f"{existing}-wal").exists()
+    assert not Path(f"{existing}-shm").exists()
+    with sqlite3.connect(existing) as connection:
+        assert connection.execute("SELECT value FROM preserved").fetchone() == ("keep",)
+
+    fresh = tmp_path / "fresh.sqlite3"
+    Path(f"{fresh}-wal").write_text("stale")
+    Path(f"{fresh}-shm").write_text("stale")
+    with pytest.raises(RuntimeError, match="upgrade failed"):
+        migrate_local_database(fresh)
+    assert not fresh.exists()
+    assert not Path(f"{fresh}-wal").exists()
+    assert not Path(f"{fresh}-shm").exists()
+
+
 def test_lifecycle_migration_empty_and_upgrade_identity(tmp_path: Path) -> None:
     fresh = tmp_path / "fresh.sqlite3"
     migrate_local_database(fresh)
