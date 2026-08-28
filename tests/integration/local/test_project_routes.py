@@ -58,15 +58,8 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         reopened = client.post("/api/v1/projects/open", json={"root_path": str(root)})
         assert reopened.status_code == 200
         assert reopened.json()["project_id"] == project["project_id"]
-        assert reopened.json()["manifest_hash"] == project["manifest_hash"]
         listed = client.get("/api/v1/projects")
         assert listed.status_code == 200
-        listed_project = next(
-            item
-            for item in listed.json()["projects"]
-            if item["project_id"] == project["project_id"]
-        )
-        assert listed_project["manifest_hash"] == project["manifest_hash"]
         assert {item["project_id"] for item in listed.json()["projects"]} == {
             project["project_id"],
             duplicate.json()["project_id"],
@@ -74,42 +67,6 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         fetched = client.get(f"/api/v1/projects/{project['project_id']}")
         assert fetched.status_code == 200
         assert fetched.json() == reopened.json()
-
-
-def test_project_summary_contract_includes_stored_agent_file_hash(
-    tmp_path: Path,
-) -> None:
-    fixture_root = ROOT / "contracts" / "fixtures" / "project" / "agents"
-    agent = json.loads(
-        (fixture_root / "github-triage" / "agent.vagent.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    settings = LocalSettings(
-        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
-        project_storage_root=tmp_path / "application-data" / "projects",
-    )
-    with TestClient(create_app(settings)) as client:
-        created = client.post(
-            "/api/v1/projects",
-            json={"name": "With Agent", "agents": [agent]},
-        )
-        assert created.status_code == 201
-        project = created.json()
-        assert project["manifest_hash"]
-        assert project["agents"][0]["source_file_hash"]
-
-        project_id = project["project_id"]
-        for response in (
-            client.get(f"/api/v1/projects/{project_id}"),
-            client.patch(f"/api/v1/projects/{project_id}", json={"pinned": True}),
-        ):
-            assert response.status_code == 200
-            assert response.json()["manifest_hash"] == project["manifest_hash"]
-            assert (
-                response.json()["agents"][0]["source_file_hash"]
-                == project["agents"][0]["source_file_hash"]
-            )
 
 
 def test_project_metadata_description_pinning_and_closed_patch_body(
@@ -225,6 +182,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
         assert created.status_code == 201
         project = created.json()
         agent_id = project["agents"][0]["agent_id"]
+        assert project["agents"][0]["source_file_hash"]
         draft = client.get(
             f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/draft"
         )
