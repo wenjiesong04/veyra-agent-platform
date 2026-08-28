@@ -19,6 +19,7 @@ export const projectRoutePaths = {
   agentVersion: (projectId: string, agentId: string, versionId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/versions/${encodeRouteSegment(versionId)}`,
   factory: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/factory`,
   agentDesign: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/design`,
+  agentAnalysis: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/analysis`,
   agentRun: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/run`,
 } as const;
 
@@ -33,7 +34,7 @@ export const libraryRoutePaths = {
   file: (fileId: string) => `#/files/${encodeRouteSegment(fileId)}`,
 } as const;
 
-export type ProjectRouteKind = "project" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-run";
+export type ProjectRouteKind = "project" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
 export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
 export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 
@@ -118,6 +119,9 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   if (parts.length === 6 && parts[2] === "agents" && agentId && parts[4] === "versions" && versionId) return { kind: "agent-version", path, projectId, agentId, versionId };
   if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "design") {
     return { kind: "agent-design", path, projectId, agentId };
+  }
+  if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "analysis") {
+    return { kind: "agent-analysis", path, projectId, agentId };
   }
   if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "run") {
     return { kind: "agent-run", path, projectId, agentId };

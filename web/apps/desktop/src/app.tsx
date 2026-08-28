@@ -7,7 +7,9 @@ import type { NavigationGroup } from "@veyra/ui";
 import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { desktopHeader } from "./desktop-header";
+import { agentContextActiveHref, agentContextNavigation, agentRecentNavigation, isAgentContextRoute } from "./features/agents/agent-navigation";
 import { AccountPage } from "./pages/account";
+import { AgentAnalysisPage } from "./pages/agent-analysis";
 import { AgentRunPage } from "./pages/agent-run";
 import { AgentDetailPage } from "./pages/agent-detail";
 import { AgentVersionPage } from "./pages/agent-version";
@@ -68,6 +70,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "agent-version") return <AgentVersionPage projectId={route.projectId} agentId={route.agentId ?? ""} versionId={route.versionId ?? ""} />;
   if (route.kind === "factory") return <FactoryPage projectId={route.projectId} />;
   if (route.kind === "agent-design") return <StudioPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
+  if (route.kind === "agent-analysis") return <AgentAnalysisPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "agent-run") return <AgentRunPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "components") return <ComponentsPage />;
   if (route.kind === "component") return <ComponentsPage componentId={route.componentId} />;
@@ -95,19 +98,24 @@ function DesktopWorkspace() {
   if (route.kind === "login") return <LoginPage />;
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
-  const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run" ? route.projectId : undefined;
-  const activeAgentId = route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "agent-design" || route.kind === "agent-run" ? route.agentId : undefined;
-  const activeHref = route.kind === "projects" || route.kind === "chat"
+  const agentContextRoute = isAgentContextRoute(route) ? route : undefined;
+  const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-analysis" || route.kind === "agent-run" ? route.projectId : undefined;
+  const activeAgentId = agentContextRoute?.agentId;
+  const activeHref = agentContextRoute
+    ? agentContextActiveHref(agentContextRoute)
+    : route.kind === "projects" || route.kind === "chat"
     ? desktopRoutePaths.chat
-    : route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-run"
+    : route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-analysis" || route.kind === "agent-run"
     ? desktopRoutePaths.projects
     : route.kind === "component" || route.kind === "components" ? desktopRoutePaths.components
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : desktopRoutePaths[route.kind];
   const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId, routeKey: route.path });
-  const header = desktopHeader(route, projects);
-  const navigation: NavigationGroup[] = [fixedNavigation, ...projectNavigation];
+  const header = desktopHeader(route, projects, locale);
+  const navigation: NavigationGroup[] = agentContextRoute
+    ? [agentContextNavigation(agentContextRoute, locale), ...projectNavigation, agentRecentNavigation(locale)]
+    : [fixedNavigation, ...projectNavigation];
 
   return (
     <ApplicationShell

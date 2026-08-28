@@ -1,0 +1,25 @@
+.agent-analysis-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.agent-analysis-empty {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  padding: 24px;
+  background: var(--surface-soft);
+}
+
+.agent-analysis-empty .ui-empty {
+  max-width: 420px;
+}
+
+@media (max-width: 540px) {
+  .agent-analysis-empty {
+    min-height: 220px;
+    padding: 18px;
+  }
+}

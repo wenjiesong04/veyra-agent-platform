@@ -358,6 +358,57 @@ describe("desktop Project workspace", () => {
     expect(screen.getAllByRole("button", { name: "Close navigation" })).toHaveLength(2);
   });
 
+  it("uses Agent-context navigation in English while preserving the real Project tree", async () => {
+    const scoped = project({
+      project_id: "agent-project",
+      name: "Agent Project",
+      agents: [{ agent_id: "agent-one", slug: "review-agent", source_path: "agents/review-agent/agent.vagent.yaml", source_file_hash: "agent-hash" }],
+    });
+    window.location.hash = projectRoutePaths.agent(scoped.project_id, "agent-one");
+    render(<DesktopApp api={apiFor([scoped])} />);
+
+    const contextLinks = await screen.findAllByRole("link", { name: /^(New chat|Orchestration|Data analysis)$/ });
+    expect(contextLinks.map((link) => link.textContent)).toEqual(["New chat", "Orchestration", "Data analysis"]);
+    expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.agent("agent-project", "agent-one"));
+    expect(screen.getByRole("link", { name: "Orchestration" })).toHaveAttribute("href", projectRoutePaths.agentDesign("agent-project", "agent-one"));
+    expect(screen.getByRole("link", { name: "Data analysis" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project", "agent-one"));
+    expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("aria-current", "page");
+    const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agent("agent-project", "agent-one") + "\"]");
+    const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("agent-project") + "\"]");
+    expect(agentTreeLink).toHaveAttribute("aria-current", "page");
+    expect(projectTreeLink).not.toHaveAttribute("aria-current");
+    expect(document.querySelector(".nav-group-recent")).toBeInTheDocument();
+    expect(screen.getByText("No recent conversations or runs yet.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("link", { name: "Data analysis" }));
+    expect(await screen.findByRole("heading", { name: "Data analysis", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Data analysis" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("localizes Agent-context navigation and analysis empty state in Chinese", async () => {
+    window.localStorage.setItem("veyra.language", "zh");
+    const scoped = project({
+      project_id: "agent-project-zh",
+      name: "中文项目",
+      agents: [{ agent_id: "agent-zh", slug: "审阅 Agent", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "agent-hash" }],
+    });
+    window.location.hash = projectRoutePaths.agentAnalysis(scoped.project_id, "agent-zh");
+    render(<DesktopApp api={apiFor([scoped])} />);
+
+    const contextLinks = await screen.findAllByRole("link", { name: /^(新聊天|编排|数据分析)$/ });
+    expect(contextLinks.map((link) => link.textContent)).toEqual(["新聊天", "编排", "数据分析"]);
+    expect(screen.getByRole("link", { name: "数据分析" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project-zh", "agent-zh"));
+    expect(screen.getByRole("link", { name: "数据分析" })).toHaveAttribute("aria-current", "page");
+    const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agent("agent-project-zh", "agent-zh") + "\"]");
+    const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("agent-project-zh") + "\"]");
+    expect(agentTreeLink).toHaveAttribute("aria-current", "page");
+    expect(projectTreeLink).not.toHaveAttribute("aria-current");
+    expect(screen.getByText("暂无最近聊天或运行记录。")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "数据分析", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("暂无可分析的运行记录")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "主页" })).toHaveAttribute("href", "#/projects");
+  });
+
   it("preserves account controls, theme choices, and responsive sidebar focus behavior", async () => {
     const user = userEvent.setup();
     const api = apiFor();
@@ -512,6 +563,7 @@ describe("desktop route parser", () => {
     expect(parseDesktopRoute(projectRoutePaths.agents("p")).kind).toBe("project-agents");
     expect(parseDesktopRoute(projectRoutePaths.agent("p", "a")).kind).toBe("agent-detail");
     expect(parseDesktopRoute(projectRoutePaths.agentVersion("p", "a", "v1")).kind).toBe("agent-version");
+    expect(parseDesktopRoute(projectRoutePaths.agentAnalysis("p", "a")).kind).toBe("agent-analysis");
     expect(parseDesktopRoute("#/components").kind).toBe("components");
     expect(parseDesktopRoute("#/files").kind).toBe("files");
     expect(parseDesktopRoute("#/runs").kind).toBe("runs");
