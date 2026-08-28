@@ -137,6 +137,98 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
     assert restarted.json()["pinned_at"] == repinned.json()["pinned_at"]
 
 
+def test_project_agent_creation_templates_and_import(tmp_path: Path) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
+    fixture = (
+        ROOT
+        / "contracts"
+        / "fixtures"
+        / "project"
+        / "agents"
+        / "github-triage"
+        / "agent.vagent.yaml"
+    )
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={}).json()
+        project_id = project["project_id"]
+
+        templates = client.get(f"/api/v1/projects/{project_id}/agent-templates")
+        assert templates.status_code == 200
+        template = templates.json()["templates"][0]
+        assert template == {
+            "template_id": "veyra.starter-agent@1.0.0",
+            "name": "Starter Agent",
+            "description": "A safe local-first starting point for a new Agent.",
+            "default_slug": "starter-agent",
+        }
+
+        blank = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={"mode": "blank", "name": "  ", "description": "  "},
+        )
+        suffix = client.post(
+            f"/api/v1/projects/{project_id}/agents", json={"mode": "blank"}
+        )
+        created_template = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={"mode": "template", "template_id": template["template_id"]},
+        )
+        assert (
+            blank.status_code
+            == suffix.status_code
+            == created_template.status_code
+            == 201
+        )
+        assert (blank.json()["name"], blank.json()["slug"]) == (
+            "New Agent",
+            "new-agent",
+        )
+        assert blank.json()["project_id"] == project_id
+        assert (suffix.json()["name"], suffix.json()["slug"]) == (
+            "New Agent(1)",
+            "new-agent-1",
+        )
+        assert (created_template.json()["name"], created_template.json()["slug"]) == (
+            "Starter Agent",
+            "starter-agent",
+        )
+
+        imported = client.post(
+            f"/api/v1/projects/{project_id}/agents/import",
+            files={
+                "file": (
+                    "github-triage.yml",
+                    fixture.read_bytes(),
+                    "application/yaml",
+                )
+            },
+        )
+        assert imported.status_code == 201
+        assert (imported.json()["name"], imported.json()["slug"]) == (
+            "GitHub Triage",
+            "github-triage",
+        )
+        agent_root = Path(project["root_path"]) / imported.json()["source_path"]
+        assert (agent_root.parent / "README.md").is_file()
+        assert (agent_root.parent / "tests").is_dir()
+
+        oversized = client.post(
+            f"/api/v1/projects/{project_id}/agents/import",
+            files={
+                "file": (
+                    "too-large.vagent.yaml",
+                    b"#" * 1_000_001,
+                    "application/yaml",
+                )
+            },
+        )
+        assert oversized.status_code == 422
+        assert oversized.json()["code"] == "project_invalid"
+
+
 def test_project_names_edit_manifest_and_exclusive_pin(tmp_path: Path) -> None:
     settings = LocalSettings(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",

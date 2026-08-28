@@ -15,18 +15,24 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
-from veyra_agent_platform.contracts.agent import AgentSource, ProjectManifest
+from veyra_agent_platform.contracts.agent import (
+    AgentSource,
+    ProjectAgentDirectory,
+    ProjectManifest,
+)
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.storage.objects import write_object
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 from veyra_agent_platform.local.templates import (
+    STARTER_TEMPLATE_ID,
     AgentTemplateCatalog,
     AgentTemplateError,
 )
 
 MAX_INDEXED_FILE_BYTES = 1_000_000
 MAX_INDEXED_TOTAL_BYTES = 10_000_000
+MAX_AGENT_IMPORT_BYTES = 1_000_000
 _EXCLUDED_DIRECTORIES = {".git", "node_modules", "build", "cache", "runtime"}
 _FORBIDDEN_SECRET_NAMES = {".env", "id_rsa", "credentials.json"}
 _FORBIDDEN_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".token"}
@@ -250,10 +256,87 @@ class ProjectService:
             "removed_at": removed_at,
         }
 
+    def create_agent(
+        self,
+        *,
+        project_id: str,
+        mode: str,
+        template_id: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Create one blank or catalog-based Agent inside an existing Project."""
+        with self._writer_lock:
+            if mode == "blank":
+                source = self._starter_source()
+                return self._install_prepared_source(
+                    project_id=project_id,
+                    source=source,
+                    name=name,
+                    description=description,
+                    slug="new-agent",
+                    default_name="New Agent",
+                )
+            if mode == "template":
+                if template_id is None:
+                    raise ProjectError("template_id is required for template mode")
+                source = self._template_source(template_id)
+                return self._install_prepared_source(
+                    project_id=project_id,
+                    source=source,
+                    name=name,
+                    description=description,
+                )
+            raise ProjectError("Agent creation mode is unknown")
+
+    def import_agent(
+        self,
+        *,
+        project_id: str,
+        filename: str | None,
+        contents: bytes,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Safely validate and install one portable Agent source file."""
+        if not isinstance(filename, str) or not filename.lower().endswith(
+            (".vagent.yaml", ".yaml", ".yml")
+        ):
+            raise ProjectError("import must be a .vagent.yaml, .yaml, or .yml file")
+        if not isinstance(contents, bytes) or len(contents) > MAX_AGENT_IMPORT_BYTES:
+            raise ProjectError("Agent import exceeds the 1 MiB size limit")
+        try:
+            source_text = contents.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProjectError("Agent import must be UTF-8") from exc
+        source = AgentSource.from_dict(self._parse_yaml(source_text, "Agent import"))
+        with self._writer_lock:
+            return self._install_prepared_source(
+                project_id=project_id,
+                source=source,
+                name=name,
+                description=description,
+            )
+
     def add_agent(
         self, *, project_id: str, template_selection: dict[str, str]
     ) -> dict[str, Any]:
-        """Atomically add one catalog Agent to an existing Project directory."""
+        """Install a legacy catalog selection through the common source installer."""
+        with self._writer_lock:
+            source = self._instantiate_template(template_selection)
+            return self._install_prepared_source(project_id=project_id, source=source)
+
+    def _install_prepared_source(
+        self,
+        *,
+        project_id: str,
+        source: AgentSource,
+        name: str | None = None,
+        description: str | None = None,
+        slug: str | None = None,
+        default_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Allocate project-local identity before atomically installing one source."""
         project = self.repository.project(project_id)
         if project is None:
             raise ProjectError("unknown Project")
@@ -266,8 +349,35 @@ class ProjectService:
         if manifest.project_id != project_id:
             raise ProjectError("Project manifest identity does not match its index")
 
-        source = self._instantiate_template(template_selection)
-        source = self._fork_template(source)
+        source = self._allocate_agent_identity(
+            root=root,
+            manifest=manifest,
+            source=source,
+            name=name,
+            description=description,
+            slug=slug,
+            default_name=default_name,
+        )
+        return self._install_source(
+            project_id=project_id,
+            root=root,
+            manifest_path=manifest_path,
+            previous_manifest_text=previous_manifest_text,
+            manifest=manifest,
+            source=source,
+        )
+
+    def _install_source(
+        self,
+        *,
+        project_id: str,
+        root: Path,
+        manifest_path: Path,
+        previous_manifest_text: str,
+        manifest: ProjectManifest,
+        source: AgentSource,
+    ) -> dict[str, Any]:
+        """Install source, manifest, and SQLite index with filesystem rollback."""
         existing_ids = {entry.agent_id for entry in manifest.agents}
         existing_slugs = {entry.slug for entry in manifest.agents}
         if source.agent_id in existing_ids or self.repository.agent(source.agent_id):
@@ -630,6 +740,7 @@ class ProjectService:
             raise ProjectError("Project Agent identity does not match source")
         return {
             "schema_version": "1.0",
+            "project_id": project_id,
             "agent_id": source.agent_id,
             "slug": source.slug,
             "name": source.name,
@@ -646,11 +757,89 @@ class ProjectService:
     def template_metadata(self) -> list[dict[str, str]]:
         return self.templates.metadata()
 
+    def _starter_source(self) -> AgentSource:
+        return self._template_source(STARTER_TEMPLATE_ID)
+
+    def _template_source(self, template_id: str) -> AgentSource:
+        try:
+            return self.templates.source(template_id)
+        except AgentTemplateError as exc:
+            raise ProjectError(str(exc)) from exc
+
     def _instantiate_template(self, selection: dict[str, str]) -> AgentSource:
         try:
             return self.templates.instantiate(**selection)
         except (AgentTemplateError, TypeError) as exc:
             raise ProjectError(str(exc)) from exc
+
+    def _allocate_agent_identity(
+        self,
+        *,
+        root: Path,
+        manifest: ProjectManifest,
+        source: AgentSource,
+        name: str | None,
+        description: str | None,
+        slug: str | None,
+        default_name: str | None,
+    ) -> AgentSource:
+        """Fork a source and reserve a safe display name and directory slug."""
+        occupied_names = {
+            self._agent_source(root, entry).name for entry in manifest.agents
+        }
+        name_override = _nonblank_optional_text(name)
+        description_override = _nonblank_optional_text(description)
+        base_name = name_override or default_name or source.name
+        allocated_name = self._allocate_agent_name(base_name, occupied_names)
+        allocated_slug = self._allocate_agent_slug(
+            slug or source.slug, {entry.slug for entry in manifest.agents}
+        )
+        prepared = source.to_dict()
+        prepared.update(
+            {
+                "agent_id": new_uuid7(),
+                "name": allocated_name,
+                "slug": allocated_slug,
+                "description": description_override or source.description,
+            }
+        )
+        return AgentSource.from_dict(prepared)
+
+    def _agent_source(self, root: Path, entry: ProjectAgentDirectory) -> AgentSource:
+        source_path = self._safe_file(root, Path(entry.path) / "agent.vagent.yaml")
+        source = AgentSource.from_dict(
+            self._parse_yaml(self._read_text(source_path), entry.slug)
+        )
+        if source.agent_id != entry.agent_id or source.slug != entry.slug:
+            raise ProjectError("Project manifest Agent identity does not match source")
+        return source
+
+    @staticmethod
+    def _allocate_agent_name(base: str, occupied: set[str]) -> str:
+        if not isinstance(base, str):
+            raise ProjectError("Agent name must be a string")
+        normalized = unicodedata.normalize("NFC", base).strip()
+        if not normalized:
+            raise ProjectError("Agent name must not be empty")
+        occupied_keys = {_name_key(value) for value in occupied}
+        candidate = normalized
+        suffix = 1
+        while _name_key(candidate) in occupied_keys:
+            candidate = f"{normalized}({suffix})"
+            suffix += 1
+        return candidate
+
+    @staticmethod
+    def _allocate_agent_slug(base: str, occupied: set[str]) -> str:
+        if not isinstance(base, str) or not base:
+            raise ProjectError("Agent slug must be a non-empty string")
+        candidate = base
+        suffix = 1
+        while candidate in occupied:
+            suffix_text = f"-{suffix}"
+            candidate = f"{base[: 63 - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        return candidate
 
     def _collect_allowed_files(
         self, root: Path, manifest: ProjectManifest, manifest_path: Path
@@ -894,6 +1083,14 @@ def _utc_now() -> str:
 
 def _name_key(value: str) -> str:
     return unicodedata.normalize("NFC", value).strip().casefold()
+
+
+def _nonblank_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ProjectError("Agent override must be a string")
+    return None if not value.strip() else value
 
 
 def _etag(revision: int, current_file_hash: str) -> str:

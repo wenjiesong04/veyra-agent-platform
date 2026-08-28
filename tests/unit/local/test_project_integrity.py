@@ -250,6 +250,27 @@ def test_atomic_create_failure_leaves_no_target_or_staging(
     assert not list(tmp_path.glob(".target.veyra-staging-*"))
 
 
+def test_agent_install_failure_restores_manifest_and_agent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="One")
+    root = Path(created["root_path"])
+    manifest_path = root / "project.vproject.yaml"
+    previous_manifest = manifest_path.read_text(encoding="utf-8")
+
+    def fail_index(_: Path) -> dict[str, object]:
+        raise OSError("index unavailable")
+
+    monkeypatch.setattr(projects, "index", fail_index)
+    with pytest.raises(OSError, match="index unavailable"):
+        projects.create_agent(project_id=created["project_id"], mode="blank")
+
+    assert manifest_path.read_text(encoding="utf-8") == previous_manifest
+    assert list((root / "agents").iterdir()) == []
+    assert projects.repository.agents(created["project_id"]) == []
+
+
 def test_create_accepts_existing_empty_directory_and_refuses_nonempty_root(
     tmp_path: Path,
 ) -> None:

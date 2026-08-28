@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Annotated, Any, Literal, TypeVar, cast
 
-from fastapi import APIRouter, Header, Request, Response, status
+from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
-from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
+from veyra_agent_platform.local.projects.service import (
+    MAX_AGENT_IMPORT_BYTES,
+    ProjectError,
+    ProjectService,
+)
 from veyra_agent_platform.local.storage import IdempotencyConflict
 
 _Result = TypeVar("_Result")
@@ -47,6 +51,21 @@ class UpdateProjectRequest(_ClosedModel):
 class ReplaceDraftRequest(_ClosedModel):
     source: dict[str, Any]
     expected_revision: int = Field(ge=0)
+
+
+class CreateAgentRequest(_ClosedModel):
+    mode: Literal["blank", "template"]
+    template_id: str | None = None
+    name: str | None = None
+    description: str | None = None
+
+    @model_validator(mode="after")
+    def require_template_for_template_mode(self) -> CreateAgentRequest:
+        if self.mode == "template" and self.template_id is None:
+            raise ValueError("template_id is required for template mode")
+        if self.mode == "blank" and self.template_id is not None:
+            raise ValueError("template_id is only valid for template mode")
+        return self
 
 
 class TypedApiError(Exception):
@@ -129,6 +148,46 @@ def build_router() -> APIRouter:
     def delete_project(project_id: str, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(lambda: projects.remove(project_id))
+
+    @router.get("/{project_id}/agent-templates")
+    def list_agent_templates(project_id: str, request: Request) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: {
+                "schema_version": "1.0",
+                "project_id": projects.project_summary(project_id)["project_id"],
+                "templates": projects.template_metadata(),
+            }
+        )
+
+    @router.post("/{project_id}/agents", status_code=status.HTTP_201_CREATED)
+    def create_agent(
+        project_id: str, payload: CreateAgentRequest, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.create_agent(project_id=project_id, **payload.model_dump())
+        )
+
+    @router.post("/{project_id}/agents/import", status_code=status.HTTP_201_CREATED)
+    def import_agent(
+        project_id: str,
+        request: Request,
+        file: Annotated[UploadFile, File()],
+        name: Annotated[str | None, Form()] = None,
+        description: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        contents = file.file.read(MAX_AGENT_IMPORT_BYTES + 1)
+        return _translate(
+            lambda: projects.import_agent(
+                project_id=project_id,
+                filename=file.filename,
+                contents=contents,
+                name=name,
+                description=description,
+            )
+        )
 
     @router.get("/{project_id}/agents")
     def list_agents(project_id: str, request: Request) -> dict[str, Any]:

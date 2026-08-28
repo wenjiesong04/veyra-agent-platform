@@ -94,13 +94,17 @@ class AgentTemplateCatalog:
             }
         ]
 
-    def instantiate(
-        self, *, template_id: str, slug: str, name: str, description: str
-    ) -> AgentSource:
+    def source(self, template_id: str) -> AgentSource:
+        """Return a validated copy of a registered source without installing it."""
         template = self._sources.get(template_id)
         if template is None:
             raise AgentTemplateError("unknown Agent template")
-        source = template.to_dict()
+        return AgentSource.from_dict(template.to_dict())
+
+    def instantiate(
+        self, *, template_id: str, slug: str, name: str, description: str
+    ) -> AgentSource:
+        source = self.source(template_id).to_dict()
         source.update(
             {
                 "agent_id": new_uuid7(),
