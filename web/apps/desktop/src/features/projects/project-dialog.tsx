@@ -120,7 +120,7 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
   </Modal>;
 }
 
-export function ProjectDeleteDialog({ project, onClose }: { project: ProjectSummaryResponse; onClose: () => void }) {
+export function ProjectDeleteDialog({ project, onClose, onDeleted }: { project: ProjectSummaryResponse; onClose: () => void; onDeleted?: () => void }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api, removeProject } = useProjectWorkspace();
@@ -129,7 +129,7 @@ export function ProjectDeleteDialog({ project, onClose }: { project: ProjectSumm
   const copy = zh ? { title: "删除项目？", detail: `将从此 Desktop 工作区移除“${project.name}”。`, cancel: "取消", remove: "删除项目", close: "关闭对话框", failed: "无法删除项目，请重试。" } : { title: "Delete Project?", detail: `This removes “${project.name}” from this Desktop workspace.`, cancel: "Cancel", remove: "Delete Project", close: "Close dialog", failed: "The Project could not be deleted. Try again." };
   const remove = async () => {
     setDeleting(true); setError(null);
-    try { await api.deleteProject(project.project_id); removeProject(project.project_id); onClose(); } catch { setError(copy.failed); } finally { setDeleting(false); }
+    try { await api.deleteProject(project.project_id); removeProject(project.project_id); onDeleted?.(); onClose(); } catch { setError(copy.failed); } finally { setDeleting(false); }
   };
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
     <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>

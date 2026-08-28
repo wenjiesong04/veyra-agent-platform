@@ -252,7 +252,9 @@ describe("desktop Project workspace", () => {
     const api = apiFor([editable]);
     api.updateProject.mockResolvedValue(project({ project_id: "editable", name: "Allocated edit", description: "Updated" }));
     api.deleteProject.mockResolvedValue({ schema_version: "1.0", project_id: "editable", disposition: "trashed", removed_at: "2026-08-28T00:00:00Z" });
+    api.getProject.mockResolvedValue(editable);
     const user = userEvent.setup();
+    window.location.hash = projectRoutePaths.project("editable");
     render(<DesktopApp api={api} />);
 
     expect((await screen.findByRole("link", { name: "Add Agent: Before edit" }))).toHaveAttribute("href", projectRoutePaths.factory("editable"));
@@ -270,6 +272,7 @@ describe("desktop Project workspace", () => {
     expect(api.deleteProject).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Delete Project" }));
     await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith("editable"));
+    await waitFor(() => expect(window.location.hash).toBe("#/projects"));
     expect(screen.queryByRole("link", { name: "Allocated edit" })).not.toBeInTheDocument();
   });
 

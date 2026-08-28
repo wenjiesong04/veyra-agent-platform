@@ -1,5 +1,5 @@
 import { Bot, ChevronDown, ChevronRight, FolderKanban, FolderOpen, MoreHorizontal, Plus } from "lucide-react";
-import { projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
+import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { NavigationGroup } from "@veyra/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocale } from "@veyra/ui";
@@ -73,7 +73,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId }: Project
     : modal?.kind === "edit"
       ? <ProjectEditDialog project={modal.project} onClose={() => setModal(null)} />
       : modal?.kind === "delete"
-        ? <ProjectDeleteDialog project={modal.project} onClose={() => setModal(null)} />
+        ? <ProjectDeleteDialog project={modal.project} onClose={() => setModal(null)} onDeleted={modal.project.project_id === scopedProjectId ? () => { window.location.hash = desktopRoutePaths.projects; } : undefined} />
         : null;
   return { navigation, dialogs };
 }
