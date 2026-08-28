@@ -110,12 +110,11 @@ describe("desktop Project workspace", () => {
     expect(screen.queryByRole("heading", { name: "Projects", level: 2 })).not.toBeInTheDocument();
   });
 
-  it("creates a Project from the global picker dialog without navigating away from the current surface", async () => {
+  it("creates a Project without rendering or calling the folder picker", async () => {
     const api = apiFor();
     const created = project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" });
     api.createProject.mockResolvedValue(created);
     api.listProjects.mockResolvedValueOnce({ schema_version: "1.0", projects: [] }).mockRejectedValueOnce(new Error("refresh unavailable"));
-    api.selectDirectory.mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/Users/test/Downloads" });
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
 
@@ -124,15 +123,12 @@ describe("desktop Project workspace", () => {
     await user.type(await screen.findByRole("textbox", { name: "Project name" }), "Created Project");
     expect(screen.queryByRole("textbox", { name: /path/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect project/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Choose where to save it. Veyra will create a new Project folder inside.")).toBeInTheDocument();
-    expect(screen.queryByText(/path/i)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Select save location" }));
-    expect(await screen.findByText("Save location: Downloads")).toBeInTheDocument();
-    expect(screen.getByText("Create Created Project in Downloads")).toBeInTheDocument();
-    expect(screen.queryByText("/Users/test/Downloads")).not.toBeInTheDocument();
+    expect(screen.queryByText(/folder|save location|path|downloads/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /folder|save location/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ parent_path: "/Users/test/Downloads", name: "Created Project", description: "" }));
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ name: "Created Project", description: "" }));
+    expect(api.selectDirectory).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#/projects");
     expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -157,32 +153,31 @@ describe("desktop Project workspace", () => {
     expect(window.location.hash).toBe("#/projects");
   });
 
-  it("localizes typed create errors without exposing a backend path on a Chinese Desktop", async () => {
+  it("localizes a create failure without rendering a folder path on a Chinese Desktop", async () => {
     window.localStorage.setItem("veyra.language", "zh");
     const api = apiFor();
-    api.selectDirectory.mockResolvedValue({ schema_version: "1.0", status: "selected", root_path: "/Users/test/Downloads" });
-    api.createProject.mockRejectedValue(new LocalApiClientError("/Users/test/Downloads/test already exists", { status: 409, code: "project_directory_exists" }));
+    api.createProject.mockRejectedValue(new LocalApiClientError("/Users/test/Downloads/test unavailable", { status: 503, code: "project_unavailable" }));
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
 
     await user.click(await screen.findByRole("button", { name: "新建项目" }));
     await user.type(screen.getByRole("textbox", { name: "项目名称" }), "test");
-    await user.click(screen.getByRole("button", { name: "选择保存位置" }));
     await user.click(screen.getByRole("button", { name: "创建" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("该保存位置中已存在同名项目文件夹。");
-    expect(screen.queryByText("/Users/test/Downloads/test already exists")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("创建项目失败，请稍后重试。");
+    expect(screen.queryByText("/Users/test/Downloads/test unavailable")).not.toBeInTheDocument();
   });
 
-  it("keeps picker cancellation and errors recoverable", async () => {
+  it("keeps open-existing picker cancellation and errors recoverable", async () => {
     const api = apiFor();
     api.selectDirectory.mockResolvedValueOnce({ schema_version: "1.0", status: "cancelled", root_path: null }).mockRejectedValueOnce(new Error("picker unavailable"));
     const user = userEvent.setup();
     render(<DesktopApp api={api} />);
-    await user.click(await screen.findByRole("button", { name: "Create Project" }));
-    await user.click(screen.getByRole("button", { name: "Select save location" }));
+    await user.click(await screen.findByRole("button", { name: "Project actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open existing project" }));
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
     expect(screen.queryByText(/^Selected:/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Select save location" }));
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("picker unavailable");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
