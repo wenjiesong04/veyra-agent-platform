@@ -71,6 +71,11 @@ export type LocalProjectApi = {
   createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string }): Promise<CreatedAgentResponse>;
   getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
+  /** Studio mutations are optional so narrow consumers can still supply read-only APIs. */
+  saveDraft?(projectId: string, agentId: string, input: SaveDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveDraftResponse>;
+  reloadDraft?(projectId: string, agentId: string): Promise<DraftResponse>;
+  validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
+  commit?(projectId: string, agentId: string, options?: { idempotencyKey?: string }): Promise<CommitResponse>;
   selectDirectory(): Promise<SelectDirectoryResponse>;
 };
 

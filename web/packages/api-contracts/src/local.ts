@@ -244,6 +244,12 @@ export type CommitResponse = {
   file_hash: string;
 };
 
+/** Reserved for the planned local runtime endpoint. It is intentionally not
+ * used until the sidecar exposes a typed run response. */
+export type StartAgentRunRequest = {
+  inputs: Record<string, JsonValue>;
+};
+
 export type ExportResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   agent_id: string;
