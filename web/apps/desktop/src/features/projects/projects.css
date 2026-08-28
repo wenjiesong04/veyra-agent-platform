@@ -78,8 +78,7 @@
 }
 
 .project-modal-header,
-.project-modal-actions,
-.project-detail-summary {
+.project-modal-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -146,12 +145,6 @@
 .project-delete-copy { margin-top: 18px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .project-visually-hidden { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
-.project-detail-summary { justify-content: flex-start; }
-.project-detail-summary > div:first-of-type { min-width: 0; flex: 1; }
-.project-detail-summary > div:last-child { display: grid; gap: 4px; min-width: 70px; }
-.project-detail-summary > div:last-child strong { font-size: 28px; }
-.project-detail-summary .project-path { margin: 5px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-
 .project-form input::placeholder {
   color: var(--subtle);
 }
@@ -215,17 +208,6 @@
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
   gap: 20px;
-}
-
-.project-overview-icon {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  margin-bottom: 13px;
-  border-radius: 12px;
-  color: var(--accent-strong);
-  background: var(--accent-soft);
 }
 
 .project-overview-grid > .ui-panel > strong {
@@ -355,5 +337,4 @@ a.project-agent-row:hover { color: var(--accent-strong); background: var(--surfa
   .project-modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .project-modal-actions .ui-button { justify-content: center; }
   .folder-selection { align-items: flex-start; flex-wrap: wrap; }
-  .project-detail-summary { align-items: flex-start; }
 }
