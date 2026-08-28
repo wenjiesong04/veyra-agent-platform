@@ -14,6 +14,7 @@ type ApplicationShellProps = {
   breadcrumbs?: { label: string; href?: string; icon?: LucideIcon }[];
   backHref?: string;
   headerActions?: ReactNode;
+  contentClassName?: string;
   children: ReactNode;
   account?: AccountMenuConfig;
   footer?: ReactNode;
@@ -208,7 +209,7 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
   );
 }
 
-export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, backHref, headerActions, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
+export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, backHref, headerActions, contentClassName, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
@@ -344,7 +345,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
             <button className="header-control theme-control" type="button" onClick={() => setTheme(effectiveDark ? "light" : "dark")} aria-label={effectiveDark ? t("switchToLight") : t("switchToDark")} title={effectiveDark ? t("switchToLight") : t("switchToDark")}><span aria-hidden="true">{effectiveDark ? <Sun size={17} /> : <Moon size={17} />}</span><span>{effectiveDark ? t("day") : t("night")}</span></button>
           </div>
         </header>
-        <main className="page-content">{children}</main>
+        <main className={`page-content ${contentClassName ?? ""}`.trim()}>{children}</main>
       </div>
     </div>
   );

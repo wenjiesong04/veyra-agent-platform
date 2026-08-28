@@ -125,6 +125,7 @@ function DesktopWorkspace() {
       title={header.title}
       breadcrumbs={header.breadcrumbs}
       backHref={header.backHref}
+      contentClassName={route.kind === "agent-design" ? "agent-studio-content" : undefined}
       account={account ? {
         displayName: account.display_name || account.handle,
         detail: account.email,

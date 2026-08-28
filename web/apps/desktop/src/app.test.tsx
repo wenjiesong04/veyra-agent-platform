@@ -36,6 +36,7 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
   listAgentTemplates: ReturnType<typeof vi.fn>;
   createAgent: ReturnType<typeof vi.fn>;
   importAgent: ReturnType<typeof vi.fn>;
+  listAgentRuns: ReturnType<typeof vi.fn>;
 } {
   const getProject = vi.fn().mockImplementation(async (projectId: string) => project({ project_id: projectId, name: projectId }));
   return {
@@ -49,6 +50,7 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     listAgentTemplates: vi.fn().mockResolvedValue({ schema_version: "1.0", templates: [{ template_id: "review", name: "Review Agent", description: "Reviews a bounded scope.", default_slug: "review-agent" }] }),
     createAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "created-agent", slug: "created-agent", name: "Created Agent", description: "", source_path: "agents/created-agent/agent.vagent.yaml", source_file_hash: "created-hash" }),
     importAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "imported-agent", slug: "imported-agent", name: "Imported Agent", description: "", source_path: "agents/imported-agent/agent.vagent.yaml", source_file_hash: "imported-hash" }),
+    listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [] }),
     getDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "draft-1", revision: 1, etag: "etag-1", source_file_hash: "source-hash", source: { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", inputs: {}, outputs: {}, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: {} }, lock: {} } }),
   };
 }
