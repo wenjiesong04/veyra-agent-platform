@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.contracts.wire import RunEvent
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 
@@ -72,17 +73,25 @@ def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
             url, json={"inputs": {"name": "Ada"}}, headers={"Idempotency-Key": key}
         )
         assert first.status_code == 200
-        assert first.json()["status"] == "succeeded"
+        assert first.json()["status"] == "unverified"
         assert first.json()["result"] == {"result": "Hello Ada"}
         replay = client.post(
             url, json={"inputs": {"name": "Ada"}}, headers={"Idempotency-Key": key}
         )
         assert replay.json()["run_id"] == first.json()["run_id"]
         detail = client.get(url + "s/" + first.json()["run_id"]).json()
-        assert [event["event_type"] for event in detail["events"]] == [
-            "node_started",
-            "node_finished",
-        ] * 2 + ["node_started", "node_finished"]
+        assert [event["kind"] for event in detail["events"]] == [
+            "run.created",
+            "run.started",
+            "node.started",
+            "node.completed",
+            "node.started",
+            "node.completed",
+            "node.started",
+            "node.completed",
+            "run.completed",
+        ]
+        assert all(RunEvent.from_dict(event) for event in detail["events"])
     with TestClient(create_app(settings)) as restarted:
         assert len(restarted.get(url + "s").json()["runs"]) == 1
 
@@ -123,6 +132,7 @@ def test_runtime_condition_verifier_and_unsupported_nodes(tmp_path: Path) -> Non
             json={"inputs": {"flag": True}},
             headers={"Idempotency-Key": new_uuid7()},
         )
+        assert response.json()["status"] == "verified"
         assert response.json()["result"] == {"result": "ok"}
 
 
@@ -167,3 +177,12 @@ def test_runtime_rejects_tool_and_approval(tmp_path: Path) -> None:
             )
             assert response.json()["status"] == "failed"
             assert response.json()["error"]["code"] == "runtime_not_supported"
+            detail = client.get(
+                f"/api/v1/projects/{project['project_id']}/agents/"
+                f"{agent['agent_id']}/runs/{response.json()['run_id']}"
+            ).json()
+            assert [event["kind"] for event in detail["events"]][-2:] == [
+                "node.failed",
+                "run.failed",
+            ]
+            assert all(RunEvent.from_dict(event) for event in detail["events"])

@@ -60,8 +60,6 @@ class LocalSettings(BaseSettings):
         default="unknown",
         validation_alias=AliasChoices("VEYRA_BUILD_SHA", "build_sha"),
     )
-    model_base_url: str | None = None
-    model_api_key: str | None = None
 
     @field_validator("host")
     @classmethod

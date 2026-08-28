@@ -11,6 +11,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -472,7 +473,9 @@ class LocalRepository:
         created_at: str,
     ) -> None:
         connection.execute(
-            "INSERT INTO runtime_runs(run_id, project_id, agent_id, version_id, status, created_at) VALUES (?, ?, ?, ?, 'running', ?)",
+            "INSERT INTO runtime_runs("
+            "run_id, project_id, agent_id, version_id, status, created_at"
+            ") VALUES (?, ?, ?, ?, 'running', ?)",
             (run_id, project_id, agent_id, version_id, created_at),
         )
 
@@ -483,18 +486,23 @@ class LocalRepository:
         events: list[tuple[str | None, str, dict[str, Any]]],
     ) -> None:
         start = connection.execute(
-            "SELECT COALESCE(MAX(sequence), 0) FROM runtime_run_events WHERE run_id = ?",
+            "SELECT COALESCE(MAX(sequence), 0) "
+            "FROM runtime_run_events WHERE run_id = ?",
             (run_id,),
         ).fetchone()[0]
         for offset, (node_id, event_type, payload) in enumerate(events, start=1):
             connection.execute(
-                "INSERT INTO runtime_run_events(run_id, sequence, node_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                """INSERT INTO runtime_run_events(
+                     event_id, run_id, sequence, node_id, kind, payload_json, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
+                    new_uuid7(),
                     run_id,
                     start + offset,
                     node_id,
                     event_type,
                     json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 ),
             )
 
@@ -510,7 +518,8 @@ class LocalRepository:
         finished_at: str,
     ) -> None:
         connection.execute(
-            "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, error_message = ?, finished_at = ? WHERE run_id = ?",
+            "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, "
+            "error_message = ?, finished_at = ? WHERE run_id = ?",
             (
                 status,
                 json.dumps(result, sort_keys=True, separators=(",", ":"))
@@ -535,23 +544,28 @@ class LocalRepository:
     def runs(self, agent_id: str) -> list[sqlite3.Row]:
         with self._connect() as connection:
             return connection.execute(
-                "SELECT * FROM runtime_runs WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC",
+                "SELECT * FROM runtime_runs WHERE agent_id = ? "
+                "ORDER BY created_at DESC, run_id DESC",
                 (agent_id,),
             ).fetchall()
 
     def run_events(self, run_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT sequence, node_id, event_type, payload_json, created_at FROM runtime_run_events WHERE run_id = ? ORDER BY sequence",
+                """SELECT event_id, sequence, node_id, kind, payload_json, created_at
+                   FROM runtime_run_events WHERE run_id = ? ORDER BY sequence""",
                 (run_id,),
             ).fetchall()
         return [
             {
+                "schema_version": "1.0",
+                "event_id": row["event_id"],
+                "run_id": run_id,
                 "sequence": row["sequence"],
                 "node_id": row["node_id"],
-                "event_type": row["event_type"],
+                "kind": row["kind"],
                 "payload": json.loads(row["payload_json"]),
-                "created_at": row["created_at"],
+                "timestamp": row["created_at"],
             }
             for row in rows
         ]

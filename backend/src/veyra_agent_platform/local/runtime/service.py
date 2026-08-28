@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
@@ -30,6 +31,7 @@ class RuntimeError(ProjectError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+        self.events: list[tuple[str | None, str, dict[str, Any]]] = []
 
 
 class RuntimeService:
@@ -120,14 +122,25 @@ class RuntimeService:
                 version_id=version_id,
                 created_at=_now(),
             )
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [(None, "run.created", {}), (None, "run.started", {})],
+            )
         try:
-            result, events = self._execute(source, inputs)
+            result, events, verified = self._execute(source, inputs)
             with self.repository.transaction() as connection:
                 self.repository.add_run_events(connection, run_id, events)
+                final_status = "verified" if verified else "unverified"
+                self.repository.add_run_events(
+                    connection,
+                    run_id,
+                    [(None, "run.completed", {"state": final_status})],
+                )
                 self.repository.finish_run(
                     connection,
                     run_id,
-                    status="succeeded",
+                    status=final_status,
                     result=result,
                     code=None,
                     message=None,
@@ -145,7 +158,9 @@ class RuntimeService:
         except RuntimeError as exc:
             with self.repository.transaction() as connection:
                 self.repository.add_run_events(
-                    connection, run_id, [(None, "run_failed", {"code": exc.code})]
+                    connection,
+                    run_id,
+                    exc.events + [(None, "run.failed", {"code": exc.code})],
                 )
                 self.repository.finish_run(
                     connection,
@@ -216,14 +231,24 @@ class RuntimeService:
             raise RuntimeError(
                 "inputs_invalid", "inputs must exactly match the Agent source inputs"
             )
-        if not all(
-            isinstance(value, str | int | float | bool) for value in inputs.values()
-        ):
-            raise RuntimeError("inputs_invalid", "inputs must be scalar JSON values")
+        validators: dict[str, Callable[[Any], bool]] = {
+            "string": lambda value: isinstance(value, str),
+            "boolean": lambda value: isinstance(value, bool),
+            "integer": lambda value: isinstance(value, int)
+            and not isinstance(value, bool),
+            "number": lambda value: isinstance(value, int | float)
+            and not isinstance(value, bool),
+        }
+        for field, field_type in source.inputs.items():
+            validator = validators.get(field_type)
+            if validator is None or not validator(inputs[field]):
+                raise RuntimeError(
+                    "inputs_invalid", f"input {field} must be a {field_type}"
+                )
 
     def _execute(
         self, source: AgentSource, inputs: dict[str, Any]
-    ) -> tuple[dict[str, Any], list[tuple[str | None, str, dict[str, Any]]]]:
+    ) -> tuple[dict[str, Any], list[tuple[str | None, str, dict[str, Any]]], bool]:
         nodes = {node.id: node for node in source.nodes}
         edges = {
             (edge.from_node, edge.port.value): edge.to_node
@@ -236,56 +261,73 @@ class RuntimeService:
         )
         values = dict(inputs)
         result: dict[str, Any] = {}
+        verifier_passed = False
         events: list[tuple[str | None, str, dict[str, Any]]] = []
         for _ in range(len(nodes) + 1):
             node = nodes[current]
             events.append(
-                (node.id, "node_started", {"component_type": node.component_type.value})
+                (node.id, "node.started", {"component_type": node.component_type.value})
             )
-            if node.component_type is ComponentType.START:
-                port = "next"
-            elif node.component_type is ComponentType.TRANSFORM:
-                assert node.mapping is not None
-                values.update(
-                    {
-                        key: _interpolate(template, values)
-                        for key, template in node.mapping.items()
-                    }
-                )
-                port = "next"
-            elif node.component_type is ComponentType.CONDITION:
-                assert node.expression is not None
-                port = "true" if _condition(node.expression, values) else "false"
-            elif node.component_type is ComponentType.VERIFIER:
-                assert node.checks is not None
-                port = (
-                    "passed"
-                    if all(_check(check, values) for check in node.checks)
-                    else "failed"
-                )
-            elif node.component_type is ComponentType.OUTPUT:
-                assert node.output_name is not None
-                if node.output_name not in values:
-                    raise RuntimeError(
-                        "output_missing",
-                        f"output {node.output_name} was not materialized",
+            try:
+                if node.component_type is ComponentType.START:
+                    port = "next"
+                elif node.component_type is ComponentType.TRANSFORM:
+                    assert node.mapping is not None
+                    values.update(
+                        {
+                            key: _interpolate(template, values)
+                            for key, template in node.mapping.items()
+                        }
                     )
-                result[node.output_name] = values[node.output_name]
-                events.append((node.id, "node_finished", {"port": cast(Any, None)}))
-                return result, events
-            elif node.component_type in {
-                ComponentType.TOOL,
-                ComponentType.HUMAN_APPROVAL,
-            }:
-                raise RuntimeError(
-                    "runtime_not_supported",
-                    f"{node.component_type.value} is not supported by this local Runtime",
-                )
-            else:
-                raise RuntimeError(
-                    "runtime_not_supported", "Agent nodes require a configured provider"
-                )
-            events.append((node.id, "node_finished", {"port": port}))
+                    port = "next"
+                elif node.component_type is ComponentType.CONDITION:
+                    assert node.expression is not None
+                    port = "true" if _condition(node.expression, values) else "false"
+                elif node.component_type is ComponentType.VERIFIER:
+                    assert node.checks is not None
+                    result.update(
+                        {
+                            output_name: values[output_name]
+                            for output_name in source.outputs
+                            if output_name in values
+                        }
+                    )
+                    verifier_passed = all(
+                        _check(check, result) for check in node.checks
+                    )
+                    port = "passed" if verifier_passed else "failed"
+                    events.append(
+                        (node.id, "verifier.result", {"passed": verifier_passed})
+                    )
+                elif node.component_type is ComponentType.OUTPUT:
+                    assert node.output_name is not None
+                    if node.output_name not in values:
+                        raise RuntimeError(
+                            "output_missing",
+                            f"output {node.output_name} was not materialized",
+                        )
+                    result[node.output_name] = values[node.output_name]
+                    events.append((node.id, "node.completed", {}))
+                    return result, events, verifier_passed
+                elif node.component_type in {
+                    ComponentType.TOOL,
+                    ComponentType.HUMAN_APPROVAL,
+                }:
+                    raise RuntimeError(
+                        "runtime_not_supported",
+                        f"{node.component_type.value} is not supported by "
+                        "this local Runtime",
+                    )
+                else:
+                    raise RuntimeError(
+                        "runtime_not_supported",
+                        "Agent nodes require a configured provider",
+                    )
+            except RuntimeError as exc:
+                events.append((node.id, "node.failed", {"code": exc.code}))
+                exc.events = events
+                raise
+            events.append((node.id, "node.completed", {"port": port}))
             current = edges.get((node.id, port), "")
             if not current:
                 raise RuntimeError(
