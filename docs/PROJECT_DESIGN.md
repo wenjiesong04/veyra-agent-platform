@@ -402,6 +402,12 @@ UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
 Run state, account tokens, secrets, caches, and event history never enter the
 Project directory.
 
+Desktop-created V1 Projects are allocated automatically under the Veyra
+application-data `v1/projects/` root. Project creation asks only for the name
+and optional description; it never asks the user to choose or type a storage
+path. Opening an existing Project remains an explicit action for indexing a
+user-owned directory that already contains `project.vproject.yaml`.
+
 V1 permits an empty Project: `agents` may be empty and then
 `default_agent_id` is `null`. When Agents exist, `default_agent_id` identifies
 one listed Agent. Agents remain flat at `agents/<slug>`; a future child-Agent
@@ -861,6 +867,7 @@ Runs remains immutable history. Monitor must not duplicate the full Run detail p
 
 ```text
 <platform application data>/Veyra Agent Platform/v1/
+  projects/
   db/app.sqlite3
   library/agents/
   library/components/
