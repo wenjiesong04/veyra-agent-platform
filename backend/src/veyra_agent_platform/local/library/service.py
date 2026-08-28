@@ -214,18 +214,21 @@ class LibraryService:
         *,
         project_id: str,
         agent_id: str,
+        expected_revision: int,
+        expected_etag: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         agent = self._agent_in_project(project_id, agent_id)
         scope = f"commit:{project_id}:{agent_id}"
         source_path = self._source_path(project_id, agent)
-        source_text = self.projects._read_text(source_path)
-        source = AgentSource.from_dict(
-            self.projects._parse_yaml(source_text, agent["slug"])
+        if isinstance(expected_revision, bool) or not isinstance(
+            expected_revision, int
+        ):
+            raise ProjectError("expected_revision must be an integer")
+        request_digest = sha256_digest(
+            {"expected_revision": expected_revision, "expected_etag": expected_etag}
         )
-        current_file_hash = file_hash(source_text)
-        request_digest = sha256_digest({"file_hash": current_file_hash})
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, request_digest
@@ -235,8 +238,17 @@ class LibraryService:
             draft = connection.execute(
                 "SELECT * FROM agent_drafts WHERE agent_id = ?", (agent_id,)
             ).fetchone()
-            if draft is None or draft["source_file_hash"] != current_file_hash:
+            if draft is None:
                 raise DraftConflict("source changed outside Studio; reload it")
+            if draft["revision"] != expected_revision or draft["etag"] != expected_etag:
+                raise DraftConflict("draft revision or ETag does not match")
+            source_text = self.projects._read_text(source_path)
+            current_file_hash = file_hash(source_text)
+            if draft["source_file_hash"] != current_file_hash:
+                raise DraftConflict("source changed outside Studio; reload it")
+            source = AgentSource.from_dict(
+                self.projects._parse_yaml(source_text, agent["slug"])
+            )
             existing = self.repository.version_by_fingerprint(
                 connection, agent_id, current_file_hash
             )

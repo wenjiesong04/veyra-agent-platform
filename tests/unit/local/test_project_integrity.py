@@ -81,6 +81,18 @@ def test_lifecycle_migration_empty_and_upgrade_identity(tmp_path: Path) -> None:
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_REVISION,)
 
+    from_0005 = tmp_path / "from-0005.sqlite3"
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{from_0005}")
+    command.upgrade(config, "local_0005_project_lifecycle")
+    migrate_local_database(from_0005)
+    with sqlite3.connect(from_0005) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'runtime_runs'"
+        ).fetchone() == ("runtime_runs",)
+
 
 def test_managed_delete_rolls_back_move_when_database_marking_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -200,8 +212,13 @@ def test_index_reconciles_unversioned_manifest_removal_and_rejects_duplicate_cop
     with pytest.raises(ProjectError, match="duplicate Project ID"):
         projects.index(copied)
     first_agent = summary["agents"][0]["agent_id"]
+    draft = library.draft(project_id, first_agent)
     library.commit(
-        project_id=project_id, agent_id=first_agent, idempotency_key=new_uuid7()
+        project_id=project_id,
+        agent_id=first_agent,
+        expected_revision=draft["revision"],
+        expected_etag=draft["etag"],
+        idempotency_key=new_uuid7(),
     )
     manifest["agents"] = [removed]
     manifest["default_agent_id"] = removed["agent_id"]

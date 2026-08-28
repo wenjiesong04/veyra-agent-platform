@@ -42,6 +42,7 @@ class RuntimeService:
         library: LibraryService,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
+        self.repository.interrupt_orphan_runs()
 
     def components(self) -> dict[str, Any]:
         from veyra_agent_platform.local.components import component_registry
@@ -127,6 +128,17 @@ class RuntimeService:
                 run_id,
                 [(None, "run.created", {}), (None, "run.started", {})],
             )
+            self.repository.remember_response(
+                connection,
+                scope,
+                idempotency_key,
+                digest,
+                self._row_payload(
+                    connection.execute(
+                        "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                    ).fetchone()
+                ),
+            )
         try:
             result, events, verified = self._execute(source, inputs)
             with self.repository.transaction() as connection:
@@ -151,7 +163,7 @@ class RuntimeService:
                         "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
                     ).fetchone()
                 )
-                self.repository.remember_response(
+                self.repository.replace_idempotent_response(
                     connection, scope, idempotency_key, digest, response
                 )
                 return response
@@ -176,7 +188,7 @@ class RuntimeService:
                         "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
                     ).fetchone()
                 )
-                self.repository.remember_response(
+                self.repository.replace_idempotent_response(
                     connection, scope, idempotency_key, digest, response
                 )
                 return response
@@ -285,13 +297,7 @@ class RuntimeService:
                     port = "true" if _condition(node.expression, values) else "false"
                 elif node.component_type is ComponentType.VERIFIER:
                     assert node.checks is not None
-                    result.update(
-                        {
-                            output_name: values[output_name]
-                            for output_name in source.outputs
-                            if output_name in values
-                        }
-                    )
+                    result = self._validated_outputs(source, values)
                     verifier_passed = all(
                         _check(check, result) for check in node.checks
                     )
@@ -301,12 +307,7 @@ class RuntimeService:
                     )
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
-                    if node.output_name not in values:
-                        raise RuntimeError(
-                            "output_missing",
-                            f"output {node.output_name} was not materialized",
-                        )
-                    result[node.output_name] = values[node.output_name]
+                    result = self._validated_outputs(source, values)
                     events.append((node.id, "node.completed", {}))
                     return result, events, verifier_passed
                 elif node.component_type in {
@@ -327,6 +328,13 @@ class RuntimeService:
                 events.append((node.id, "node.failed", {"code": exc.code}))
                 exc.events = events
                 raise
+            except Exception:
+                runtime_error = RuntimeError(
+                    "executor_failed", "local Runtime execution failed"
+                )
+                events.append((node.id, "node.failed", {"code": runtime_error.code}))
+                runtime_error.events = events
+                raise runtime_error from None
             events.append((node.id, "node.completed", {"port": port}))
             current = edges.get((node.id, port), "")
             if not current:
@@ -337,6 +345,30 @@ class RuntimeService:
         raise RuntimeError(
             "graph_execution_invalid", "graph exceeded deterministic execution limit"
         )
+
+    @staticmethod
+    def _validated_outputs(
+        source: AgentSource, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        validators: dict[str, Callable[[Any], bool]] = {
+            "string": lambda value: isinstance(value, str),
+            "boolean": lambda value: isinstance(value, bool),
+            "integer": lambda value: isinstance(value, int)
+            and not isinstance(value, bool),
+            "number": lambda value: isinstance(value, int | float)
+            and not isinstance(value, bool),
+        }
+        result: dict[str, Any] = {}
+        for name, output_type in source.outputs.items():
+            if name not in values or not validators.get(output_type, lambda _: False)(
+                values[name]
+            ):
+                raise RuntimeError(
+                    "output_invalid",
+                    f"output {name} is missing or is not a {output_type}",
+                )
+            result[name] = values[name]
+        return result
 
 
 def _interpolate(template: str, values: dict[str, Any]) -> str:
@@ -363,7 +395,13 @@ def _condition(expression: str, values: dict[str, Any]) -> bool:
         )
     left, operator, raw = values[match.group(1)], match.group(2), match.group(3)
     if raw.startswith('"'):
-        right: Any = json.loads(raw)
+        try:
+            right: Any = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "condition_invalid",
+                "Condition contains an invalid string literal",
+            ) from exc
     elif raw.startswith("'"):
         right = raw[1:-1]
     elif raw == "true":

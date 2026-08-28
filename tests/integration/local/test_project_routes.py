@@ -370,10 +370,35 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
         )
         committed = client.post(
             f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/commit",
-            headers={"Idempotency-Key": new_uuid7()},
+            json={"expected_revision": draft.json()["revision"]},
+            headers={"Idempotency-Key": new_uuid7(), "If-Match": draft.headers["etag"]},
         )
         assert committed.status_code == 200
         exported = client.get(
             f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/export"
         )
         assert exported.json()["source"]["agent_id"] == agent_id
+
+
+def test_commit_requires_current_revision_and_etag(tmp_path: Path) -> None:
+    source = json.loads(
+        (
+            ROOT / "contracts/fixtures/project/agents/github-triage/agent.vagent.yaml"
+        ).read_text()
+    )
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent_id = project["agents"][0]["agent_id"]
+        base = f"/api/v1/projects/{project['project_id']}/agents/{agent_id}"
+        draft = client.get(base + "/draft")
+        stale = client.post(
+            base + "/commit",
+            json={"expected_revision": draft.json()["revision"] + 1},
+            headers={"If-Match": draft.headers["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["code"] == "draft_conflict"

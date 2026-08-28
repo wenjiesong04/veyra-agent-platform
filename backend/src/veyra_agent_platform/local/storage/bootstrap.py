@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -15,9 +16,20 @@ _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 def migrate_local_database(database_path: Path) -> None:
     """Upgrade an application-owned SQLite file to the only supported schema head."""
     database_path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = database_path.with_suffix(database_path.suffix + ".pre-migration")
+    had_database = database_path.is_file()
+    if had_database:
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("PRAGMA wal_checkpoint(FULL)")
+        shutil.copy2(database_path, backup_path)
     config = Config(str(_MIGRATIONS / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
-    command.upgrade(config, "head")
+    try:
+        command.upgrade(config, "head")
+    except Exception:
+        if had_database:
+            shutil.copy2(backup_path, database_path)
+        raise
     require_schema_head(database_path)
 
 

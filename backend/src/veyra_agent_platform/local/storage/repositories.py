@@ -462,6 +462,25 @@ class LocalRepository:
             ),
         )
 
+    def replace_idempotent_response(
+        self,
+        connection: sqlite3.Connection,
+        scope: str,
+        key: str,
+        request_digest: str,
+        response: dict[str, Any],
+    ) -> None:
+        connection.execute(
+            """UPDATE idempotency_records SET response_json = ?
+               WHERE scope = ? AND key = ? AND request_digest = ?""",
+            (
+                json.dumps(response, sort_keys=True, separators=(",", ":")),
+                scope,
+                key,
+                request_digest,
+            ),
+        )
+
     def create_run(
         self,
         connection: sqlite3.Connection,
@@ -569,3 +588,23 @@ class LocalRepository:
             }
             for row in rows
         ]
+
+    def interrupt_orphan_runs(self) -> None:
+        """Close local runs left nonterminal by a prior process termination."""
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT run_id FROM runtime_runs WHERE status = 'running'"
+            ).fetchall()
+            for row in rows:
+                self.add_run_events(
+                    connection, row["run_id"], [(None, "run.interrupted", {})]
+                )
+                self.finish_run(
+                    connection,
+                    row["run_id"],
+                    status="interrupted",
+                    result=None,
+                    code="run_interrupted",
+                    message="local Runtime restarted before this run finished",
+                    finished_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                )

@@ -53,6 +53,10 @@ class ReplaceDraftRequest(_ClosedModel):
     expected_revision: int = Field(ge=0)
 
 
+class CommitAgentRequest(_ClosedModel):
+    expected_revision: int = Field(ge=0)
+
+
 class CreateAgentRequest(_ClosedModel):
     mode: Literal["blank", "template"]
     template_id: str | None = None
@@ -242,7 +246,9 @@ def build_router() -> APIRouter:
     def commit_agent(
         project_id: str,
         agent_id: str,
+        payload: CommitAgentRequest,
         request: Request,
+        if_match: str = Header(),
         idempotency_key: str = Header(),
     ) -> dict[str, Any]:
         _, library = _services(request)
@@ -250,6 +256,8 @@ def build_router() -> APIRouter:
             lambda: library.commit(
                 project_id=project_id,
                 agent_id=agent_id,
+                expected_revision=payload.expected_revision,
+                expected_etag=if_match,
                 idempotency_key=idempotency_key,
             )
         )
