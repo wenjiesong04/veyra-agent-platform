@@ -287,7 +287,7 @@
 
 .sidebar-nav .sidebar-nav-children a svg { width: 16px; height: 16px; flex-basis: 16px; }
 
-.sidebar-nav-item-action button {
+.sidebar-nav-item-action > button {
   display: grid;
   width: 30px;
   height: 30px;
@@ -299,8 +299,8 @@
   cursor: pointer;
 }
 
-.sidebar-nav-item-action button:hover,
-.sidebar-nav-item-action button:focus-visible {
+.sidebar-nav-item-action > button:hover,
+.sidebar-nav-item-action > button:focus-visible {
   color: var(--accent-strong);
   background: var(--surface-soft);
   outline: none;
