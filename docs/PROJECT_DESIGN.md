@@ -692,9 +692,13 @@ Routes:
 
 The Desktop sidebar presents an optional single pinned Project followed by a
 collapsible Project-to-Agent tree. Each Project row owns Pin/Edit/Delete and an
-explicit Add Agent entry into Factory. The Desktop header uses one title for a
-root page and a horizontal, linked breadcrumb for nested Project and Agent
-pages; it does not stack an eyebrow over the page title.
+Add Agent button that opens a top-layer chooser without navigating. The chooser
+offers a blank Agent, a registered template, or a validated local Agent file;
+each choice opens its own confirmation form and refreshes the tree after a real
+write. Only selecting an existing Agent navigates to the Agent route. The
+Desktop header uses one title for a root page and a horizontal, linked
+breadcrumb for nested Project and Agent pages; it does not stack an eyebrow
+over the page title.
 
 Empty library redirects to Studio onboarding. Otherwise `/` redirects to Agents/Dashboard.
 
@@ -1103,6 +1107,8 @@ Star does not mean safe or effective.
 - `GET /api/v1/projects/{project_id}`
 - `PATCH/DELETE /api/v1/projects/{project_id}`
 - `GET/POST /api/v1/projects/{project_id}/agents`
+- `GET /api/v1/projects/{project_id}/agent-templates`
+- `POST /api/v1/projects/{project_id}/agents/import`
 - `GET /api/v1/projects/{project_id}/agents/{agent_id}`
 - `GET/PATCH /api/v1/projects/{project_id}/agents/{agent_id}/draft`
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/generate`
