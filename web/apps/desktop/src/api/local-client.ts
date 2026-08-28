@@ -1,7 +1,9 @@
 import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
+  type AgentRunResponse,
   type AgentTemplate,
+  type ComponentDefinition,
   type CommitResponse,
   type CreateAgentRequest,
   type CreatedAgentResponse,
@@ -9,8 +11,12 @@ import {
   type DeleteProjectResponse,
   type DraftResponse,
   type ExportResponse,
+  type JsonObject,
+  type JsonValue,
+  type ListAgentRunsResponse,
   type ListAgentsResponse,
   type ListAgentTemplatesResponse,
+  type ListComponentsResponse,
   type ListProjectsResponse,
   type LocalErrorEnvelope,
   type OpenProjectRequest,
@@ -19,6 +25,7 @@ import {
   type SaveDraftRequest,
   type SaveDraftResponse,
   type SelectDirectoryResponse,
+  type StartAgentRunRequest,
   type UpdateProjectRequest,
   type ValidateResponse,
 } from "@veyra/api-contracts";
@@ -76,6 +83,10 @@ export type LocalProjectApi = {
   reloadDraft?(projectId: string, agentId: string): Promise<DraftResponse>;
   validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
   commit?(projectId: string, agentId: string, options?: { idempotencyKey?: string }): Promise<CommitResponse>;
+  listComponents?(): Promise<ListComponentsResponse>;
+  runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
+  listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
+  getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
   selectDirectory(): Promise<SelectDirectoryResponse>;
 };
 
@@ -149,6 +160,21 @@ function asNumber(value: unknown, field: string, status = 502): number {
     });
   }
   return value;
+}
+
+function asJsonValue(value: unknown, field: string, status = 502): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map((item) => asJsonValue(item, field, status));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, asJsonValue(item, `${field}.${key}`, status)]),
+    );
+  }
+  throw new LocalApiClientError(`The local service returned an invalid ${field}.`, {
+    status,
+    code: "invalid_response",
+  });
 }
 
 function schemaRecord(value: unknown, status = 502): Record<string, unknown> {
@@ -337,6 +363,111 @@ function committed(value: unknown, status = 502): CommitResponse {
     behavior_hash: asString(record.behavior_hash, "behavior_hash", status),
     lock_hash: asString(record.lock_hash, "lock_hash", status),
     file_hash: asString(record.file_hash, "file_hash", status),
+  };
+}
+
+const componentTypes = new Set<ComponentDefinition["type"]>([
+  "Start",
+  "Agent",
+  "Tool",
+  "Condition",
+  "Transform",
+  "HumanApproval",
+  "Verifier",
+  "Output",
+]);
+const transitionPorts = new Set<ComponentDefinition["output_ports"][number]>([
+  "next",
+  "true",
+  "false",
+  "approved",
+  "rejected",
+  "passed",
+  "failed",
+]);
+const runtimeStatuses = new Set<ComponentDefinition["runtime_status"]>([
+  "supported",
+  "runtime_not_configured",
+  "runtime_not_supported",
+]);
+const runtimeEventKinds = new Set<NonNullable<AgentRunResponse["events"]>[number]["kind"]>([
+  "run.created", "run.state_changed", "run.started", "run.completed", "run.interrupted", "run.failed", "run.cancelled",
+  "node.queued", "node.state_changed", "node.started", "node.output", "node.waiting", "node.completed", "node.failed", "node.skipped", "node.cancelled",
+  "tool.requested", "tool.started", "tool.completed", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
+  "artifact.created", "checkpoint.created", "verification.completed", "verifier.result",
+]);
+
+function componentDefinition(value: unknown, status = 502): ComponentDefinition {
+  const record = asRecord(value, status);
+  const type = asString(record.type, "component.type", status) as ComponentDefinition["type"];
+  const runtimeStatus = asString(record.runtime_status, "component.runtime_status", status) as ComponentDefinition["runtime_status"];
+  const fields = asArray(record.fields, "component.fields", status).map((item) => asString(item, "component field", status));
+  const outputPorts = asArray(record.output_ports, "component.output_ports", status).map((item) => asString(item, "component output port", status) as ComponentDefinition["output_ports"][number]);
+  if (!componentTypes.has(type) || !runtimeStatuses.has(runtimeStatus) || outputPorts.some((port) => !transitionPorts.has(port))) {
+    throw new LocalApiClientError("The local service returned an unknown Component definition.", { status, code: "invalid_response" });
+  }
+  return { type, fields, output_ports: outputPorts, runtime_status: runtimeStatus };
+}
+
+function listedComponents(value: unknown, status = 502): ListComponentsResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    components: asArray(record.components, "components", status).map((item) => componentDefinition(item, status)),
+  };
+}
+
+function runtimeEvent(value: unknown, status = 502): NonNullable<AgentRunResponse["events"]>[number] {
+  const record = schemaRecord(value, status);
+  const kind = asString(record.kind, "event.kind", status) as NonNullable<AgentRunResponse["events"]>[number]["kind"];
+  if (!runtimeEventKinds.has(kind)) {
+    throw new LocalApiClientError("The local service returned an unknown runtime event.", { status, code: "invalid_response" });
+  }
+  const payload = asJsonValue(asRecord(record.payload, status), "event.payload", status) as JsonObject;
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    event_id: asString(record.event_id, "event_id", status),
+    run_id: asString(record.run_id, "run_id", status),
+    sequence: asNumber(record.sequence, "event.sequence", status),
+    kind,
+    node_id: record.node_id === null ? null : asString(record.node_id, "event.node_id", status),
+    payload,
+    timestamp: asString(record.timestamp, "event.timestamp", status),
+  };
+}
+
+function agentRun(value: unknown, status = 502): AgentRunResponse {
+  const record = schemaRecord(value, status);
+  const runStatus = asString(record.status, "run.status", status);
+  if (runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed") {
+    throw new LocalApiClientError("The local service returned an unknown run status.", { status, code: "invalid_response" });
+  }
+  const result = record.result === null ? null : asJsonValue(asRecord(record.result, status), "run.result", status) as JsonObject;
+  let error: AgentRunResponse["error"] = null;
+  if (record.error !== null) {
+    const rawError = asRecord(record.error, status);
+    error = { code: asString(rawError.code, "run.error.code", status), message: asString(rawError.message, "run.error.message", status) };
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    run_id: asString(record.run_id, "run_id", status),
+    project_id: asString(record.project_id, "project_id", status),
+    agent_id: asString(record.agent_id, "agent_id", status),
+    version_id: asString(record.version_id, "version_id", status),
+    status: runStatus,
+    result,
+    error,
+    created_at: asString(record.created_at, "created_at", status),
+    finished_at: record.finished_at === null ? null : asString(record.finished_at, "finished_at", status),
+    ...(record.events === undefined ? {} : { events: asArray(record.events, "run.events", status).map((item) => runtimeEvent(item, status)) }),
+  };
+}
+
+function listedAgentRuns(value: unknown, status = 502): ListAgentRunsResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    runs: asArray(record.runs, "runs", status).map((item) => agentRun(item, status)),
   };
 }
 
@@ -531,6 +662,42 @@ export class LocalApiClient {
         idempotencyKey: options.idempotencyKey,
         requireIdempotencyKey: true,
       },
+    );
+  }
+
+  listComponents(): Promise<ListComponentsResponse> {
+    return this.request("components", listedComponents);
+  }
+
+  runAgent(
+    projectId: string,
+    agentId: string,
+    input: StartAgentRunRequest,
+    options: { idempotencyKey?: string } = {},
+  ): Promise<AgentRunResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/run`,
+      agentRun,
+      {
+        method: "POST",
+        body: input,
+        idempotencyKey: options.idempotencyKey,
+        requireIdempotencyKey: true,
+      },
+    );
+  }
+
+  listAgentRuns(projectId: string, agentId: string): Promise<ListAgentRunsResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs`,
+      listedAgentRuns,
+    );
+  }
+
+  getAgentRun(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}`,
+      agentRun,
     );
   }
 

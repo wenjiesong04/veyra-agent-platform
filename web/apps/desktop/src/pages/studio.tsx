@@ -1,10 +1,11 @@
 import * as React from "react";
-import { Code2, LayoutPanelTop, Play, Save, SlidersHorizontal } from "lucide-react";
-import { projectRoutePaths, type AgentSource } from "@veyra/api-contracts";
-import { Button, LinkButton, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { Code2, LayoutPanelTop, Save, SlidersHorizontal } from "lucide-react";
+import type { AgentSource, ComponentDefinition } from "@veyra/api-contracts";
+import { Button, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { StudioWorkbench, graphDiagnostics } from "../features/studio/StudioWorkbench";
+import { TestRunPanel } from "../features/studio/TestRunPanel";
 import { NotFoundPage } from "./not-found";
 
 type StudioView = "canvas" | "form" | "source";
@@ -13,10 +14,15 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   const { api, projects } = useProjectWorkspace(); const { locale } = useLocale();
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<AgentSource | null>(null);
   const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null);
+  const [componentDefinitions, setComponentDefinitions] = React.useState<ComponentDefinition[]>([]);
   const cleanSnapshot = React.useRef(""); const [dirty, setDirty] = React.useState(false);
   const project = projects.find((item) => item.project_id === projectId);
   const load = React.useCallback(async () => { setStatus("loading"); setMessage(""); try { const draft = await api.getDraft(projectId, agentId); cleanSnapshot.current = JSON.stringify(draft.source); setSource(draft.source); setDirty(false); setRevision(draft.revision); setEtag(draft.etag); setStatus("ready"); } catch (error) { setStatus("offline"); setMessage(error instanceof Error ? error.message : "The local draft is unavailable."); } }, [api, projectId, agentId]);
   React.useEffect(() => { void load(); }, [load]);
+  React.useEffect(() => {
+    if (!api.listComponents) return;
+    void api.listComponents().then((response) => setComponentDefinitions(response.components)).catch(() => setComponentDefinitions([]));
+  }, [api]);
   const diagnostics = source ? graphDiagnostics(source) : [];
   const updateSource = React.useCallback((next: AgentSource) => { setSource(next); setDirty(JSON.stringify(next) !== cleanSnapshot.current); setStatus("ready"); }, []);
   const save = async () => { if (!source || diagnostics.length || !api.saveDraft) return; try { const saved = await api.saveDraft(projectId, agentId, { source, expected_revision: revision }, { etag }); cleanSnapshot.current = JSON.stringify(saved.source); setSource(saved.source); setDirty(false); setRevision(saved.revision); setEtag(saved.etag); setStatus("saved"); setMessage("Draft saved with the current revision."); } catch (error) { if (error instanceof LocalApiClientError && error.status === 409) { setStatus("conflict"); setMessage("This draft changed elsewhere. Reload before saving again."); } else { setStatus("offline"); setMessage(error instanceof Error ? error.message : "Save failed."); } } };
@@ -24,11 +30,11 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   if (!project && status !== "loading") return <NotFoundPage backHref="#/projects" backLabel={locale === "zh" ? "返回项目" : "Back to Projects"} />;
   if (status === "loading") return <Panel><SectionHeading eyebrow="Studio" title={locale === "zh" ? "正在加载草稿…" : "Loading draft…"} /></Panel>;
   if (!source) return <Panel><SectionHeading eyebrow="Studio" title={locale === "zh" ? "本地草稿不可用" : "Draft unavailable"} detail={message} action={<Button onClick={() => void load()}>Reload</Button>} /></Panel>;
-  return <div className="page-stack"><div className="page-intro studio-intro"><div><span className="ui-eyebrow">Agent definition</span><h2>{source.name}</h2><p>{locale === "zh" ? "Canvas、表单和源码编辑同一份 AgentSource。" : "Canvas, Form, and Source edit the same AgentSource."}</p></div><div className="intro-actions"><StatusBadge label={status === "committed" ? "Committed" : dirty ? "Draft changes" : "Saved"} tone={status === "offline" || status === "conflict" ? "bad" : dirty ? "warn" : "good"} /><Button icon={Save} variant="primary" disabled={!dirty || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save()}>Save draft</Button><Button disabled={dirty || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>Validate & commit</Button><LinkButton href={projectRoutePaths.agentRun(projectId, agentId)} icon={Play}>Run</LinkButton></div></div>
+  return <div className="page-stack"><div className="page-intro studio-intro"><div><span className="ui-eyebrow">Agent definition</span><h2>{source.name}</h2><p>{locale === "zh" ? "Canvas、表单和源码编辑同一份 AgentSource。" : "Canvas, Form, and Source edit the same AgentSource."}</p></div><div className="intro-actions"><StatusBadge label={status === "committed" ? "Committed" : dirty ? "Draft changes" : "Saved"} tone={status === "offline" || status === "conflict" ? "bad" : dirty ? "warn" : "good"} /><Button icon={Save} variant="primary" disabled={!dirty || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save()}>Save draft</Button><Button disabled={dirty || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>Validate & commit</Button></div></div>
     {(message || diagnostics.length) && <div className={status === "conflict" || status === "offline" || diagnostics.length ? "studio-alert bad" : "studio-alert"}>{message}{diagnostics.map((item) => <div key={item}>{item}</div>)}{status === "conflict" && <Button size="sm" onClick={() => void load()}>Reload server draft</Button>}</div>}
     <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label="Studio view">{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{item}</button>)}</div><span className="toolbar-meta">revision <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span></div>
-    {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
-    <Panel className="studio-run-panel"><SectionHeading eyebrow="Test run" title="Local runtime" detail="The typed local run endpoint is not available in this sidecar build; no simulated output is shown." /><Tag tone="warn">Unavailable</Tag></Panel>
+    {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} componentDefinitions={componentDefinitions} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
+    <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} />
   </div>;
 }
 

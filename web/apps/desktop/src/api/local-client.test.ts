@@ -90,4 +90,57 @@ describe("LocalApiClient Project requests", () => {
       message: "Project root cannot be read",
     });
   });
+
+  it("parses the component registry and starts a durable Agent run", async () => {
+    const run = {
+      schema_version: "1.0",
+      run_id: "run-1",
+      project_id: "project-1",
+      agent_id: "agent-1",
+      version_id: "version-1",
+      status: "unverified",
+      result: { result: "Hello Ada" },
+      error: null,
+      created_at: "2026-08-28T10:00:00Z",
+      finished_at: "2026-08-28T10:00:01Z",
+    };
+    const event = {
+      schema_version: "1.0",
+      event_id: "event-1",
+      run_id: "run-1",
+      sequence: 1,
+      kind: "run.created",
+      node_id: null,
+      payload: {},
+      timestamp: "2026-08-28T10:00:00Z",
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({
+        schema_version: "1.0",
+        components: [{ type: "Transform", fields: ["mapping"], output_ports: ["next"], runtime_status: "supported" }],
+      }))
+      .mockResolvedValueOnce(response(run))
+      .mockResolvedValueOnce(response({ ...run, events: [event] }));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.listComponents()).resolves.toMatchObject({
+      components: [{ type: "Transform", runtime_status: "supported" }],
+    });
+    const started = await client.runAgent(
+      "project-1",
+      "agent-1",
+      { inputs: { name: "Ada" } },
+      { idempotencyKey: "019c0000-0000-7000-8000-000000000001" },
+    );
+    await expect(client.getAgentRun("project-1", "agent-1", started.run_id)).resolves.toMatchObject({
+      run_id: "run-1",
+      events: [{ kind: "run.created" }],
+    });
+
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/agents/agent-1/run");
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toMatchObject({
+      "Idempotency-Key": "019c0000-0000-7000-8000-000000000001",
+    });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { name: "Ada" } });
+  });
 });

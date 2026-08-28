@@ -5,18 +5,19 @@ export type StudioComponent = {
   label: string;
   labelZh: string;
   detail: string;
+  detailZh: string;
   ports: string[];
 };
 
 export const studioComponents: StudioComponent[] = [
-  { type: "Start", label: "Start", labelZh: "开始", detail: "Entry point", ports: ["next"] },
-  { type: "Agent", label: "Agent", labelZh: "Agent", detail: "Model instruction", ports: ["next"] },
-  { type: "Tool", label: "Tool", labelZh: "工具", detail: "Governed tool", ports: ["next"] },
-  { type: "Condition", label: "Condition", labelZh: "条件", detail: "Branch expression", ports: ["true", "false"] },
-  { type: "Transform", label: "Transform", labelZh: "转换", detail: "Map values", ports: ["next"] },
-  { type: "HumanApproval", label: "Human approval", labelZh: "人工审批", detail: "Human decision", ports: ["approved", "rejected"] },
-  { type: "Verifier", label: "Verifier", labelZh: "验证器", detail: "Independent checks", ports: ["passed", "failed"] },
-  { type: "Output", label: "Output", labelZh: "输出", detail: "Named result", ports: [] },
+  { type: "Start", label: "Start", labelZh: "开始", detail: "Entry point", detailZh: "工作流入口", ports: ["next"] },
+  { type: "Agent", label: "Agent", labelZh: "Agent", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
+  { type: "Tool", label: "Tool", labelZh: "工具", detail: "Governed tool", detailZh: "受治理工具调用", ports: ["next"] },
+  { type: "Condition", label: "Condition", labelZh: "条件", detail: "Branch expression", detailZh: "条件分支", ports: ["true", "false"] },
+  { type: "Transform", label: "Transform", labelZh: "转换", detail: "Map values", detailZh: "安全字段映射", ports: ["next"] },
+  { type: "HumanApproval", label: "Human approval", labelZh: "人工审批", detail: "Human decision", detailZh: "等待人工决策", ports: ["approved", "rejected"] },
+  { type: "Verifier", label: "Verifier", labelZh: "验证器", detail: "Independent checks", detailZh: "独立结果检查", ports: ["passed", "failed"] },
+  { type: "Output", label: "Output", labelZh: "输出", detail: "Named result", detailZh: "声明最终结果", ports: [] },
 ];
 
 export function componentFor(type: FlowNode["component_type"]) {

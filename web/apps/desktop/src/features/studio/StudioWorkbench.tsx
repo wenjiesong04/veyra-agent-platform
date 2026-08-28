@@ -1,6 +1,7 @@
 import * as React from "react";
 import { addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, type Connection, type Edge, type Node, type NodeProps, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
-import type { AgentSource, FlowNode } from "@veyra/api-contracts";
+import "@xyflow/react/dist/style.css";
+import type { AgentSource, ComponentDefinition, FlowNode } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, Tag } from "@veyra/ui";
 import { componentFor, newNode, studioComponents } from "./registry";
 import { graphDiagnostics, sourceWithGraph, toCanvas, type CanvasNodeData } from "./graph";
@@ -12,7 +13,7 @@ function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "agentNode
 
 const nodeTypes = { agentNode: AgentNode };
 
-export function StudioWorkbench({ source, onChange, locale }: { source: AgentSource; onChange: (source: AgentSource) => void; locale: "en" | "zh" }) {
+export function StudioWorkbench({ source, onChange, locale, componentDefinitions }: { source: AgentSource; onChange: (source: AgentSource) => void; locale: "en" | "zh"; componentDefinitions: ComponentDefinition[] }) {
   const initial = React.useMemo(() => toCanvas(source), [source]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<CanvasNodeData>>(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
@@ -44,8 +45,11 @@ export function StudioWorkbench({ source, onChange, locale }: { source: AgentSou
   const flow = nodes.find((node) => node.id === selected)?.data.flow;
   return <div className="studio-layout">
     <Panel className="component-rail"><SectionHeading eyebrow={locale === "zh" ? "组件库" : "Palette"} title={locale === "zh" ? "组件" : "Components"} />
-      <div className="component-list">{studioComponents.map((component) => <button key={component.type} draggable onDragStart={(event) => event.dataTransfer.setData("veyra/component", component.type)} onClick={() => add(component.type)}><strong>{locale === "zh" ? component.labelZh : component.label}</strong><small>{component.detail}</small></button>)}</div>
-      <p className="rail-note">{locale === "zh" ? "点击或拖入以添加。组件注册表当前由本地服务提供前不可用。" : "Click or drag to add. Server component support is unavailable until the local registry endpoint exists."}</p>
+      <div className="component-list">{studioComponents.map((component) => {
+        const runtimeStatus = componentDefinitions.find((item) => item.type === component.type)?.runtime_status;
+        return <button key={component.type} draggable onDragStart={(event) => event.dataTransfer.setData("veyra/component", component.type)} onClick={() => add(component.type)}><span><strong>{locale === "zh" ? component.labelZh : component.label}</strong><small>{locale === "zh" ? component.detailZh : component.detail}</small></span><em className={`component-runtime-status ${runtimeStatus ?? "loading"}`}>{runtimeStatus === "supported" ? (locale === "zh" ? "可运行" : "Runnable") : runtimeStatus === "runtime_not_configured" ? (locale === "zh" ? "待配置" : "Configure") : runtimeStatus === "runtime_not_supported" ? (locale === "zh" ? "仅设计" : "Design only") : "…"}</em></button>;
+      })}</div>
+      <p className="rail-note">{locale === "zh" ? "点击或拖入组件；保存前必须补全所有必需端口。" : "Click or drag a component; every required port must be connected before saving."}</p>
     </Panel>
     <Panel className="canvas-panel"><div className="studio-canvas" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const type = event.dataTransfer.getData("veyra/component") as FlowNode["component_type"]; if (studioComponents.some((item) => item.type === type)) add(type, flowInstance?.screenToFlowPosition({ x: event.clientX, y: event.clientY })); }}>
       <ReactFlow<Node<CanvasNodeData>, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodesDelete={(deleted) => { const ids = new Set(deleted.map((node) => node.id)); const nextNodes = nodes.filter((node) => !ids.has(node.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)); setNodes(nextNodes); setEdges(nextEdges); emit(nextNodes, nextEdges); }} onEdgesDelete={(deleted) => { const ids = new Set(deleted.map((edge) => edge.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.id)); setEdges(nextEdges); emit(nodes, nextEdges); }} onNodeDragStop={(_, node) => { const next = nodes.map((item) => item.id === node.id ? { ...item, position: node.position } : item); setNodes(next); emit(next, edges); }} onConnect={connect} onNodeClick={(_, node) => setSelected(node.id)} onPaneClick={() => setSelected(null)} fitView><Background /><Controls /><MiniMap /></ReactFlow>

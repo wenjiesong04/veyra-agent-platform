@@ -244,10 +244,86 @@ export type CommitResponse = {
   file_hash: string;
 };
 
-/** Reserved for the planned local runtime endpoint. It is intentionally not
- * used until the sidecar exposes a typed run response. */
 export type StartAgentRunRequest = {
   inputs: Record<string, JsonValue>;
+};
+
+export type ComponentRuntimeStatus =
+  | "supported"
+  | "runtime_not_configured"
+  | "runtime_not_supported";
+
+export type ComponentDefinition = {
+  type: FlowNode["component_type"];
+  fields: string[];
+  output_ports: FlowTransition["port"][];
+  runtime_status: ComponentRuntimeStatus;
+};
+
+export type ListComponentsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  components: ComponentDefinition[];
+};
+
+export type RuntimeRunStatus = "verified" | "unverified" | "failed";
+
+export type RuntimeEventKind =
+  | "run.created"
+  | "run.state_changed"
+  | "run.started"
+  | "run.completed"
+  | "run.interrupted"
+  | "run.failed"
+  | "run.cancelled"
+  | "node.queued"
+  | "node.state_changed"
+  | "node.started"
+  | "node.output"
+  | "node.waiting"
+  | "node.completed"
+  | "node.failed"
+  | "node.skipped"
+  | "node.cancelled"
+  | "tool.requested"
+  | "tool.started"
+  | "tool.completed"
+  | "approval.requested"
+  | "approval.resolved"
+  | "input.requested"
+  | "input.resolved"
+  | "artifact.created"
+  | "checkpoint.created"
+  | "verification.completed"
+  | "verifier.result";
+
+export type RuntimeEvent = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  event_id: string;
+  run_id: string;
+  sequence: number;
+  kind: RuntimeEventKind;
+  node_id: string | null;
+  payload: JsonObject;
+  timestamp: string;
+};
+
+export type AgentRunResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  run_id: string;
+  project_id: string;
+  agent_id: string;
+  version_id: string;
+  status: RuntimeRunStatus;
+  result: JsonObject | null;
+  error: { code: string; message: string } | null;
+  created_at: string;
+  finished_at: string | null;
+  events?: RuntimeEvent[];
+};
+
+export type ListAgentRunsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  runs: AgentRunResponse[];
 };
 
 export type ExportResponse = {
