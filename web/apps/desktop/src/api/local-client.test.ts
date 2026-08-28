@@ -34,17 +34,17 @@ describe("LocalApiClient Project requests", () => {
     expect(fetcher).toHaveBeenCalledWith("/api/v1/projects", expect.objectContaining({ method: "GET", credentials: "include" }));
   });
 
-  it("sends the empty Project create and open payloads without fixture Agents", async () => {
+  it("sends a create parent path while opening continues to send an existing root path", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response(summary({ project_id: "created", name: "Created" }), 201))
       .mockResolvedValueOnce(response(summary({ project_id: "opened", name: "Opened" })));
     const client = new LocalApiClient({ fetcher });
 
-    await client.createProject({ root_path: "/tmp/created", name: "Created", description: "A created Project" });
+    await client.createProject({ parent_path: "/tmp", name: "Created", description: "A created Project" });
     await client.openProject({ root_path: "/tmp/existing" });
 
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects");
-    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ root_path: "/tmp/created", name: "Created", description: "A created Project" });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ parent_path: "/tmp", name: "Created", description: "A created Project" });
     expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/open");
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ root_path: "/tmp/existing" });
   });

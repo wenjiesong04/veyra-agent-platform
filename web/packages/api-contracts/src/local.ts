@@ -143,7 +143,8 @@ export type ListAgentsResponse = {
 };
 
 export type CreateProjectRequest = {
-  root_path: string;
+  /** Native-picker-selected parent directory; the service creates `name` inside it. */
+  parent_path: string;
   name: string;
   description: string;
 };

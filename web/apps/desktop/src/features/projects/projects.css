@@ -139,6 +139,7 @@
 .project-modal-hint { margin: 12px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .project-modal-actions { justify-content: flex-end; margin-top: 8px; }
 .project-form-error { margin: 0; color: var(--bad); font-size: 12px; }
+.project-create-preview { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .project-visually-hidden { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
 .project-detail-summary { justify-content: flex-start; }
