@@ -24,14 +24,14 @@ function initialInputs(source: AgentSource): Record<string, JsonValue> {
 
 function runTone(status: AgentRunResponse["status"]): "good" | "warn" | "bad" {
   if (status === "verified") return "good";
-  if (status === "failed") return "bad";
+  if (status === "failed" || status === "interrupted") return "bad";
   return "warn";
 }
 
 function runStatusLabel(status: AgentRunResponse["status"], locale: "zh" | "en"): string {
   const labels = locale === "zh"
-    ? { verified: "已验证", unverified: "未验证", failed: "失败" }
-    : { verified: "Verified", unverified: "Unverified", failed: "Failed" };
+    ? { running: "运行中", verified: "已验证", unverified: "未验证", failed: "失败", interrupted: "已中断" }
+    : { running: "Running", verified: "Verified", unverified: "Unverified", failed: "Failed", interrupted: "Interrupted" };
   return labels[status];
 }
 

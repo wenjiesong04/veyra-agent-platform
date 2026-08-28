@@ -439,7 +439,7 @@ function runtimeEvent(value: unknown, status = 502): NonNullable<AgentRunRespons
 function agentRun(value: unknown, status = 502): AgentRunResponse {
   const record = schemaRecord(value, status);
   const runStatus = asString(record.status, "run.status", status);
-  if (runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed") {
+  if (runStatus !== "running" && runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed" && runStatus !== "interrupted") {
     throw new LocalApiClientError("The local service returned an unknown run status.", { status, code: "invalid_response" });
   }
   const result = record.result === null ? null : asJsonValue(asRecord(record.result, status), "run.result", status) as JsonObject;

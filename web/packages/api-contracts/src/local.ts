@@ -270,7 +270,7 @@ export type ListComponentsResponse = {
   components: ComponentDefinition[];
 };
 
-export type RuntimeRunStatus = "verified" | "unverified" | "failed";
+export type RuntimeRunStatus = "running" | "verified" | "unverified" | "failed" | "interrupted";
 
 export type RuntimeEventKind =
   | "run.created"
