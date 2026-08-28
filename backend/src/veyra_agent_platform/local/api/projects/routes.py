@@ -287,6 +287,9 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
     except IdempotencyConflict as exc:
         raise TypedApiError(409, "idempotency_conflict", str(exc)) from exc
     except ProjectError as exc:
+        code = getattr(exc, "code", "project_invalid")
+        if code != "project_invalid":
+            raise TypedApiError(422, code, str(exc)) from exc
         raise TypedApiError(422, "project_invalid", str(exc)) from exc
     except ContractValidationError as exc:
         raise TypedApiError(422, "contract_invalid", str(exc)) from exc

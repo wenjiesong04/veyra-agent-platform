@@ -460,3 +460,98 @@ class LocalRepository:
                 json.dumps(response, sort_keys=True, separators=(",", ":")),
             ),
         )
+
+    def create_run(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        project_id: str,
+        agent_id: str,
+        version_id: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO runtime_runs(run_id, project_id, agent_id, version_id, status, created_at) VALUES (?, ?, ?, ?, 'running', ?)",
+            (run_id, project_id, agent_id, version_id, created_at),
+        )
+
+    def add_run_events(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        events: list[tuple[str | None, str, dict[str, Any]]],
+    ) -> None:
+        start = connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) FROM runtime_run_events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+        for offset, (node_id, event_type, payload) in enumerate(events, start=1):
+            connection.execute(
+                "INSERT INTO runtime_run_events(run_id, sequence, node_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (
+                    run_id,
+                    start + offset,
+                    node_id,
+                    event_type,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+
+    def finish_run(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None,
+        code: str | None,
+        message: str | None,
+        finished_at: str,
+    ) -> None:
+        connection.execute(
+            "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, error_message = ?, finished_at = ? WHERE run_id = ?",
+            (
+                status,
+                json.dumps(result, sort_keys=True, separators=(",", ":"))
+                if result is not None
+                else None,
+                code,
+                message,
+                finished_at,
+                run_id,
+            ),
+        )
+
+    def run(self, run_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone(),
+            )
+
+    def runs(self, agent_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM runtime_runs WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC",
+                (agent_id,),
+            ).fetchall()
+
+    def run_events(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT sequence, node_id, event_type, payload_json, created_at FROM runtime_run_events WHERE run_id = ? ORDER BY sequence",
+                (run_id,),
+            ).fetchall()
+        return [
+            {
+                "sequence": row["sequence"],
+                "node_id": row["node_id"],
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]

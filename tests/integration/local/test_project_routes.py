@@ -345,7 +345,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
-        assert health.json()["database_revision"] == "local_0005_project_lifecycle"
+        assert health.json()["database_revision"] == "local_0006_runtime_runs"
         created = client.post(
             "/api/v1/projects",
             json={

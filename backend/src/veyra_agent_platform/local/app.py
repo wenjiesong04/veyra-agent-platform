@@ -17,10 +17,12 @@ from .api.projects import (
 from .api.projects import (
     build_router as build_projects_router,
 )
+from .api.runtime import build_router as build_runtime_router
 from .api.system import build_router as build_system_router
 from .config import LocalSettings
 from .library import LibraryService
 from .projects import ProjectService
+from .runtime import RuntimeService
 from .storage import LocalRepository, migrate_local_database
 from .system import DirectoryPicker, MacOSDirectoryPicker
 
@@ -64,7 +66,10 @@ def create_app(
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
-        application.state.database_revision = "local_0005_project_lifecycle"
+        application.state.runtime = RuntimeService(
+            repository, projects, application.state.library
+        )
+        application.state.database_revision = "local_0006_runtime_runs"
         application.state.database_ready = True
         try:
             yield
@@ -90,6 +95,7 @@ def create_app(
     )
     application.include_router(build_projects_router())
     application.include_router(build_system_router(resolved_directory_picker))
+    application.include_router(build_runtime_router())
 
     return application
 
