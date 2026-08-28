@@ -64,7 +64,7 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
     tmp_path: Path,
 ) -> None:
     settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
-    first_root = tmp_path / "first"
+    first_root = tmp_path / "First"
     with TestClient(create_app(settings)) as client:
         first = client.post(
             "/api/v1/projects",
