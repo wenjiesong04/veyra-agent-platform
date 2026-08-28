@@ -51,7 +51,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
 
   const navigation = [...(pinned.length ? [makeGroup("Pinned", pinned, false)] : []), makeGroup("Projects", normal, true)];
   const dialogs = <>
-    {popover ? <FixedSidebarPopover anchor={popover.anchor} estimatedWidth={popover.kind === "project-actions" ? 176 : 276} className={popover.kind === "project-actions" ? "sidebar-project-menu" : "agent-add-chooser"} onClose={() => setPopover(null)}>
+    {popover ? <FixedSidebarPopover anchor={popover.anchor} estimatedWidth={popover.kind === "project-actions" ? 176 : 232} className={popover.kind === "project-actions" ? "sidebar-project-menu" : "agent-add-chooser"} onClose={() => setPopover(null)}>
       {popover.kind === "project-actions" ? <ProjectActionsPopover onPin={() => { setPopover(null); void setProjectPinned(popover.project.project_id, !popover.project.pinned).catch(() => undefined); }} onEdit={() => { setPopover(null); setModal({ kind: "edit", project: popover.project }); }} onDelete={() => { setPopover(null); setModal({ kind: "delete", project: popover.project }); }} labels={{ pin: popover.project.pinned ? t("unpinProject") : t("pinProject"), edit: t("editProject"), delete: t("deleteProject"), actions: `${t("projectActions")}: ${popover.project.name}` }} /> : <AgentChooserPopover project={popover.project} zh={locale === "zh"} onChoose={chooseAgentMode} />}
     </FixedSidebarPopover> : null}
     {modal?.kind === "create" || modal?.kind === "open" ? <ProjectDialog mode={modal.kind as ProjectDialogMode} onClose={() => setModal(null)} /> : null}
@@ -72,7 +72,7 @@ function AgentChooserPopover({ project, zh, onChoose }: { project: ProjectSummar
   ] : [
     { mode: "blank" as const, icon: Plus, title: "Create blank Agent", detail: "Start from an empty definition" }, { mode: "template" as const, icon: Box, title: "Import Agent from template", detail: "Choose a registered template" }, { mode: "file" as const, icon: FileUp, title: "Import Agent file", detail: "Import a .vagent.yaml file" },
   ];
-  return <div role="menu" aria-label={zh ? `添加 Agent：${project.name}` : `Add Agent: ${project.name}`}>{options.map(({ mode, icon: Icon, title, detail }) => <button type="button" role="menuitem" key={mode} onClick={() => onChoose(project, mode)}><Icon size={16} aria-hidden="true" /><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>;
+  return <div role="menu" aria-label={zh ? `添加 Agent：${project.name}` : `Add Agent: ${project.name}`}>{options.map(({ mode, icon: Icon, title, detail }) => <button type="button" role="menuitem" key={mode} onClick={() => onChoose(project, mode)}><span className="agent-add-chooser-icon"><Icon size={14} aria-hidden="true" /></span><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>;
 }
 
 function FixedSidebarPopover({ anchor, estimatedWidth, className, onClose, children }: { anchor: HTMLButtonElement; estimatedWidth: number; className: string; onClose: () => void; children: ReactNode }) {

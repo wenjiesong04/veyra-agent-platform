@@ -144,14 +144,14 @@
 .sidebar-project-menu { width: 176px; padding: 5px; }
 .sidebar-project-menu button { width: 100%; border: 0; border-radius: 7px; padding: 8px 9px; color: var(--ink); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .sidebar-project-menu button:hover, .sidebar-project-menu button:focus-visible { background: var(--surface-soft); outline: none; }
-.agent-add-chooser { width: min(276px, calc(100vw - 16px)); padding: 5px; }
-.agent-add-chooser button { display: flex; width: 100%; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 8px; color: var(--ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
-.agent-add-chooser button + button { margin-top: 2px; border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent); }
+.agent-add-chooser { width: min(232px, calc(100vw - 16px)); padding: 4px; }
+.agent-add-chooser button { display: flex; width: 100%; min-height: 45px; align-items: center; gap: 8px; border: 0; border-radius: 7px; padding: 6px; color: var(--ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.agent-add-chooser button + button { border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent); }
 .agent-add-chooser button:hover, .agent-add-chooser button:focus-visible { background: var(--surface-soft); outline: none; }
-.agent-add-chooser button > svg { flex: 0 0 auto; color: var(--accent-strong); }
-.agent-add-chooser button > span { display: grid; min-width: 0; gap: 2px; }
-.agent-add-chooser strong { font-size: 12px; }
-.agent-add-chooser small { color: var(--subtle); font-size: 10px; }
+.agent-add-chooser-icon { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 7px; color: var(--accent-strong); background: var(--accent-soft); }
+.agent-add-chooser button > span:last-child { display: grid; min-width: 0; gap: 1px; }
+.agent-add-chooser strong { overflow: hidden; font-size: 11px; font-weight: 740; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.agent-add-chooser small { overflow: hidden; color: var(--subtle); font-size: 10px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 
 .project-modal-tabs { display: flex; gap: 5px; margin-top: 20px; }
 .project-modal-tabs button { border: 0; border-radius: 9px; padding: 8px 10px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }

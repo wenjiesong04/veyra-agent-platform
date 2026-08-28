@@ -251,6 +251,7 @@
 }
 
 .sidebar-nav-item-row {
+  position: relative;
   display: flex;
   min-width: 0;
   align-items: center;
@@ -301,24 +302,34 @@
   outline: none;
 }
 
-.sidebar-nav-item.has-children > .sidebar-nav-item-row > .sidebar-nav-link {
+.sidebar-nav-item-row:has(.project-row-actions) {
+  min-height: 32px;
+  border-radius: 8px;
+}
+
+.sidebar-nav-item-row:has(.project-row-actions) > .sidebar-nav-link {
+  min-height: 32px;
+  gap: 8px;
   padding-right: 8px;
   padding-left: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 680;
 }
 
 .sidebar-nav-children {
   display: grid;
   gap: 1px;
-  margin: 1px 0 2px 26px;
+  margin: 1px 0 2px 28px;
 }
 
 .sidebar-nav .sidebar-nav-children .sidebar-nav-link {
-  min-height: 30px;
+  min-height: 29px;
   gap: 8px;
   border-radius: 8px;
   padding: 0 8px;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 640;
 }
 
 .sidebar-nav .sidebar-nav-children .sidebar-nav-link svg { width: 15px; height: 15px; flex-basis: 15px; }
@@ -340,6 +351,43 @@
   color: var(--accent-strong);
   background: var(--surface-soft);
   outline: none;
+}
+
+/* Project actions overlay the row so project names keep the full link width.
+ * They remain tabbable DOM controls; pointer devices reveal them on intent. */
+.sidebar-nav-item-row:has(.project-row-actions) > .sidebar-nav-item-action {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 3px;
+  display: inline-flex;
+  width: 56px;
+  min-height: 28px;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0;
+  border-radius: 8px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--surface-soft) 94%, var(--surface)) 32%);
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.sidebar-nav-item-row:has(> .sidebar-nav-link.active) > .sidebar-nav-item-action {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--nav-active) 92%, var(--surface)) 32%);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-nav-item-row:has(.project-row-actions) > .sidebar-nav-item-action {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .sidebar-nav-item-row:has(.project-row-actions):hover > .sidebar-nav-item-action,
+  .sidebar-nav-item-row:has(.project-row-actions):focus-within > .sidebar-nav-item-action,
+  .sidebar-nav-item-row:has(.project-row-actions):has(button[aria-expanded="true"]) > .sidebar-nav-item-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .sidebar-nav-link {
