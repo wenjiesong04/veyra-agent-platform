@@ -150,7 +150,7 @@
 .agent-add-chooser button:hover, .agent-add-chooser button:focus-visible { background: var(--surface-soft); outline: none; }
 .agent-add-chooser-icon { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 7px; color: var(--accent-strong); background: var(--accent-soft); }
 .agent-add-chooser button > span:last-child { display: grid; min-width: 0; gap: 1px; }
-.agent-add-chooser strong { overflow: hidden; font-size: 11px; font-weight: 740; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.agent-add-chooser strong { overflow: hidden; font-size: 12px; font-weight: 740; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .agent-add-chooser small { overflow: hidden; color: var(--subtle); font-size: 10px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 
 .project-modal-tabs { display: flex; gap: 5px; margin-top: 20px; }
