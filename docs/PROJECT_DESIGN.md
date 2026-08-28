@@ -699,7 +699,9 @@ collapsible Project-to-Agent tree. Each Project row owns Pin/Edit/Delete and an
 Add Agent button that opens a top-layer chooser without navigating. The chooser
 offers a blank Agent, a registered template, or a validated local Agent file;
 each choice opens its own confirmation form and refreshes the tree after a real
-write. Only selecting an existing Agent navigates to the Agent route. The
+write. Selecting an existing Agent opens its Orchestration route by default;
+Agent-context New chat remains the explicit entry to the Agent conversation
+surface. The
 Desktop header uses one title for a root page and a horizontal, linked
 breadcrumb for nested Project and Agent pages; it does not stack an eyebrow
 over the page title.

@@ -311,7 +311,10 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
                     const ChildIcon = child.icon;
                     const childActive = child.active ?? child.href === activeHref;
                     const childLabel = shellText(child.label, t);
-                    return <a className={`sidebar-nav-link ${childActive ? "active" : ""}`} key={`${child.href}-${childLabel}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>;
+                    return <div className={`sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`} key={`${child.href}-${childLabel}`}>
+                      <a className={`sidebar-nav-link ${childActive ? "active" : ""}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>
+                      {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
+                    </div>;
                   })}</div> : null}
                 </div>;
               })}

@@ -140,10 +140,13 @@
 .project-row-actions { position: relative; display: inline-flex; align-items: center; gap: 0; }
 .project-row-actions > button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 7px; color: var(--subtle); background: transparent; cursor: pointer; }
 .project-row-actions > button:hover, .project-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
-.sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
-.sidebar-project-menu { width: 176px; padding: 5px; }
-.sidebar-project-menu button { width: 100%; border: 0; border-radius: 7px; padding: 8px 9px; color: var(--ink); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
-.sidebar-project-menu button:hover, .sidebar-project-menu button:focus-visible { background: var(--surface-soft); outline: none; }
+.sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
+.sidebar-project-menu, .sidebar-agent-menu { width: 208px; padding: 5px; }
+.sidebar-action-menu { display: grid; gap: 2px; }
+.sidebar-action-menu button, .sidebar-action-menu a { display: flex; width: 100%; min-height: 34px; box-sizing: border-box; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 0 9px; color: var(--ink); background: transparent; font: inherit; font-size: 12px; text-align: left; text-decoration: none; cursor: pointer; }
+.sidebar-action-menu button:hover, .sidebar-action-menu button:focus-visible, .sidebar-action-menu a:hover, .sidebar-action-menu a:focus-visible { background: var(--surface-soft); outline: none; }
+.sidebar-action-menu svg { flex: 0 0 15px; color: var(--accent-strong); }
+.sidebar-action-menu span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-add-chooser { width: min(232px, calc(100vw - 16px)); padding: 4px; }
 .agent-add-chooser button { display: flex; width: 100%; min-height: 45px; align-items: center; gap: 8px; border: 0; border-radius: 7px; padding: 6px; color: var(--ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .agent-add-chooser button + button { border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent); }

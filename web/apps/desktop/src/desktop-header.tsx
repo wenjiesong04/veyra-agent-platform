@@ -19,7 +19,7 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   const home = { label: "Home", href: desktopRoutePaths.projects, icon: Home };
   const projectCrumb = "projectId" in route ? { label: projectLabel, href: projectRoutePaths.project(route.projectId), icon: FolderKanban } : undefined;
   const agent = project && "agentId" in route ? project.agents.find((item) => item.agent_id === route.agentId) : undefined;
-  const agentCrumb = agent && "projectId" in route && "agentId" in route ? { label: agent.slug, href: projectRoutePaths.agent(route.projectId, agent.agent_id), icon: Bot } : undefined;
+  const agentCrumb = agent && "projectId" in route && "agentId" in route ? { label: agent.slug, href: projectRoutePaths.agentDesign(route.projectId, agent.agent_id), icon: Bot } : undefined;
   if (!projectCrumb) return { title: "Route not found" };
   if (route.kind === "project" || route.kind === "project-agents") return { title: projectLabel, breadcrumbs: [home, { label: projectLabel, icon: FolderKanban }], backHref: desktopRoutePaths.projects };
   if (route.kind === "factory") return { title: "Factory", breadcrumbs: [home, projectCrumb, { label: "Factory", icon: Wrench }], backHref: projectCrumb.href };

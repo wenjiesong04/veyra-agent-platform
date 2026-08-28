@@ -242,9 +242,7 @@ describe("desktop Project workspace", () => {
 
     await user.click(await screen.findByRole("button", { name: "Expand Project: Tree Project" }));
     const agentLink = screen.getByRole("link", { name: "tree-agent" });
-    expect(agentLink).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
-    await user.click(agentLink);
-    await waitFor(() => expect(agentLink).toHaveAttribute("aria-current", "page"));
+    expect(agentLink).toHaveAttribute("href", projectRoutePaths.agentDesign("tree", "agent-tree"));
     const projectRow = document.querySelector(`.nav-group-projects .sidebar-nav-item-row`);
     const projectLink = projectRow?.querySelector(`a[href="${projectRoutePaths.project("tree")}"]`);
     expect(projectLink).toHaveClass("sidebar-nav-link");
@@ -253,6 +251,12 @@ describe("desktop Project workspace", () => {
     expect(projectRow?.querySelector(".sidebar-nav-item-action")).not.toBeNull();
     expect(projectRow?.querySelector(".sidebar-nav-item-leading-action")).not.toBeNull();
     expect(projectRow?.parentElement?.querySelector(":scope > .sidebar-nav-children")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Agent actions: tree-agent" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Agent actions: tree-agent" }));
+    expect(screen.getByRole("menu", { name: "Agent actions: tree-agent" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Open Agent" })).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
+    expect(screen.getByRole("menuitem", { name: "Orchestration" })).toHaveAttribute("href", projectRoutePaths.agentDesign("tree", "agent-tree"));
+    await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Project actions: Tree Project" }));
     expect(document.querySelector(".sidebar-project-menu")?.parentElement).toBe(document.body);
     expect(document.querySelector(".sidebar-project-menu")).not.toHaveClass("agent-add-chooser");
@@ -375,7 +379,7 @@ describe("desktop Project workspace", () => {
     expect(screen.getByRole("link", { name: "Orchestration" })).toHaveAttribute("href", projectRoutePaths.agentDesign("agent-project", "agent-one"));
     expect(screen.getByRole("link", { name: "Data analysis" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project", "agent-one"));
     expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("aria-current", "page");
-    const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agent("agent-project", "agent-one") + "\"]");
+    const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agentDesign("agent-project", "agent-one") + "\"]");
     const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("agent-project") + "\"]");
     expect(agentTreeLink).toHaveAttribute("aria-current", "page");
     expect(projectTreeLink).not.toHaveAttribute("aria-current");
@@ -401,7 +405,7 @@ describe("desktop Project workspace", () => {
     expect(contextLinks.map((link) => link.textContent)).toEqual(["新聊天", "编排", "数据分析"]);
     expect(screen.getByRole("link", { name: "数据分析" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project-zh", "agent-zh"));
     expect(screen.getByRole("link", { name: "数据分析" })).toHaveAttribute("aria-current", "page");
-    const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agent("agent-project-zh", "agent-zh") + "\"]");
+    const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agentDesign("agent-project-zh", "agent-zh") + "\"]");
     const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("agent-project-zh") + "\"]");
     expect(agentTreeLink).toHaveAttribute("aria-current", "page");
     expect(projectTreeLink).not.toHaveAttribute("aria-current");
