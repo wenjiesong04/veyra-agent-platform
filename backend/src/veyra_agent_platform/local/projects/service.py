@@ -381,11 +381,13 @@ class ProjectService:
             "description": project["description"],
             "pinned": project["pinned_at"] is not None,
             "pinned_at": project["pinned_at"],
+            "manifest_hash": project["manifest_hash"],
             "agents": [
                 {
                     "agent_id": agent["agent_id"],
                     "slug": agent["slug"],
                     "source_path": agent["source_path"],
+                    "source_file_hash": agent["source_file_hash"],
                 }
                 for agent in self.repository.agents(project_id)
             ],
