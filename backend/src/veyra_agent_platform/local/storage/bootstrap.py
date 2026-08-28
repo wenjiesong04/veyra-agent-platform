@@ -8,7 +8,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0004_project_metadata"
+HEAD_REVISION = "local_0005_project_lifecycle"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

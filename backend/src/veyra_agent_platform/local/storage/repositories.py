@@ -82,7 +82,9 @@ class LocalRepository:
             return cast(
                 sqlite3.Row | None,
                 connection.execute(
-                    "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                    """SELECT * FROM projects
+                       WHERE project_id = ? AND removed_at IS NULL""",
+                    (project_id,),
                 ).fetchone(),
             )
 
@@ -91,14 +93,15 @@ class LocalRepository:
             return cast(
                 sqlite3.Row | None,
                 connection.execute(
-                    "SELECT * FROM projects WHERE root_path = ?", (root_path,)
+                    "SELECT * FROM projects WHERE root_path = ? AND removed_at IS NULL",
+                    (root_path,),
                 ).fetchone(),
             )
 
     def projects(self) -> list[sqlite3.Row]:
         with self._connect() as connection:
             return connection.execute(
-                """SELECT * FROM projects
+                """SELECT * FROM projects WHERE removed_at IS NULL
                    ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
                             indexed_at DESC, project_id ASC"""
             ).fetchall()
@@ -108,17 +111,36 @@ class LocalRepository:
     ) -> sqlite3.Row | None:
         with self.transaction() as connection:
             cursor = connection.execute(
-                "UPDATE projects SET pinned_at = ? WHERE project_id = ?",
+                """UPDATE projects SET pinned_at = ?
+                   WHERE project_id = ? AND removed_at IS NULL""",
                 (pinned_at, project_id),
             )
             if cursor.rowcount == 0:
                 return None
+            if pinned_at is not None:
+                connection.execute(
+                    """UPDATE projects SET pinned_at = NULL
+                       WHERE project_id != ? AND removed_at IS NULL""",
+                    (project_id,),
+                )
             return cast(
                 sqlite3.Row,
                 connection.execute(
-                    "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                    """SELECT * FROM projects
+                       WHERE project_id = ? AND removed_at IS NULL""",
+                    (project_id,),
                 ).fetchone(),
             )
+
+    def remove_project(self, project_id: str, removed_at: str) -> bool:
+        """Soft-remove one active Project, retaining its original root identity."""
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE projects SET removed_at = ?, pinned_at = NULL
+                   WHERE project_id = ? AND removed_at IS NULL""",
+                (removed_at, project_id),
+            )
+            return cursor.rowcount == 1
 
     def agent(self, agent_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:

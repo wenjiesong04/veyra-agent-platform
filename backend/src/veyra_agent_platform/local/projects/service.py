@@ -7,6 +7,8 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -50,12 +52,33 @@ class ProjectService:
         self.project_storage_root = (
             project_storage_root or object_root.parent / "projects"
         )
+        self._writer_lock = threading.RLock()
 
     def create(
         self,
         *,
         root_path: str | Path,
-        name: str,
+        name: str | None,
+        description: str = "",
+        sources: list[dict[str, Any]] | None = None,
+        template_selections: list[dict[str, str]] | None = None,
+        require_new_root: bool = False,
+    ) -> dict[str, Any]:
+        with self._writer_lock:
+            return self._create(
+                root_path=root_path,
+                name=name,
+                description=description,
+                sources=sources,
+                template_selections=template_selections,
+                require_new_root=require_new_root,
+            )
+
+    def _create(
+        self,
+        *,
+        root_path: str | Path,
+        name: str | None,
         description: str = "",
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
@@ -64,8 +87,7 @@ class ProjectService:
         root = self._new_root(root_path, require_new_root=require_new_root)
         root_preexisted = root.exists()
         root_mode = root.stat().st_mode & 0o777 if root_preexisted else None
-        if not isinstance(name, str) or not name.strip():
-            raise ProjectError("Project name must be non-empty")
+        allocated_name = self._allocate_name(name)
         selected_sources = [AgentSource.from_dict(source) for source in (sources or [])]
         selected_sources.extend(
             self._instantiate_template(selection)
@@ -74,7 +96,7 @@ class ProjectService:
         forked_sources = [self._fork_template(source) for source in selected_sources]
         if len({source.slug for source in forked_sources}) != len(forked_sources):
             raise ProjectError("Project Agent slugs must be unique")
-        manifest = self._manifest(name.strip(), description, forked_sources)
+        manifest = self._manifest(allocated_name, description, forked_sources)
         staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
         installed = False
         try:
@@ -125,7 +147,7 @@ class ProjectService:
     def create_managed(
         self,
         *,
-        name: str,
+        name: str | None,
         description: str = "",
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
@@ -141,6 +163,29 @@ class ProjectService:
             template_selections=template_selections,
             require_new_root=True,
         )
+
+    def _allocate_name(
+        self, requested_name: str | None, *, exclude_project_id: str | None = None
+    ) -> str:
+        """Allocate a display name among active Projects under the writer lock."""
+        if requested_name is None:
+            base = "New project"
+        elif not isinstance(requested_name, str):
+            raise ProjectError("Project name must be a string")
+        else:
+            base = requested_name
+        base = unicodedata.normalize("NFC", base).strip() or "New project"
+        occupied = {
+            _name_key(row["name"])
+            for row in self.repository.projects()
+            if row["project_id"] != exclude_project_id
+        }
+        candidate = base
+        suffix = 1
+        while _name_key(candidate) in occupied:
+            candidate = f"{base}({suffix})"
+            suffix += 1
+        return candidate
 
     def _managed_storage_root(self) -> Path:
         """Create and validate a managed root without traversing symlinks."""
@@ -159,6 +204,51 @@ class ProjectService:
         if not root.is_dir() or root.is_symlink():
             raise ProjectError("managed Project storage root must be a directory")
         return root
+
+    def _is_managed_root(self, root_path: Path) -> bool:
+        """Recognize only immediate, non-symlink children allocated by this service."""
+        storage_root = self._managed_storage_root()
+        candidate = Path(root_path).expanduser().absolute()
+        if candidate.parent != storage_root or not candidate.name.startswith(
+            "project-"
+        ):
+            return False
+        root = self._existing_root(candidate)
+        return root.parent == storage_root and root.name.startswith("project-")
+
+    def _trash_target(self, project_id: str) -> Path:
+        storage_root = self._managed_storage_root()
+        trash_root = storage_root.parent / "trash" / "projects"
+        current = trash_root
+        while True:
+            if current.exists() and current.is_symlink():
+                raise ProjectError("managed Project trash path must not be a symlink")
+            if current == current.parent:
+                break
+            current = current.parent
+        try:
+            trash_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ProjectError("managed Project trash path is unavailable") from exc
+        if not trash_root.is_dir() or trash_root.is_symlink():
+            raise ProjectError("managed Project trash path must be a directory")
+        target = trash_root / project_id
+        if target.exists() or target.is_symlink():
+            raise ProjectError(
+                "managed Project trash target already exists or is unsafe"
+            )
+        return target
+
+    @staticmethod
+    def _removal_summary(
+        project_id: str, disposition: str, removed_at: str
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "disposition": disposition,
+            "removed_at": removed_at,
+        }
 
     def add_agent(
         self, *, project_id: str, template_selection: dict[str, str]
@@ -245,13 +335,46 @@ class ProjectService:
             raise
 
     def index(self, root_path: str | Path) -> dict[str, Any]:
+        with self._writer_lock:
+            return self._index(root_path)
+
+    def _index(self, root_path: str | Path) -> dict[str, Any]:
         root = self._existing_root(root_path)
         self._scan_for_forbidden_names(root)
         manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
-        manifest_text = self._read_text(manifest_path)
+        original_manifest_text = self._read_text(manifest_path)
+        manifest_text = original_manifest_text
         manifest = ProjectManifest.from_dict(
             self._parse_yaml(manifest_text, "Project manifest")
         )
+        allocated_name = self._allocate_name(
+            manifest.name, exclude_project_id=manifest.project_id
+        )
+        manifest_replaced = False
+        if allocated_name != manifest.name:
+            updated = manifest.to_dict()
+            updated["name"] = allocated_name
+            manifest = ProjectManifest.from_dict(updated)
+            manifest_text = self._canonical_source(manifest.to_dict())
+            self.atomic_write(manifest_path, manifest_text)
+            manifest_replaced = True
+        try:
+            return self._index_manifest(root, manifest_path, manifest_text, manifest)
+        except BaseException as exc:
+            if manifest_replaced:
+                try:
+                    self.atomic_write(manifest_path, original_manifest_text)
+                except BaseException as rollback_exc:
+                    exc.add_note(f"rollback failed: {rollback_exc}")
+            raise
+
+    def _index_manifest(
+        self,
+        root: Path,
+        manifest_path: Path,
+        manifest_text: str,
+        manifest: ProjectManifest,
+    ) -> dict[str, Any]:
         records, indexed_files = self._collect_allowed_files(
             root, manifest, manifest_path
         )
@@ -294,6 +417,10 @@ class ProjectService:
                         now,
                         manifest.project_id,
                     ),
+                )
+                connection.execute(
+                    "UPDATE projects SET removed_at = NULL WHERE project_id = ?",
+                    (manifest.project_id,),
                 )
             manifest_agent_ids = {source.agent_id for source, _, _ in records}
             existing_agents = connection.execute(
@@ -396,10 +523,96 @@ class ProjectService:
         }
 
     def set_pinned(self, project_id: str, *, pinned: bool) -> dict[str, Any]:
-        if self.repository.project(project_id) is None:
-            raise ProjectError("unknown Project")
-        self.repository.set_project_pinned(project_id, _utc_now() if pinned else None)
-        return self.project_summary(project_id)
+        with self._writer_lock:
+            if self.repository.project(project_id) is None:
+                raise ProjectError("unknown Project")
+            self.repository.set_project_pinned(
+                project_id, _utc_now() if pinned else None
+            )
+            return self.project_summary(project_id)
+
+    def edit(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        pinned: bool | None = None,
+    ) -> dict[str, Any]:
+        """Apply portable metadata changes before re-indexing their source manifest."""
+        with self._writer_lock:
+            project = self.repository.project(project_id)
+            if project is None:
+                raise ProjectError("unknown Project")
+            if name is None and description is None:
+                if pinned is None:
+                    raise ProjectError("at least one Project field is required")
+                return self.set_pinned(project_id, pinned=pinned)
+
+            root = self._existing_root(project["root_path"])
+            manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+            previous_text = self._read_text(manifest_path)
+            manifest = ProjectManifest.from_dict(
+                self._parse_yaml(previous_text, "Project manifest")
+            )
+            if manifest.project_id != project_id:
+                raise ProjectError("Project manifest identity does not match its index")
+            updated = manifest.to_dict()
+            if name is not None:
+                updated["name"] = self._allocate_name(
+                    name, exclude_project_id=project_id
+                )
+            if description is not None:
+                updated["description"] = description
+            validated = ProjectManifest.from_dict(updated)
+            try:
+                self.atomic_write(
+                    manifest_path, self._canonical_source(validated.to_dict())
+                )
+                result = self.index(root)
+            except BaseException as exc:
+                try:
+                    self.atomic_write(manifest_path, previous_text)
+                except BaseException as rollback_exc:
+                    exc.add_note(f"rollback failed: {rollback_exc}")
+                raise
+            if pinned is not None:
+                result = self.set_pinned(project_id, pinned=pinned)
+            return result
+
+    def remove(self, project_id: str) -> dict[str, Any]:
+        """Soft-remove a Project, moving only application-managed roots to trash."""
+        with self._writer_lock:
+            project = self.repository.project(project_id)
+            if project is None:
+                raise ProjectError("unknown Project")
+            removed_at = _utc_now()
+            root = Path(project["root_path"])
+            if not self._is_managed_root(root):
+                if not self.repository.remove_project(project_id, removed_at):
+                    raise ProjectError("unknown Project")
+                return self._removal_summary(project_id, "unlinked", removed_at)
+
+            source = self._existing_root(root)
+            target = self._trash_target(project_id)
+            moved = False
+            try:
+                os.replace(source, target)
+                moved = True
+                self._fsync_directory(source.parent)
+                self._fsync_directory(target.parent)
+                if not self.repository.remove_project(project_id, removed_at):
+                    raise ProjectError("unknown Project")
+            except BaseException as exc:
+                if moved:
+                    try:
+                        os.replace(target, source)
+                        self._fsync_directory(source.parent)
+                        self._fsync_directory(target.parent)
+                    except BaseException as rollback_exc:
+                        exc.add_note(f"rollback failed: {rollback_exc}")
+                raise
+            return self._removal_summary(project_id, "trashed", removed_at)
 
     def agent_summary(self, project_id: str, agent_id: str) -> dict[str, Any]:
         """Return an Agent summary parsed from its authoritative source file."""
@@ -677,6 +890,10 @@ def _walk_existing_parts(root: Path, relative: Path) -> list[Path]:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _name_key(value: str) -> str:
+    return unicodedata.normalize("NFC", value).strip().casefold()
 
 
 def _etag(revision: int, current_file_hash: str) -> str:

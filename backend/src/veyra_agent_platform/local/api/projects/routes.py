@@ -7,7 +7,7 @@ from typing import Any, TypeVar, cast
 
 from fastapi import APIRouter, Header, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
@@ -22,7 +22,7 @@ class _ClosedModel(BaseModel):
 
 
 class CreateProjectRequest(_ClosedModel):
-    name: str = Field(min_length=1)
+    name: str | None = None
     description: str = ""
     agents: list[dict[str, Any]] = Field(default_factory=list)
     templates: list[dict[str, str]] = Field(default_factory=list)
@@ -32,8 +32,16 @@ class OpenProjectRequest(_ClosedModel):
     root_path: str = Field(min_length=1)
 
 
-class SetProjectPinnedRequest(_ClosedModel):
-    pinned: StrictBool
+class UpdateProjectRequest(_ClosedModel):
+    name: str | None = None
+    description: str | None = None
+    pinned: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def require_update(self) -> UpdateProjectRequest:
+        if not self.model_fields_set:
+            raise ValueError("at least one Project field is required")
+        return self
 
 
 class ReplaceDraftRequest(_ClosedModel):
@@ -100,13 +108,27 @@ def build_router() -> APIRouter:
         return _translate(lambda: projects.project_summary(project_id))
 
     @router.patch("/{project_id}")
-    def set_project_pinned(
-        project_id: str, payload: SetProjectPinnedRequest, request: Request
+    def update_project(
+        project_id: str, payload: UpdateProjectRequest, request: Request
     ) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(
-            lambda: projects.set_pinned(project_id, pinned=payload.pinned)
+            lambda: projects.edit(
+                project_id,
+                name=payload.name if "name" in payload.model_fields_set else None,
+                description=(
+                    payload.description
+                    if "description" in payload.model_fields_set
+                    else None
+                ),
+                pinned=payload.pinned if "pinned" in payload.model_fields_set else None,
+            )
         )
+
+    @router.delete("/{project_id}")
+    def delete_project(project_id: str, request: Request) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(lambda: projects.remove(project_id))
 
     @router.get("/{project_id}/agents")
     def list_agents(project_id: str, request: Request) -> dict[str, Any]:

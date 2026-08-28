@@ -137,6 +137,88 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
     assert restarted.json()["pinned_at"] == repinned.json()["pinned_at"]
 
 
+def test_project_names_edit_manifest_and_exclusive_pin(tmp_path: Path) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        default = client.post("/api/v1/projects", json={})
+        suffix = client.post("/api/v1/projects", json={"name": " new project "})
+        second = client.post("/api/v1/projects", json={"name": "Second"})
+        assert default.status_code == suffix.status_code == second.status_code == 201
+        first_project = default.json()
+        suffix_project = suffix.json()
+        assert first_project["name"] == "New project"
+        assert suffix_project["name"] == "new project(1)"
+
+        edited = client.patch(
+            f"/api/v1/projects/{second.json()['project_id']}",
+            json={"name": "NEW PROJECT", "description": "  Renamed  "},
+        )
+        assert edited.status_code == 200
+        assert edited.json()["name"] == "NEW PROJECT(2)"
+        manifest = json.loads(
+            (Path(edited.json()["root_path"]) / "project.vproject.yaml").read_text()
+        )
+        assert manifest["name"] == "NEW PROJECT(2)"
+        assert manifest["description"] == "Renamed"
+
+        assert (
+            client.patch(
+                f"/api/v1/projects/{first_project['project_id']}", json={"pinned": True}
+            ).json()["pinned"]
+            is True
+        )
+        assert (
+            client.patch(
+                f"/api/v1/projects/{suffix_project['project_id']}",
+                json={"pinned": True},
+            ).json()["pinned"]
+            is True
+        )
+        listed = {
+            item["project_id"]: item
+            for item in client.get("/api/v1/projects").json()["projects"]
+        }
+        assert listed[first_project["project_id"]]["pinned"] is False
+        assert listed[suffix_project["project_id"]]["pinned"] is True
+
+
+def test_project_delete_trashes_managed_and_unlinks_external(tmp_path: Path) -> None:
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
+    external_root = tmp_path / "external"
+    with TestClient(create_app(settings)) as client:
+        managed = client.post("/api/v1/projects", json={"name": "Managed"}).json()
+        external = client.app.state.projects.create(
+            root_path=external_root, name="External"
+        )
+        removed_managed = client.delete(f"/api/v1/projects/{managed['project_id']}")
+        removed_external = client.delete(f"/api/v1/projects/{external['project_id']}")
+        assert removed_managed.json()["disposition"] == "trashed"
+        assert removed_external.json()["disposition"] == "unlinked"
+        assert not Path(managed["root_path"]).exists()
+        assert (
+            managed_root.parent / "trash" / "projects" / managed["project_id"]
+        ).is_dir()
+        assert external_root.is_dir()
+        assert (
+            client.get(f"/api/v1/projects/{managed['project_id']}").status_code == 422
+        )
+        assert (
+            client.get(f"/api/v1/projects/{external['project_id']}").status_code == 422
+        )
+        reopened = client.post(
+            "/api/v1/projects/open", json={"root_path": str(external_root)}
+        )
+        assert reopened.status_code == 200
+        assert reopened.json()["project_id"] == external["project_id"]
+
+
 def test_project_description_length_returns_typed_contract_error(
     tmp_path: Path,
 ) -> None:
@@ -171,7 +253,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
-        assert health.json()["database_revision"] == "local_0004_project_metadata"
+        assert health.json()["database_revision"] == "local_0005_project_lifecycle"
         created = client.post(
             "/api/v1/projects",
             json={

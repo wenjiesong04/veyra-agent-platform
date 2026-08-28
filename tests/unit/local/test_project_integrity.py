@@ -7,6 +7,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.exc import OperationalError
 
 from veyra_agent_platform.contracts.common import new_uuid7
@@ -22,6 +24,7 @@ from veyra_agent_platform.local.storage import (
     LocalRepository,
     migrate_local_database,
 )
+from veyra_agent_platform.local.storage.bootstrap import HEAD_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -55,6 +58,75 @@ def test_only_alembic_bootstraps_schema_and_fresh_upgrade_is_repeatable(
         connection.execute("CREATE TABLE projects (project_id TEXT PRIMARY KEY)")
     with pytest.raises(OperationalError, match="already exists"):
         migrate_local_database(collision)
+
+
+def test_lifecycle_migration_empty_and_upgrade_identity(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.sqlite3"
+    migrate_local_database(fresh)
+    with sqlite3.connect(fresh) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert "removed_at" in {
+            row[1] for row in connection.execute("PRAGMA table_info(projects)")
+        }
+
+    upgraded = tmp_path / "upgraded.sqlite3"
+    config = Config("backend/migrations/local/alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{upgraded}")
+    command.upgrade(config, "local_0004_project_metadata")
+    migrate_local_database(upgraded)
+    with sqlite3.connect(upgraded) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+
+
+def test_managed_delete_rolls_back_move_when_database_marking_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "app.sqlite3"
+    migrate_local_database(database_path)
+    managed_root = tmp_path / "application-data" / "projects"
+    projects = ProjectService(
+        LocalRepository(database_path),
+        tmp_path / "objects",
+        project_storage_root=managed_root,
+    )
+    created = projects.create_managed(name="Rollback")
+    root = Path(created["root_path"])
+    monkeypatch.setattr(projects.repository, "remove_project", lambda *_: False)
+
+    with pytest.raises(ProjectError, match="unknown Project"):
+        projects.remove(created["project_id"])
+
+    assert root.is_dir()
+    assert not (
+        managed_root.parent / "trash" / "projects" / created["project_id"]
+    ).exists()
+
+
+def test_failed_duplicate_name_index_restores_external_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+    projects.create(root_path=tmp_path / "first", name="Duplicate")
+    projects.create(root_path=tmp_path / "second", name="Other")
+    manifest_path = tmp_path / "second" / "project.vproject.yaml"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["name"] = "Duplicate"
+    original_text = json.dumps(manifest)
+    manifest_path.write_text(original_text, encoding="utf-8")
+    monkeypatch.setattr(
+        projects,
+        "_collect_allowed_files",
+        lambda *_: (_ for _ in ()).throw(OSError("index unavailable")),
+    )
+
+    with pytest.raises(OSError, match="index unavailable"):
+        projects.index(tmp_path / "second")
+
+    assert manifest_path.read_text(encoding="utf-8") == original_text
 
 
 def test_template_projects_fork_agent_identities_and_write_agent_scaffolding(

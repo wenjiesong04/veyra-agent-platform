@@ -64,7 +64,7 @@ def create_app(
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
-        application.state.database_revision = "local_0004_project_metadata"
+        application.state.database_revision = "local_0005_project_lifecycle"
         application.state.database_ready = True
         try:
             yield
