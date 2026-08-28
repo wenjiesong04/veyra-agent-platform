@@ -244,6 +244,11 @@ export type CommitResponse = {
   file_hash: string;
 };
 
+/** Compare-and-swap boundary for materializing an immutable Agent version. */
+export type CommitRequest = {
+  expected_revision: number;
+};
+
 export type StartAgentRunRequest = {
   inputs: Record<string, JsonValue>;
 };

@@ -82,7 +82,7 @@ export type LocalProjectApi = {
   saveDraft?(projectId: string, agentId: string, input: SaveDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveDraftResponse>;
   reloadDraft?(projectId: string, agentId: string): Promise<DraftResponse>;
   validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
-  commit?(projectId: string, agentId: string, options?: { idempotencyKey?: string }): Promise<CommitResponse>;
+  commit?(projectId: string, agentId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
   listComponents?(): Promise<ListComponentsResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
@@ -652,13 +652,15 @@ export class LocalApiClient {
   commit(
     projectId: string,
     agentId: string,
-    options: { idempotencyKey?: string } = {},
+    options: { expectedRevision: number; etag: string; idempotencyKey?: string },
   ): Promise<CommitResponse> {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/commit`,
       committed,
       {
         method: "POST",
+        body: { expected_revision: options.expectedRevision },
+        ifMatch: options.etag,
         idempotencyKey: options.idempotencyKey,
         requireIdempotencyKey: true,
       },

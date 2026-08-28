@@ -143,4 +143,23 @@ describe("LocalApiClient Project requests", () => {
     });
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { name: "Ada" } });
   });
+
+  it("sends commit compare-and-swap headers and revision body", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0", version_id: "version-1", agent_id: "agent-1", source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file",
+    }));
+    const client = new LocalApiClient({ fetcher });
+
+    await client.commit("project-1", "agent-1", {
+      expectedRevision: 7,
+      etag: '"draft-7"',
+      idempotencyKey: "019c0000-0000-7000-8000-000000000002",
+    });
+
+    expect(fetcher).toHaveBeenCalledWith("/api/v1/projects/project-1/agents/agent-1/commit", expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "If-Match": '"draft-7"', "Idempotency-Key": "019c0000-0000-7000-8000-000000000002" }),
+    }));
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ expected_revision: 7 });
+  });
 });

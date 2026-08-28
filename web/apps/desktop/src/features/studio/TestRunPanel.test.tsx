@@ -77,7 +77,8 @@ describe("TestRunPanel", () => {
       "agent-1",
       { inputs: { name: "Ada" } },
     ));
-    expect(await screen.findByText("run.created")).toBeInTheDocument();
+    expect(await screen.findByText("Run created")).toBeInTheDocument();
+    expect(screen.getByText("run.created")).toBeInTheDocument();
     expect(screen.getByText(/Hello Ada/)).toBeInTheDocument();
   });
 });

@@ -28,6 +28,24 @@ function runTone(status: AgentRunResponse["status"]): "good" | "warn" | "bad" {
   return "warn";
 }
 
+function runStatusLabel(status: AgentRunResponse["status"], locale: "zh" | "en"): string {
+  const labels = locale === "zh"
+    ? { verified: "已验证", unverified: "未验证", failed: "失败" }
+    : { verified: "Verified", unverified: "Unverified", failed: "Failed" };
+  return labels[status];
+}
+
+function eventLabel(kind: NonNullable<AgentRunResponse["events"]>[number]["kind"], locale: "zh" | "en"): string {
+  const labels: Partial<Record<NonNullable<AgentRunResponse["events"]>[number]["kind"], [string, string]>> = {
+    "run.created": ["运行已创建", "Run created"], "run.state_changed": ["运行状态已改变", "Run state changed"], "run.started": ["运行已开始", "Run started"], "run.completed": ["运行已完成", "Run completed"], "run.interrupted": ["运行已中断", "Run interrupted"], "run.failed": ["运行失败", "Run failed"], "run.cancelled": ["运行已取消", "Run cancelled"],
+    "node.queued": ["节点已排队", "Node queued"], "node.state_changed": ["节点状态已改变", "Node state changed"], "node.started": ["节点已开始", "Node started"], "node.completed": ["节点已完成", "Node completed"], "node.failed": ["节点失败", "Node failed"], "node.waiting": ["节点等待中", "Node waiting"], "node.output": ["节点输出", "Node output"], "node.skipped": ["节点已跳过", "Node skipped"], "node.cancelled": ["节点已取消", "Node cancelled"],
+    "tool.requested": ["工具已请求", "Tool requested"], "tool.started": ["工具已开始", "Tool started"], "tool.completed": ["工具已完成", "Tool completed"], "approval.requested": ["审批已请求", "Approval requested"], "approval.resolved": ["审批已处理", "Approval resolved"], "input.requested": ["输入已请求", "Input requested"], "input.resolved": ["输入已提供", "Input resolved"], "artifact.created": ["产物已创建", "Artifact created"], "checkpoint.created": ["检查点已创建", "Checkpoint created"],
+    "verification.completed": ["验证已完成", "Verification completed"], "verifier.result": ["验证器结果", "Verifier result"],
+  };
+  const label = labels[kind];
+  return label ? label[locale === "zh" ? 0 : 1] : kind;
+}
+
 export function TestRunPanel({ api, projectId, agentId, source, disabled, locale }: TestRunPanelProps) {
   const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialInputs(source));
   const [run, setRun] = React.useState<AgentRunResponse | null>(null);
@@ -66,7 +84,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
         detail={zh
           ? "运行会绑定不可变版本并把节点事件写入本机数据库。"
           : "The run binds an immutable version and persists node events in the local database."}
-        action={run ? <StatusBadge label={run.status} tone={runTone(run.status)} /> : undefined}
+        action={run ? <StatusBadge label={runStatusLabel(run.status, locale)} tone={runTone(run.status)} /> : undefined}
       />
       <div className="studio-run-grid">
         <div className="studio-run-inputs">
@@ -110,14 +128,15 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
         </div>
         <div className="studio-run-result" aria-live="polite">
           {error ? <div className="studio-alert bad">{error}</div> : null}
-          {run?.error ? <div className="studio-alert bad"><strong>{run.error.code}</strong><span>{run.error.message}</span></div> : null}
+          {run?.error ? <div className="studio-alert bad"><span>{run.error.message}</span><small>{zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`}</small></div> : null}
           {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
           {run?.events?.length ? (
             <ol className="studio-event-list">
               {run.events.map((event) => (
                 <li key={event.event_id} className={event.kind.endsWith("failed") ? "bad" : ""}>
                   <span>{event.sequence}</span>
-                  <strong>{event.kind}</strong>
+                  <strong>{eventLabel(event.kind, locale)}</strong>
+                  <small>{event.kind}</small>
                   <small>{event.node_id ?? "run"}</small>
                 </li>
               ))}

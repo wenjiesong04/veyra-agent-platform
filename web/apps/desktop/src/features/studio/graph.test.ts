@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource } from "@veyra/api-contracts";
-import { graphDiagnostics, sourceWithGraph, toCanvas } from "./graph";
+import { graphDiagnostics, isAgentSourceCandidate, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
 
@@ -14,7 +14,9 @@ describe("Studio graph adapter", () => {
   });
 
   it("blocks persistence for incomplete local graphs", () => {
-    expect(graphDiagnostics({ ...source, nodes: [{ id: "agent", component_type: "Agent" }], transitions: [] })).toEqual(expect.arrayContaining(["Exactly one Start node is required.", "An Output node is required.", "agent is missing required Agent fields."]));
+    expect(graphDiagnostics({ ...source, nodes: [{ id: "agent", component_type: "Agent" }], transitions: [] })).toEqual(expect.arrayContaining([
+      { code: "start_count" }, { code: "output_missing" }, { code: "node_fields_missing", params: { nodeId: "agent", componentType: "Agent" } },
+    ]));
   });
 
   it("serializes a connection from a newly added canvas node and removes a deleted edge", () => {
@@ -24,5 +26,11 @@ describe("Studio graph adapter", () => {
     expect(withConnection.nodes).toContainEqual(agent.data.flow);
     expect(withConnection.transitions).toContainEqual({ from: "agent", port: "next", to: "out" });
     expect(sourceWithGraph(withConnection, toCanvas(withConnection).nodes, []).transitions).toEqual([]);
+  });
+
+  it("rejects structurally incomplete parsed source before graph diagnostics can read it", () => {
+    expect(isAgentSourceCandidate({ schema_version: "1.0", nodes: [] })).toBe(false);
+    expect(isAgentSourceCandidate({ ...source, extensions: { veyra: { runtime_profile: "guarded" } } })).toBe(false);
+    expect(isAgentSourceCandidate(source)).toBe(true);
   });
 });
