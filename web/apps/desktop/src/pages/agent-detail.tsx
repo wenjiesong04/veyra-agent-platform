@@ -1,7 +1,9 @@
 import { useLocale } from "@veyra/ui";
+import { useProjectWorkspace } from "../api/project-workspace";
+import { AgentChatSurface } from "../features/agents/chat/AgentChatSurface";
 
-/** Route and shell identity intentionally remain while the Agent surface is introduced. */
 export function AgentDetailPage({ projectId, agentId }: { projectId: string; agentId: string }) {
   const { locale } = useLocale();
-  return <section className="agent-detail-placeholder" aria-label={locale === "zh" ? `Agent ${agentId}（项目 ${projectId}）` : `Agent ${agentId} in Project ${projectId}`} />;
+  const { api } = useProjectWorkspace();
+  return <AgentChatSurface api={api} projectId={projectId} agentId={agentId} locale={locale} />;
 }
