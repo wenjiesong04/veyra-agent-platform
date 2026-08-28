@@ -671,6 +671,10 @@ Identity   Account / Settings
 Routes:
 
 ```text
+#/projects/:projectId/agents/:agentId
+#/projects/:projectId/agents/:agentId/design
+#/projects/:projectId/agents/:agentId/analysis
+#/projects/:projectId/agents/:agentId/run
 #/studio/new
 #/studio/:agentId
 #/agents
@@ -700,6 +704,12 @@ Desktop header uses one title for a root page and a horizontal, linked
 breadcrumb for nested Project and Agent pages; it does not stack an eyebrow
 over the page title.
 
+Inside a concrete Agent route, the fixed navigation changes to New chat,
+Orchestration, and Data analysis. The existing Project-to-Agent tree follows
+these entries, and Recent is shown only in Agent context. Recent must remain an
+empty state until durable conversation or Run data exists; it is not populated
+from fixtures or browser storage.
+
 Empty library redirects to Studio onboarding. Otherwise `/` redirects to Agents/Dashboard.
 
 ### 7.3 Studio layout
@@ -721,6 +731,17 @@ Prompt, Form, Canvas, and Source edit the same normalized IR.
 - revision/ETag: protect drafts from multi-window overwrite
 - stable node IDs: map runtime events back to source
 - Source/Canvas round-trip: behavior hash must remain stable when semantics do not change
+
+Canvas may temporarily contain an incomplete graph while the user is editing.
+That transient state does not replace the Project source: Studio writes only a
+strictly valid `AgentSource`, so `agent.vagent.yaml` remains the last valid
+definition. Conflicts use the Draft revision/ETag boundary and require an
+explicit reload rather than a silent overwrite.
+
+The component palette is a projection of the server-owned registry. Each entry
+declares its editable fields, output ports, and Runtime support. A component can
+be designable before it is executable, but Test Run must reject unsupported
+nodes explicitly and must never skip them.
 
 ### 7.5 Run Canvas
 
