@@ -408,6 +408,13 @@ and optional description; it never asks the user to choose or type a storage
 path. Opening an existing Project remains an explicit action for indexing a
 user-owned directory that already contains `project.vproject.yaml`.
 
+`project_id` is the stable identity; the name is a unique active-workspace
+label assigned by the local service. An empty name becomes `New project`, and
+collisions use the first free suffix such as `New project(1)`. At most one
+active Project is pinned. Removing a managed Project moves it to Veyra Trash;
+removing an externally opened Project only unlinks it and never deletes the
+external directory.
+
 V1 permits an empty Project: `agents` may be empty and then
 `default_agent_id` is `null`. When Agents exist, `default_agent_id` identifies
 one listed Agent. Agents remain flat at `agents/<slug>`; a future child-Agent
@@ -682,6 +689,12 @@ Routes:
 #/settings
 #/account
 ```
+
+The Desktop sidebar presents an optional single pinned Project followed by a
+collapsible Project-to-Agent tree. Each Project row owns Pin/Edit/Delete and an
+explicit Add Agent entry into Factory. The Desktop header uses one title for a
+root page and a horizontal, linked breadcrumb for nested Project and Agent
+pages; it does not stack an eyebrow over the page title.
 
 Empty library redirects to Studio onboarding. Otherwise `/` redirects to Agents/Dashboard.
 
@@ -1088,6 +1101,7 @@ Star does not mean safe or effective.
 - `GET/POST /api/v1/projects`
 - `POST /api/v1/projects/open`
 - `GET /api/v1/projects/{project_id}`
+- `PATCH/DELETE /api/v1/projects/{project_id}`
 - `GET/POST /api/v1/projects/{project_id}/agents`
 - `GET /api/v1/projects/{project_id}/agents/{agent_id}`
 - `GET/PATCH /api/v1/projects/{project_id}/agents/{agent_id}/draft`
