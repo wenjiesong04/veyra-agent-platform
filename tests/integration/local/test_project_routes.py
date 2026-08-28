@@ -13,48 +13,56 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -> None:
-    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
     parent = tmp_path / "Downloads"
     parent.mkdir()
     preserved = parent / "existing-download.txt"
     preserved.write_text("keep", encoding="utf-8")
-    root = parent / "Empty"
     with TestClient(create_app(settings)) as client:
         created = client.post(
             "/api/v1/projects",
-            json={"parent_path": str(parent), "name": "Empty"},
+            json={"name": "Empty"},
         )
         assert created.status_code == 201
         project = created.json()
         assert project["agents"] == []
         assert project["agent_count"] == 0
         assert project["indexed_at"]
-        assert project["root_path"] == str(root)
+        root = Path(project["root_path"])
+        assert root.is_relative_to(managed_root)
         assert preserved.read_text(encoding="utf-8") == "keep"
 
-        occupied = parent / "Taken"
-        occupied.mkdir()
-        occupied_file = occupied / "keep.txt"
-        occupied_file.write_text("do not overwrite", encoding="utf-8")
-        conflict = client.post(
+        duplicate = client.post(
             "/api/v1/projects",
-            json={"parent_path": str(parent), "name": "Taken"},
+            json={"name": "Empty"},
         )
-        assert conflict.status_code == 422
-        assert occupied_file.read_text(encoding="utf-8") == "do not overwrite"
+        assert duplicate.status_code == 201
+        assert duplicate.json()["root_path"] != project["root_path"]
 
-        invalid_name = client.post(
+        rejected_parent = client.post(
             "/api/v1/projects",
-            json={"parent_path": str(parent), "name": "../escape"},
+            json={"name": "No parent", "parent_path": str(parent)},
         )
-        assert invalid_name.status_code == 422
+        assert rejected_parent.status_code == 422
+        rejected_root = client.post(
+            "/api/v1/projects",
+            json={"name": "No root", "root_path": str(parent)},
+        )
+        assert rejected_root.status_code == 422
 
         reopened = client.post("/api/v1/projects/open", json={"root_path": str(root)})
         assert reopened.status_code == 200
         assert reopened.json()["project_id"] == project["project_id"]
         listed = client.get("/api/v1/projects")
         assert listed.status_code == 200
-        assert listed.json()["projects"] == [reopened.json()]
+        assert {item["project_id"] for item in listed.json()["projects"]} == {
+            project["project_id"],
+            duplicate.json()["project_id"],
+        }
         fetched = client.get(f"/api/v1/projects/{project['project_id']}")
         assert fetched.status_code == 200
         assert fetched.json() == reopened.json()
@@ -63,13 +71,15 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
 def test_project_metadata_description_pinning_and_closed_patch_body(
     tmp_path: Path,
 ) -> None:
-    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
-    first_root = tmp_path / "First"
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
     with TestClient(create_app(settings)) as client:
         first = client.post(
             "/api/v1/projects",
             json={
-                "parent_path": str(tmp_path),
                 "name": "First",
                 "description": "  Cafe\u0301 Project  ",
             },
@@ -79,12 +89,13 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
         assert first_project["description"] == "Café Project"
         assert first_project["pinned"] is False
         assert first_project["pinned_at"] is None
+        first_root = Path(first_project["root_path"])
         manifest = json.loads((first_root / "project.vproject.yaml").read_text())
         assert manifest["description"] == "Café Project"
 
         second = client.post(
             "/api/v1/projects",
-            json={"parent_path": str(tmp_path), "name": "Second"},
+            json={"name": "Second"},
         )
         assert second.status_code == 201
         pinned = client.patch(
@@ -128,12 +139,14 @@ def test_project_metadata_description_pinning_and_closed_patch_body(
 def test_project_description_length_returns_typed_contract_error(
     tmp_path: Path,
 ) -> None:
-    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
     with TestClient(create_app(settings)) as client:
         response = client.post(
             "/api/v1/projects",
             json={
-                "parent_path": str(tmp_path),
                 "name": "Too long",
                 "description": "x" * 501,
             },
@@ -150,7 +163,10 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
         json.loads((fixture_root / slug / "agent.vagent.yaml").read_text())
         for slug in ("github-triage", "release-summary")
     ]
-    settings = LocalSettings(database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}")
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
@@ -158,7 +174,6 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
         created = client.post(
             "/api/v1/projects",
             json={
-                "parent_path": str(tmp_path),
                 "name": "Example",
                 "agents": agents,
             },

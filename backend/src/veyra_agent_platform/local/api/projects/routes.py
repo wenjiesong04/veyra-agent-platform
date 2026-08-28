@@ -22,7 +22,6 @@ class _ClosedModel(BaseModel):
 
 
 class CreateProjectRequest(_ClosedModel):
-    parent_path: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
     agents: list[dict[str, Any]] = Field(default_factory=list)
@@ -82,8 +81,7 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(
-            lambda: projects.create_in_parent(
-                parent_path=payload.parent_path,
+            lambda: projects.create_managed(
                 name=payload.name,
                 description=payload.description,
                 sources=payload.agents,

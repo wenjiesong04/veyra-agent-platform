@@ -1,4 +1,4 @@
-"""Safe creation and bounded indexing of user-selected Project directories."""
+"""Safe managed creation and bounded indexing of Project directories."""
 
 from __future__ import annotations
 
@@ -42,10 +42,14 @@ class ProjectService:
         repository: LocalRepository,
         object_root: Path,
         templates: AgentTemplateCatalog | None = None,
+        project_storage_root: Path | None = None,
     ) -> None:
         self.repository = repository
         self.object_root = object_root
         self.templates = templates or AgentTemplateCatalog()
+        self.project_storage_root = (
+            project_storage_root or object_root.parent / "projects"
+        )
 
     def create(
         self,
@@ -118,29 +122,17 @@ class ProjectService:
                 exc.add_note(f"rollback failed: {rollback_note}")
             raise
 
-    def create_in_parent(
+    def create_managed(
         self,
         *,
-        parent_path: str | Path,
         name: str,
         description: str = "",
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Create a Project in a new child of a user-selected parent directory."""
-        parent = self._existing_root(parent_path)
-        child_name = name.strip()
-        if (
-            not child_name
-            or child_name in {".", ".."}
-            or Path(child_name).is_absolute()
-            or "/" in child_name
-            or "\\" in child_name
-        ):
-            raise ProjectError("Project name must be one folder name")
-        target = parent / child_name
-        if target.exists() or target.is_symlink():
-            raise ProjectError("Project directory already exists")
+        """Create a Project under the application-managed storage root only."""
+        storage_root = self._managed_storage_root()
+        target = storage_root / f"project-{new_uuid7()}"
         return self.create(
             root_path=target,
             name=name,
@@ -149,6 +141,24 @@ class ProjectService:
             template_selections=template_selections,
             require_new_root=True,
         )
+
+    def _managed_storage_root(self) -> Path:
+        """Create and validate a managed root without traversing symlinks."""
+        root = Path(self.project_storage_root).expanduser().absolute()
+        current = root
+        while True:
+            if current.exists() and current.is_symlink():
+                raise ProjectError("managed Project storage root must not be a symlink")
+            if current == current.parent:
+                break
+            current = current.parent
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ProjectError("managed Project storage root is unavailable") from exc
+        if not root.is_dir() or root.is_symlink():
+            raise ProjectError("managed Project storage root must be a directory")
+        return root
 
     def add_agent(
         self, *, project_id: str, template_selection: dict[str, str]

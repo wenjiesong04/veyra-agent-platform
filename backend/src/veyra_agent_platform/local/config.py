@@ -19,6 +19,13 @@ def _default_database_url() -> str:
     return f"sqlite+aiosqlite:///{data_root / 'app.sqlite3'}"
 
 
+def _default_project_storage_root() -> Path:
+    """Return the application-managed root for newly created Projects."""
+    return (
+        Path(user_data_dir("Veyra Agent Platform", appauthor=False)) / "v1" / "projects"
+    )
+
+
 class LocalSettings(BaseSettings):
     """Environment-backed settings for the local service."""
 
@@ -36,6 +43,7 @@ class LocalSettings(BaseSettings):
         "info"
     )
     database_url: str = Field(default_factory=_default_database_url)
+    project_storage_root: Path = Field(default_factory=_default_project_storage_root)
     mode: LocalEnvironmentMode = Field(
         default="development",
         validation_alias=AliasChoices(

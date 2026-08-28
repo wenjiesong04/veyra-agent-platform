@@ -35,3 +35,24 @@ def test_index_rejects_symlinked_agent_source(tmp_path: Path) -> None:
 
     with pytest.raises(ProjectError, match="symlink"):
         projects.index(root)
+
+
+def test_managed_create_rejects_symlinked_storage_root_without_outside_writes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "app.sqlite3"
+    migrate_local_database(database_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    managed_root = tmp_path / "managed-projects"
+    os.symlink(outside, managed_root)
+    projects = ProjectService(
+        LocalRepository(database_path),
+        tmp_path / "objects",
+        project_storage_root=managed_root,
+    )
+
+    with pytest.raises(ProjectError, match="managed Project storage root"):
+        projects.create_managed(name="Unsafe")
+
+    assert list(outside.iterdir()) == []

@@ -56,7 +56,11 @@ def create_app(
         migrate_local_database(database_path)
         repository = LocalRepository(database_path)
         object_root = database_path.parent.parent / "objects"
-        projects = ProjectService(repository, object_root)
+        projects = ProjectService(
+            repository,
+            object_root,
+            project_storage_root=resolved_settings.project_storage_root,
+        )
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
