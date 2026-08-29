@@ -55,7 +55,8 @@ describe("StudioPage source and conflict safety", () => {
     await user.click(await screen.findByRole("button", { name: "Load disk version" }));
     await waitFor(() => expect(reloadDraft).toHaveBeenCalledWith("project-1", "agent-1"));
     expect(getDraft).toHaveBeenCalledTimes(1);
-    expect(await screen.findByRole("heading", { name: "Disk review" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Disk review");
   });
 
   it("offers disk reload after a save conflict and keeps ordinary initial loading separate", async () => {
@@ -65,7 +66,8 @@ describe("StudioPage source and conflict safety", () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), saveDraft, reloadDraft } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     renderPage(api);
-    await screen.findByRole("heading", { name: "Review" });
+    await screen.findByRole("tab", { name: "Canvas" });
+    expect(screen.queryByText("Agent definition")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Form" }));
     await user.clear(screen.getByRole("textbox", { name: "Name" }));
     await user.type(screen.getByRole("textbox", { name: "Name" }), "Changed");

@@ -57,6 +57,15 @@
   font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.studio-toolbar-end {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .studio-layout {
   display: grid;
   grid-template-columns: minmax(190px, 230px) minmax(420px, 1fr) minmax(240px, 300px);

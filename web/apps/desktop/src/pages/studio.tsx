@@ -13,12 +13,12 @@ type StudioView = "canvas" | "form" | "source";
 
 const studioCopy = {
   zh: {
-    eyebrow: "Agent 定义", description: "Canvas、表单和源码编辑同一份 AgentSource。", saved: "已保存", dirty: "草稿变更", committed: "已提交",
+    saved: "已保存", dirty: "草稿变更", committed: "已提交",
     save: "保存草稿", commit: "校验并提交版本", loading: "正在加载草稿…", unavailable: "本地草稿不可用", retry: "重试", loadDisk: "加载磁盘版本",
     canvas: "Canvas", form: "表单", source: "源码", view: "Studio 视图", revision: "修订",
   },
   en: {
-    eyebrow: "Agent definition", description: "Canvas, Form, and Source edit the same AgentSource.", saved: "Saved", dirty: "Draft changes", committed: "Committed",
+    saved: "Saved", dirty: "Draft changes", committed: "Committed",
     save: "Save draft", commit: "Validate & commit", loading: "Loading draft…", unavailable: "Draft unavailable", retry: "Retry", loadDisk: "Load disk version",
     canvas: "Canvas", form: "Form", source: "Source", view: "Studio view", revision: "revision",
   },
@@ -56,9 +56,9 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   if (!project && status !== "loading") return <NotFoundPage backHref="#/projects" backLabel={locale === "zh" ? "返回项目" : "Back to Projects"} />;
   if (status === "loading") return <Panel><SectionHeading eyebrow="Studio" title={copy.loading} /></Panel>;
   if (!source) return <Panel><SectionHeading eyebrow="Studio" title={copy.unavailable} detail={message} action={status === "conflict" && api.reloadDraft ? <Button onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : <Button onClick={() => void load()}>{copy.retry}</Button>} /></Panel>;
-  return <div className="page-stack"><div className="page-intro studio-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{source.name}</h2><p>{copy.description}</p></div><div className="intro-actions"><StatusBadge label={status === "committed" ? copy.committed : dirty ? copy.dirty : copy.saved} tone={status === "offline" || status === "conflict" ? "bad" : dirty ? "warn" : "good"} /><Button icon={Save} variant="primary" disabled={!dirty || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save()}>{copy.save}</Button><Button disabled={dirty || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button></div></div>
+  return <div className="page-stack">
     {Boolean(message || diagnostics.length) ? <div className={status === "conflict" || status === "offline" || diagnostics.length ? "studio-alert bad" : "studio-alert"}>{message}{diagnostics.map((item, index) => <div key={`${item.code}-${index}`}>{graphDiagnosticText(item, locale)}</div>)}{status === "conflict" && api.reloadDraft ? <Button size="sm" onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : null}</div> : null}
-    <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{copy[item]}</button>)}</div><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span></div>
+    <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{copy[item]}</button>)}</div><div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={status === "committed" ? copy.committed : dirty ? copy.dirty : copy.saved} tone={status === "offline" || status === "conflict" ? "bad" : dirty ? "warn" : "good"} /><Button icon={Save} variant="primary" disabled={!dirty || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save()}>{copy.save}</Button><Button disabled={dirty || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button></div></div>
     {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} componentDefinitions={componentDefinitions} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
     <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} />
   </div>;
