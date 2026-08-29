@@ -4,15 +4,16 @@ import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation, type P
 type DesktopHeader = { title: string; breadcrumbs?: { label: string; href?: string; icon?: typeof Home }[]; backHref?: string };
 type DesktopLocale = "zh" | "en";
 
-const rootTitles: Partial<Record<DesktopRouteLocation["kind"], string>> = {
-  chat: "New chat", projects: "New chat", components: "Components", files: "Files", runs: "Runs", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found",
+const rootTitles: Record<"en" | "zh", Partial<Record<DesktopRouteLocation["kind"], string>>> = {
+  en: { chat: "New chat", projects: "New chat", components: "Resource Library", files: "Knowledge base", runs: "Runs", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found" },
+  zh: { chat: "新聊天", projects: "新聊天", components: "资源库", files: "知识库", runs: "运行记录", monitor: "监控", community: "社区", account: "账号", settings: "设置", "not-found": "找不到页面" },
 };
 
 export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSummaryResponse[], locale: DesktopLocale = "en"): DesktopHeader {
   const contextLabels = locale === "zh"
     ? { orchestration: "编排", analysis: "数据分析", run: "运行", version: "版本" }
     : { orchestration: "Orchestration", analysis: "Data analysis", run: "Run", version: "Version" };
-  const title = rootTitles[route.kind];
+  const title = rootTitles[locale][route.kind];
   if (title) return { title };
   const project = "projectId" in route ? projects.find((item) => item.project_id === route.projectId) : undefined;
   const projectLabel = project?.name ?? ("projectId" in route ? route.projectId : "Project");
