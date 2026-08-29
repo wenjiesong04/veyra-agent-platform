@@ -23,13 +23,16 @@ Veyra Agent Platform will be a local-first desktop product with six connected su
 5. **Veyra Library** — manage Agent files, Component files, packages, versions, imports, exports, and artifacts.
 6. **Veyra Community** — required V1 accounts and a remote registry for publishing, downloading, Forking, starring, and reviewing Agent versions and templates.
 
-Veyra's own Factory Agent will use **Kimi K3** by default. Generated Agents remain provider-neutral and may use Kimi K3 or another configured model.
+Veyra's own Factory Agent uses the configurable Kimi Open Platform provider.
+The client discovers `/v1/models` and currently defaults to **kimi-k3**.
+Generated Agents remain provider-neutral and may use Kimi or another configured
+model.
 
 Core product loop:
 
 ```text
 Describe requirement
-→ Kimi K3 generates typed AgentBlueprint Draft
+→ configured Kimi model generates typed AgentBlueprint Draft
 → server compiles Agent Definition
 → user edits Form / Canvas / Source
 → validate schema, graph, components, permissions, secrets and verifier
@@ -549,6 +552,49 @@ Initial tools:
 
 Browser, GitHub, OCR, Email, and databases are tools or providers, not separate control-flow component types.
 
+### 5.5.1 Resource Catalog V1
+
+Factory and Studio resolve capabilities only through one server-owned Resource
+Catalog. The catalog is not a folder of arbitrary code and it is not populated
+from model output. It exposes immutable, versioned descriptors for:
+
+- **Component** — one of the platform-owned graph node types and its editable
+  fields, ports, compiler support, and Runtime status.
+- **Tool** — an executable capability with exact version, input/output schema,
+  permission requirements, secret references, receipts, and Runtime adapter
+  status.
+- **MCP server/tool** — a configured discovery source. An MCP tool must be
+  normalized into a Tool descriptor before Factory may select it; connection
+  configuration and credentials remain outside Agent source.
+- **Skill** — a non-executable, versioned instruction/method asset. Factory may
+  compile Skill content into an Agent prompt, while the exact Skill reference
+  and hash remain in the dependency lock.
+- **Policy** — platform/project constraints for models, tools, network, files,
+  approvals, budgets, and verification. Policy is an overlay enforced during
+  resolution and Runtime authorization, not a free-form Canvas node.
+- **Template** — a complete, Forkable Agent definition assembled from catalog
+  resources.
+
+Each descriptor declares stable resource ID, kind, version, name/description,
+origin, content hash, availability state, Factory selectability, Runtime
+support, required permissions, and compatibility. Availability is explicit:
+`ready`, `requires_configuration`, `design_only`, `quarantined`, `disabled`, or
+`unavailable`. Factory cannot present a resource as runnable when its adapter or
+provider is absent.
+
+The first useful catalog contains the eight existing graph Components, a small
+set of versioned instruction Skills and default Policies, and only Tool/MCP
+entries backed by real adapters. The UI may display an unavailable Tool/MCP
+descriptor, but Factory cannot select it for a runnable Agent.
+
+If no registered resource satisfies a requirement, Factory returns a typed
+`MissingCapabilityProposal`. With explicit user approval, Kimi may produce a
+quarantined Resource Draft containing a declarative specification,
+input/output schemas, permissions, documentation, test cases, and an adapter
+scaffold. It may not register, authorize, install, or execute generated code.
+Promotion into the catalog is a separate Resource Workshop flow with human
+review, static/security checks, tests, and an immutable version.
+
 ### 5.6 Version hashes
 
 Compute:
@@ -562,19 +608,21 @@ Moving a Canvas node must not change `behavior_hash`. Changing prompt, tool, per
 
 ---
 
-## 6. Kimi K3 Factory Agent
+## 6. Kimi Factory Agent
 
 ### 6.1 Official API baseline
 
 ```text
-model           kimi-k3
+model           kimi-k3 (current configurable default)
 base URL        https://api.moonshot.ai/v1
 chat endpoint   /v1/chat/completions
 models endpoint /v1/models
 auth            Authorization: Bearer $MOONSHOT_API_KEY
 ```
 
-Kimi K3 supports OpenAI-compatible Chat Completions, Structured Output, tool calling, streaming, reasoning, and a large context window.
+Kimi Open Platform supports OpenAI-compatible Chat Completions, Structured
+Output, tool calling, streaming, reasoning, and a large context window. The
+client validates the configured model through `/v1/models` before generation.
 
 ### 6.2 Factory responsibility
 
@@ -602,20 +650,54 @@ Kimi cannot:
 - claim verification
 - create arbitrary executable code in V1
 
+Factory receives a bounded snapshot of Resource Catalog descriptors and may
+reference only resources in that snapshot. The server, not Kimi, resolves exact
+versions, derives permissions/locks, applies Policies, and decides whether the
+result is designable or runnable.
+
+### 6.2.1 Factory conversation
+
+Agent creation begins as a Project-scoped multi-turn Factory conversation. It
+collects goal, inputs, outputs, environment, available data, desired tools,
+risk, approval points, and success criteria before generation. The conversation
+has explicit states: `collecting`, `ready`, `generating`, `review`,
+`missing_capability`, `completed`, and `abandoned`.
+
+Factory conversation messages and summaries live in the Veyra application data
+store. They never enter `project.vproject.yaml` or `agent.vagent.yaml`.
+Provider `reasoning_content` is request-chain-only and is not persisted. A
+Factory conversation is distinct from the later Agent conversation used to run
+an existing Agent and display its durable Run history.
+
+The UI pairs a conversation transcript with a live Resource Plan showing chosen
+Components, Tools/MCP, Skills, Policies, permissions, missing capabilities, and
+run availability. Generation is enabled only after the server marks the
+conversation `ready`.
+
 ### 6.3 Generation flow
 
 ```text
 User requirement
+→ bounded Factory conversation
+→ server-selected Resource Catalog snapshot
 → Kimi JSON Schema AgentBlueprint
 → schema validation
 → component/tool resolution
-→ permission derivation
+→ Skill compilation and Policy application
+→ exact resource lock and permission derivation
 → graph validation
 → bounded repair loop, maximum three attempts
-→ user-visible Draft
+→ user-visible Blueprint and Resource Plan
 → user edits and confirms
+→ server creates or replaces an Agent Draft
 → immutable version
 ```
+
+The repair loop receives only validation diagnostics and the same immutable
+catalog snapshot. It cannot broaden permissions, replace the catalog, or invent
+resource identifiers. After three failed attempts the session becomes a visible
+generation failure or `missing_capability`; it never silently falls back to an
+unvalidated graph.
 
 ### 6.4 Kimi configuration
 
@@ -623,9 +705,26 @@ User requirement
 VEYRA_FACTORY_MODEL_BASE_URL=https://api.moonshot.ai/v1
 VEYRA_FACTORY_MODEL_ID=kimi-k3
 VEYRA_FACTORY_MODEL_API_KEY_ENV=MOONSHOT_API_KEY
+VEYRA_FACTORY_REASONING_EFFORT=high
+VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 ```
 
 The key belongs in Keychain/environment, never SQLite, Agent source, browser storage, logs, or packages.
+
+Blueprint generation uses `response_format.type=json_schema` with the committed
+AgentBlueprint JSON Schema. Thinking-model `reasoning_content` may be retained
+only inside one in-memory generation/repair request chain when required by the
+provider protocol. It is never persisted in Factory messages, SQLite, logs, or
+Agent source.
+
+Kimi K3 always uses thinking mode. The client sends only supported
+`reasoning_effort` values (`low`, `high`, `max`), omits fixed sampling
+parameters, and applies a Veyra-owned completion-token bound rather than the
+provider's very large default. Structured Output parses only final
+`message.content`. Each repair request replays the complete prior assistant
+message required by the provider protocol, including ephemeral
+`reasoning_content`, then discards that reasoning data when the generation chain
+ends.
 
 ### 6.5 Kimi acceptance
 
@@ -640,6 +739,12 @@ The key belongs in Keychain/environment, never SQLite, Agent source, browser sto
 - 20 real requirements; at least 15 produce valid Drafts after bounded repair
 
 Factory and user Runtime models use separate configuration, keys, and budgets.
+Both may be unconfigured. Without a Factory provider the user can still create,
+import, and edit Agents manually. Without a Runtime model profile the Agent can
+still be generated, validated, versioned, and exported, but model-based Run is
+disabled with an explicit configuration requirement. Provider secrets live in
+Keychain/process environment and Agent source stores only `model_ref` or
+`secretRef`.
 
 ---
 
@@ -1144,13 +1249,24 @@ Star does not mean safe or effective.
 
 ### Components and files
 
-- `GET/POST /api/v1/components`
-- `POST /api/v1/components/resolve`
+- `GET /api/v1/resources?kind=&availability=`
+- `GET /api/v1/resources/{resource_id}/versions/{version}`
+- `POST /api/v1/resources/resolve`
+- `POST /api/v1/resources/drafts` (quarantined Resource Workshop intake)
+- `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`
 - `POST /api/v1/files/import`
 - `GET/DELETE /api/v1/files/{id}`
 - `POST /api/v1/files/{id}/restore`
 - `GET /api/v1/artifacts/{id}`
+
+### Factory
+
+- `POST /api/v1/projects/{project_id}/factory/sessions`
+- `GET /api/v1/projects/{project_id}/factory/sessions/{session_id}`
+- `POST /api/v1/projects/{project_id}/factory/sessions/{session_id}/messages`
+- `POST /api/v1/projects/{project_id}/factory/sessions/{session_id}/generate`
+- `POST /api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft`
 
 ### Runtime
 
@@ -1366,9 +1482,13 @@ Historical smoke counts are not a quality goal.
 
 ### R2 — Kimi Factory and Studio
 
+- Resource Catalog and availability projection
+- built-in Component, Skill, Policy, and honest Tool/MCP descriptors
+- Project-scoped Factory conversation persistence
 - model discovery/settings
 - AgentBlueprint
 - generator and repair
+- resource resolution, permission derivation, and missing-capability proposals
 - Form/Source
 - React Flow Canvas
 - permission preview
@@ -1489,12 +1609,14 @@ Stop expanding if:
 
 ## 20. Immediate Next Documentation/Implementation Tasks
 
-1. Review and approve this design.
-2. Create `docs/MIGRATION_PROVENANCE.md` before extracting old code.
-3. Add ADRs for Agent Spec profile, SQLite, Kimi transport, Runtime events, Community separation, and Tauri.
-4. Finalize Python dependency versions and lock.
-5. Finalize frontend package versions and lock.
-6. Handwrite three Agent fixtures: Repo Auditor, GitHub Issue Triage, Research Brief.
-7. Implement only R0 after explicit approval.
+1. Implement ADR 0003 Resource Catalog and expose it through the real Resource
+   Library page.
+2. Add Project-scoped Factory conversations and an injected Kimi transport.
+3. Resolve only catalog resources, derive permissions/locks, and enforce the
+   three-attempt repair boundary.
+4. Hand the confirmed Agent Draft into the existing Studio without executing it.
+5. Add the provider-profile boundary required to run an Agent model node only
+   after the generation-to-Studio flow is stable.
 
-No implementation phase should begin by copying old Veyra directories.
+All new work retains the clean-room legacy boundary. No implementation phase
+copies legacy Veyra directories or loads a Project `.env` automatically.

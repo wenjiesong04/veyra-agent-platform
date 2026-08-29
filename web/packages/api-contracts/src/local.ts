@@ -289,6 +289,70 @@ export type ListComponentsResponse = {
   components: ComponentDefinition[];
 };
 
+/** Server-owned, immutable capability descriptor exposed by the Resource Catalog. */
+export type ResourceKind =
+  | "component"
+  | "tool"
+  | "mcp_tool"
+  | "skill"
+  | "policy"
+  | "template";
+
+export type ResourceAvailability =
+  | "ready"
+  | "requires_configuration"
+  | "design_only"
+  | "quarantined"
+  | "disabled"
+  | "unavailable";
+
+export type ResourceRuntimeStatus =
+  | "supported"
+  | "runtime_not_configured"
+  | "runtime_not_supported";
+
+export type ResourcePermissions = {
+  network_hosts: string[];
+  tools: string[];
+  filesystem_read_roots: string[];
+  filesystem_write_roots: string[];
+  shell_workspace_only: boolean;
+};
+
+export type ResourceDescriptor = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  resource_id: string;
+  kind: ResourceKind;
+  version: string;
+  reference: string;
+  name: string;
+  description: string;
+  origin: "builtin";
+  content_hash: string;
+  availability: ResourceAvailability;
+  factory_selectable: boolean;
+  runtime_status: ResourceRuntimeStatus;
+  required_permissions: ResourcePermissions;
+  tags: string[];
+  spec: JsonObject;
+};
+
+export type ResourceKindCount = {
+  kind: ResourceKind;
+  count: number;
+};
+
+export type ListResourcesResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  resources: ResourceDescriptor[];
+  kinds: ResourceKindCount[];
+};
+
+export type ListResourceFilters = {
+  kind?: ResourceKind;
+  availability?: ResourceAvailability;
+};
+
 export type RuntimeRunStatus = "running" | "verified" | "unverified" | "failed" | "interrupted";
 
 export type RuntimeEventKind =
