@@ -35,3 +35,9 @@ def test_component_catalog_status_and_legacy_projection_are_honest() -> None:
         "output_ports": ["next"],
         "runtime_status": "runtime_not_supported",
     }
+
+
+def test_skill_resources_await_runtime_provider_configuration() -> None:
+    skills = ResourceCatalog().resources(kind="skill")["resources"]
+
+    assert {skill["runtime_status"] for skill in skills} == {"runtime_not_configured"}

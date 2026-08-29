@@ -169,7 +169,7 @@ class ResourceCatalog:
                 ),
                 "availability": "ready",
                 "factory_selectable": True,
-                "runtime_status": "runtime_not_supported",
+                "runtime_status": "runtime_not_configured",
                 "required_permissions": deepcopy(_EMPTY_PERMISSIONS),
                 "tags": ["research", "instruction"],
                 "spec": {
@@ -188,7 +188,7 @@ class ResourceCatalog:
                 ),
                 "availability": "ready",
                 "factory_selectable": True,
-                "runtime_status": "runtime_not_supported",
+                "runtime_status": "runtime_not_configured",
                 "required_permissions": deepcopy(_EMPTY_PERMISSIONS),
                 "tags": ["document", "instruction"],
                 "spec": {
@@ -207,7 +207,7 @@ class ResourceCatalog:
                 ),
                 "availability": "ready",
                 "factory_selectable": True,
-                "runtime_status": "runtime_not_supported",
+                "runtime_status": "runtime_not_configured",
                 "required_permissions": deepcopy(_EMPTY_PERMISSIONS),
                 "tags": ["planning", "instruction"],
                 "spec": {
@@ -261,16 +261,6 @@ class ResourceCatalog:
                 "starter-agent",
                 "Starter Agent",
                 "A safe local-first starting point for a new Agent.",
-            ),
-            (
-                "research-brief",
-                "Research Brief",
-                "A forkable outline for a bounded research brief.",
-            ),
-            (
-                "verified-response",
-                "Verified Response",
-                "A forkable flow that includes a verification step.",
             ),
         )
         return [
