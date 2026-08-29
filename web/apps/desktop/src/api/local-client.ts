@@ -18,6 +18,8 @@ import {
   type ListAgentsResponse,
   type ListAgentTemplatesResponse,
   type ListComponentsResponse,
+  type ListResourceFilters,
+  type ListResourcesResponse,
   type ListProjectsResponse,
   type LocalErrorEnvelope,
   type OpenProjectRequest,
@@ -27,6 +29,10 @@ import {
   type SaveDraftResponse,
   type SelectDirectoryResponse,
   type StartAgentRunRequest,
+  type ResourceDescriptor,
+  type ResourceAvailability,
+  type ResourceKind,
+  type ResourceRuntimeStatus,
   type UpdateProjectRequest,
   type UpdateAgentRequest,
   type ValidateResponse,
@@ -88,6 +94,8 @@ export type LocalProjectApi = {
   validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
   commit?(projectId: string, agentId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
   listComponents?(): Promise<ListComponentsResponse>;
+  listResources?(filters?: ListResourceFilters): Promise<ListResourcesResponse>;
+  getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
   getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
@@ -441,6 +449,61 @@ function listedComponents(value: unknown, status = 502): ListComponentsResponse 
   };
 }
 
+const resourceKinds = new Set<ResourceKind>(["component", "tool", "mcp_tool", "skill", "policy", "template"]);
+const resourceAvailability = new Set<ResourceAvailability>(["ready", "requires_configuration", "design_only", "quarantined", "disabled", "unavailable"]);
+const resourceRuntimeStatuses = new Set<ResourceRuntimeStatus>(["supported", "runtime_not_configured", "runtime_not_supported"]);
+
+function resourcePermissions(value: unknown, status = 502): ResourceDescriptor["required_permissions"] {
+  const record = asRecord(value, status);
+  const list = (field: string) => asArray(record[field], `resource.required_permissions.${field}`, status).map((item) => asString(item, `resource.required_permissions.${field}`, status));
+  if (typeof record.shell_workspace_only !== "boolean") throw new LocalApiClientError("The local service returned invalid resource permissions.", { status, code: "invalid_response" });
+  return {
+    network_hosts: list("network_hosts"),
+    tools: list("tools"),
+    filesystem_read_roots: list("filesystem_read_roots"),
+    filesystem_write_roots: list("filesystem_write_roots"),
+    shell_workspace_only: record.shell_workspace_only,
+  };
+}
+
+function resource(value: unknown, status = 502): ResourceDescriptor {
+  const record = schemaRecord(value, status);
+  const kind = asString(record.kind, "resource.kind", status) as ResourceKind;
+  const availability = asString(record.availability, "resource.availability", status) as ResourceAvailability;
+  const runtimeStatus = asString(record.runtime_status, "resource.runtime_status", status) as ResourceRuntimeStatus;
+  if (!resourceKinds.has(kind) || !resourceAvailability.has(availability) || !resourceRuntimeStatuses.has(runtimeStatus) || record.origin !== "builtin" || typeof record.factory_selectable !== "boolean") {
+    throw new LocalApiClientError("The local service returned an invalid Resource descriptor.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    resource_id: asString(record.resource_id, "resource.resource_id", status),
+    kind,
+    version: asString(record.version, "resource.version", status),
+    reference: asString(record.reference, "resource.reference", status),
+    name: asString(record.name, "resource.name", status),
+    description: asText(record.description, "resource.description", status),
+    origin: "builtin",
+    content_hash: asString(record.content_hash, "resource.content_hash", status),
+    availability,
+    factory_selectable: record.factory_selectable,
+    runtime_status: runtimeStatus,
+    required_permissions: resourcePermissions(record.required_permissions, status),
+    tags: asArray(record.tags, "resource.tags", status).map((item) => asString(item, "resource tag", status)),
+    spec: asRecord(record.spec, status) as ResourceDescriptor["spec"],
+  };
+}
+
+function listedResources(value: unknown, status = 502): ListResourcesResponse {
+  const record = schemaRecord(value, status);
+  const kinds = asArray(record.kinds, "resource.kinds", status).map((item) => {
+    const kindRecord = asRecord(item, status);
+    const kind = asString(kindRecord.kind, "resource kind", status) as ResourceKind;
+    if (!resourceKinds.has(kind)) throw new LocalApiClientError("The local service returned an unknown Resource kind.", { status, code: "invalid_response" });
+    return { kind, count: asNumber(kindRecord.count, `resource kind ${kind} count`, status) };
+  });
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, resources: asArray(record.resources, "resources", status).map((item) => resource(item, status)), kinds };
+}
+
 function runtimeEvent(value: unknown, status = 502): NonNullable<AgentRunResponse["events"]>[number] {
   const record = schemaRecord(value, status);
   const kind = asString(record.kind, "event.kind", status) as NonNullable<AgentRunResponse["events"]>[number]["kind"];
@@ -708,6 +771,18 @@ export class LocalApiClient {
 
   listComponents(): Promise<ListComponentsResponse> {
     return this.request("components", listedComponents);
+  }
+
+  listResources(filters: ListResourceFilters = {}): Promise<ListResourcesResponse> {
+    const params = new URLSearchParams();
+    if (filters.kind) params.set("kind", filters.kind);
+    if (filters.availability) params.set("availability", filters.availability);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return this.request(`resources${suffix}`, listedResources);
+  }
+
+  getResource(resourceId: string, version: string): Promise<ResourceDescriptor> {
+    return this.request(`resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}`, resource);
   }
 
   runAgent(

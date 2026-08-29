@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectSummaryResponse } from "@veyra/api-contracts";
+import type { ProjectSummaryResponse, ResourceDescriptor } from "@veyra/api-contracts";
 import { LocalApiClient } from "./local-client";
 
 function summary(overrides: Partial<ProjectSummaryResponse> = {}) {
@@ -144,6 +144,34 @@ describe("LocalApiClient Project requests", () => {
       "Idempotency-Key": "019c0000-0000-7000-8000-000000000001",
     });
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { name: "Ada" } });
+  });
+
+  it("lists filtered Resource Catalog entries and reads an immutable detail", async () => {
+    const resource = {
+      schema_version: "1.0",
+      resource_id: "veyra.skill.research-brief",
+      kind: "skill",
+      version: "1.0.0",
+      reference: "veyra.skill.research-brief@1.0.0",
+      name: "Research Brief",
+      description: "Structure a bounded research brief.",
+      origin: "builtin",
+      content_hash: "a".repeat(64),
+      availability: "ready",
+      factory_selectable: true,
+      runtime_status: "runtime_not_configured",
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      tags: ["research", "instruction"],
+      spec: { instruction: "State scope and evidence." },
+    } satisfies ResourceDescriptor;
+    const kinds = ["component", "tool", "mcp_tool", "skill", "policy", "template"].map((kind) => ({ kind, count: kind === "skill" ? 1 : 0 }));
+    const fetcher = vi.fn().mockResolvedValueOnce(response({ schema_version: "1.0", resources: [resource], kinds })).mockResolvedValueOnce(response(resource));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.listResources({ kind: "skill" })).resolves.toMatchObject({ resources: [resource] });
+    await expect(client.getResource(resource.resource_id, resource.version)).resolves.toEqual(resource);
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/resources?kind=skill");
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/resources/veyra.skill.research-brief/versions/1.0.0");
   });
 
   it("sends commit compare-and-swap headers and revision body", async () => {
