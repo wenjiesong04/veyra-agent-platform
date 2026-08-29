@@ -57,6 +57,8 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/agents/{agent_id}/commit",
         "/api/v1/projects/{project_id}/agents/{agent_id}/export",
         "/api/v1/components",
+        "/api/v1/resources",
+        "/api/v1/resources/{resource_id}/versions/{version}",
         "/api/v1/projects/{project_id}/agents/{agent_id}/run",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}",

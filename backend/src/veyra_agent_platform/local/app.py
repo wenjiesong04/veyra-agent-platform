@@ -10,18 +10,15 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from .api.health import build_router
-from .api.projects import (
-    TypedApiError,
-    typed_error_response,
-)
-from .api.projects import (
-    build_router as build_projects_router,
-)
+from .api.projects import TypedApiError, typed_error_response
+from .api.projects import build_router as build_projects_router
+from .api.resources import build_router as build_resources_router
 from .api.runtime import build_router as build_runtime_router
 from .api.system import build_router as build_system_router
 from .config import LocalSettings
 from .library import LibraryService
 from .projects import ProjectService
+from .resources import ResourceCatalog
 from .runtime import RuntimeService
 from .storage import LocalRepository, migrate_local_database
 from .system import DirectoryPicker, MacOSDirectoryPicker
@@ -84,6 +81,7 @@ def create_app(
     application.state.settings = resolved_settings
     application.state.database_ready = False
     application.state.database_revision = None
+    application.state.resource_catalog = ResourceCatalog()
     application.add_exception_handler(TypedApiError, typed_error_response)
 
     application.include_router(
@@ -96,6 +94,7 @@ def create_app(
     application.include_router(build_projects_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())
+    application.include_router(build_resources_router())
 
     return application
 
