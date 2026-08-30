@@ -36,6 +36,10 @@ import {
   type LocalErrorEnvelope,
   type OpenProjectRequest,
   type ProjectAgentRecord,
+  type ProjectFileContentResponse,
+  type ProjectFileKind,
+  type ProjectFileRecord,
+  type ProjectFilesResponse,
   type ProjectSummaryResponse,
   type SaveDraftRequest,
   type SaveDraftResponse,
@@ -101,6 +105,10 @@ export type LocalProjectApi = {
   listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse>;
   createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; }): Promise<CreatedAgentResponse>;
+  importProject?(file: File): Promise<ProjectSummaryResponse>;
+  exportProject?(projectId: string): Promise<Blob>;
+  listProjectFiles?(projectId: string): Promise<ProjectFilesResponse>;
+  getProjectFile?(projectId: string, path: string): Promise<ProjectFileContentResponse>;
   getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
   /** Studio mutations are optional so narrow consumers can still supply read-only APIs. */
   saveDraft?(projectId: string, agentId: string, input: SaveDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveDraftResponse>;
@@ -369,6 +377,52 @@ function listAgents(value: unknown, status = 502): ListAgentsResponse {
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
+  };
+}
+
+const PROJECT_FILE_KINDS = new Set<ProjectFileKind>([
+  "manifest",
+  "agent_source",
+  "readme",
+  "test",
+  "resource",
+  "project_test",
+  "file",
+]);
+
+function projectFile(value: unknown, status = 502): ProjectFileRecord {
+  const record = asRecord(value, status);
+  const kind = asString(record.kind, "kind", status);
+  if (!PROJECT_FILE_KINDS.has(kind as ProjectFileKind)) {
+    throw new LocalApiClientError("The local service returned an invalid file kind.", {
+      status,
+      code: "invalid_response",
+    });
+  }
+  return {
+    path: asString(record.path, "path", status),
+    kind: kind as ProjectFileKind,
+    byte_length: asNumber(record.byte_length, "byte_length", status),
+    ...(record.agent_id === undefined ? {} : { agent_id: asString(record.agent_id, "agent_id", status) }),
+  };
+}
+
+function projectFiles(value: unknown, status = 502): ProjectFilesResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    files: asArray(record.files, "files", status).map((item) => projectFile(item, status)),
+  };
+}
+
+function projectFileContent(value: unknown, status = 502): ProjectFileContentResponse {
+  const record = schemaRecord(value, status);
+  return {
+    ...projectFile(record, status),
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    text: asText(record.text, "text", status),
   };
 }
 
@@ -920,6 +974,31 @@ export class LocalApiClient {
     });
   }
 
+  importProject(file: File): Promise<ProjectSummaryResponse> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request("projects/import", projectSummary, {
+      method: "POST",
+      formData,
+    });
+  }
+
+  exportProject(projectId: string): Promise<Blob> {
+    return this.requestBlob(`projects/${encodeURIComponent(projectId)}/export`);
+  }
+
+  listProjectFiles(projectId: string): Promise<ProjectFilesResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/files`, projectFiles);
+  }
+
+  getProjectFile(projectId: string, path: string): Promise<ProjectFileContentResponse> {
+    const query = new URLSearchParams({ path });
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/files/content?${query.toString()}`,
+      projectFileContent,
+    );
+  }
+
   listAgents(projectId: string): Promise<ListAgentsResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}/agents`, listAgents);
   }
@@ -1230,6 +1309,27 @@ export class LocalApiClient {
       throw errorEnvelope(payload, response.status);
     }
     return parse(payload, response.status);
+  }
+
+  private async requestBlob(path: string): Promise<Blob> {
+    let response: Response;
+    try {
+      response = await this.fetcher(apiUrl(this.baseUrl, path), {
+        method: "GET",
+        headers: { Accept: "application/zip, application/json" },
+        credentials: "include",
+      });
+    } catch {
+      throw new LocalApiClientError(
+        "The local service is unavailable. Check that the desktop sidecar is running.",
+        { status: 0, code: "unavailable" },
+      );
+    }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => undefined);
+      throw errorEnvelope(payload, response.status);
+    }
+    return response.blob();
   }
 }
 

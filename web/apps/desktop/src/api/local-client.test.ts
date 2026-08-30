@@ -81,6 +81,22 @@ describe("LocalApiClient Project requests", () => {
     expect(body.get("description")).toBe("Imported");
   });
 
+  it("downloads a Project zip and posts a Project archive without JSON parsing", async () => {
+    const zip = new Blob(["PK"], { type: "application/zip" });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(zip, { status: 200, headers: { "Content-Type": "application/zip" } }))
+      .mockResolvedValueOnce(response(summary({ project_id: "imported", name: "Imported" }), 201));
+    const client = new LocalApiClient({ fetcher });
+    const file = new File(["PK"], "team.vproject.zip", { type: "application/zip" });
+
+    await expect(client.exportProject("project-1")).resolves.toBeInstanceOf(Blob);
+    await client.importProject(file);
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/export");
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/import");
+    expect(fetcher.mock.calls[1]?.[1]?.body).toBeInstanceOf(FormData);
+  });
+
   it("surfaces typed sidecar errors instead of falling back to fixture data", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", code: "project_unavailable", message: "Project root cannot be read", request_id: "request-1" }, 503));
     const client = new LocalApiClient({ fetcher });

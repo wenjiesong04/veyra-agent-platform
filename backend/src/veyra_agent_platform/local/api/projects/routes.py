@@ -6,12 +6,23 @@ import os
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, TypeVar, cast
 
-from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    Header,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
+from veyra_agent_platform.local.projects.packaging import MAX_PROJECT_ARCHIVE_BYTES
 from veyra_agent_platform.local.projects.service import (
     MAX_AGENT_IMPORT_BYTES,
     ProjectError,
@@ -156,6 +167,20 @@ def build_router() -> APIRouter:
             lambda: _project_response(request, projects.index(payload.root_path))
         )
 
+    @router.post("/import", status_code=status.HTTP_201_CREATED)
+    def import_project(
+        request: Request,
+        file: Annotated[UploadFile, File()],
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        contents = file.file.read(MAX_PROJECT_ARCHIVE_BYTES + 1)
+        return _translate(
+            lambda: _project_response(
+                request,
+                projects.import_archive(filename=file.filename, contents=contents),
+            )
+        )
+
     @router.get("/{project_id}")
     def get_project(project_id: str, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
@@ -204,6 +229,37 @@ def build_router() -> APIRouter:
     def delete_project(project_id: str, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(lambda: projects.remove(project_id))
+
+    @router.get("/{project_id}/export")
+    def export_project(project_id: str, request: Request) -> Response:
+        projects, _ = _services(request)
+
+        def operation() -> Response:
+            payload, filename = projects.export_archive(project_id)
+            return Response(
+                content=payload,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        return _translate(operation)
+
+    @router.get("/{project_id}/files/content")
+    def get_project_file(
+        project_id: str,
+        request: Request,
+        path: Annotated[str, Query(min_length=1)],
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(lambda: projects.file_content(project_id, path))
+
+    @router.get("/{project_id}/files")
+    def list_project_files(project_id: str, request: Request) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(lambda: projects.list_files(project_id))
 
     @router.get("/{project_id}/agent-templates")
     def list_agent_templates(project_id: str, request: Request) -> dict[str, Any]:

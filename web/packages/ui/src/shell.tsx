@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useLocale } from "./i18n";
 import { IconButton } from "./primitives";
 import { useTheme } from "./theme";
-import type { AccountMenuConfig, Brand, NavigationGroup } from "./types";
+import type { AccountMenuConfig, Brand, NavigationGroup, NavigationItem } from "./types";
 
 type ApplicationShellProps = {
   brand: Brand;
@@ -100,6 +100,28 @@ function navigationStatusText(group: NavigationGroup, translate: (key: string, f
   if (group.status === "loading") return translate("loadingProjects");
   if (group.status === "error") return translate("projectsUnavailable");
   return group.label === "Recent" ? translate("noRecentProjects") : translate("noProjects");
+}
+
+function renderSidebarChildren(
+  items: NavigationItem[],
+  activeHref: string,
+  closeMobile: () => void,
+  translate: (key: string, fallback?: string) => string,
+): ReactNode {
+  return items.map((child) => {
+    const ChildIcon = child.icon;
+    const childActive = child.active ?? child.href === activeHref;
+    const childLabel = shellText(child.label, translate);
+    return (
+      <div className="sidebar-nav-child" key={`${child.href}-${childLabel}`}>
+        <div className={`sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`}>
+          <a className={`sidebar-nav-link ${childActive ? "active" : ""}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>
+          {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
+        </div>
+        {child.children && child.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(child.children, activeHref, closeMobile, translate)}</div> : null}
+      </div>
+    );
+  });
 }
 
 function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: AccountMenuConfig; collapsed: boolean; onNavigate: () => void }) {
@@ -307,15 +329,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
                     <a className={`sidebar-nav-link ${active ? "active" : ""}`} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={16} aria-hidden="true" /><span>{label}</span></a>
                     {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
                   </div>
-                  {item.children && item.expanded ? <div className="sidebar-nav-children">{item.children.map((child) => {
-                    const ChildIcon = child.icon;
-                    const childActive = child.active ?? child.href === activeHref;
-                    const childLabel = shellText(child.label, t);
-                    return <div className={`sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`} key={`${child.href}-${childLabel}`}>
-                      <a className={`sidebar-nav-link ${childActive ? "active" : ""}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>
-                      {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
-                    </div>;
-                  })}</div> : null}
+                  {item.children && item.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(item.children, activeHref, closeMobile, t)}</div> : null}
                 </div>;
               })}
               {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}

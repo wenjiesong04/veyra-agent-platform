@@ -41,6 +41,9 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
   listAgentTemplates: ReturnType<typeof vi.fn>;
   createAgent: ReturnType<typeof vi.fn>;
   importAgent: ReturnType<typeof vi.fn>;
+  importProject: ReturnType<typeof vi.fn>;
+  exportProject: ReturnType<typeof vi.fn>;
+  listProjectFiles: ReturnType<typeof vi.fn>;
   listAgentRuns: ReturnType<typeof vi.fn>;
 } {
   const getProject = vi.fn().mockImplementation(async (projectId: string) => project({ project_id: projectId, name: projectId }));
@@ -57,6 +60,9 @@ function apiFor(projects: ProjectSummaryResponse[] = []): LocalProjectApi & {
     listAgentTemplates: vi.fn().mockResolvedValue({ schema_version: "1.0", templates: [{ template_id: "review", name: "Review Agent", description: "Reviews a bounded scope.", default_slug: "review-agent" }] }),
     createAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "created-agent", slug: "created-agent", name: "Created Agent", description: "", source_path: "agents/created-agent/agent.vagent.yaml", source_file_hash: "created-hash" }),
     importAgent: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: "imported-agent", slug: "imported-agent", name: "Imported Agent", description: "", source_path: "agents/imported-agent/agent.vagent.yaml", source_file_hash: "imported-hash" }),
+    importProject: vi.fn().mockResolvedValue(project({ project_id: "imported-project", name: "Imported Project", root_path: "/tmp/imported-project" })),
+    exportProject: vi.fn().mockResolvedValue(new Blob(["zip"], { type: "application/zip" })),
+    listProjectFiles: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", files: [] }),
     listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [] }),
     getDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "draft-1", revision: 1, etag: "etag-1", source_file_hash: "source-hash", source: { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", inputs: {}, outputs: {}, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: {} }, lock: {} } }),
     saveDraft: vi.fn().mockImplementation(async (_projectId: string, _agentId: string, input: SaveDraftRequest): Promise<SaveDraftResponse> => ({ schema_version: "1.0", revision: input.expected_revision + 1, etag: "etag-2", source: input.source })),
@@ -217,7 +223,7 @@ describe("desktop Project workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "Evidence Project", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "2 Agents" })).toBeInTheDocument();
-    expect(screen.getByText("Reviewer")).toBeInTheDocument();
+    expect(screen.getAllByText("Reviewer").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("reviewer")).toBeInTheDocument();
     expect(screen.getByText("agents/reviewer/agent.vagent.yaml", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("Agents will be added later.")).not.toBeInTheDocument();
@@ -244,7 +250,7 @@ describe("desktop Project workspace", () => {
     expect(window.location.hash).toBe("#/projects");
   });
 
-  it("expands a Project tree into selected Agent links and keeps the per-Project menu to three actions", async () => {
+  it("expands a Project tree into selected Agent links and keeps the per-Project menu to four actions", async () => {
     const tree = project({ project_id: "tree", name: "Tree Project", agents: [{ agent_id: "agent-tree", slug: "tree-agent", name: "Tree Agent", description: "", pinned: false, source_path: "agents/tree/agent.vagent.yaml", source_file_hash: "tree-hash" }], agent_count: 1 });
     const user = userEvent.setup();
     const api = apiFor([tree]);
@@ -276,8 +282,9 @@ describe("desktop Project workspace", () => {
     await user.click(screen.getByRole("button", { name: "Project actions: Tree Project" }));
     expect(document.querySelector(".sidebar-project-menu")?.parentElement).toBe(document.body);
     expect(document.querySelector(".sidebar-project-menu")).not.toHaveClass("agent-add-chooser");
-    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(4);
     expect(screen.getByRole("menuitem", { name: "Pin Project" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Export Project" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
@@ -390,6 +397,30 @@ describe("desktop Project workspace", () => {
     render(<DesktopApp api={apiFor([project({ project_id: "empty", name: "Empty Project" })])} />);
     await user.click(await screen.findByRole("button", { name: "Expand Project: Empty Project" }));
     expect(document.querySelector(".nav-group-projects .sidebar-nav-children")).toBeNull();
+  });
+
+  it("renders grandchild Agent links in the sidebar and imports a Project archive", async () => {
+    const nested = project({
+      project_id: "nested",
+      name: "Nested Project",
+      agents: [
+        { agent_id: "parent", slug: "parent", name: "Parent Agent", description: "", pinned: false, source_path: "agents/parent/agent.vagent.yaml", source_file_hash: "p" },
+        { agent_id: "child", slug: "child", name: "Child Agent", description: "", pinned: false, source_path: "agents/child/agent.vagent.yaml", source_file_hash: "c", parent_agent_id: "parent" },
+        { agent_id: "grand", slug: "grand", name: "Grand Agent", description: "", pinned: false, source_path: "agents/grand/agent.vagent.yaml", source_file_hash: "g", parent_agent_id: "child" },
+      ],
+      agent_count: 3,
+    });
+    const user = userEvent.setup();
+    const api = apiFor([nested]);
+    render(<DesktopApp api={api} />);
+    await user.click(await screen.findByRole("button", { name: "Expand Project: Nested Project" }));
+    expect(screen.getByRole("link", { name: "Grand Agent" })).toHaveAttribute("href", projectRoutePaths.agentDesign("nested", "grand"));
+    const file = new File(["zip"], "team.vproject.zip", { type: "application/zip" });
+    await user.upload(document.querySelector(".sidebar-import-input") as HTMLInputElement, file);
+    await waitFor(() => expect(api.importProject).toHaveBeenCalledWith(file));
+    await user.click(screen.getByRole("button", { name: "Project actions: Nested Project" }));
+    await user.click(screen.getByRole("menuitem", { name: "Export Project" }));
+    await waitFor(() => expect(api.exportProject).toHaveBeenCalledWith("nested"));
   });
 
   it("renders title-only root headers and linked nested breadcrumbs at 320px", async () => {

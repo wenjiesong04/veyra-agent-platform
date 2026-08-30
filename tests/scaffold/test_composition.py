@@ -46,7 +46,11 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
     expected_local_paths = shared_paths | {
         "/api/v1/projects",
         "/api/v1/projects/open",
+        "/api/v1/projects/import",
         "/api/v1/projects/{project_id}",
+        "/api/v1/projects/{project_id}/export",
+        "/api/v1/projects/{project_id}/files",
+        "/api/v1/projects/{project_id}/files/content",
         "/api/v1/projects/{project_id}/agent-templates",
         "/api/v1/projects/{project_id}/agents",
         "/api/v1/projects/{project_id}/agents/import",

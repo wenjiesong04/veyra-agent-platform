@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -22,6 +23,11 @@ from veyra_agent_platform.contracts.agent import (
 )
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.local.projects.packaging import (
+    ProjectPackageError,
+    pack_project_files,
+    unpack_project_archive,
+)
 from veyra_agent_platform.local.storage.objects import write_object
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 from veyra_agent_platform.local.templates import (
@@ -69,6 +75,10 @@ class ProjectService:
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
         require_new_root: bool = False,
+        fork_identities: bool = True,
+        parents: dict[str, str] | None = None,
+        extra_files: dict[str, bytes] | None = None,
+        default_agent_id: str | None = None,
     ) -> dict[str, Any]:
         with self._writer_lock:
             return self._create(
@@ -78,6 +88,10 @@ class ProjectService:
                 sources=sources,
                 template_selections=template_selections,
                 require_new_root=require_new_root,
+                fork_identities=fork_identities,
+                parents=parents,
+                extra_files=extra_files,
+                default_agent_id=default_agent_id,
             )
 
     def _create(
@@ -89,6 +103,10 @@ class ProjectService:
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
         require_new_root: bool = False,
+        fork_identities: bool = True,
+        parents: dict[str, str] | None = None,
+        extra_files: dict[str, bytes] | None = None,
+        default_agent_id: str | None = None,
     ) -> dict[str, Any]:
         root = self._new_root(root_path, require_new_root=require_new_root)
         root_preexisted = root.exists()
@@ -99,10 +117,20 @@ class ProjectService:
             self._instantiate_template(selection)
             for selection in (template_selections or [])
         )
-        forked_sources = [self._fork_template(source) for source in selected_sources]
+        forked_sources = (
+            [self._fork_template(source) for source in selected_sources]
+            if fork_identities
+            else selected_sources
+        )
         if len({source.slug for source in forked_sources}) != len(forked_sources):
             raise ProjectError("Project Agent slugs must be unique")
-        manifest = self._manifest(allocated_name, description, forked_sources)
+        manifest = self._manifest(
+            allocated_name,
+            description,
+            forked_sources,
+            parents=parents,
+            default_agent_id=None if fork_identities else default_agent_id,
+        )
         staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
         installed = False
         try:
@@ -119,6 +147,7 @@ class ProjectService:
                     self._canonical_source(source.to_dict()),
                 )
                 self.atomic_write(agent_root / "README.md", f"# {source.name}\n")
+            self._write_extra_files(staging, extra_files or {})
             self.atomic_write(
                 staging / "project.vproject.yaml", self._canonical_source(manifest)
             )
@@ -157,6 +186,10 @@ class ProjectService:
         description: str = "",
         sources: list[dict[str, Any]] | None = None,
         template_selections: list[dict[str, str]] | None = None,
+        fork_identities: bool = True,
+        parents: dict[str, str] | None = None,
+        extra_files: dict[str, bytes] | None = None,
+        default_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a Project under the application-managed storage root only."""
         storage_root = self._managed_storage_root()
@@ -168,7 +201,82 @@ class ProjectService:
             sources=sources,
             template_selections=template_selections,
             require_new_root=True,
+            fork_identities=fork_identities,
+            parents=parents,
+            extra_files=extra_files,
+            default_agent_id=default_agent_id,
         )
+
+    def export_archive(self, project_id: str) -> tuple[bytes, str]:
+        """Pack indexed Project source files into a portable zip archive."""
+        _, root, manifest_path, _, manifest = self._project_manifest_state(project_id)
+        _records, files = self._collect_allowed_files(root, manifest, manifest_path)
+        try:
+            payload = pack_project_files(root, files)
+        except ProjectPackageError as exc:
+            raise _package_error(exc) from exc
+        return payload, _archive_filename(manifest.name)
+
+    def import_archive(
+        self, *, filename: str | None, contents: bytes
+    ) -> dict[str, Any]:
+        """Install a portable Project archive as a new managed Project with new IDs."""
+        try:
+            bundle = unpack_project_archive(filename, contents)
+        except ProjectPackageError as exc:
+            raise _package_error(exc) from exc
+        return self.create_managed(
+            name=bundle.name,
+            description=bundle.description,
+            sources=[source.to_dict() for source in bundle.sources],
+            fork_identities=False,
+            parents=bundle.parents,
+            extra_files=bundle.extra_files,
+            default_agent_id=bundle.default_agent_id,
+        )
+
+    def list_files(self, project_id: str) -> dict[str, Any]:
+        """List indexed Project source files without exposing runtime state."""
+        _, root, manifest_path, _, manifest = self._project_manifest_state(project_id)
+        _records, files = self._collect_allowed_files(root, manifest, manifest_path)
+        listed: list[dict[str, Any]] = []
+        for path in files:
+            relative = path.relative_to(root).as_posix()
+            kind, agent_id = _file_kind(relative, manifest)
+            item: dict[str, Any] = {
+                "path": relative,
+                "kind": kind,
+                "byte_length": path.stat().st_size,
+            }
+            if agent_id is not None:
+                item["agent_id"] = agent_id
+            listed.append(item)
+        return {
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "files": listed,
+        }
+
+    def file_content(self, project_id: str, relative_path: str) -> dict[str, Any]:
+        """Return UTF-8 text for one indexed Project source file."""
+        listing = self.list_files(project_id)
+        selected = next(
+            (item for item in listing["files"] if item["path"] == relative_path),
+            None,
+        )
+        if selected is None:
+            raise ProjectError("unknown Project file")
+        project = self.repository.project(project_id)
+        if project is None:
+            raise ProjectError("unknown Project")
+        root = self._existing_root(project["root_path"])
+        path = self._safe_file(root, Path(relative_path))
+        return {
+            **selected,
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "text": self._read_text(path),
+        }
 
     def _allocate_name(
         self, requested_name: str | None, *, exclude_project_id: str | None = None
@@ -1094,6 +1202,32 @@ class ProjectService:
             raise ProjectError("Project exceeds the indexing total size limit")
         return records, unique
 
+    def _write_extra_files(self, staging: Path, extra_files: dict[str, bytes]) -> None:
+        staging_resolved = staging.resolve()
+        for relative, payload in extra_files.items():
+            path = Path(relative)
+            if path.is_absolute() or ".." in path.parts or not path.parts:
+                raise ProjectError("Project relative path escapes its root")
+            if path.name in {"agent.vagent.yaml", "project.vproject.yaml"}:
+                raise ProjectError("Project archive contains a disallowed path")
+            current = staging
+            for part in path.parts[:-1]:
+                current = current / part
+                if current.exists() and (current.is_symlink() or not current.is_dir()):
+                    raise ProjectError("Project path or symlink escapes its root")
+                if not current.exists():
+                    current.mkdir(mode=0o700)
+            target = staging / path
+            if target.exists() and (target.is_symlink() or not target.is_file()):
+                raise ProjectError("Project files may not be symlinks")
+            if not target.parent.resolve().is_relative_to(staging_resolved):
+                raise ProjectError("Project path or symlink escapes its root")
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ProjectError("Project source must be UTF-8") from exc
+            self.atomic_write(target, text)
+
     def _files_below(self, directory: Path) -> list[Path]:
         files: list[Path] = []
         for path in directory.rglob("*"):
@@ -1259,23 +1393,36 @@ class ProjectService:
 
     @staticmethod
     def _manifest(
-        name: str, description: str, sources: list[AgentSource]
+        name: str,
+        description: str,
+        sources: list[AgentSource],
+        parents: dict[str, str] | None = None,
+        default_agent_id: str | None = None,
     ) -> dict[str, Any]:
+        parent_map = parents or {}
+        agents: list[dict[str, Any]] = []
+        for source in sources:
+            entry: dict[str, Any] = {
+                "agent_id": source.agent_id,
+                "slug": source.slug,
+                "path": f"agents/{source.slug}",
+            }
+            parent_id = parent_map.get(source.agent_id)
+            if parent_id is not None:
+                entry["parent_agent_id"] = parent_id
+            agents.append(entry)
+        if default_agent_id is None:
+            resolved_default = sources[0].agent_id if sources else None
+        else:
+            resolved_default = default_agent_id
         manifest = {
             "schema_version": "1.0",
             "project_version": "1",
             "project_id": new_uuid7(),
             "name": name,
             "description": description,
-            "agents": [
-                {
-                    "agent_id": source.agent_id,
-                    "slug": source.slug,
-                    "path": f"agents/{source.slug}",
-                }
-                for source in sources
-            ],
-            "default_agent_id": sources[0].agent_id if sources else None,
+            "agents": agents,
+            "default_agent_id": resolved_default,
             "resource_policy": {
                 "max_concurrent_runs": 1,
                 "max_nodes_per_run": 128,
@@ -1316,3 +1463,31 @@ def _etag(revision: int, current_file_hash: str) -> str:
         + sha256_digest({"revision": revision, "file_hash": current_file_hash})
         + '"'
     )
+
+
+def _package_error(exc: ProjectPackageError) -> ProjectError:
+    error = ProjectError(str(exc))
+    error.code = exc.code
+    return error
+
+
+def _archive_filename(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip())[:80].strip(".-")
+    return f"{slug or 'project'}.vproject.zip"
+
+
+def _file_kind(relative: str, manifest: ProjectManifest) -> tuple[str, str | None]:
+    if relative == "project.vproject.yaml":
+        return "manifest", None
+    for entry in manifest.agents:
+        if relative == f"{entry.path}/agent.vagent.yaml":
+            return "agent_source", entry.agent_id
+        if relative == f"{entry.path}/README.md":
+            return "readme", entry.agent_id
+        if relative.startswith(f"{entry.path}/tests/"):
+            return "test", entry.agent_id
+    if relative.startswith("resources/"):
+        return "resource", None
+    if relative.startswith("tests/"):
+        return "project_test", None
+    return "file", None

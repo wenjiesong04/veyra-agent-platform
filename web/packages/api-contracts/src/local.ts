@@ -241,6 +241,34 @@ export type OpenProjectRequest = {
   root_path: string;
 };
 
+export type ProjectFileKind =
+  | "manifest"
+  | "agent_source"
+  | "readme"
+  | "test"
+  | "resource"
+  | "project_test"
+  | "file";
+
+export type ProjectFileRecord = {
+  path: string;
+  kind: ProjectFileKind;
+  byte_length: number;
+  agent_id?: string;
+};
+
+export type ProjectFilesResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  files: ProjectFileRecord[];
+};
+
+export type ProjectFileContentResponse = ProjectFileRecord & {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  text: string;
+};
+
 /** Result of a native desktop directory picker. Paths never come from typed UI input. */
 export type SelectDirectoryResponse =
   | {

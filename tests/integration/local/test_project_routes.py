@@ -490,3 +490,94 @@ def test_commit_requires_current_revision_and_etag(tmp_path: Path) -> None:
         )
         assert stale.status_code == 409
         assert stale.json()["code"] == "draft_conflict"
+
+
+def test_project_export_import_files_and_parent_remap(tmp_path: Path) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/v1/projects", json={"name": "Team"}).json()
+        project_id = created["project_id"]
+        parent = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={"mode": "blank", "name": "Coordinator"},
+        )
+        child = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={
+                "mode": "blank",
+                "name": "Worker",
+                "parent_agent_id": parent.json()["agent_id"],
+            },
+        )
+        assert parent.status_code == child.status_code == 201
+        root = Path(created["root_path"])
+        (root / "resources" / "note.md").write_text("shared note\n", encoding="utf-8")
+        (root / "agents" / parent.json()["slug"] / "tests" / "check.md").write_text(
+            "ok\n", encoding="utf-8"
+        )
+        indexed = client.post("/api/v1/projects/open", json={"root_path": str(root)})
+        assert indexed.status_code == 200
+        listed = client.get(f"/api/v1/projects/{project_id}/files")
+        assert listed.status_code == 200
+        paths = {item["path"] for item in listed.json()["files"]}
+        assert "project.vproject.yaml" in paths
+        assert "resources/note.md" in paths
+        preview = client.get(
+            f"/api/v1/projects/{project_id}/files/content",
+            params={"path": "resources/note.md"},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["text"] == "shared note\n"
+        escaped = client.get(
+            f"/api/v1/projects/{project_id}/files/content",
+            params={"path": "../secret.md"},
+        )
+        assert escaped.status_code == 422
+
+        exported = client.get(f"/api/v1/projects/{project_id}/export")
+        assert exported.status_code == 200
+        assert exported.headers["content-type"].startswith("application/zip")
+        assert "Team.vproject.zip" in exported.headers["content-disposition"]
+
+        imported = client.post(
+            "/api/v1/projects/import",
+            files={
+                "file": (
+                    "team.vproject.zip",
+                    exported.content,
+                    "application/zip",
+                )
+            },
+        )
+        assert imported.status_code == 201
+        payload = imported.json()
+        assert payload["project_id"] != project_id
+        assert {agent["agent_id"] for agent in payload["agents"]}.isdisjoint(
+            {parent.json()["agent_id"], child.json()["agent_id"]}
+        )
+        imported_child = next(
+            agent for agent in payload["agents"] if agent["parent_agent_id"]
+        )
+        imported_parent = next(
+            agent
+            for agent in payload["agents"]
+            if agent["agent_id"] == imported_child["parent_agent_id"]
+        )
+        assert imported_parent["name"] == "Coordinator"
+        assert imported_child["name"] == "Worker"
+        imported_root = Path(payload["root_path"])
+        assert (imported_root / "resources" / "note.md").read_text(
+            encoding="utf-8"
+        ) == "shared note\n"
+        assert (
+            imported_root / "agents" / imported_parent["slug"] / "tests" / "check.md"
+        ).read_text(encoding="utf-8") == "ok\n"
+        rejected = client.post(
+            "/api/v1/projects/import",
+            files={"file": ("notes.txt", b"not a zip", "text/plain")},
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "project_package_invalid"

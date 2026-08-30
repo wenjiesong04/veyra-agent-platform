@@ -323,6 +323,14 @@
   margin: 1px 0 2px 28px;
 }
 
+.sidebar-nav-children .sidebar-nav-children {
+  margin-left: 16px;
+}
+
+.sidebar-nav-child {
+  min-width: 0;
+}
+
 .sidebar-nav-child-row {
   position: relative;
   display: flex;
