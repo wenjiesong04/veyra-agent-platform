@@ -23,11 +23,16 @@ def test_component_catalog_status_and_legacy_projection_are_honest() -> None:
 
     agent = next(resource for resource in components if resource["name"] == "Agent")
     tool = next(resource for resource in components if resource["name"] == "Tool")
+    approval = next(
+        resource for resource in components if resource["name"] == "HumanApproval"
+    )
 
     assert agent["availability"] == "requires_configuration"
     assert agent["runtime_status"] == "runtime_not_configured"
     assert tool["availability"] == "ready"
     assert tool["runtime_status"] == "supported"
+    assert approval["availability"] == "ready"
+    assert approval["runtime_status"] == "supported"
     assert all(resource["factory_selectable"] for resource in components)
     assert catalog.components()[2] == {
         "type": "Tool",
@@ -69,13 +74,16 @@ def test_catalog_exposes_honest_tools_and_unconfigured_mcp() -> None:
     by_name = {resource["name"]: resource for resource in tools}
 
     assert by_name["Filesystem Read"]["availability"] == "ready"
-    assert by_name["Filesystem Read"]["factory_selectable"] is True
     assert by_name["Filesystem Read"]["runtime_status"] == "supported"
+    assert by_name["Filesystem Write"]["availability"] == "ready"
+    assert by_name["Filesystem Write"]["runtime_status"] == "supported"
+    assert by_name["Filesystem Write"]["factory_selectable"] is True
     assert by_name["GitHub Read"]["availability"] == "unavailable"
     assert by_name["GitHub Read"]["factory_selectable"] is False
     assert mcp[0]["availability"] == "requires_configuration"
     assert mcp[0]["factory_selectable"] is False
     snapshot = {item["reference"] for item in catalog.factory_snapshot()}
     assert "veyra.tool.filesystem.read@1.0.0" in snapshot
+    assert "veyra.tool.filesystem.write@1.0.0" in snapshot
     assert "veyra.tool.github.read@1.0.0" not in snapshot
     assert catalog.by_reference("veyra.skill.research-brief@1.0.0")["kind"] == "skill"

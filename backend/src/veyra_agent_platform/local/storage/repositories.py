@@ -529,12 +529,20 @@ class LocalRepository:
         agent_id: str,
         version_id: str,
         created_at: str,
+        inputs: dict[str, Any] | None = None,
     ) -> None:
         connection.execute(
             "INSERT INTO runtime_runs("
-            "run_id, project_id, agent_id, version_id, status, created_at"
-            ") VALUES (?, ?, ?, ?, 'running', ?)",
-            (run_id, project_id, agent_id, version_id, created_at),
+            "run_id, project_id, agent_id, version_id, status, inputs_json, created_at"
+            ") VALUES (?, ?, ?, ?, 'running', ?, ?)",
+            (
+                run_id,
+                project_id,
+                agent_id,
+                version_id,
+                json.dumps(inputs or {}, sort_keys=True, separators=(",", ":")),
+                created_at,
+            ),
         )
 
     def add_run_events(
@@ -563,6 +571,202 @@ class LocalRepository:
                     datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 ),
             )
+
+    def set_run_status(
+        self, connection: sqlite3.Connection, run_id: str, *, status: str
+    ) -> None:
+        connection.execute(
+            "UPDATE runtime_runs SET status = ? WHERE run_id = ?",
+            (status, run_id),
+        )
+
+    def version(self, version_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM agent_versions WHERE version_id = ?",
+                    (version_id,),
+                ).fetchone(),
+            )
+
+    def insert_tool_call(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        node_id: str,
+        tool_reference: str,
+        authorization: str,
+        decision_code: str,
+        decision_reason: str,
+        input_digest: str,
+        receipt: dict[str, Any] | None,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO runtime_tool_calls(
+                 tool_call_id, run_id, node_id, tool_reference, authorization,
+                 decision_code, decision_reason, input_digest, receipt_json, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                new_uuid7(),
+                run_id,
+                node_id,
+                tool_reference,
+                authorization,
+                decision_code,
+                decision_reason,
+                input_digest,
+                json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+                if receipt is not None
+                else None,
+                created_at,
+            ),
+        )
+
+    def insert_approval_request(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        approval_id: str,
+        run_id: str,
+        node_id: str,
+        prompt: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO runtime_approval_requests(
+                 approval_id, run_id, node_id, prompt, status, created_at
+               ) VALUES (?, ?, ?, ?, 'pending', ?)""",
+            (approval_id, run_id, node_id, prompt, created_at),
+        )
+
+    def pending_approval(
+        self, connection: sqlite3.Connection, run_id: str
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """SELECT * FROM runtime_approval_requests
+                   WHERE run_id = ? AND status = 'pending'
+                   ORDER BY created_at DESC, approval_id DESC""",
+                (run_id,),
+            ).fetchone(),
+        )
+
+    def resolve_approval(
+        self,
+        connection: sqlite3.Connection,
+        approval_id: str,
+        *,
+        status: str,
+        command_id: str,
+        resolved_at: str,
+    ) -> None:
+        connection.execute(
+            """UPDATE runtime_approval_requests
+               SET status = ?, resolved_at = ?, resolved_by_command_id = ?
+               WHERE approval_id = ?""",
+            (status, resolved_at, command_id, approval_id),
+        )
+
+    def insert_checkpoint(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        checkpoint_id: str,
+        run_id: str,
+        node_id: str,
+        waiting_kind: str,
+        values: dict[str, Any],
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO runtime_checkpoints(
+                 checkpoint_id, run_id, node_id, waiting_kind, values_json, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                checkpoint_id,
+                run_id,
+                node_id,
+                waiting_kind,
+                json.dumps(values, sort_keys=True, separators=(",", ":")),
+                created_at,
+            ),
+        )
+
+    def latest_checkpoint(
+        self, connection: sqlite3.Connection, run_id: str
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """SELECT * FROM runtime_checkpoints
+                   WHERE run_id = ?
+                   ORDER BY created_at DESC, checkpoint_id DESC""",
+                (run_id,),
+            ).fetchone(),
+        )
+
+    def insert_run_command(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        command_id: str,
+        run_id: str,
+        command_type: str,
+        payload: dict[str, Any],
+        status: str,
+        created_at: str,
+        applied_at: str | None = None,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO runtime_run_commands(
+                 command_id, run_id, command_type, payload_json, status,
+                 created_at, applied_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                command_id,
+                run_id,
+                command_type,
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                status,
+                created_at,
+                applied_at,
+            ),
+        )
+
+    def mark_command_applied(
+        self,
+        connection: sqlite3.Connection,
+        command_id: str,
+        *,
+        applied_at: str,
+        status: str = "applied",
+    ) -> None:
+        connection.execute(
+            """UPDATE runtime_run_commands
+               SET status = ?, applied_at = ?
+               WHERE command_id = ?""",
+            (status, applied_at, command_id),
+        )
+
+    def cancel_pending_approvals(
+        self, connection: sqlite3.Connection, run_id: str, *, resolved_at: str
+    ) -> None:
+        connection.execute(
+            """UPDATE runtime_approval_requests
+               SET status = 'cancelled', resolved_at = ?
+               WHERE run_id = ? AND status = 'pending'""",
+            (resolved_at, run_id),
+        )
+
+    def run_inputs(self, run_id: str) -> dict[str, Any]:
+        row = self.run(run_id)
+        if row is None or row["inputs_json"] in (None, ""):
+            return {}
+        return cast(dict[str, Any], json.loads(row["inputs_json"]))
 
     def finish_run(
         self,
@@ -628,6 +832,25 @@ class LocalRepository:
             for row in rows
         ]
 
+    def replace_run_idempotent_payload(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        for record in connection.execute(
+            "SELECT scope, key, request_digest, response_json FROM idempotency_records"
+        ).fetchall():
+            response = json.loads(record["response_json"])
+            if response.get("run_id") == run_id:
+                self.replace_idempotent_response(
+                    connection,
+                    record["scope"],
+                    record["key"],
+                    record["request_digest"],
+                    payload,
+                )
+
     def interrupt_orphan_runs(self) -> None:
         """Close local runs left nonterminal by a prior process termination."""
         with self.transaction() as connection:
@@ -651,20 +874,9 @@ class LocalRepository:
                     "SELECT * FROM runtime_runs WHERE run_id = ?", (row["run_id"],)
                 ).fetchone()
                 assert recovered is not None
-                payload = self._run_payload(recovered)
-                for record in connection.execute(
-                    "SELECT scope, key, request_digest, response_json "
-                    "FROM idempotency_records"
-                ).fetchall():
-                    response = json.loads(record["response_json"])
-                    if response.get("run_id") == row["run_id"]:
-                        self.replace_idempotent_response(
-                            connection,
-                            record["scope"],
-                            record["key"],
-                            record["request_digest"],
-                            payload,
-                        )
+                self.replace_run_idempotent_payload(
+                    connection, row["run_id"], self._run_payload(recovered)
+                )
 
     @staticmethod
     def _run_payload(row: sqlite3.Row) -> dict[str, Any]:

@@ -38,9 +38,11 @@ locks, and consistent verification declarations.
   an allowlisted Condition DSL, allowlisted Verifier checks, and Output. A
   no-tools Agent node may run only through an explicitly configured provider
   adapter with bounded timeout/output and redacted receipts.
-- Tool and HumanApproval remain designable portable nodes, but the first Runtime
-  rejects them as `runtime_not_supported`; it never skips them or reports a
-  successful run.
+- Tool and HumanApproval remain designable portable nodes. The current Runtime
+  executes `HumanApproval` as a durable wait plus `approve`/`reject`/`stop`
+  commands, and executes catalogued filesystem read/write adapters. Unsupported
+  tools still fail as `runtime_not_supported` or `tool_runtime_unavailable`;
+  the executor never skips them or reports a successful run.
 - Every test run validates the current source, materializes or reuses an immutable
   Agent version, and records a Run plus ordered events outside the Project
   directory. Runtime state and provider secrets never enter Agent source.

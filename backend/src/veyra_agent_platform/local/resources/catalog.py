@@ -44,7 +44,7 @@ _COMPONENTS: Final[tuple[tuple[str, list[str], list[str], RuntimeStatus], ...]] 
     ("Tool", ["uses"], ["next"], "supported"),
     ("Condition", ["expression"], ["true", "false"], "supported"),
     ("Transform", ["mapping"], ["next"], "supported"),
-    ("HumanApproval", ["prompt"], ["approved", "rejected"], "runtime_not_supported"),
+    ("HumanApproval", ["prompt"], ["approved", "rejected"], "supported"),
     ("Verifier", ["checks"], ["passed", "failed"], "supported"),
     ("Output", ["output_name"], [], "supported"),
 )
@@ -293,10 +293,11 @@ class ResourceCatalog:
                     "approval_required": True,
                     "input_schema": {"path": "string", "content": "string"},
                     "output_schema": {"written": "boolean"},
+                    "adapter": "veyra.runtime.filesystem.write",
                 },
-                "design_only",
+                "ready",
                 True,
-                "runtime_not_supported",
+                "supported",
                 ["filesystem", "approval"],
             ),
             (

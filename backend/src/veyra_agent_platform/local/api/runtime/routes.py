@@ -24,6 +24,11 @@ class RunRequest(BaseModel):
     inputs: dict[str, Any]
 
 
+class RunCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str
+
+
 class SetRuntimeApiProfileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -134,6 +139,21 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _runtime(request).run_detail(project_id, agent_id, run_id)
+        )
+
+    @router.post("/projects/{project_id}/agents/{agent_id}/runs/{run_id}/commands")
+    def command(
+        project_id: str,
+        agent_id: str,
+        run_id: str,
+        payload: RunCommandRequest,
+        request: Request,
+        idempotency_key: str = Header(),
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _runtime(request).command(
+                project_id, agent_id, run_id, payload.command, idempotency_key
+            )
         )
 
     return router

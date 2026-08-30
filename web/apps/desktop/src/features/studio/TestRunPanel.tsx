@@ -24,14 +24,14 @@ function initialInputs(source: AgentSource): Record<string, JsonValue> {
 
 function runTone(status: AgentRunResponse["status"]): "good" | "warn" | "bad" {
   if (status === "verified") return "good";
-  if (status === "failed" || status === "interrupted") return "bad";
+  if (status === "failed" || status === "interrupted" || status === "cancelled") return "bad";
   return "warn";
 }
 
 function runStatusLabel(status: AgentRunResponse["status"], locale: "zh" | "en"): string {
   const labels = locale === "zh"
-    ? { running: "运行中", verified: "已验证", unverified: "未验证", failed: "失败", interrupted: "已中断" }
-    : { running: "Running", verified: "Verified", unverified: "Unverified", failed: "Failed", interrupted: "Interrupted" };
+    ? { running: "运行中", waiting: "等待审批", verified: "已验证", unverified: "未验证", failed: "失败", interrupted: "已中断", cancelled: "已取消" }
+    : { running: "Running", waiting: "Waiting", verified: "Verified", unverified: "Unverified", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled" };
   return labels[status];
 }
 
@@ -103,6 +103,25 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
     }
   };
 
+  const sendCommand = async (command: "approve" | "reject" | "stop") => {
+    if (!run || !api.commandAgentRun || running) return;
+    setRunning(true);
+    setError("");
+    try {
+      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command });
+      const detailed = api.getAgentRun
+        ? await api.getAgentRun(projectId, agentId, updated.run_id)
+        : updated;
+      setRun(detailed);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "运行命令失败。" : "The run command failed."));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const approvalPrompt = [...(run?.events ?? [])].reverse().find((event) => event.kind === "approval.requested")?.payload.prompt;
+
   return (
     <Panel className="studio-run-panel">
       <SectionHeading
@@ -150,6 +169,14 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             </Button>
             {run ? <Button icon={RotateCcw} variant="ghost" onClick={() => { setRun(null); setError(""); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
+          {run?.status === "waiting" && api.commandAgentRun ? (
+            <div className="studio-run-actions">
+              {typeof approvalPrompt === "string" && approvalPrompt ? <p className="studio-run-note">{approvalPrompt}</p> : null}
+              <Button variant="primary" disabled={running} onClick={() => void sendCommand("approve")}>{zh ? "批准" : "Approve"}</Button>
+              <Button variant="ghost" disabled={running} onClick={() => void sendCommand("reject")}>{zh ? "拒绝" : "Reject"}</Button>
+              <Button variant="ghost" disabled={running} onClick={() => void sendCommand("stop")}>{zh ? "停止" : "Stop"}</Button>
+            </div>
+          ) : null}
           {disabled ? <p className="studio-run-note">{zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."}</p> : null}
           {!api.runAgent ? <p className="studio-run-note">{zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."}</p> : null}
           {api.runtimeStatus && !disabled ? <RuntimeKeyNote api={api} locale={locale} /> : null}

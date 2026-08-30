@@ -146,6 +146,36 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { name: "Ada" } });
   });
 
+  it("posts a durable run command with an idempotency key", async () => {
+    const run = {
+      schema_version: "1.0",
+      run_id: "run-1",
+      project_id: "project-1",
+      agent_id: "agent-1",
+      version_id: "version-1",
+      status: "unverified",
+      result: { written: true },
+      error: null,
+      created_at: "2026-08-28T10:00:00Z",
+      finished_at: "2026-08-28T10:00:02Z",
+    };
+    const fetcher = vi.fn().mockResolvedValueOnce(response(run));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.commandAgentRun(
+      "project-1",
+      "agent-1",
+      "run-1",
+      { command: "approve" },
+      { idempotencyKey: "019c0000-0000-7000-8000-000000000002" },
+    )).resolves.toMatchObject({ run_id: "run-1", status: "unverified" });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/agents/agent-1/runs/run-1/commands");
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "Idempotency-Key": "019c0000-0000-7000-8000-000000000002",
+    });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ command: "approve" });
+  });
+
   it("lists filtered Resource Catalog entries and reads an immutable detail", async () => {
     const resource = {
       schema_version: "1.0",

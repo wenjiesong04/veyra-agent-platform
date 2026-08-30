@@ -142,7 +142,7 @@
       ]
     },
     {
-      "availability": "design_only",
+      "availability": "ready",
       "description": "Platform-owned HumanApproval graph component.",
       "factory_selectable": true,
       "kind": "component",
@@ -155,7 +155,7 @@
         "tools": []
       },
       "resource_id": "veyra.component.humanapproval",
-      "runtime_status": "runtime_not_supported",
+      "runtime_status": "supported",
       "spec": {
         "fields": [
           "prompt"
@@ -261,7 +261,7 @@
       ]
     },
     {
-      "availability": "design_only",
+      "availability": "ready",
       "description": "Write inside a Project workspace. Approval is required by default.",
       "factory_selectable": true,
       "kind": "tool",
@@ -278,8 +278,9 @@
         ]
       },
       "resource_id": "veyra.tool.filesystem.write",
-      "runtime_status": "runtime_not_supported",
+      "runtime_status": "supported",
       "spec": {
+        "adapter": "veyra.runtime.filesystem.write",
         "approval_required": true,
         "input_schema": {
           "content": "string",

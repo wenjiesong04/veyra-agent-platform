@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0009_agent_hierarchy_runtime_profiles"
+HEAD_REVISION = "local_0010_runtime_control_plane"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

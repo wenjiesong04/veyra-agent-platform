@@ -303,6 +303,10 @@ export type StartAgentRunRequest = {
   inputs: Record<string, JsonValue>;
 };
 
+export type RunCommandRequest = {
+  command: "approve" | "reject" | "stop" | "resume" | "retry";
+};
+
 export type ComponentRuntimeStatus =
   | "supported"
   | "runtime_not_configured"
@@ -472,7 +476,7 @@ export type ApplyFactoryDraftResponse = {
   agent: CreatedAgentResponse;
 };
 
-export type RuntimeRunStatus = "running" | "verified" | "unverified" | "failed" | "interrupted";
+export type RuntimeRunStatus = "running" | "waiting" | "verified" | "unverified" | "failed" | "interrupted" | "cancelled";
 
 export type RuntimeEventKind =
   | "run.created"

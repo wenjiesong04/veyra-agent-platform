@@ -15,7 +15,7 @@ from .profiles import (
     RuntimeProfileStore,
 )
 from .service import RuntimeService
-from .tools import ToolExecution, ToolRuntime, ToolRuntimeError
+from .tools import ToolAuthorization, ToolExecution, ToolRuntime, ToolRuntimeError
 
 __all__ = [
     "RuntimeCompletion",
@@ -29,6 +29,7 @@ __all__ = [
     "RuntimeApiProfileInput",
     "RuntimeProfileError",
     "RuntimeProfileStore",
+    "ToolAuthorization",
     "ToolExecution",
     "ToolRuntime",
     "ToolRuntimeError",

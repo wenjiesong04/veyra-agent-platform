@@ -41,6 +41,7 @@ import {
   type SaveDraftResponse,
   type SelectDirectoryResponse,
   type StartAgentRunRequest,
+  type RunCommandRequest,
   type ResourceDescriptor,
   type ResourceAvailability,
   type ResourceKind,
@@ -120,6 +121,7 @@ export type LocalProjectApi = {
   generateFactoryBlueprint?(projectId: string, sessionId: string): Promise<FactorySession>;
   applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string }): Promise<ApplyFactoryDraftResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
+  commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
   getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
   selectDirectory(): Promise<SelectDirectoryResponse>;
@@ -726,7 +728,7 @@ function runtimeEvent(value: unknown, status = 502): NonNullable<AgentRunRespons
 function agentRun(value: unknown, status = 502): AgentRunResponse {
   const record = schemaRecord(value, status);
   const runStatus = asString(record.status, "run.status", status);
-  if (runStatus !== "running" && runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed" && runStatus !== "interrupted") {
+  if (runStatus !== "running" && runStatus !== "waiting" && runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed" && runStatus !== "interrupted" && runStatus !== "cancelled") {
     throw new LocalApiClientError("The local service returned an unknown run status.", { status, code: "invalid_response" });
   }
   const result = record.result === null ? null : asJsonValue(asRecord(record.result, status), "run.result", status) as JsonObject;
@@ -1102,6 +1104,25 @@ export class LocalApiClient {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}`,
       agentRun,
+    );
+  }
+
+  commandAgentRun(
+    projectId: string,
+    agentId: string,
+    runId: string,
+    input: RunCommandRequest,
+    options: { idempotencyKey?: string } = {},
+  ): Promise<AgentRunResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/commands`,
+      agentRun,
+      {
+        method: "POST",
+        body: input,
+        idempotencyKey: options.idempotencyKey,
+        requireIdempotencyKey: true,
+      },
     );
   }
 

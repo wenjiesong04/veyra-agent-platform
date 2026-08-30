@@ -146,60 +146,52 @@ def test_runtime_condition_verifier_and_unsupported_nodes(tmp_path: Path) -> Non
         assert response.json()["result"] == {"result": "ok"}
 
 
-def test_runtime_rejects_tool_and_approval(tmp_path: Path) -> None:
+def test_runtime_rejects_unregistered_tool(tmp_path: Path) -> None:
     settings = LocalSettings(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    for component_type, extra in (
-        ("Tool", {"uses": "demo.tool@1.0.0"}),
-        ("HumanApproval", {"prompt": "Approve?"}),
-    ):
-        node = {"id": "blocked", "component_type": component_type, **extra}
-        port = "next" if component_type == "Tool" else "approved"
-        source = _source(
-            [
-                {"id": "start", "component_type": "Start"},
-                node,
-                {"id": "output", "component_type": "Output", "output_name": "result"},
-            ],
-            [
-                {"from": "start", "port": "next", "to": "blocked"},
-                {"from": "blocked", "port": port, "to": "output"},
-            ]
-            + (
-                [{"from": "blocked", "port": "rejected", "to": "output"}]
-                if component_type == "HumanApproval"
-                else []
-            ),
-            {"issue": "string"},
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {
+                "id": "blocked",
+                "component_type": "Tool",
+                "uses": "demo.tool@1.0.0",
+            },
+            {"id": "output", "component_type": "Output", "output_name": "result"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "blocked"},
+            {"from": "blocked", "port": "next", "to": "output"},
+        ],
+        {"issue": "string"},
+    )
+    source["extensions"]["veyra"]["permissions"]["tools"] = ["demo.tool"]
+    source["lock"]["demo.tool@1.0.0"] = "b" * 64
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        response = client.post(
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
+            json={"inputs": {"issue": "one"}},
+            headers={"Idempotency-Key": new_uuid7()},
         )
-        if component_type == "Tool":
-            source["extensions"]["veyra"]["permissions"]["tools"] = ["demo.tool"]
-            source["lock"]["demo.tool@1.0.0"] = "b" * 64
-        with TestClient(create_app(settings)) as client:
-            project = client.post("/api/v1/projects", json={"agents": [source]}).json()
-            agent = project["agents"][0]
-            response = client.post(
-                f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-                json={"inputs": {"issue": "one"}},
-                headers={"Idempotency-Key": new_uuid7()},
-            )
-            assert response.json()["status"] == "failed"
-            assert response.json()["error"]["code"] == (
-                "tool_not_registered"
-                if component_type == "Tool"
-                else "runtime_not_supported"
-            )
-            detail = client.get(
-                f"/api/v1/projects/{project['project_id']}/agents/"
-                f"{agent['agent_id']}/runs/{response.json()['run_id']}"
-            ).json()
-            assert [event["kind"] for event in detail["events"]][-2:] == [
-                "node.failed",
-                "run.failed",
-            ]
-            assert all(RunEvent.from_dict(event) for event in detail["events"])
+        assert response.json()["status"] == "failed"
+        assert response.json()["error"]["code"] == "tool_not_registered"
+        detail = client.get(
+            f"/api/v1/projects/{project['project_id']}/agents/"
+            f"{agent['agent_id']}/runs/{response.json()['run_id']}"
+        ).json()
+        requested = next(
+            event for event in detail["events"] if event["kind"] == "tool.requested"
+        )
+        assert requested["payload"]["permission"] == "denied"
+        assert [event["kind"] for event in detail["events"]][-2:] == [
+            "node.failed",
+            "run.failed",
+        ]
+        assert all(RunEvent.from_dict(event) for event in detail["events"])
 
 
 def test_runtime_condition_and_output_failures_are_terminal(tmp_path: Path) -> None:
@@ -664,3 +656,190 @@ def test_filesystem_read_tool_rejects_project_escape(tmp_path: Path) -> None:
         )
         assert response.json()["status"] == "failed"
         assert response.json()["error"]["code"] == "tool_path_denied"
+
+
+def _write_source(client: TestClient) -> dict[str, object]:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {
+                "id": "approve",
+                "component_type": "HumanApproval",
+                "prompt": "Write {{path}}?",
+            },
+            {
+                "id": "write",
+                "component_type": "Tool",
+                "uses": "veyra.tool.filesystem.write@1.0.0",
+            },
+            {"id": "output", "component_type": "Output", "output_name": "written"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "approve"},
+            {"from": "approve", "port": "approved", "to": "write"},
+            {"from": "approve", "port": "rejected", "to": "output"},
+            {"from": "write", "port": "next", "to": "output"},
+        ],
+        {"path": "string", "content": "string"},
+    )
+    source["outputs"] = {"written": "boolean"}
+    source["extensions"]["veyra"]["permissions"] = {
+        "network_hosts": [],
+        "tools": ["veyra.tool.filesystem.write"],
+        "filesystem_read_roots": [],
+        "filesystem_write_roots": ["project"],
+        "shell_workspace_only": False,
+    }
+    write_hash = client.app.state.resource_catalog.detail(
+        "veyra.tool.filesystem.write", "1.0.0"
+    )["content_hash"]
+    source["lock"]["veyra.tool.filesystem.write@1.0.0"] = write_hash
+    return source
+
+
+def test_filesystem_write_pauses_for_approval_then_writes(
+    tmp_path: Path,
+) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        source = _write_source(client)
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        run_url = (
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        )
+        waiting = client.post(
+            run_url,
+            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert waiting["status"] == "waiting"
+        assert waiting["result"] is None
+        assert not Path(project["root_path"], "resources", "out.txt").exists()
+        detail = client.get(f"{run_url}s/{waiting['run_id']}").json()
+        kinds = [event["kind"] for event in detail["events"]]
+        assert "approval.requested" in kinds
+        assert "checkpoint.created" in kinds
+        completed = client.post(
+            f"{run_url}s/{waiting['run_id']}/commands",
+            json={"command": "approve"},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert completed["status"] == "unverified"
+        assert completed["result"] == {"written": True}
+        assert Path(project["root_path"], "resources", "out.txt").read_text(
+            encoding="utf-8"
+        ) == "saved"
+        events = client.get(f"{run_url}s/{waiting['run_id']}").json()["events"]
+        tool_kinds = [
+            event["kind"]
+            for event in events
+            if event["kind"].startswith("tool.")
+        ]
+        assert tool_kinds == ["tool.requested", "tool.started", "tool.completed"]
+        requested = next(event for event in events if event["kind"] == "tool.requested")
+        assert requested["payload"]["permission"] == "allowed"
+
+
+def test_filesystem_write_stop_and_reject_do_not_write(tmp_path: Path) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        source = _write_source(client)
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        run_url = (
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        )
+        waiting = client.post(
+            run_url,
+            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        resume = client.post(
+            f"{run_url}s/{waiting['run_id']}/commands",
+            json={"command": "resume"},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert resume.status_code == 422
+        assert resume.json()["code"] == "command_not_applicable"
+        stopped = client.post(
+            f"{run_url}s/{waiting['run_id']}/commands",
+            json={"command": "stop"},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert stopped["status"] == "cancelled"
+        assert not Path(project["root_path"], "resources", "out.txt").exists()
+        retried = client.post(
+            f"{run_url}s/{waiting['run_id']}/commands",
+            json={"command": "retry"},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert retried["status"] == "waiting"
+        assert retried["run_id"] != waiting["run_id"]
+
+        waiting = client.post(
+            run_url,
+            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        rejected = client.post(
+            f"{run_url}s/{waiting['run_id']}/commands",
+            json={"command": "reject"},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert rejected["status"] == "unverified"
+        assert rejected["result"] == {"written": False}
+        assert not Path(project["root_path"], "resources", "out.txt").exists()
+
+
+def test_filesystem_write_without_approval_is_denied(tmp_path: Path) -> None:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {
+                "id": "write",
+                "component_type": "Tool",
+                "uses": "veyra.tool.filesystem.write@1.0.0",
+            },
+            {"id": "output", "component_type": "Output", "output_name": "written"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "write"},
+            {"from": "write", "port": "next", "to": "output"},
+        ],
+        {"path": "string", "content": "string"},
+    )
+    source["outputs"] = {"written": "boolean"}
+    source["extensions"]["veyra"]["permissions"] = {
+        "network_hosts": [],
+        "tools": ["veyra.tool.filesystem.write"],
+        "filesystem_read_roots": [],
+        "filesystem_write_roots": ["project"],
+        "shell_workspace_only": False,
+    }
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        source["lock"]["veyra.tool.filesystem.write@1.0.0"] = (
+            client.app.state.resource_catalog.detail(
+                "veyra.tool.filesystem.write", "1.0.0"
+            )["content_hash"]
+        )
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        response = client.post(
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
+            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert response.json()["status"] == "failed"
+        assert response.json()["error"]["code"] == "approval_required"
+        assert not Path(project["root_path"], "resources", "out.txt").exists()

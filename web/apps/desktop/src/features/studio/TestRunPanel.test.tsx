@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResponse, AgentSource } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { TestRunPanel } from "./TestRunPanel";
@@ -49,6 +49,8 @@ const run: AgentRunResponse = {
   finished_at: "2026-08-28T10:00:01Z",
 };
 
+afterEach(() => cleanup());
+
 describe("TestRunPanel", () => {
   it("submits typed inputs and renders durable run evidence", async () => {
     const runAgent = vi.fn().mockResolvedValue(run);
@@ -80,5 +82,33 @@ describe("TestRunPanel", () => {
     expect(await screen.findByText("Run created")).toBeInTheDocument();
     expect(screen.getByText("run.created")).toBeInTheDocument();
     expect(screen.getByText(/Hello Ada/)).toBeInTheDocument();
+  });
+
+  it("sends approve when a run is waiting", async () => {
+    const waiting: AgentRunResponse = {
+      ...run,
+      status: "waiting",
+      result: null,
+      finished_at: null,
+      events: [{
+        schema_version: "1.0",
+        event_id: "event-2",
+        run_id: "run-1",
+        sequence: 4,
+        kind: "approval.requested",
+        node_id: "approve",
+        payload: { prompt: "Write notes.txt?" },
+        timestamp: "2026-08-28T10:00:02Z",
+      }],
+    };
+    const commandAgentRun = vi.fn().mockResolvedValue({ ...run, status: "unverified", result: { written: true } });
+    const getAgentRun = vi.fn().mockResolvedValue(waiting);
+    const api = { runAgent: vi.fn().mockResolvedValue(waiting), getAgentRun, commandAgentRun } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Test run" }));
+    expect(await screen.findByText("Write notes.txt?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve" }));
   });
 });

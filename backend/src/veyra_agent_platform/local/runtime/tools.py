@@ -5,15 +5,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
-_MAX_READ_BYTES = 1_000_000
+_MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
 _FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".token")
+_READ_ADAPTER = "veyra.runtime.filesystem.read"
+_WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 
 
 class ToolRuntimeError(RuntimeError):
@@ -22,6 +24,20 @@ class ToolRuntimeError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class ToolAuthorization:
+    """Permission decision recorded before any adapter effect."""
+
+    tool_reference: str
+    adapter: str | None
+    decision: Literal["allowed", "denied"]
+    code: str
+    reason: str
+    input_digest: str
+    approval_required: bool
+    resource: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -36,6 +52,82 @@ class ToolRuntime:
     def __init__(self, catalog: ResourceCatalog) -> None:
         self.catalog = catalog
 
+    def authorize(
+        self, *, source: AgentSource, node: FlowNode, values: dict[str, Any]
+    ) -> ToolAuthorization:
+        if node.uses is None:
+            return self._denied(
+                None,
+                "tool_reference_missing",
+                "Tool node has no uses reference",
+                values,
+            )
+        try:
+            resource_id, version = node.uses.rsplit("@", 1)
+            resource = self.catalog.detail(resource_id, version)
+        except (ValueError, ResourceCatalogError):
+            return self._denied(
+                node.uses,
+                "tool_not_registered",
+                "Tool reference is not registered in the catalog",
+                values,
+            )
+        if resource["kind"] not in {"tool", "mcp_tool"}:
+            return self._denied(
+                node.uses,
+                "tool_not_executable",
+                "Resource is not an executable Tool",
+                values,
+                resource,
+            )
+        if resource["availability"] != "ready":
+            return self._denied(
+                node.uses,
+                "tool_unavailable",
+                "Tool is not ready for local execution",
+                values,
+                resource,
+            )
+        if resource["runtime_status"] != "supported":
+            return self._denied(
+                node.uses,
+                "tool_runtime_unavailable",
+                "Tool has no local Runtime adapter",
+                values,
+                resource,
+            )
+        if source.lock.get(node.uses) != resource["content_hash"]:
+            return self._denied(
+                node.uses,
+                "tool_lock_invalid",
+                "Tool lock does not match the catalog version",
+                values,
+                resource,
+            )
+        try:
+            self._authorize(source, resource)
+        except ToolRuntimeError as exc:
+            return self._denied(node.uses, exc.code, str(exc), values, resource)
+        adapter = resource.get("spec", {}).get("adapter")
+        if adapter not in {_READ_ADAPTER, _WRITE_ADAPTER}:
+            return self._denied(
+                node.uses,
+                "tool_runtime_unavailable",
+                "Tool adapter is not installed",
+                values,
+                resource,
+            )
+        return ToolAuthorization(
+            tool_reference=node.uses,
+            adapter=str(adapter),
+            decision="allowed",
+            code="allowed",
+            reason="catalog permission subset matched",
+            input_digest=_input_digest(resource, values),
+            approval_required=bool(resource.get("spec", {}).get("approval_required")),
+            resource=resource,
+        )
+
     def execute(
         self,
         *,
@@ -43,54 +135,67 @@ class ToolRuntime:
         source: AgentSource,
         node: FlowNode,
         values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
     ) -> ToolExecution:
-        if node.uses is None:
-            raise ToolRuntimeError(
-                "tool_reference_missing", "Tool node has no uses reference"
-            )
-        try:
-            resource_id, version = node.uses.rsplit("@", 1)
-            resource = self.catalog.detail(resource_id, version)
-        except (ValueError, ResourceCatalogError) as exc:
-            raise ToolRuntimeError(
-                "tool_not_registered", "Tool reference is not registered in the catalog"
-            ) from exc
-        if resource["kind"] not in {"tool", "mcp_tool"}:
-            raise ToolRuntimeError(
-                "tool_not_executable", "Resource is not an executable Tool"
-            )
-        if resource["availability"] != "ready":
-            raise ToolRuntimeError(
-                "tool_unavailable", "Tool is not ready for local execution"
-            )
-        if resource["runtime_status"] != "supported":
-            raise ToolRuntimeError(
-                "tool_runtime_unavailable", "Tool has no local Runtime adapter"
-            )
-        if source.lock.get(node.uses) != resource["content_hash"]:
+        if authorization.decision != "allowed" or authorization.resource is None:
+            raise ToolRuntimeError(authorization.code, authorization.reason)
+        if node.uses is None or source.lock.get(
+            node.uses
+        ) != authorization.resource.get("content_hash"):
             raise ToolRuntimeError(
                 "tool_lock_invalid", "Tool lock does not match the catalog version"
             )
-        self._authorize(source, resource)
-        adapter = resource.get("spec", {}).get("adapter")
-        input_digest = sha256_digest({"path": values.get("path")})
-        if adapter != "veyra.runtime.filesystem.read":
+        if authorization.approval_required and not approved:
+            raise ToolRuntimeError(
+                "approval_required",
+                "This Tool requires an approved HumanApproval on the current path",
+            )
+        adapter = authorization.adapter
+        if adapter == _READ_ADAPTER:
+            output, byte_length, relative_path = self._read_project_file(
+                project_root, values.get("path")
+            )
+        elif adapter == _WRITE_ADAPTER:
+            output, byte_length, relative_path = self._write_project_file(
+                project_root, values.get("path"), values.get("content")
+            )
+        else:
             raise ToolRuntimeError(
                 "tool_runtime_unavailable", "Tool adapter is not installed"
             )
-        output, byte_length, relative_path = self._read_project_file(
-            project_root, values.get("path")
-        )
         receipt = {
-            "tool_reference": node.uses,
+            "tool_reference": authorization.tool_reference,
             "adapter": adapter,
             "permission": "allowed",
-            "input_digest": input_digest,
+            "authorization": "allowed",
+            "input_digest": authorization.input_digest,
             "output_digest": sha256_digest(output),
             "byte_length": byte_length,
             "relative_path": relative_path,
         }
         return ToolExecution(output=output, receipt=receipt)
+
+    @staticmethod
+    def _denied(
+        reference: str | None,
+        code: str,
+        reason: str,
+        values: dict[str, Any],
+        resource: dict[str, Any] | None = None,
+    ) -> ToolAuthorization:
+        return ToolAuthorization(
+            tool_reference=reference or "",
+            adapter=(resource or {}).get("spec", {}).get("adapter"),
+            decision="denied",
+            code=code,
+            reason=reason,
+            input_digest=_input_digest(resource, values),
+            approval_required=bool(
+                (resource or {}).get("spec", {}).get("approval_required")
+            ),
+            resource=resource,
+        )
 
     @staticmethod
     def _authorize(source: AgentSource, resource: dict[str, Any]) -> None:
@@ -128,13 +233,70 @@ class ToolRuntime:
                 "Agent permissions do not include required shell scope",
             )
 
-    @staticmethod
+    @classmethod
     def _read_project_file(
-        project_root: Path, raw_path: Any
+        cls, project_root: Path, raw_path: Any
     ) -> tuple[dict[str, str], int, str]:
+        target, relative_path = cls._project_target(
+            project_root, raw_path, create_parents=False
+        )
+        if not target.is_file():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Tool path is not a regular file"
+            )
+        try:
+            content = target.read_bytes()
+        except OSError as exc:
+            raise ToolRuntimeError(
+                "tool_failed", "Tool could not read the Project file"
+            ) from exc
+        if len(content) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
+            )
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ToolRuntimeError(
+                "tool_output_invalid", "Tool file is not UTF-8 text"
+            ) from exc
+        return {"content": text}, len(content), relative_path
+
+    @classmethod
+    def _write_project_file(
+        cls, project_root: Path, raw_path: Any, raw_content: Any
+    ) -> tuple[dict[str, bool], int, str]:
+        if not isinstance(raw_content, str):
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Filesystem Write requires UTF-8 text content"
+            )
+        encoded = raw_content.encode("utf-8")
+        if len(encoded) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
+            )
+        target, relative_path = cls._project_target(
+            project_root, raw_path, create_parents=True
+        )
+        if target.exists() and not target.is_file():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Tool path is not a regular file"
+            )
+        try:
+            target.write_bytes(encoded)
+        except OSError as exc:
+            raise ToolRuntimeError(
+                "tool_failed", "Tool could not write the Project file"
+            ) from exc
+        return {"written": True}, len(encoded), relative_path
+
+    @staticmethod
+    def _project_target(
+        project_root: Path, raw_path: Any, *, create_parents: bool
+    ) -> tuple[Path, str]:
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ToolRuntimeError(
-                "tool_input_invalid", "Filesystem Read requires a relative path"
+                "tool_input_invalid", "Filesystem tool requires a relative path"
             )
         if "\x00" in raw_path or os.path.isabs(raw_path):
             raise ToolRuntimeError(
@@ -154,7 +316,7 @@ class ToolRuntime:
             for part in portable.parts
         ):
             raise ToolRuntimeError(
-                "tool_path_denied", "Tool cannot read secret material"
+                "tool_path_denied", "Tool cannot access secret material"
             )
         root = project_root.expanduser().absolute()
         if root.is_symlink() or not root.is_dir():
@@ -162,37 +324,40 @@ class ToolRuntime:
                 "project_unavailable", "Project directory is unavailable"
             )
         current = root
-        for part in portable.parts:
+        parents = portable.parts[:-1]
+        for part in parents:
             current = current / part
             if current.is_symlink():
                 raise ToolRuntimeError(
                     "tool_path_denied", "Tool cannot follow Project symlinks"
                 )
-        target = current
+            if current.exists() and not current.is_dir():
+                raise ToolRuntimeError(
+                    "tool_path_denied", "Tool path parent is not a directory"
+                )
+            if create_parents and not current.exists():
+                current.mkdir(parents=False, exist_ok=True)
+        target = current / portable.name
+        if target.is_symlink():
+            raise ToolRuntimeError(
+                "tool_path_denied", "Tool cannot follow Project symlinks"
+            )
         try:
             target.relative_to(root)
         except ValueError as exc:
             raise ToolRuntimeError(
                 "tool_path_denied", "Tool path is outside the Project directory"
             ) from exc
-        if not target.is_file():
-            raise ToolRuntimeError(
-                "tool_input_invalid", "Tool path is not a regular file"
-            )
-        try:
-            content = target.read_bytes()
-        except OSError as exc:
-            raise ToolRuntimeError(
-                "tool_failed", "Tool could not read the Project file"
-            ) from exc
-        if len(content) > _MAX_READ_BYTES:
-            raise ToolRuntimeError(
-                "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
-            )
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ToolRuntimeError(
-                "tool_output_invalid", "Tool file is not UTF-8 text"
-            ) from exc
-        return {"content": text}, len(content), relative_path
+        return target, relative_path
+
+
+def _input_digest(resource: dict[str, Any] | None, values: dict[str, Any]) -> str:
+    schema = (resource or {}).get("spec", {}).get("input_schema") or {"path": "string"}
+    material: dict[str, Any] = {}
+    for name in schema:
+        value = values.get(name)
+        if name == "content" and isinstance(value, str):
+            material[name] = sha256_digest(value)
+        else:
+            material[name] = value
+    return sha256_digest(material)

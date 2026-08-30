@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,36 @@ class RuntimeError(ProjectError):
         super().__init__(message)
         self.code = code
         self.events: list[tuple[str | None, str, dict[str, Any]]] = []
+        self.tool_calls: tuple[_ToolCallRecord, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ToolCallRecord:
+    node_id: str
+    tool_reference: str
+    authorization: str
+    decision_code: str
+    decision_reason: str
+    input_digest: str
+    receipt: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _ExecutionPause:
+    node_id: str
+    prompt: str
+    values: dict[str, Any]
+    events: list[tuple[str | None, str, dict[str, Any]]]
+    tool_calls: tuple[_ToolCallRecord, ...]
+
+
+@dataclass(frozen=True)
+class _ExecutionOutcome:
+    events: list[tuple[str | None, str, dict[str, Any]]]
+    tool_calls: tuple[_ToolCallRecord, ...]
+    result: dict[str, Any] | None
+    verified: bool
+    pause: _ExecutionPause | None
 
 
 class RuntimeService:
@@ -138,6 +169,7 @@ class RuntimeService:
                 agent_id=agent_id,
                 version_id=version_id,
                 created_at=_now(),
+                inputs=inputs,
             )
             self.repository.add_run_events(
                 connection,
@@ -156,63 +188,75 @@ class RuntimeService:
                 ),
             )
         try:
-            result, events, verified = self._execute(
+            outcome = self._execute(
                 project_id,
                 source,
                 inputs,
                 self._model_for(project_id, agent_id),
             )
-            with self.repository.transaction() as connection:
-                self.repository.add_run_events(connection, run_id, events)
-                final_status = "verified" if verified else "unverified"
-                self.repository.add_run_events(
-                    connection,
-                    run_id,
-                    [(None, "run.completed", {"state": final_status})],
-                )
-                self.repository.finish_run(
-                    connection,
-                    run_id,
-                    status=final_status,
-                    result=result,
-                    code=None,
-                    message=None,
-                    finished_at=_now(),
-                )
-                response = self._row_payload(
-                    connection.execute(
-                        "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
-                    ).fetchone()
-                )
-                self.repository.replace_idempotent_response(
-                    connection, scope, idempotency_key, digest, response
-                )
-                return response
+            return self._commit_outcome(
+                run_id,
+                outcome,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
         except RuntimeError as exc:
-            with self.repository.transaction() as connection:
-                self.repository.add_run_events(
-                    connection,
-                    run_id,
-                    exc.events + [(None, "run.failed", {"code": exc.code})],
-                )
-                self.repository.finish_run(
-                    connection,
-                    run_id,
-                    status="failed",
-                    result=None,
-                    code=exc.code,
-                    message=str(exc),
-                    finished_at=_now(),
-                )
-                response = self._row_payload(
-                    connection.execute(
-                        "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
-                    ).fetchone()
-                )
-                self.repository.replace_idempotent_response(
-                    connection, scope, idempotency_key, digest, response
-                )
-                return response
+            return self._fail_run(
+                run_id,
+                exc,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+
+    def command(
+        self,
+        project_id: str,
+        agent_id: str,
+        run_id: str,
+        command: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        IdempotencyKey(SCHEMA_VERSION, idempotency_key)
+        self.library._agent_in_project(project_id, agent_id)
+        row = self.repository.run(run_id)
+        if (
+            row is None
+            or row["agent_id"] != agent_id
+            or row["project_id"] != project_id
+        ):
+            raise ProjectError("unknown Agent run")
+        if command not in {"approve", "reject", "stop", "resume", "retry"}:
+            raise RuntimeError("command_invalid", "Unsupported run command")
+        scope = f"run-command:{run_id}"
+        digest = sha256_digest({"command": command})
+        with self.repository.transaction() as connection:
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
+        if command == "retry":
+            return self._retry_run(
+                row, scope=scope, idempotency_key=idempotency_key, digest=digest
+            )
+        if command == "stop":
+            return self._stop_run(
+                row, scope=scope, idempotency_key=idempotency_key, digest=digest
+            )
+        if command == "resume":
+            raise RuntimeError(
+                "command_not_applicable",
+                "Approval waits must be approved or rejected",
+            )
+        return self._resolve_approval(
+            row,
+            decision="approved" if command == "approve" else "rejected",
+            scope=scope,
+            idempotency_key=idempotency_key,
+            digest=digest,
+        )
 
     def runs(self, project_id: str, agent_id: str) -> dict[str, Any]:
         self.library._agent_in_project(project_id, agent_id)
@@ -233,6 +277,375 @@ class RuntimeService:
         payload = self._row_payload(row)
         payload["events"] = self.repository.run_events(run_id)
         return payload
+
+    def _commit_outcome(
+        self,
+        run_id: str,
+        outcome: _ExecutionOutcome,
+        *,
+        scope: str | None,
+        idempotency_key: str | None,
+        digest: str | None,
+        extra_events: list[tuple[str | None, str, dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        events = list(extra_events or []) + outcome.events
+        if outcome.pause is not None:
+            return self._pause_run(
+                run_id,
+                _ExecutionPause(
+                    node_id=outcome.pause.node_id,
+                    prompt=outcome.pause.prompt,
+                    values=outcome.pause.values,
+                    events=events,
+                    tool_calls=outcome.pause.tool_calls,
+                ),
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+        with self.repository.transaction() as connection:
+            self.repository.add_run_events(connection, run_id, events)
+            self._store_tool_calls(connection, run_id, outcome.tool_calls)
+            final_status = "verified" if outcome.verified else "unverified"
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [(None, "run.completed", {"state": final_status})],
+            )
+            self.repository.finish_run(
+                connection,
+                run_id,
+                status=final_status,
+                result=outcome.result,
+                code=None,
+                message=None,
+                finished_at=_now(),
+            )
+            return self._stored_run_response(
+                connection,
+                run_id,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+
+    def _fail_run(
+        self,
+        run_id: str,
+        exc: RuntimeError,
+        *,
+        scope: str | None,
+        idempotency_key: str | None,
+        digest: str | None,
+    ) -> dict[str, Any]:
+        with self.repository.transaction() as connection:
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                exc.events + [(None, "run.failed", {"code": exc.code})],
+            )
+            self._store_tool_calls(connection, run_id, exc.tool_calls)
+            self.repository.finish_run(
+                connection,
+                run_id,
+                status="failed",
+                result=None,
+                code=exc.code,
+                message=str(exc),
+                finished_at=_now(),
+            )
+            return self._stored_run_response(
+                connection,
+                run_id,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+
+    def _pause_run(
+        self,
+        run_id: str,
+        pause: _ExecutionPause,
+        *,
+        scope: str | None,
+        idempotency_key: str | None,
+        digest: str | None,
+    ) -> dict[str, Any]:
+        now = _now()
+        with self.repository.transaction() as connection:
+            self.repository.add_run_events(connection, run_id, pause.events)
+            self._store_tool_calls(connection, run_id, pause.tool_calls)
+            self.repository.insert_approval_request(
+                connection,
+                approval_id=new_uuid7(),
+                run_id=run_id,
+                node_id=pause.node_id,
+                prompt=pause.prompt,
+                created_at=now,
+            )
+            self.repository.insert_checkpoint(
+                connection,
+                checkpoint_id=new_uuid7(),
+                run_id=run_id,
+                node_id=pause.node_id,
+                waiting_kind="approval",
+                values=pause.values,
+                created_at=now,
+            )
+            self.repository.set_run_status(connection, run_id, status="waiting")
+            return self._stored_run_response(
+                connection,
+                run_id,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+
+    def _stored_run_response(
+        self,
+        connection: Any,
+        run_id: str,
+        *,
+        scope: str | None,
+        idempotency_key: str | None,
+        digest: str | None,
+    ) -> dict[str, Any]:
+        response = self._row_payload(
+            connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        )
+        if scope and idempotency_key and digest:
+            self.repository.replace_idempotent_response(
+                connection, scope, idempotency_key, digest, response
+            )
+        self.repository.replace_run_idempotent_payload(connection, run_id, response)
+        return response
+
+    def _store_tool_calls(
+        self,
+        connection: Any,
+        run_id: str,
+        records: tuple[_ToolCallRecord, ...],
+    ) -> None:
+        now = _now()
+        for record in records:
+            self.repository.insert_tool_call(
+                connection,
+                run_id=run_id,
+                node_id=record.node_id,
+                tool_reference=record.tool_reference,
+                authorization=record.authorization,
+                decision_code=record.decision_code,
+                decision_reason=record.decision_reason,
+                input_digest=record.input_digest,
+                receipt=record.receipt,
+                created_at=now,
+            )
+
+    def _retry_run(
+        self,
+        row: Any,
+        *,
+        scope: str,
+        idempotency_key: str,
+        digest: str,
+    ) -> dict[str, Any]:
+        if row["status"] not in {"failed", "interrupted", "cancelled"}:
+            raise RuntimeError(
+                "command_not_applicable",
+                "Retry is only available for terminal unsuccessful runs",
+            )
+        inputs = self.repository.run_inputs(row["run_id"])
+        now = _now()
+        command_id = new_uuid7()
+        with self.repository.transaction() as connection:
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, self._row_payload(row)
+            )
+            self.repository.insert_run_command(
+                connection,
+                command_id=command_id,
+                run_id=row["run_id"],
+                command_type="retry",
+                payload={},
+                status="accepted",
+                created_at=now,
+            )
+        child = self.run(row["project_id"], row["agent_id"], inputs, new_uuid7())
+        with self.repository.transaction() as connection:
+            self.repository.mark_command_applied(
+                connection, command_id, applied_at=_now()
+            )
+            response = dict(child)
+            self.repository.replace_idempotent_response(
+                connection, scope, idempotency_key, digest, response
+            )
+        return response
+
+    def _stop_run(
+        self,
+        row: Any,
+        *,
+        scope: str,
+        idempotency_key: str,
+        digest: str,
+    ) -> dict[str, Any]:
+        if row["status"] not in {"waiting", "running"}:
+            raise RuntimeError(
+                "command_not_applicable", "Stop is only available for active runs"
+            )
+        now = _now()
+        command_id = new_uuid7()
+        with self.repository.transaction() as connection:
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, self._row_payload(row)
+            )
+            self.repository.insert_run_command(
+                connection,
+                command_id=command_id,
+                run_id=row["run_id"],
+                command_type="stop",
+                payload={},
+                status="applied",
+                created_at=now,
+                applied_at=now,
+            )
+            self.repository.cancel_pending_approvals(
+                connection, row["run_id"], resolved_at=now
+            )
+            self.repository.add_run_events(
+                connection, row["run_id"], [(None, "run.cancelled", {})]
+            )
+            self.repository.finish_run(
+                connection,
+                row["run_id"],
+                status="cancelled",
+                result=None,
+                code="run_cancelled",
+                message="run stopped by command",
+                finished_at=now,
+            )
+            self.repository.mark_command_applied(connection, command_id, applied_at=now)
+            return self._stored_run_response(
+                connection,
+                row["run_id"],
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+
+    def _resolve_approval(
+        self,
+        row: Any,
+        *,
+        decision: str,
+        scope: str,
+        idempotency_key: str,
+        digest: str,
+    ) -> dict[str, Any]:
+        if row["status"] != "waiting":
+            raise RuntimeError(
+                "command_not_applicable", "This run is not waiting for approval"
+            )
+        now = _now()
+        command_id = new_uuid7()
+        with self.repository.transaction() as connection:
+            pending = self.repository.pending_approval(connection, row["run_id"])
+            checkpoint = self.repository.latest_checkpoint(connection, row["run_id"])
+            if pending is None or checkpoint is None:
+                raise RuntimeError(
+                    "command_not_applicable", "No pending approval checkpoint"
+                )
+            version = connection.execute(
+                "SELECT source_json FROM agent_versions WHERE version_id = ?",
+                (row["version_id"],),
+            ).fetchone()
+            if version is None:
+                raise RuntimeError("version_missing", "Agent version is unavailable")
+            source = AgentSource.from_dict(json.loads(version["source_json"]))
+            values = json.loads(checkpoint["values_json"])
+            if (
+                decision == "rejected"
+                and source.outputs.get("written") == "boolean"
+                and "written" not in values
+            ):
+                values["written"] = False
+            next_node = next(
+                (
+                    edge.to_node
+                    for edge in source.transitions
+                    if edge.from_node == pending["node_id"]
+                    and edge.port.value == decision
+                ),
+                "",
+            )
+            if not next_node:
+                raise RuntimeError(
+                    "transition_missing",
+                    f"node {pending['node_id']} did not select a valid transition",
+                )
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, self._row_payload(row)
+            )
+            self.repository.insert_run_command(
+                connection,
+                command_id=command_id,
+                run_id=row["run_id"],
+                command_type="approve" if decision == "approved" else "reject",
+                payload={"decision": decision},
+                status="accepted",
+                created_at=now,
+            )
+            self.repository.resolve_approval(
+                connection,
+                pending["approval_id"],
+                status=decision,
+                command_id=command_id,
+                resolved_at=now,
+            )
+            self.repository.set_run_status(connection, row["run_id"], status="running")
+            self.repository.add_run_events(
+                connection,
+                row["run_id"],
+                [
+                    (
+                        pending["node_id"],
+                        "approval.resolved",
+                        {"decision": decision},
+                    ),
+                    (
+                        pending["node_id"],
+                        "node.completed",
+                        {"port": decision},
+                    ),
+                ],
+            )
+            self.repository.mark_command_applied(connection, command_id, applied_at=now)
+        try:
+            outcome = self._execute(
+                row["project_id"],
+                source,
+                values,
+                self._model_for(row["project_id"], row["agent_id"]),
+                start_node=next_node,
+                approved=decision == "approved",
+            )
+            return self._commit_outcome(
+                row["run_id"],
+                outcome,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
+        except RuntimeError as exc:
+            return self._fail_run(
+                row["run_id"],
+                exc,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            )
 
     def _run_response(self, run_id: str) -> dict[str, Any]:
         row = self.repository.run(run_id)
@@ -287,13 +700,16 @@ class RuntimeService:
         source: AgentSource,
         inputs: dict[str, Any],
         model: RuntimeModelClient,
-    ) -> tuple[dict[str, Any], list[tuple[str | None, str, dict[str, Any]]], bool]:
+        *,
+        start_node: str | None = None,
+        approved: bool = False,
+    ) -> _ExecutionOutcome:
         nodes = {node.id: node for node in source.nodes}
         edges = {
             (edge.from_node, edge.port.value): edge.to_node
             for edge in source.transitions
         }
-        current = next(
+        current = start_node or next(
             node.id
             for node in source.nodes
             if node.component_type is ComponentType.START
@@ -302,6 +718,7 @@ class RuntimeService:
         result: dict[str, Any] = {}
         verifier_passed = False
         events: list[tuple[str | None, str, dict[str, Any]]] = []
+        tool_calls: list[_ToolCallRecord] = []
         for _ in range(len(nodes) + 1):
             node = nodes[current]
             events.append(
@@ -336,47 +753,107 @@ class RuntimeService:
                     project = self.repository.project(project_id)
                     if project is None:
                         raise RuntimeError("project_invalid", "Project is unavailable")
+                    authorization = self.tools.authorize(
+                        source=source, node=node, values=values
+                    )
+                    events.append(
+                        (
+                            node.id,
+                            "tool.requested",
+                            {
+                                "tool_reference": authorization.tool_reference,
+                                "input_digest": authorization.input_digest,
+                                "permission": authorization.decision,
+                                "code": authorization.code,
+                            },
+                        )
+                    )
+                    record = _ToolCallRecord(
+                        node_id=node.id,
+                        tool_reference=authorization.tool_reference,
+                        authorization=authorization.decision,
+                        decision_code=authorization.code,
+                        decision_reason=authorization.reason,
+                        input_digest=authorization.input_digest,
+                        receipt=None,
+                    )
+                    tool_calls.append(record)
+                    if authorization.decision != "allowed":
+                        raise RuntimeError(authorization.code, authorization.reason)
                     execution = self.tools.execute(
                         project_root=Path(project["root_path"]),
                         source=source,
                         node=node,
                         values=values,
+                        authorization=authorization,
+                        approved=approved,
                     )
-                    values.update(execution.output)
                     events.extend(
                         [
                             (
                                 node.id,
-                                "tool.requested",
-                                {
-                                    "tool_reference": node.uses,
-                                    "input_digest": execution.receipt["input_digest"],
-                                },
-                            ),
-                            (
-                                node.id,
                                 "tool.started",
-                                {"tool_reference": node.uses},
+                                {"tool_reference": authorization.tool_reference},
                             ),
                             (node.id, "tool.completed", execution.receipt),
                         ]
                     )
+                    tool_calls[-1] = _ToolCallRecord(
+                        node_id=record.node_id,
+                        tool_reference=record.tool_reference,
+                        authorization=record.authorization,
+                        decision_code=record.decision_code,
+                        decision_reason=record.decision_reason,
+                        input_digest=record.input_digest,
+                        receipt=execution.receipt,
+                    )
+                    values.update(execution.output)
                     port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
                     result = self._validated_outputs(source, values)
                     events.append((node.id, "node.completed", {}))
-                    return result, events, verifier_passed
+                    return _ExecutionOutcome(
+                        events=events,
+                        tool_calls=tuple(tool_calls),
+                        result=result,
+                        verified=verifier_passed,
+                        pause=None,
+                    )
                 elif node.component_type is ComponentType.AGENT:
                     values.update(self._run_agent(node, source, values, model))
                     port = "next"
-                elif node.component_type in {
-                    ComponentType.HUMAN_APPROVAL,
-                }:
-                    raise RuntimeError(
-                        "runtime_not_supported",
-                        f"{node.component_type.value} is not supported by "
-                        "this local Runtime",
+                elif node.component_type is ComponentType.HUMAN_APPROVAL:
+                    prompt = node.prompt or ""
+                    if "{{" in prompt:
+                        prompt = _interpolate(prompt, values)
+                    events.extend(
+                        [
+                            (node.id, "node.waiting", {"reason": "approval"}),
+                            (
+                                node.id,
+                                "approval.requested",
+                                {"prompt": prompt},
+                            ),
+                            (
+                                node.id,
+                                "checkpoint.created",
+                                {"waiting_kind": "approval"},
+                            ),
+                        ]
+                    )
+                    return _ExecutionOutcome(
+                        events=events,
+                        tool_calls=tuple(tool_calls),
+                        result=None,
+                        verified=False,
+                        pause=_ExecutionPause(
+                            node_id=node.id,
+                            prompt=prompt,
+                            values=values,
+                            events=events,
+                            tool_calls=tuple(tool_calls),
+                        ),
                     )
                 else:
                     raise RuntimeError(
@@ -388,10 +865,12 @@ class RuntimeService:
                 runtime_error = RuntimeError(exc.code, str(exc))
                 events.append((node.id, "node.failed", {"code": runtime_error.code}))
                 runtime_error.events = events
+                runtime_error.tool_calls = tuple(tool_calls)
                 raise runtime_error from exc
             except RuntimeError as exc:
                 events.append((node.id, "node.failed", {"code": exc.code}))
                 exc.events = events
+                exc.tool_calls = tuple(tool_calls)
                 raise
             except Exception:
                 runtime_error = RuntimeError(
@@ -399,6 +878,7 @@ class RuntimeService:
                 )
                 events.append((node.id, "node.failed", {"code": runtime_error.code}))
                 runtime_error.events = events
+                runtime_error.tool_calls = tuple(tool_calls)
                 raise runtime_error from None
             events.append((node.id, "node.completed", {"port": port}))
             current = edges.get((node.id, port), "")

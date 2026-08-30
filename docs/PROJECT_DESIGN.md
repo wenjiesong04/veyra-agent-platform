@@ -554,8 +554,8 @@ Later:
 
 Initial tools:
 
-- filesystem.read
-- filesystem.write, approval by default
+- filesystem.read — current Runtime adapter, Project workspace only
+- filesystem.write — current Runtime adapter, HumanApproval by default, Project workspace only
 - shell.exec, approval and workspace scope by default
 - http.request, host allowlist
 - github.read
@@ -923,6 +923,12 @@ process loss → interrupted
 ```
 
 Terminal runs never return to running. Resume creates a child run referencing an explicit checkpoint.
+
+Current local slice: a run may become `waiting` at `HumanApproval`, persist an
+approval request plus checkpoint, and continue on the **same run** through
+`approve` or `reject`. `stop` cancels the run. `retry` starts a new run from
+stored inputs. `resume` is not used for approval waits. SSE and Run Canvas
+remain later.
 
 ### 8.2 Runtime guarantees
 
