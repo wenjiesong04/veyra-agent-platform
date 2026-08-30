@@ -3,6 +3,8 @@ import { Play, RotateCcw } from "lucide-react";
 import type { AgentRunResponse, AgentSource, JsonValue } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
+import { nodeRunStates, useLiveRun, type NodeRunState } from "./live-run";
+import { RunApprovalBar } from "./RunApprovalBar";
 
 type TestRunPanelProps = {
   api: LocalProjectApi;
@@ -46,22 +48,6 @@ function eventLabel(kind: NonNullable<AgentRunResponse["events"]>[number]["kind"
   return label ? label[locale === "zh" ? 0 : 1] : kind;
 }
 
-type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
-
-function nodeRunStates(source: AgentSource, events: NonNullable<AgentRunResponse["events"]>): { id: string; state: NodeRunState }[] {
-  return source.nodes.map((node) => {
-    let state: NodeRunState = "pending";
-    for (const event of events) {
-      if (event.node_id !== node.id) continue;
-      if (event.kind === "node.failed") state = "failed";
-      else if (event.kind === "node.waiting") state = "waiting";
-      else if (event.kind === "node.completed") state = "completed";
-      else if (event.kind === "node.started" && state === "pending") state = "running";
-    }
-    return { id: node.id, state };
-  });
-}
-
 function nodeStateLabel(state: NodeRunState, locale: "zh" | "en"): string {
   const labels = locale === "zh"
     ? { pending: "未开始", running: "运行中", waiting: "等待", completed: "完成", failed: "失败" }
@@ -97,83 +83,18 @@ function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: "zh" | 
 }
 
 export function TestRunPanel({ api, projectId, agentId, source, disabled, locale }: TestRunPanelProps) {
+  const live = useLiveRun({ api, projectId, agentId, locale });
   const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialInputs(source));
-  const [run, setRun] = React.useState<AgentRunResponse | null>(null);
-  const [running, setRunning] = React.useState(false);
-  const [error, setError] = React.useState("");
   const zh = locale === "zh";
+  const run = live.run;
+  const inFlight = live.busy || run?.status === "running" || run?.status === "waiting";
 
   React.useEffect(() => {
     setInputs(initialInputs(source));
-    setRun(null);
-    setError("");
-  }, [source.agent_id, source.inputs]);
+    live.clear();
+  }, [source.agent_id, source.inputs, live.clear]);
 
-  const start = async () => {
-    if (!api.runAgent || disabled || running) return;
-    setRunning(true);
-    setError("");
-    try {
-      const started = await api.runAgent(projectId, agentId, { inputs });
-      const detailed = api.getAgentRun
-        ? await api.getAgentRun(projectId, agentId, started.run_id)
-        : started;
-      setRun(detailed);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "测试运行失败。" : "Test run failed."));
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const sendCommand = async (command: "approve" | "reject" | "stop") => {
-    if (!run || !api.commandAgentRun || running) return;
-    setRunning(true);
-    setError("");
-    try {
-      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command });
-      const detailed = api.getAgentRun
-        ? await api.getAgentRun(projectId, agentId, updated.run_id)
-        : updated;
-      setRun(detailed);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "运行命令失败。" : "The run command failed."));
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const approvalPrompt = [...(run?.events ?? [])].reverse().find((event) => event.kind === "approval.requested")?.payload.prompt;
   const nodes = nodeRunStates(source, run?.events ?? []);
-
-  React.useEffect(() => {
-    if (!run?.run_id || !api.watchAgentRunEvents) return;
-    const after = run.events?.at(-1)?.sequence ?? 0;
-    return api.watchAgentRunEvents(
-      projectId,
-      agentId,
-      run.run_id,
-      {
-        onEvent: (event) => {
-          setRun((current) => {
-            if (!current || current.run_id !== event.run_id) return current;
-            const events = [...(current.events ?? [])];
-            if (events.some((item) => item.event_id === event.event_id || item.sequence === event.sequence)) {
-              return current;
-            }
-            events.push(event);
-            events.sort((left, right) => left.sequence - right.sequence);
-            return { ...current, events };
-          });
-        },
-        onDone: () => {
-          if (!api.getAgentRun || !run.run_id) return;
-          void api.getAgentRun(projectId, agentId, run.run_id).then(setRun);
-        },
-      },
-      { after },
-    );
-  }, [api, projectId, agentId, run?.run_id]);
 
   return (
     <Panel className="studio-run-panel">
@@ -217,25 +138,18 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
           ))}
           {!Object.keys(source.inputs).length ? <p>{zh ? "此 Agent 不需要输入。" : "This Agent has no inputs."}</p> : null}
           <div className="studio-run-actions">
-            <Button icon={Play} variant="primary" disabled={disabled || running || !api.runAgent} onClick={() => void start()}>
-              {running ? (zh ? "运行中…" : "Running…") : (zh ? "测试运行" : "Test run")}
+            <Button icon={Play} variant="primary" disabled={disabled || inFlight || !api.runAgent} onClick={() => void live.start(inputs)}>
+              {inFlight ? (zh ? "运行中…" : "Running…") : (zh ? "测试运行" : "Test run")}
             </Button>
-            {run ? <Button icon={RotateCcw} variant="ghost" onClick={() => { setRun(null); setError(""); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
+            {run ? <Button icon={RotateCcw} variant="ghost" onClick={() => live.clear()}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
-          {run?.status === "waiting" && api.commandAgentRun ? (
-            <div className="studio-run-actions">
-              {typeof approvalPrompt === "string" && approvalPrompt ? <p className="studio-run-note">{approvalPrompt}</p> : null}
-              <Button variant="primary" disabled={running} onClick={() => void sendCommand("approve")}>{zh ? "批准" : "Approve"}</Button>
-              <Button variant="ghost" disabled={running} onClick={() => void sendCommand("reject")}>{zh ? "拒绝" : "Reject"}</Button>
-              <Button variant="ghost" disabled={running} onClick={() => void sendCommand("stop")}>{zh ? "停止" : "Stop"}</Button>
-            </div>
-          ) : null}
+          <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
           {disabled ? <p className="studio-run-note">{zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."}</p> : null}
           {!api.runAgent ? <p className="studio-run-note">{zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."}</p> : null}
           {api.runtimeStatus && !disabled ? <RuntimeKeyNote api={api} locale={locale} /> : null}
         </div>
         <div className="studio-run-result" aria-live="polite">
-          {error ? <div className="studio-alert bad">{error}</div> : null}
+          {live.error ? <div className="studio-alert bad">{live.error}</div> : null}
           {run?.error ? <div className="studio-alert bad"><span>{run.error.message}</span><small>{zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`}</small></div> : null}
           {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
           {run ? (
@@ -259,7 +173,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
                 </li>
               ))}
             </ol>
-          ) : !run && !error ? <p className="studio-run-empty">{zh ? "运行结果和节点事件会显示在这里。" : "Run output and node events will appear here."}</p> : null}
+          ) : !run && !live.error ? <p className="studio-run-empty">{zh ? "运行结果和节点事件会显示在这里。" : "Run output and node events will appear here."}</p> : null}
         </div>
       </div>
     </Panel>

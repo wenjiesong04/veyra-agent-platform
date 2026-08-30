@@ -1,11 +1,12 @@
 import * as React from "react";
 import { Code2, LayoutPanelTop, Save, SlidersHorizontal } from "lucide-react";
-import type { AgentSource, ComponentDefinition } from "@veyra/api-contracts";
+import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
-import { StudioWorkbench, graphDiagnostics } from "../features/studio/StudioWorkbench";
-import { isAgentSourceCandidate, type GraphDiagnostic } from "../features/studio/graph";
+import { StudioWorkbench } from "../features/studio/StudioWorkbench";
+import { graphDiagnostics, isAgentSourceCandidate, type GraphDiagnostic } from "../features/studio/graph";
+import { LiveRunProvider } from "../features/studio/live-run";
 import { TestRunPanel } from "../features/studio/TestRunPanel";
 import { NotFoundPage } from "./not-found";
 
@@ -29,7 +30,7 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   const copy = studioCopy[locale];
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<AgentSource | null>(null);
   const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null);
-  const [componentDefinitions, setComponentDefinitions] = React.useState<ComponentDefinition[]>([]);
+  const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
   const cleanSnapshot = React.useRef(""); const [dirty, setDirty] = React.useState(false);
   const project = projects.find((item) => item.project_id === projectId);
   const adoptDraft = React.useCallback((draft: { source: AgentSource; revision: number; etag: string }) => {
@@ -46,10 +47,13 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   }, [api, projectId, agentId, locale, adoptDraft]);
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
-    if (!api.listComponents) return;
-    void api.listComponents().then((response) => setComponentDefinitions(response.components)).catch(() => setComponentDefinitions([]));
+    if (!api.listResources) return;
+    void Promise.all([
+      api.listResources({ kind: "component" }),
+      api.listResources({ kind: "tool" }),
+    ]).then(([components, tools]) => setCatalog([...components.resources, ...tools.resources])).catch(() => setCatalog([]));
   }, [api]);
-  const diagnostics = source ? graphDiagnostics(source) : [];
+  const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: AgentSource) => { setSource(next); setDirty(JSON.stringify(next) !== cleanSnapshot.current); setStatus("ready"); }, []);
   const save = async () => { if (!source || diagnostics.length || !api.saveDraft) return; try { const saved = await api.saveDraft(projectId, agentId, { source, expected_revision: revision }, { etag }); cleanSnapshot.current = JSON.stringify(saved.source); setSource(saved.source); setDirty(false); setRevision(saved.revision); setEtag(saved.etag); setStatus("saved"); setMessage(locale === "zh" ? "草稿已按当前修订保存。" : "Draft saved with the current revision."); } catch (error) { if (isDraftConflict(error)) { setStatus("conflict"); setMessage(locale === "zh" ? "草稿已在其他窗口或磁盘中发生变化。请加载磁盘版本后再保存。" : "This draft changed elsewhere or on disk. Load the disk version before saving again."); } else { setStatus("offline"); setMessage(error instanceof Error ? error.message : (locale === "zh" ? "保存失败。" : "Save failed.")); } } };
   const validateAndCommit = async () => { if (!api.validate || !api.commit) return; try { const result = await api.validate(projectId, agentId); setBehaviorHash(result.behavior_hash); const committed = await api.commit(projectId, agentId, { expectedRevision: revision, etag }); setStatus("committed"); setMessage(locale === "zh" ? `已提交不可变版本 ${committed.version_id}。` : `Immutable version ${committed.version_id} committed.`); } catch (error) { setMessage(error instanceof Error ? error.message : (locale === "zh" ? "校验或提交失败。" : "Validation or commit failed.")); } };
@@ -59,8 +63,10 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   return <div className="page-stack">
     {Boolean(message || diagnostics.length) ? <div className={status === "conflict" || status === "offline" || diagnostics.length ? "studio-alert bad" : "studio-alert"}>{message}{diagnostics.map((item, index) => <div key={`${item.code}-${index}`}>{graphDiagnosticText(item, locale)}</div>)}{status === "conflict" && api.reloadDraft ? <Button size="sm" onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : null}</div> : null}
     <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{copy[item]}</button>)}</div><div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={status === "committed" ? copy.committed : dirty ? copy.dirty : copy.saved} tone={status === "offline" || status === "conflict" ? "bad" : dirty ? "warn" : "good"} /><Button icon={Save} variant="primary" disabled={!dirty || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save()}>{copy.save}</Button><Button disabled={dirty || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button></div></div>
-    {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} componentDefinitions={componentDefinitions} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
-    <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} />
+    <LiveRunProvider api={api} projectId={projectId} agentId={agentId} locale={locale}>
+      {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
+      <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} />
+    </LiveRunProvider>
   </div>;
 }
 
@@ -78,6 +84,7 @@ function graphDiagnosticText(diagnostic: GraphDiagnostic, locale: "zh" | "en"): 
     case "verifier_required": return zh ? "要求验证时必须添加 Verifier 节点。" : "Required verification needs a Verifier node.";
     case "node_fields_missing": return zh ? `${p.nodeId} 缺少必填的 ${p.componentType} 字段。` : `${p.nodeId} is missing required ${p.componentType} fields.`;
     case "tool_not_permitted_or_locked": return zh ? `${p.nodeId} 必须被授权并已锁定后才能保存。` : `${p.nodeId} must be permitted and locked before it can be saved.`;
+    case "write_requires_approval": return zh ? `${p.nodeId} 写入前必须有人工审批节点，否则运行会失败而不是假成功。` : `${p.nodeId} needs a Human approval node before a write can run.`;
     case "transition_unknown_node": return zh ? `连线 ${p.from} → ${p.to} 引用了未知节点。` : `Transition ${p.from} → ${p.to} has an unknown node.`;
     case "transition_invalid_port": return zh ? `端口 ${p.port} 不适用于 ${p.nodeId}。` : `Port ${p.port} is not valid for ${p.nodeId}.`;
     case "node_ports_incomplete": return zh ? `${p.nodeId} 必须且只能连接每个必需输出端口一次。` : `${p.nodeId} must connect every required output port exactly once.`;

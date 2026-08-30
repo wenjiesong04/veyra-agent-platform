@@ -97,9 +97,13 @@
 }
 
 .component-list button {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   justify-content: space-between;
   gap: 8px;
+}
+.component-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 .component-list button > span { display: grid; min-width: 0; gap: 2px; }
 .component-list button small { color: var(--subtle); }
@@ -126,6 +130,21 @@
   background: var(--warn-soft);
 }
 
+.component-runtime-status.runtime_not_supported,
+.component-runtime-status.unavailable {
+  color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.rail-section-label {
+  margin: 12px 0 6px;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .component-list svg {
   color: var(--accent-strong);
 }
@@ -149,6 +168,7 @@
 }
 
 .studio-canvas {
+  position: relative;
   height: 590px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
@@ -158,6 +178,29 @@
 .agent-flow-node { min-width: 145px; display: grid; gap: 3px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px 15px; background: var(--surface); color: var(--ink); box-shadow: 0 4px 12px color-mix(in srgb, var(--ink) 8%, transparent); }
 .agent-flow-node.selected { border-color: var(--accent-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong) 28%, transparent); }
 .agent-flow-node small { color: var(--subtle); font: 10px ui-monospace, monospace; }
+.agent-flow-node[data-state="running"],
+.agent-flow-node[data-state="waiting"] {
+  border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--line));
+  animation: veyra-node-pulse 1.2s ease-in-out infinite;
+}
+.agent-flow-node[data-state="completed"] { border-color: color-mix(in srgb, var(--good, #1f8a5b) 45%, var(--line)); }
+.agent-flow-node[data-state="failed"] { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--bad-soft); }
+@keyframes veyra-node-pulse {
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-strong) 22%, transparent); }
+}
+.studio-canvas > .run-approval-bar {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 6;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.run-approval-bar { display: grid; gap: 8px; }
 .inspector-fields { display: grid; gap: 12px; }
 .inspector-fields label, .form-grid label { display: grid; gap: 5px; color: var(--subtle); font-size: 11px; font-weight: 700; }
 .inspector-fields input, .inspector-fields textarea, .form-grid input, .form-grid textarea, .source-view textarea { width: 100%; box-sizing: border-box; }
@@ -198,7 +241,7 @@
 .studio-run-nodes li > strong { color: var(--ink); font-size: 11px; }
 .studio-run-nodes li > small { color: var(--subtle); font: 9px ui-monospace, monospace; }
 .studio-run-nodes li[data-state="running"],
-.studio-run-nodes li[data-state="waiting"] { border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--line)); }
+.studio-run-nodes li[data-state="waiting"] { border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--line)); animation: veyra-node-pulse 1.2s ease-in-out infinite; }
 .studio-run-nodes li[data-state="completed"] { border-color: color-mix(in srgb, var(--good, #1f8a5b) 45%, var(--line)); }
 .studio-run-nodes li[data-state="failed"] { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--bad-soft); }
 .studio-event-list { display: grid; max-height: 280px; overflow: auto; gap: 4px; margin: 0; padding: 0; list-style: none; }

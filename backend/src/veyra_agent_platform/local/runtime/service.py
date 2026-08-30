@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -32,6 +33,10 @@ _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 _COMPARE = re.compile(
     r"^([a-z][a-z0-9_]*)(?:\s*)(==|!=)(?:\s*)('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|true|false|[0-9]+)$"
 )
+
+
+class _RunAbandoned(Exception):
+    """The run left the running state before the executor could finish."""
 
 
 class RuntimeError(ProjectError):
@@ -177,40 +182,29 @@ class RuntimeService:
                 run_id,
                 [(None, "run.created", {}), (None, "run.started", {})],
             )
-            self.repository.remember_response(
-                connection,
-                scope,
-                idempotency_key,
-                digest,
-                self._row_payload(
-                    connection.execute(
-                        "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
-                    ).fetchone()
-                ),
+            started = self._row_payload(
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
             )
-        try:
-            outcome = self._execute(
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, started
+            )
+        self._schedule_execution(
+            run_id,
+            lambda: self._complete_execution(
                 project_id,
                 run_id,
                 source,
                 inputs,
-                self._model_for(project_id, agent_id),
-            )
-            return self._commit_outcome(
-                run_id,
-                outcome,
+                start_node=None,
+                approved=False,
                 scope=scope,
                 idempotency_key=idempotency_key,
                 digest=digest,
-            )
-        except RuntimeError as exc:
-            return self._fail_run(
-                run_id,
-                exc,
-                scope=scope,
-                idempotency_key=idempotency_key,
-                digest=digest,
-            )
+            ),
+        )
+        return started
 
     def command(
         self,
@@ -321,6 +315,8 @@ class RuntimeService:
         digest: str | None,
         extra_events: list[tuple[str | None, str, dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
+        if not self._is_running(run_id) and outcome.pause is None:
+            return self._run_response(run_id)
         if outcome.pause is not None:
             return self._pause_run(
                 run_id,
@@ -336,9 +332,7 @@ class RuntimeService:
                 digest=digest,
             )
         with self.repository.transaction() as connection:
-            self.repository.add_run_events(
-                connection, run_id, list(extra_events or [])
-            )
+            self.repository.add_run_events(connection, run_id, list(extra_events or []))
             self._store_tool_calls(connection, run_id, outcome.tool_calls)
             final_status = "verified" if outcome.verified else "unverified"
             self.repository.add_run_events(
@@ -372,6 +366,8 @@ class RuntimeService:
         idempotency_key: str | None,
         digest: str | None,
     ) -> dict[str, Any]:
+        if not self._is_running(run_id):
+            return self._run_response(run_id)
         with self.repository.transaction() as connection:
             self.repository.add_run_events(
                 connection,
@@ -655,31 +651,85 @@ class RuntimeService:
                 ],
             )
             self.repository.mark_command_applied(connection, command_id, applied_at=now)
-        try:
-            outcome = self._execute(
+            resumed = self._row_payload(
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (row["run_id"],)
+                ).fetchone()
+            )
+            self.repository.replace_idempotent_response(
+                connection, scope, idempotency_key, digest, resumed
+            )
+            self.repository.replace_run_idempotent_payload(
+                connection, row["run_id"], resumed
+            )
+        self._schedule_execution(
+            row["run_id"],
+            lambda: self._complete_execution(
                 row["project_id"],
                 row["run_id"],
                 source,
                 values,
-                self._model_for(row["project_id"], row["agent_id"]),
                 start_node=next_node,
                 approved=decision == "approved",
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            ),
+        )
+        return resumed
+
+    def _schedule_execution(self, run_id: str, worker: Callable[[], None]) -> None:
+        threading.Thread(
+            target=worker, daemon=True, name=f"veyra-run-{run_id[:8]}"
+        ).start()
+
+    def _complete_execution(
+        self,
+        project_id: str,
+        run_id: str,
+        source: AgentSource,
+        inputs: dict[str, Any],
+        *,
+        start_node: str | None,
+        approved: bool,
+        scope: str | None,
+        idempotency_key: str | None,
+        digest: str | None,
+    ) -> None:
+        try:
+            outcome = self._execute(
+                project_id,
+                run_id,
+                source,
+                inputs,
+                self._model_for(project_id, source.agent_id),
+                start_node=start_node,
+                approved=approved,
             )
-            return self._commit_outcome(
-                row["run_id"],
+            if not self._is_running(run_id):
+                return
+            self._commit_outcome(
+                run_id,
                 outcome,
                 scope=scope,
                 idempotency_key=idempotency_key,
                 digest=digest,
             )
+        except _RunAbandoned:
+            return
         except RuntimeError as exc:
-            return self._fail_run(
-                row["run_id"],
-                exc,
-                scope=scope,
-                idempotency_key=idempotency_key,
-                digest=digest,
-            )
+            if self._is_running(run_id):
+                self._fail_run(
+                    run_id,
+                    exc,
+                    scope=scope,
+                    idempotency_key=idempotency_key,
+                    digest=digest,
+                )
+
+    def _is_running(self, run_id: str) -> bool:
+        row = self.repository.run(run_id)
+        return row is not None and row["status"] == "running"
 
     def _run_response(self, run_id: str) -> dict[str, Any]:
         row = self.repository.run(run_id)
@@ -760,6 +810,8 @@ class RuntimeService:
             self._persist_event(run_id, node_id, kind, payload)
 
         for _ in range(len(nodes) + 1):
+            if not self._is_running(run_id):
+                raise _RunAbandoned()
             node = nodes[current]
             emit(
                 node.id,
@@ -863,9 +915,7 @@ class RuntimeService:
                         prompt = _interpolate(prompt, values)
                     emit(node.id, "node.waiting", {"reason": "approval"})
                     emit(node.id, "approval.requested", {"prompt": prompt})
-                    emit(
-                        node.id, "checkpoint.created", {"waiting_kind": "approval"}
-                    )
+                    emit(node.id, "checkpoint.created", {"waiting_kind": "approval"})
                     return _ExecutionOutcome(
                         events=events,
                         tool_calls=tuple(tool_calls),
@@ -905,6 +955,9 @@ class RuntimeService:
                 runtime_error.tool_calls = tuple(tool_calls)
                 raise runtime_error from None
             emit(node.id, "node.completed", {"port": port})
+            time.sleep(0.03)
+            if not self._is_running(run_id):
+                raise _RunAbandoned()
             current = edges.get((node.id, port), "")
             if not current:
                 raise RuntimeError(

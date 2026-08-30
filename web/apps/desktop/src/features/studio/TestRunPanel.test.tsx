@@ -111,4 +111,30 @@ describe("TestRunPanel", () => {
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve" }));
   });
+
+  it("paints node run states from the live event stream", async () => {
+    const running: AgentRunResponse = { ...run, status: "running", result: null, finished_at: null, events: [] };
+    let emit: ((event: NonNullable<AgentRunResponse["events"]>[number]) => void) | undefined;
+    const watchAgentRunEvents = vi.fn((_project: string, _agent: string, _run: string, handlers: { onEvent: (event: NonNullable<AgentRunResponse["events"]>[number]) => void }) => {
+      emit = handlers.onEvent;
+      return () => undefined;
+    });
+    const api = { runAgent: vi.fn().mockResolvedValue(running), getAgentRun: vi.fn().mockResolvedValue(running), watchAgentRunEvents } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Test run" }));
+    await waitFor(() => expect(watchAgentRunEvents).toHaveBeenCalled());
+    emit?.({
+      schema_version: "1.0",
+      event_id: "event-3",
+      run_id: "run-1",
+      sequence: 3,
+      kind: "node.started",
+      node_id: "transform",
+      payload: {},
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    expect(await screen.findByRole("list", { name: "Node run states" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Node run states" }).querySelector('[data-state="running"]')).toHaveTextContent("transform");
+  });
 });

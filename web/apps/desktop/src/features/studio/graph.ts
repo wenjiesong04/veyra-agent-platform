@@ -1,8 +1,10 @@
-import type { AgentSource, FlowNode, FlowTransition } from "@veyra/api-contracts";
+import type { AgentSource, FlowNode, FlowTransition, ResourceDescriptor } from "@veyra/api-contracts";
 import type { Edge, Node } from "@xyflow/react";
+import { catalogToolRequiresApproval } from "./palette";
 import { componentFor } from "./registry";
+import type { NodeRunState } from "./live-run";
 
-export type CanvasNodeData = { flow: FlowNode };
+export type CanvasNodeData = { flow: FlowNode; runState?: NodeRunState; title?: string };
 
 export type GraphDiagnosticCode =
   | "start_count"
@@ -11,6 +13,7 @@ export type GraphDiagnosticCode =
   | "verifier_required"
   | "node_fields_missing"
   | "tool_not_permitted_or_locked"
+  | "write_requires_approval"
   | "transition_unknown_node"
   | "transition_invalid_port"
   | "node_ports_incomplete";
@@ -73,7 +76,7 @@ export function isAgentSourceCandidate(value: unknown): value is AgentSource {
 
 export function toCanvas(source: AgentSource): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
   return {
-    nodes: source.nodes.map((flow, index) => ({ id: flow.id, type: "agentNode", position: source.ui.positions[flow.id] ?? { x: 90 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 170 }, data: { flow } })),
+    nodes: source.nodes.map((flow, index) => ({ id: flow.id, type: "agentNode", position: source.ui.positions[flow.id] ?? { x: 90 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 170 }, data: { flow, runState: "pending" as const } })),
     edges: source.transitions.map((transition) => ({ id: `${transition.from}:${transition.port}:${transition.to}`, source: transition.from, target: transition.to, sourceHandle: transition.port, label: transition.port })),
   };
 }
@@ -89,9 +92,13 @@ export function sourceWithGraph(source: AgentSource, nodes: Node<CanvasNodeData>
   return { ...source, nodes: flowNodes, transitions, ui: { ...source.ui, positions } };
 }
 
-export function graphDiagnostics(source: AgentSource): GraphDiagnostic[] {
+export function graphDiagnostics(source: AgentSource, catalog: ResourceDescriptor[] = []): GraphDiagnostic[] {
   const problems: GraphDiagnostic[] = [];
   const ids = new Set(source.nodes.map((node) => node.id));
+  const approvalRequired = new Set(
+    catalog.filter(catalogToolRequiresApproval).map((resource) => resource.reference),
+  );
+  const hasApproval = source.nodes.some((node) => node.component_type === "HumanApproval");
   if (source.nodes.filter((node) => node.component_type === "Start").length !== 1) problems.push({ code: "start_count" });
   if (!source.nodes.some((node) => node.component_type === "Output")) problems.push({ code: "output_missing" });
   const outputNames = source.nodes.filter((node) => node.component_type === "Output").map((node) => node.output_name);
@@ -101,6 +108,9 @@ export function graphDiagnostics(source: AgentSource): GraphDiagnostic[] {
     const required = node.component_type === "Agent" ? [node.model_ref, node.system_prompt] : node.component_type === "Tool" ? [node.uses] : node.component_type === "Condition" ? [node.expression] : node.component_type === "Transform" ? [node.mapping && Object.keys(node.mapping).length] : node.component_type === "HumanApproval" ? [node.prompt] : node.component_type === "Verifier" ? [node.checks?.length] : node.component_type === "Output" ? [node.output_name] : [];
     if (required.some((value) => !value)) problems.push({ code: "node_fields_missing", params: { nodeId: node.id, componentType: node.component_type } });
     if (node.component_type === "Tool" && node.uses && (!source.extensions.veyra.permissions.tools.includes(node.uses.split("@").slice(0, -1).join("@")) || !(node.uses in source.lock))) problems.push({ code: "tool_not_permitted_or_locked", params: { nodeId: node.id } });
+    if (node.component_type === "Tool" && node.uses && approvalRequired.has(node.uses) && !hasApproval) {
+      problems.push({ code: "write_requires_approval", params: { nodeId: node.id } });
+    }
   }
   for (const edge of source.transitions) {
     if (!ids.has(edge.from) || !ids.has(edge.to)) problems.push({ code: "transition_unknown_node", params: { from: edge.from, to: edge.to } });

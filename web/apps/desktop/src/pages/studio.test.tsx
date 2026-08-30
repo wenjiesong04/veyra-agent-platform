@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSource, DraftResponse, ProjectSummaryResponse } from "@veyra/api-contracts";
+import type { AgentSource, DraftResponse, ProjectSummaryResponse, ResourceDescriptor } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
@@ -80,5 +80,58 @@ describe("StudioPage source and conflict safety", () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft({ source: { ...source, nodes: [{ id: "out", component_type: "Output", output_name: "result" }], transitions: [] } })) } as unknown as LocalProjectApi;
     renderPage(api, "zh");
     expect(await screen.findByText("必须且只能有一个 Start 节点。")).toBeInTheDocument();
+  });
+
+  it("loads Catalog tools into the palette and attaches Read File uses, lock, and permissions", async () => {
+    const read: ResourceDescriptor = {
+      schema_version: "1.0",
+      resource_id: "veyra.tool.filesystem.read",
+      kind: "tool",
+      version: "1.0.0",
+      reference: "veyra.tool.filesystem.read@1.0.0",
+      name: "Filesystem Read",
+      description: "Read a bounded Project path.",
+      origin: "builtin",
+      content_hash: "d".repeat(64),
+      availability: "ready",
+      factory_selectable: true,
+      runtime_status: "supported",
+      required_permissions: { network_hosts: [], tools: ["veyra.tool.filesystem.read"], filesystem_read_roots: ["project"], filesystem_write_roots: [], shell_workspace_only: false },
+      tags: ["filesystem"],
+      spec: { ui: { category: "filesystem", icon: "file-text", title: "Read File" }, approval_required: false },
+    };
+    const github: ResourceDescriptor = {
+      ...read,
+      resource_id: "veyra.tool.github.read",
+      reference: "veyra.tool.github.read@1.0.0",
+      name: "GitHub Read",
+      availability: "unavailable",
+      factory_selectable: false,
+      runtime_status: "runtime_not_supported",
+      required_permissions: { network_hosts: ["api.github.com"], tools: ["veyra.tool.github.read"], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      spec: { ui: { category: "git", icon: "github", title: "GitHub Read" } },
+    };
+    const start: ResourceDescriptor = {
+      ...read,
+      resource_id: "veyra.component.start",
+      kind: "component",
+      reference: "veyra.component.start@1.0.0",
+      name: "Start",
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      spec: { fields: [], output_ports: ["next"], ui: { category: "core", icon: "circle-play", title: "Start" } },
+    };
+    const listResources = vi.fn(async ({ kind }: { kind?: string } = {}) => ({
+      schema_version: "1.0",
+      resources: kind === "tool" ? [read, github] : kind === "component" ? [start] : [],
+      kinds: [],
+    }));
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), listResources } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: /Read File/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /GitHub Read/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /Read File/ }));
+    expect((await screen.findAllByDisplayValue("veyra.tool.filesystem.read@1.0.0")).length).toBeGreaterThan(1);
+    expect(screen.getByDisplayValue("veyra.tool.filesystem.read")).toBeInTheDocument();
   });
 });

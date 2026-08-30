@@ -53,6 +53,51 @@ def _source(
     return base
 
 
+def _await_run(
+    client: TestClient, run_url: str, run_id: str, *, timeout: float = 8
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout
+    detail: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        detail = client.get(f"{run_url}s/{run_id}").json()
+        if detail["status"] != "running":
+            return detail
+        time.sleep(0.05)
+    raise AssertionError(f"run {run_id} stayed running: {detail}")
+
+
+def _run_until_settled(
+    client: TestClient,
+    url: str,
+    inputs: dict[str, object],
+    *,
+    key: str | None = None,
+) -> dict[str, object]:
+    started = client.post(
+        url,
+        json={"inputs": inputs},
+        headers={"Idempotency-Key": key or new_uuid7()},
+    )
+    assert started.status_code == 200
+    assert started.json()["status"] == "running"
+    return _await_run(client, url, started.json()["run_id"])
+
+
+def _command_until_settled(
+    client: TestClient, run_url: str, run_id: str, command: str
+) -> dict[str, object]:
+    started = client.post(
+        f"{run_url}s/{run_id}/commands",
+        json={"command": command},
+        headers={"Idempotency-Key": new_uuid7()},
+    )
+    assert started.status_code == 200
+    payload = started.json()
+    if payload["status"] == "running":
+        return _await_run(client, run_url, str(payload["run_id"]))
+    return payload
+
+
 def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
     source = _source(
         [
@@ -84,12 +129,15 @@ def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
             url, json={"inputs": {"name": "Ada"}}, headers={"Idempotency-Key": key}
         )
         assert first.status_code == 200
-        assert first.json()["status"] == "unverified"
-        assert first.json()["result"] == {"result": "Hello Ada"}
+        assert first.json()["status"] == "running"
+        settled = _await_run(client, url, first.json()["run_id"])
+        assert settled["status"] == "unverified"
+        assert settled["result"] == {"result": "Hello Ada"}
         replay = client.post(
             url, json={"inputs": {"name": "Ada"}}, headers={"Idempotency-Key": key}
         )
         assert replay.json()["run_id"] == first.json()["run_id"]
+        assert replay.json()["status"] == "unverified"
         detail = client.get(url + "s/" + first.json()["run_id"]).json()
         assert [event["kind"] for event in detail["events"]] == [
             "run.created",
@@ -138,13 +186,9 @@ def test_runtime_condition_verifier_and_unsupported_nodes(tmp_path: Path) -> Non
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
-        response = client.post(
-            url,
-            json={"inputs": {"flag": True}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "verified"
-        assert response.json()["result"] == {"result": "ok"}
+        response = _run_until_settled(client, url, {"flag": True})
+        assert response["status"] == "verified"
+        assert response["result"] == {"result": "ok"}
 
 
 def test_runtime_rejects_unregistered_tool(tmp_path: Path) -> None:
@@ -173,17 +217,11 @@ def test_runtime_rejects_unregistered_tool(tmp_path: Path) -> None:
     with TestClient(create_app(settings)) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"issue": "one"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "failed"
-        assert response.json()["error"]["code"] == "tool_not_registered"
-        detail = client.get(
-            f"/api/v1/projects/{project['project_id']}/agents/"
-            f"{agent['agent_id']}/runs/{response.json()['run_id']}"
-        ).json()
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"issue": "one"})
+        assert response["status"] == "failed"
+        assert response["error"]["code"] == "tool_not_registered"
+        detail = client.get(f"{url}s/{response['run_id']}").json()
         requested = next(
             event for event in detail["events"] if event["kind"] == "tool.requested"
         )
@@ -223,14 +261,10 @@ def test_runtime_condition_and_output_failures_are_terminal(tmp_path: Path) -> N
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
-        failed = client.post(
-            url,
-            json={"inputs": {"flag": "yes"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert failed.json()["status"] == "failed"
-        assert failed.json()["error"]["code"] == "condition_invalid"
-        detail = client.get(url + "s/" + failed.json()["run_id"]).json()
+        failed = _run_until_settled(client, url, {"flag": "yes"})
+        assert failed["status"] == "failed"
+        assert failed["error"]["code"] == "condition_invalid"
+        detail = client.get(url + "s/" + failed["run_id"]).json()
         assert detail["events"][-2]["kind"] == "node.failed"
         assert detail["events"][-1]["kind"] == "run.failed"
 
@@ -253,11 +287,7 @@ def test_runtime_startup_interrupts_orphan_run(tmp_path: Path) -> None:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
-        completed = client.post(
-            url,
-            json={"inputs": {"name": "Ada"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+        completed = _run_until_settled(client, url, {"name": "Ada"})
         orphan_id = new_uuid7()
         with client.app.state.repository.transaction() as connection:
             client.app.state.repository.create_run(
@@ -318,34 +348,34 @@ def test_runtime_same_key_concurrency_reserves_one_run(tmp_path: Path) -> None:
     with TestClient(create_app(settings)) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         runtime = client.app.state.runtime
         execute_started = threading.Event()
         release_execute = threading.Event()
         request_barrier = threading.Barrier(3)
         original_execute = runtime._execute
 
-        def delayed_execute(*args: object) -> object:
+        def delayed_execute(*args: object, **kwargs: object) -> object:
             execute_started.set()
             assert release_execute.wait(timeout=5)
-            return original_execute(*args)  # type: ignore[arg-type]
+            return original_execute(*args, **kwargs)
 
         runtime._execute = delayed_execute  # type: ignore[method-assign]
         responses: list[dict[str, object]] = []
         errors: list[BaseException] = []
-        replay_returned = threading.Event()
         key = new_uuid7()
 
         def request_run() -> None:
             try:
                 request_barrier.wait(timeout=5)
-                response = runtime.run(
-                    project["project_id"],
-                    agent["agent_id"],
-                    {"name": "Ada"},
-                    key,
+                responses.append(
+                    runtime.run(
+                        project["project_id"],
+                        agent["agent_id"],
+                        {"name": "Ada"},
+                        key,
+                    )
                 )
-                responses.append(response)
-                replay_returned.set()
             except BaseException as exc:
                 errors.append(exc)
 
@@ -353,21 +383,68 @@ def test_runtime_same_key_concurrency_reserves_one_run(tmp_path: Path) -> None:
         for thread in threads:
             thread.start()
         request_barrier.wait(timeout=5)
-        assert execute_started.wait(timeout=5)
-        assert replay_returned.wait(timeout=5)
-        assert len(responses) == 1
-        assert responses[0]["status"] == "running"
-        assert responses[0]["finished_at"] is None
-        release_execute.set()
         for thread in threads:
             thread.join(timeout=5)
         assert not errors
+        assert execute_started.wait(timeout=5)
         assert len(responses) == 2
-        assert {response["status"] for response in responses} == {
-            "running",
-            "unverified",
-        }
+        assert {item["run_id"] for item in responses} == {responses[0]["run_id"]}
+        assert {item["status"] for item in responses} == {"running"}
+        release_execute.set()
+        settled = _await_run(client, url, str(responses[0]["run_id"]))
+        assert settled["status"] == "unverified"
         assert len(client.app.state.repository.runs(agent["agent_id"])) == 1
+
+
+def test_runtime_http_returns_running_before_execute_finishes(
+    tmp_path: Path,
+) -> None:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {"id": "output", "component_type": "Output", "output_name": "name"},
+        ],
+        [{"from": "start", "port": "next", "to": "output"}],
+        {"name": "string"},
+    )
+    source["outputs"] = {"name": "string"}
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        runtime = client.app.state.runtime
+        execute_started = threading.Event()
+        release_execute = threading.Event()
+        original_execute = runtime._execute
+
+        def delayed_execute(*args: object, **kwargs: object) -> object:
+            execute_started.set()
+            assert release_execute.wait(timeout=5)
+            return original_execute(*args, **kwargs)
+
+        runtime._execute = delayed_execute  # type: ignore[method-assign]
+        started_at = time.monotonic()
+        response = client.post(
+            url,
+            json={"inputs": {"name": "Ada"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert time.monotonic() - started_at < 1
+        assert response.status_code == 200
+        assert response.json()["status"] == "running"
+        assert execute_started.wait(timeout=5)
+        assert (
+            client.get(url + "s/" + response.json()["run_id"]).json()["status"]
+            == "running"
+        )
+        release_execute.set()
+        settled = _await_run(client, url, response.json()["run_id"])
+        assert settled["status"] == "unverified"
+        assert settled["result"] == {"name": "Ada"}
 
 
 def test_runtime_rejects_wrong_declared_output_type(tmp_path: Path) -> None:
@@ -395,13 +472,10 @@ def test_runtime_rejects_wrong_declared_output_type(tmp_path: Path) -> None:
     with TestClient(create_app(settings)) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"name": "Ada"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "failed"
-        assert response.json()["error"]["code"] == "output_invalid"
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"name": "Ada"})
+        assert response["status"] == "failed"
+        assert response["error"]["code"] == "output_invalid"
 
 
 class ScriptedRuntimeTransport:
@@ -464,13 +538,10 @@ def test_agent_node_requires_runtime_key(tmp_path: Path) -> None:
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"request": "Summarize this"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "failed"
-        assert response.json()["error"]["code"] == "runtime_not_configured"
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"request": "Summarize this"})
+        assert response["status"] == "failed"
+        assert response["error"]["code"] == "runtime_not_configured"
 
 
 def test_agent_node_uses_injected_runtime_model(tmp_path: Path) -> None:
@@ -486,15 +557,12 @@ def test_agent_node_uses_injected_runtime_model(tmp_path: Path) -> None:
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"request": "What is the weather?"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "unverified"
-        assert response.json()["result"] == {"result": "The sky is clear."}
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"request": "What is the weather?"})
+        assert response["status"] == "unverified"
+        assert response["result"] == {"result": "The sky is clear."}
         assert transport.calls
-        assert response.json()["error"] is None
+        assert response["error"] is None
 
 
 def test_agent_node_accepts_declared_object_output(tmp_path: Path) -> None:
@@ -508,13 +576,10 @@ def test_agent_node_accepts_declared_object_output(tmp_path: Path) -> None:
     with TestClient(create_app(settings, runtime_transport=transport)) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"request": "Summarize"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "unverified"
-        assert response.json()["result"] == {"result": {"summary": "ok"}}
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"request": "Summarize"})
+        assert response["status"] == "unverified"
+        assert response["result"] == {"result": {"summary": "ok"}}
 
 
 def test_production_mode_does_not_use_host_process_key(
@@ -535,12 +600,9 @@ def test_production_mode_does_not_use_host_process_key(
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"request": "Hello"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["error"]["code"] == "runtime_not_configured"
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"request": "Hello"})
+        assert response["error"]["code"] == "runtime_not_configured"
 
 
 def test_catalogued_filesystem_read_tool_runs_inside_project_and_records_receipt(
@@ -586,14 +648,10 @@ def test_catalogued_filesystem_read_tool_runs_inside_project_and_records_receipt
         )
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
-        response = client.post(
-            url,
-            json={"inputs": {"path": "resources/note.txt"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.status_code == 200
-        assert response.json()["result"] == {"content": "hello from the Project"}
-        detail = client.get(url + "s/" + response.json()["run_id"]).json()
+        response = _run_until_settled(client, url, {"path": "resources/note.txt"})
+        assert response["status"] == "unverified"
+        assert response["result"] == {"content": "hello from the Project"}
+        detail = client.get(url + "s/" + response["run_id"]).json()
         assert [
             event["kind"]
             for event in detail["events"]
@@ -650,13 +708,10 @@ def test_filesystem_read_tool_rejects_project_escape(tmp_path: Path) -> None:
         )
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"path": "../outside.txt"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        )
-        assert response.json()["status"] == "failed"
-        assert response.json()["error"]["code"] == "tool_path_denied"
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"path": "../outside.txt"})
+        assert response["status"] == "failed"
+        assert response["error"]["code"] == "tool_path_denied"
 
 
 def _write_source(client: TestClient) -> dict[str, object]:
@@ -712,11 +767,11 @@ def test_filesystem_write_pauses_for_approval_then_writes(
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         )
-        waiting = client.post(
+        waiting = _run_until_settled(
+            client,
             run_url,
-            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+            {"path": "resources/out.txt", "content": "saved"},
+        )
         assert waiting["status"] == "waiting"
         assert waiting["result"] is None
         assert not Path(project["root_path"], "resources", "out.txt").exists()
@@ -724,21 +779,20 @@ def test_filesystem_write_pauses_for_approval_then_writes(
         kinds = [event["kind"] for event in detail["events"]]
         assert "approval.requested" in kinds
         assert "checkpoint.created" in kinds
-        completed = client.post(
-            f"{run_url}s/{waiting['run_id']}/commands",
-            json={"command": "approve"},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+        completed = _command_until_settled(
+            client, run_url, str(waiting["run_id"]), "approve"
+        )
         assert completed["status"] == "unverified"
         assert completed["result"] == {"written": True}
-        assert Path(project["root_path"], "resources", "out.txt").read_text(
-            encoding="utf-8"
-        ) == "saved"
+        assert (
+            Path(project["root_path"], "resources", "out.txt").read_text(
+                encoding="utf-8"
+            )
+            == "saved"
+        )
         events = client.get(f"{run_url}s/{waiting['run_id']}").json()["events"]
         tool_kinds = [
-            event["kind"]
-            for event in events
-            if event["kind"].startswith("tool.")
+            event["kind"] for event in events if event["kind"].startswith("tool.")
         ]
         assert tool_kinds == ["tool.requested", "tool.started", "tool.completed"]
         requested = next(event for event in events if event["kind"] == "tool.requested")
@@ -757,11 +811,11 @@ def test_filesystem_write_stop_and_reject_do_not_write(tmp_path: Path) -> None:
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         )
-        waiting = client.post(
+        waiting = _run_until_settled(
+            client,
             run_url,
-            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+            {"path": "resources/out.txt", "content": "saved"},
+        )
         resume = client.post(
             f"{run_url}s/{waiting['run_id']}/commands",
             json={"command": "resume"},
@@ -769,31 +823,25 @@ def test_filesystem_write_stop_and_reject_do_not_write(tmp_path: Path) -> None:
         )
         assert resume.status_code == 422
         assert resume.json()["code"] == "command_not_applicable"
-        stopped = client.post(
-            f"{run_url}s/{waiting['run_id']}/commands",
-            json={"command": "stop"},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+        stopped = _command_until_settled(
+            client, run_url, str(waiting["run_id"]), "stop"
+        )
         assert stopped["status"] == "cancelled"
         assert not Path(project["root_path"], "resources", "out.txt").exists()
-        retried = client.post(
-            f"{run_url}s/{waiting['run_id']}/commands",
-            json={"command": "retry"},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+        retried = _command_until_settled(
+            client, run_url, str(waiting["run_id"]), "retry"
+        )
         assert retried["status"] == "waiting"
         assert retried["run_id"] != waiting["run_id"]
 
-        waiting = client.post(
+        waiting = _run_until_settled(
+            client,
             run_url,
-            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
-        rejected = client.post(
-            f"{run_url}s/{waiting['run_id']}/commands",
-            json={"command": "reject"},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+            {"path": "resources/out.txt", "content": "saved"},
+        )
+        rejected = _command_until_settled(
+            client, run_url, str(waiting["run_id"]), "reject"
+        )
         assert rejected["status"] == "unverified"
         assert rejected["result"] == {"written": False}
         assert not Path(project["root_path"], "resources", "out.txt").exists()
@@ -836,13 +884,14 @@ def test_filesystem_write_without_approval_is_denied(tmp_path: Path) -> None:
         )
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
-        response = client.post(
-            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run",
-            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
-            headers={"Idempotency-Key": new_uuid7()},
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(
+            client,
+            url,
+            {"path": "resources/out.txt", "content": "saved"},
         )
-        assert response.json()["status"] == "failed"
-        assert response.json()["error"]["code"] == "approval_required"
+        assert response["status"] == "failed"
+        assert response["error"]["code"] == "approval_required"
         assert not Path(project["root_path"], "resources", "out.txt").exists()
 
 
@@ -873,11 +922,7 @@ def test_runtime_event_stream_replays_a_completed_run(tmp_path: Path) -> None:
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         )
-        started = client.post(
-            run_url,
-            json={"inputs": {"name": "Ada"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+        started = _run_until_settled(client, run_url, {"name": "Ada"})
         stream = client.get(f"{run_url}s/{started['run_id']}/events")
         assert stream.status_code == 200
         assert stream.headers["content-type"].startswith("text/event-stream")
@@ -902,11 +947,11 @@ def test_runtime_event_stream_follows_approval_then_completes(
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         )
-        waiting = client.post(
+        waiting = _run_until_settled(
+            client,
             run_url,
-            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+            {"path": "resources/out.txt", "content": "saved"},
+        )
         assert waiting["status"] == "waiting"
         frames: list[str] = []
         runtime = client.app.state.runtime
@@ -920,11 +965,9 @@ def test_runtime_event_stream_follows_approval_then_completes(
         watcher = threading.Thread(target=consume, daemon=True)
         watcher.start()
         time.sleep(0.1)
-        completed = client.post(
-            f"{run_url}s/{waiting['run_id']}/commands",
-            json={"command": "approve"},
-            headers={"Idempotency-Key": new_uuid7()},
-        ).json()
+        completed = _command_until_settled(
+            client, run_url, str(waiting["run_id"]), "approve"
+        )
         assert completed["status"] == "unverified"
         watcher.join(timeout=5)
         assert watcher.is_alive() is False

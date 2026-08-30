@@ -1,0 +1,172 @@
+import * as React from "react";
+import type { AgentRunResponse, AgentSource, JsonValue, RuntimeEvent, RuntimeRunStatus } from "@veyra/api-contracts";
+import type { LocalProjectApi } from "../../api/local-client";
+
+export type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
+
+export type LiveRunSession = {
+  run: AgentRunResponse | null;
+  error: string;
+  busy: boolean;
+  start: (inputs: Record<string, JsonValue>) => Promise<void>;
+  sendCommand: (command: "approve" | "reject" | "stop") => Promise<void>;
+  clear: () => void;
+};
+
+const LiveRunContext = React.createContext<LiveRunSession | null>(null);
+
+function asRunStatus(value: unknown): RuntimeRunStatus | null {
+  return value === "running" || value === "waiting" || value === "verified" || value === "unverified"
+    || value === "failed" || value === "interrupted" || value === "cancelled"
+    ? value
+    : null;
+}
+
+export function inferRunStatus(current: RuntimeRunStatus, events: RuntimeEvent[]): RuntimeRunStatus {
+  let status = current;
+  for (const event of events) {
+    if (event.kind === "run.completed") status = asRunStatus(event.payload.state) ?? "unverified";
+    else if (event.kind === "run.failed") status = "failed";
+    else if (event.kind === "run.cancelled") status = "cancelled";
+    else if (event.kind === "run.interrupted") status = "interrupted";
+    else if (event.kind === "node.waiting" || event.kind === "approval.requested") status = "waiting";
+    else if (event.kind === "approval.resolved" || event.kind === "run.started") status = "running";
+  }
+  return status;
+}
+
+export function applyRuntimeEvent(run: AgentRunResponse | null, event: RuntimeEvent): AgentRunResponse | null {
+  if (!run || run.run_id !== event.run_id) return run;
+  const events = [...(run.events ?? [])];
+  if (events.some((item) => item.event_id === event.event_id || item.sequence === event.sequence)) return run;
+  events.push(event);
+  events.sort((left, right) => left.sequence - right.sequence);
+  return { ...run, events, status: inferRunStatus(run.status, events) };
+}
+
+export function nodeRunStates(source: AgentSource, events: RuntimeEvent[]): { id: string; state: NodeRunState }[] {
+  return source.nodes.map((node) => {
+    let state: NodeRunState = "pending";
+    for (const event of events) {
+      if (event.node_id !== node.id) continue;
+      if (event.kind === "node.failed") state = "failed";
+      else if (event.kind === "node.waiting") state = "waiting";
+      else if (event.kind === "node.completed") state = "completed";
+      else if (event.kind === "node.started" && state === "pending") state = "running";
+    }
+    return { id: node.id, state };
+  });
+}
+
+export function approvalPrompt(run: AgentRunResponse | null): string {
+  const prompt = [...(run?.events ?? [])].reverse().find((event) => event.kind === "approval.requested")?.payload.prompt;
+  return typeof prompt === "string" ? prompt : "";
+}
+
+function useLiveRunSession({
+  api,
+  projectId,
+  agentId,
+  locale = "en",
+  inactive = false,
+}: {
+  api: LocalProjectApi;
+  projectId: string;
+  agentId: string;
+  locale?: "zh" | "en";
+  inactive?: boolean;
+}): LiveRunSession {
+  const [run, setRun] = React.useState<AgentRunResponse | null>(null);
+  const [error, setError] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  const adopt = React.useCallback((next: AgentRunResponse, previous: AgentRunResponse | null = null) => ({
+    ...next,
+    events: next.events ?? previous?.events ?? [],
+  }), []);
+
+  const start = React.useCallback(async (inputs: Record<string, JsonValue>) => {
+    if (inactive || !api.runAgent || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const started = await api.runAgent(projectId, agentId, { inputs });
+      const detailed = api.getAgentRun
+        ? await api.getAgentRun(projectId, agentId, started.run_id)
+        : started;
+      setRun(adopt(detailed, started));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (locale === "zh" ? "本地运行失败。" : "The local run failed."));
+    } finally {
+      setBusy(false);
+    }
+  }, [inactive, api, projectId, agentId, busy, adopt, locale]);
+
+  const sendCommand = React.useCallback(async (command: "approve" | "reject" | "stop") => {
+    if (inactive || !run || !api.commandAgentRun || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command });
+      const detailed = api.getAgentRun
+        ? await api.getAgentRun(projectId, agentId, updated.run_id)
+        : updated;
+      setRun((current) => adopt(detailed, current?.run_id === detailed.run_id ? current : updated));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (locale === "zh" ? "运行命令失败。" : "The run command failed."));
+    } finally {
+      setBusy(false);
+    }
+  }, [inactive, run, api, projectId, agentId, busy, adopt, locale]);
+
+  const clear = React.useCallback(() => {
+    setRun(null);
+    setError("");
+  }, []);
+
+  React.useEffect(() => {
+    if (inactive || !run?.run_id || !api.watchAgentRunEvents) return;
+    if (run.status !== "running" && run.status !== "waiting") return;
+    const runId = run.run_id;
+    return api.watchAgentRunEvents(
+      projectId,
+      agentId,
+      runId,
+      {
+        onEvent: (event) => setRun((current) => applyRuntimeEvent(current, event)),
+        onDone: () => {
+          if (!api.getAgentRun) return;
+          void api.getAgentRun(projectId, agentId, runId).then((detailed) => {
+            setRun((current) => (current?.run_id === detailed.run_id ? adopt(detailed, current) : current));
+          });
+        },
+      },
+      { after: 0 },
+    );
+  }, [inactive, api, projectId, agentId, run?.run_id, run?.status, adopt]);
+
+  return { run, error, busy, start, sendCommand, clear };
+}
+
+export function LiveRunProvider({
+  api,
+  projectId,
+  agentId,
+  locale = "en",
+  children,
+}: {
+  api: LocalProjectApi;
+  projectId: string;
+  agentId: string;
+  locale?: "zh" | "en";
+  children: React.ReactNode;
+}) {
+  const live = useLiveRunSession({ api, projectId, agentId, locale });
+  return React.createElement(LiveRunContext.Provider, { value: live }, children);
+}
+
+export function useLiveRun(opts: { api: LocalProjectApi; projectId: string; agentId: string; locale?: "zh" | "en" }): LiveRunSession {
+  const ctx = React.useContext(LiveRunContext);
+  const owned = useLiveRunSession({ ...opts, inactive: ctx !== null });
+  return ctx ?? owned;
+}
