@@ -68,6 +68,8 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate",
         "/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
         "/api/v1/system/select-directory",
+        "/api/v1/factory/status",
+        "/api/v1/runtime/status",
     }
     assert local_paths == expected_local_paths
     assert community_paths == shared_paths | {

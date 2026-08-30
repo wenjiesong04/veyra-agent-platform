@@ -1,13 +1,42 @@
-"""Compile a validated Blueprint and catalog plan into AgentSource."""
+"""Resolve catalog resources, derive permissions, and compile a Draft source."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
-from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource
+from veyra_agent_platform.contracts.agent import (
+    AgentBlueprint,
+    AgentSource,
+    ComponentType,
+    PermissionContract,
+)
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
-from veyra_agent_platform.local.resources import ResourceCatalog
+from veyra_agent_platform.local.domain.agent_definition import compile_agent_definition
+from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
+
+_RUNTIME_PROFILE = "veyra-runtime-profile/1"
+_WRITE_TOOLS = {
+    "veyra.tool.filesystem.write",
+    "veyra.tool.shell.exec",
+    "veyra.tool.github.write",
+}
+_NETWORK_TOOLS = {
+    "veyra.tool.http.request",
+    "veyra.tool.github.read",
+    "veyra.tool.github.write",
+    "veyra.tool.browser.navigate",
+}
+_BLOCKED_AVAILABILITY = {"unavailable", "disabled", "quarantined"}
+
+
+class BlueprintCompileError(ValueError):
+    """A bounded Factory compile failure with repair diagnostics."""
+
+    def __init__(self, diagnostics: list[str]) -> None:
+        super().__init__("; ".join(diagnostics))
+        self.diagnostics = diagnostics
 
 
 def compile_blueprint(
@@ -16,91 +45,234 @@ def compile_blueprint(
     *,
     name: str | None = None,
     description: str | None = None,
-) -> AgentSource:
-    """Create a new stable Agent identity from a validated Blueprint."""
+) -> tuple[AgentSource, list[dict[str, Any]], str]:
+    """Compile a validated Blueprint into AgentSource without executing it."""
 
-    resources = catalog.resources()["resources"]
-    by_name = {
-        resource["name"]: resource
-        for resource in resources
-        if resource["kind"] == "component"
-    }
-    lock: dict[str, str] = {}
-    for component_type in blueprint.required_capabilities.component_types:
-        resource = by_name.get(component_type.value)
-        if resource is None:
-            raise ValueError(
-                f"component resource is not registered: {component_type.value}"
-            )
-        lock[resource["reference"]] = resource["content_hash"]
-    for tool_ref in blueprint.required_capabilities.tool_refs:
-        resource_id, version = tool_ref.rsplit("@", 1)
-        resource = catalog.detail(resource_id, version)
-        if resource["kind"] not in {"tool", "mcp_tool"}:
-            raise ValueError(f"resource is not executable: {tool_ref}")
-        lock[resource["reference"]] = resource["content_hash"]
-    runtime_reference = "veyra.runtime.profile@1.0.0"
-    lock[runtime_reference] = sha256_digest(
-        {"runtime_profile": "veyra-runtime-profile/1"}
+    diagnostics: list[str] = []
+    selected = _selected_resources(blueprint, catalog, diagnostics)
+    if diagnostics:
+        raise BlueprintCompileError(diagnostics)
+    derived = _derived_permissions(selected)
+    _apply_policies(blueprint, selected, derived, diagnostics)
+    nodes = _compile_skills(blueprint, selected, diagnostics)
+    if diagnostics:
+        raise BlueprintCompileError(diagnostics)
+    payload = blueprint.to_dict()
+    payload["nodes"] = [node.to_dict() for node in nodes]
+    payload["requested_permissions"] = derived.to_dict()
+    compiled = AgentBlueprint.from_dict(payload)
+    lock = {resource["reference"]: resource["content_hash"] for resource in selected}
+    lock["veyra.runtime.profile@1.0.0"] = sha256_digest(
+        {"runtime_profile": _RUNTIME_PROFILE}
     )
-    description_text = (description or blueprint.goal).strip() or blueprint.goal
-    source = {
-        "schema_version": "1.0",
-        "agentspec_version": "26.1",
-        "component_type": "Flow",
-        "agent_id": new_uuid7(),
-        "slug": "generated-agent",
-        "name": (name or "Generated Agent").strip() or "Generated Agent",
-        "description": description_text,
-        "inputs": dict(blueprint.inputs),
-        "outputs": dict(blueprint.outputs),
-        "nodes": [node.to_dict() for node in blueprint.nodes],
-        "transitions": [transition.to_dict() for transition in blueprint.transitions],
-        "extensions": {
-            "veyra": {
-                "runtime_profile": "veyra-runtime-profile/1",
-                "secret_refs": [],
-                "permissions": _derived_permissions(blueprint, catalog),
-                "verification": blueprint.verification.to_dict(),
-            }
-        },
-        "ui": {"positions": dict(blueprint.ui_suggestions["positions"])},
-        "lock": lock,
-    }
-    return AgentSource.from_dict(source)
+    definition = compile_agent_definition(
+        compiled,
+        agent_id=new_uuid7(),
+        slug="generated-agent",
+        name=(name or "Generated Agent").strip() or "Generated Agent",
+        description=(description or blueprint.goal).strip() or blueprint.goal,
+        runtime_profile=_RUNTIME_PROFILE,
+        secret_refs=[],
+        lock=lock,
+    )
+    plan = resource_plan(compiled, catalog)
+    return definition.source, plan, run_availability(plan)
 
 
-def _derived_permissions(
+def resource_plan(
     blueprint: AgentBlueprint, catalog: ResourceCatalog
-) -> dict[str, Any]:
-    """Derive authority from selected catalog adapters, never from model output."""
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    components = {
+        resource["name"]: resource
+        for resource in catalog.resources(kind="component")["resources"]
+    }
+    for component_type in blueprint.required_capabilities.component_types:
+        resource = components.get(component_type.value)
+        if resource:
+            _append_plan(plan, seen, resource)
+    grouped = (
+        blueprint.required_capabilities.tool_refs,
+        blueprint.required_capabilities.skill_refs,
+        blueprint.required_capabilities.policy_refs,
+    )
+    for references in grouped:
+        for reference in references:
+            try:
+                _append_plan(plan, seen, catalog.by_reference(reference))
+            except ResourceCatalogError:
+                continue
+    return plan
 
-    permissions: dict[str, Any] = {
-        "network_hosts": set(),
-        "tools": set(),
-        "filesystem_read_roots": set(),
-        "filesystem_write_roots": set(),
-        "shell_workspace_only": False,
+
+def run_availability(plan: list[dict[str, Any]]) -> str:
+    if not plan:
+        return "unavailable"
+    states = {item["availability"] for item in plan}
+    statuses = {item["runtime_status"] for item in plan}
+    if states & _BLOCKED_AVAILABILITY:
+        return "unavailable"
+    if "design_only" in states or "runtime_not_supported" in statuses:
+        return "design_only"
+    if "requires_configuration" in states or "runtime_not_configured" in statuses:
+        return "requires_configuration"
+    return "ready"
+
+
+def _selected_resources(
+    blueprint: AgentBlueprint,
+    catalog: ResourceCatalog,
+    diagnostics: list[str],
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    components = {
+        resource["name"]: resource
+        for resource in catalog.resources(kind="component")["resources"]
     }
-    for tool_ref in blueprint.required_capabilities.tool_refs:
-        resource_id, version = tool_ref.rsplit("@", 1)
-        resource = catalog.detail(resource_id, version)
-        required = resource["required_permissions"]
-        permissions["network_hosts"].update(required.get("network_hosts", []))
-        permissions["tools"].update(required.get("tools", []))
-        permissions["filesystem_read_roots"].update(
-            required.get("filesystem_read_roots", [])
-        )
-        permissions["filesystem_write_roots"].update(
-            required.get("filesystem_write_roots", [])
-        )
-        permissions["shell_workspace_only"] = permissions[
-            "shell_workspace_only"
-        ] or bool(required.get("shell_workspace_only", False))
-    return {
-        "network_hosts": sorted(permissions["network_hosts"]),
-        "tools": sorted(permissions["tools"]),
-        "filesystem_read_roots": sorted(permissions["filesystem_read_roots"]),
-        "filesystem_write_roots": sorted(permissions["filesystem_write_roots"]),
-        "shell_workspace_only": permissions["shell_workspace_only"],
+    for component_type in blueprint.required_capabilities.component_types:
+        resource = components.get(component_type.value)
+        if resource is None:
+            diagnostics.append(f"component {component_type.value} is not registered")
+            continue
+        if not _factory_selectable(resource):
+            diagnostics.append(f"component {component_type.value} is not selectable")
+            continue
+        selected.append(resource)
+    expected = {
+        "tool": {"tool", "mcp_tool"},
+        "skill": {"skill"},
+        "policy": {"policy"},
     }
+    grouped = (
+        ("tool", blueprint.required_capabilities.tool_refs),
+        ("skill", blueprint.required_capabilities.skill_refs),
+        ("policy", blueprint.required_capabilities.policy_refs),
+    )
+    for kind, references in grouped:
+        for reference in references:
+            try:
+                resource = catalog.by_reference(reference)
+            except ResourceCatalogError:
+                diagnostics.append(f"{kind} {reference} is not registered")
+                continue
+            if resource["kind"] not in expected[kind]:
+                diagnostics.append(f"{reference} is not a {kind} resource")
+                continue
+            if not _factory_selectable(resource):
+                diagnostics.append(f"{kind} {reference} is not selectable")
+                continue
+            selected.append(resource)
+    return selected
+
+
+def _factory_selectable(resource: dict[str, Any]) -> bool:
+    return bool(resource["factory_selectable"]) and resource["availability"] not in (
+        _BLOCKED_AVAILABILITY
+    )
+
+
+def _derived_permissions(selected: list[dict[str, Any]]) -> PermissionContract:
+    hosts: list[str] = []
+    tools: list[str] = []
+    reads: list[str] = []
+    writes: list[str] = []
+    shell = False
+    for resource in selected:
+        if resource["kind"] not in {"tool", "mcp_tool"}:
+            continue
+        permissions = resource["required_permissions"]
+        hosts.extend(permissions["network_hosts"])
+        tools.extend(permissions["tools"])
+        reads.extend(permissions["filesystem_read_roots"])
+        writes.extend(permissions["filesystem_write_roots"])
+        shell = shell or bool(permissions["shell_workspace_only"])
+    return PermissionContract.from_dict(
+        {
+            "network_hosts": list(dict.fromkeys(hosts)),
+            "tools": list(dict.fromkeys(tools)),
+            "filesystem_read_roots": list(dict.fromkeys(reads)),
+            "filesystem_write_roots": list(dict.fromkeys(writes)),
+            "shell_workspace_only": shell,
+        }
+    )
+
+
+def _apply_policies(
+    blueprint: AgentBlueprint,
+    selected: list[dict[str, Any]],
+    derived: PermissionContract,
+    diagnostics: list[str],
+) -> None:
+    specs = [resource["spec"] for resource in selected if resource["kind"] == "policy"]
+    tool_names = set(derived.tools)
+    has_approval = any(
+        node.component_type is ComponentType.HUMAN_APPROVAL for node in blueprint.nodes
+    )
+    if tool_names & _WRITE_TOOLS and not has_approval:
+        diagnostics.append(
+            "external writes require a HumanApproval node before compilation"
+        )
+    if any(spec.get("network") == "deny" for spec in specs) and (
+        derived.network_hosts or tool_names & _NETWORK_TOOLS
+    ):
+        diagnostics.append("local-only policy forbids network tools or hosts")
+    if (
+        any(spec.get("verification") == "required" for spec in specs)
+        and not blueprint.verification.required
+    ):
+        diagnostics.append("verification-required policy needs required checks")
+    if (
+        any(spec.get("external_write") == "approval_required" for spec in specs)
+        and tool_names & _WRITE_TOOLS
+        and not has_approval
+    ):
+        diagnostics.append("external-write policy requires a HumanApproval node")
+
+
+def _compile_skills(
+    blueprint: AgentBlueprint,
+    selected: list[dict[str, Any]],
+    diagnostics: list[str],
+) -> tuple[Any, ...]:
+    skills = [resource for resource in selected if resource["kind"] == "skill"]
+    agent_nodes = [
+        node for node in blueprint.nodes if node.component_type is ComponentType.AGENT
+    ]
+    if skills and not agent_nodes:
+        diagnostics.append("selected Skills require an Agent node")
+        return blueprint.nodes
+    blocks = [
+        f"[{resource['name']}] {resource['spec'].get('instruction', '').strip()}"
+        for resource in skills
+        if resource["spec"].get("instruction")
+    ]
+    suffix = "\n\n".join(block for block in blocks if block.strip())
+    if not suffix:
+        return blueprint.nodes
+    compiled = []
+    for node in blueprint.nodes:
+        if node.component_type is ComponentType.AGENT and node.system_prompt:
+            compiled.append(
+                replace(node, system_prompt=f"{node.system_prompt}\n\n{suffix}")
+            )
+        else:
+            compiled.append(node)
+    return tuple(compiled)
+
+
+def _append_plan(
+    plan: list[dict[str, Any]], seen: set[str], resource: dict[str, Any]
+) -> None:
+    reference = resource["reference"]
+    if reference in seen:
+        return
+    seen.add(reference)
+    plan.append(
+        {
+            "reference": reference,
+            "kind": resource["kind"],
+            "availability": resource["availability"],
+            "runtime_status": resource["runtime_status"],
+        }
+    )

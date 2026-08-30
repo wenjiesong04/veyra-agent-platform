@@ -12,6 +12,15 @@ import {
   type DeleteAgentResponse,
   type DraftResponse,
   type ExportResponse,
+  type FactoryMissingCapability,
+  type FactoryResourcePlanItem,
+  type FactoryRunAvailability,
+  type FactorySession,
+  type FactorySessionState,
+  type FactoryStatus,
+  type RuntimeStatus,
+  type ApplyFactoryDraftResponse,
+  type FactoryMessage,
   type JsonObject,
   type JsonValue,
   type ListAgentRunsResponse,
@@ -36,9 +45,6 @@ import {
   type UpdateProjectRequest,
   type UpdateAgentRequest,
   type ValidateResponse,
-  type ApplyFactoryDraftResponse,
-  type FactorySession,
-  type FactorySessionState,
 } from "@veyra/api-contracts";
 import { newUuidV7 } from "./uuid";
 
@@ -99,10 +105,12 @@ export type LocalProjectApi = {
   listComponents?(): Promise<ListComponentsResponse>;
   listResources?(filters?: ListResourceFilters): Promise<ListResourcesResponse>;
   getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
+  factoryStatus?(): Promise<FactoryStatus>;
+  runtimeStatus?(): Promise<RuntimeStatus>;
   createFactorySession?(projectId: string, input?: { goal?: string }): Promise<FactorySession>;
   getFactorySession?(projectId: string, sessionId: string): Promise<FactorySession>;
-  sendFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
-  generateFactoryDraft?(projectId: string, sessionId: string): Promise<FactorySession>;
+  addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
+  generateFactoryBlueprint?(projectId: string, sessionId: string): Promise<FactorySession>;
   applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string }): Promise<ApplyFactoryDraftResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
@@ -195,6 +203,16 @@ function asJsonValue(value: unknown, field: string, status = 502): JsonValue {
     status,
     code: "invalid_response",
   });
+}
+
+function asBoolean(value: unknown, field: string, status = 502): boolean {
+  if (typeof value !== "boolean") {
+    throw new LocalApiClientError(`The local service returned an invalid ${field}.`, {
+      status,
+      code: "invalid_response",
+    });
+  }
+  return value;
 }
 
 function schemaRecord(value: unknown, status = 502): Record<string, unknown> {
@@ -512,40 +530,55 @@ function listedResources(value: unknown, status = 502): ListResourcesResponse {
   return { schema_version: LOCAL_API_SCHEMA_VERSION, resources: asArray(record.resources, "resources", status).map((item) => resource(item, status)), kinds };
 }
 
-const factoryStates = new Set<FactorySessionState>([
-  "collecting",
-  "ready",
-  "generating",
-  "review",
-  "missing_capability",
-  "completed",
-  "abandoned",
-]);
+const factoryStates = new Set<FactorySessionState>(["collecting", "ready", "generating", "review", "missing_capability", "completed", "abandoned"]);
+const factoryRunAvailability = new Set<FactoryRunAvailability>(["ready", "requires_configuration", "design_only", "unavailable"]);
 
-function factoryMessage(value: unknown, status = 502): FactorySession["messages"][number] {
-  const record = asRecord(value, status);
-  const role = record.role;
+function factoryMessage(value: unknown, status = 502): FactoryMessage {
+  const record = schemaRecord(value, status);
+  const role = asString(record.role, "factory.message.role", status);
   if (role !== "user" && role !== "assistant") {
-    throw new LocalApiClientError("The local service returned an invalid Factory message.", { status, code: "invalid_response" });
+    throw new LocalApiClientError("The local service returned an unknown Factory message role.", { status, code: "invalid_response" });
   }
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     message_id: asString(record.message_id, "factory.message_id", status),
-    sequence: asNumber(record.sequence, "factory.sequence", status),
+    sequence: asNumber(record.sequence, "factory.message.sequence", status),
     role,
-    content: asText(record.content, "factory.content", status),
-    created_at: asString(record.created_at, "factory.created_at", status),
+    content: asText(record.content, "factory.message.content", status),
+    created_at: asString(record.created_at, "factory.message.created_at", status),
   };
 }
 
-function jsonObjects(value: unknown, field: string, status = 502): JsonObject[] {
-  return asArray(value, field, status).map((item) => asJsonValue(asRecord(item, status), field, status) as JsonObject);
+function factoryPlanItem(value: unknown, status = 502): FactoryResourcePlanItem {
+  const record = asRecord(value, status);
+  const kind = asString(record.kind, "factory.plan.kind", status) as ResourceKind;
+  const availability = asString(record.availability, "factory.plan.availability", status) as ResourceAvailability;
+  const runtimeStatus = asString(record.runtime_status, "factory.plan.runtime_status", status) as ResourceRuntimeStatus;
+  if (!resourceKinds.has(kind) || !resourceAvailability.has(availability) || !resourceRuntimeStatuses.has(runtimeStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Factory resource plan item.", { status, code: "invalid_response" });
+  }
+  return { reference: asString(record.reference, "factory.plan.reference", status), kind, availability, runtime_status: runtimeStatus };
+}
+
+function factoryMissing(value: unknown, status = 502): FactoryMissingCapability {
+  const record = asRecord(value, status);
+  const proposal = asRecord(record.proposal, status);
+  if (proposal.action !== "quarantined_resource_draft" || proposal.executable !== false) {
+    throw new LocalApiClientError("The local service returned an invalid missing-capability proposal.", { status, code: "invalid_response" });
+  }
+  return {
+    kind: asString(record.kind, "factory.missing.kind", status),
+    reference: asString(record.reference, "factory.missing.reference", status),
+    reason: asString(record.reason, "factory.missing.reason", status),
+    proposal: { action: "quarantined_resource_draft", executable: false },
+  };
 }
 
 function factorySession(value: unknown, status = 502): FactorySession {
   const record = schemaRecord(value, status);
   const state = asString(record.state, "factory.state", status) as FactorySessionState;
-  if (!factoryStates.has(state) || typeof record.ready !== "boolean") {
+  const runAvailability = asString(record.run_availability, "factory.run_availability", status) as FactoryRunAvailability;
+  if (!factoryStates.has(state) || !factoryRunAvailability.has(runAvailability) || record.executes_drafts !== false) {
     throw new LocalApiClientError("The local service returned an invalid Factory session.", { status, code: "invalid_response" });
   }
   return {
@@ -553,16 +586,54 @@ function factorySession(value: unknown, status = 502): FactorySession {
     session_id: asString(record.session_id, "factory.session_id", status),
     project_id: asString(record.project_id, "factory.project_id", status),
     state,
-    ready: record.ready,
+    ready: asBoolean(record.ready, "factory.ready", status),
     next_prompt: asText(record.next_prompt, "factory.next_prompt", status),
-    resource_plan: jsonObjects(record.resource_plan, "factory.resource_plan", status),
+    resource_plan: asArray(record.resource_plan, "factory.resource_plan", status).map((item) => factoryPlanItem(item, status)),
     blueprint: record.blueprint === null ? null : asJsonValue(asRecord(record.blueprint, status), "factory.blueprint", status) as JsonObject,
     diagnostics: asArray(record.diagnostics, "factory.diagnostics", status).map((item) => asString(item, "factory.diagnostic", status)),
-    missing_capabilities: jsonObjects(record.missing_capabilities, "factory.missing_capabilities", status),
+    missing_capabilities: asArray(record.missing_capabilities, "factory.missing_capabilities", status).map((item) => factoryMissing(item, status)),
+    run_availability: runAvailability,
+    executes_drafts: false,
     revision: asNumber(record.revision, "factory.revision", status),
     created_at: asString(record.created_at, "factory.created_at", status),
     updated_at: asString(record.updated_at, "factory.updated_at", status),
     messages: asArray(record.messages, "factory.messages", status).map((item) => factoryMessage(item, status)),
+  };
+}
+
+function factoryStatus(value: unknown, status = 502): FactoryStatus {
+  const record = schemaRecord(value, status);
+  const effort = asString(record.reasoning_effort, "factory.reasoning_effort", status);
+  if ((effort !== "low" && effort !== "high" && effort !== "max") || record.executes_drafts !== false) {
+    throw new LocalApiClientError("The local service returned an invalid Factory status.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    configured: asBoolean(record.configured, "factory.configured", status),
+    model_id: asString(record.model_id, "factory.model_id", status),
+    model_base_url: asString(record.model_base_url, "factory.model_base_url", status),
+    model_api_key_env: asString(record.model_api_key_env, "factory.model_api_key_env", status),
+    reasoning_effort: effort,
+    repair_attempts: asNumber(record.repair_attempts, "factory.repair_attempts", status),
+    executes_drafts: false,
+  };
+}
+
+function runtimeStatus(value: unknown, status = 502): RuntimeStatus {
+  const record = schemaRecord(value, status);
+  const effort = asString(record.reasoning_effort, "runtime.reasoning_effort", status);
+  if (effort !== "low" && effort !== "high" && effort !== "max") {
+    throw new LocalApiClientError("The local service returned an invalid Runtime status.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    configured: asBoolean(record.configured, "runtime.configured", status),
+    model_id: asString(record.model_id, "runtime.model_id", status),
+    model_base_url: asString(record.model_base_url, "runtime.model_base_url", status),
+    model_api_key_env: asString(record.model_api_key_env, "runtime.model_api_key_env", status),
+    reasoning_effort: effort,
+    allow_process_environment_key: asBoolean(record.allow_process_environment_key, "runtime.allow_process_environment_key", status),
+    user_provided_only: asBoolean(record.user_provided_only, "runtime.user_provided_only", status),
   };
 }
 
@@ -856,22 +927,23 @@ export class LocalApiClient {
     return this.request(`resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}`, resource);
   }
 
+  factoryStatus(): Promise<FactoryStatus> {
+    return this.request("factory/status", factoryStatus);
+  }
+
+  runtimeStatus(): Promise<RuntimeStatus> {
+    return this.request("runtime/status", runtimeStatus);
+  }
+
   createFactorySession(projectId: string, input: { goal?: string } = {}): Promise<FactorySession> {
-    return this.request(
-      `projects/${encodeURIComponent(projectId)}/factory/sessions`,
-      factorySession,
-      { method: "POST", body: input },
-    );
+    return this.request(`projects/${encodeURIComponent(projectId)}/factory/sessions`, factorySession, { method: "POST", body: input });
   }
 
   getFactorySession(projectId: string, sessionId: string): Promise<FactorySession> {
-    return this.request(
-      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}`,
-      factorySession,
-    );
+    return this.request(`projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}`, factorySession);
   }
 
-  sendFactoryMessage(projectId: string, sessionId: string, content: string): Promise<FactorySession> {
+  addFactoryMessage(projectId: string, sessionId: string, content: string): Promise<FactorySession> {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/messages`,
       factorySession,
@@ -879,7 +951,7 @@ export class LocalApiClient {
     );
   }
 
-  generateFactoryDraft(projectId: string, sessionId: string): Promise<FactorySession> {
+  generateFactoryBlueprint(projectId: string, sessionId: string): Promise<FactorySession> {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/generate`,
       factorySession,

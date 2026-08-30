@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,11 +19,14 @@ from .api.runtime import build_router as build_runtime_router
 from .api.system import build_router as build_system_router
 from .config import LocalSettings
 from .factory import FactoryService, FactorySettings, KimiClient
+from .factory.client import KimiTransport
 from .factory.store import FactorySessionRepository
+from .host_env import load_host_process_env
 from .library import LibraryService
 from .projects import ProjectService
 from .resources import ResourceCatalog
-from .runtime import RuntimeService
+from .runtime import RuntimeModelClient, RuntimeService, RuntimeSettings, ToolRuntime
+from .runtime.client import RuntimeModelTransport
 from .storage import LocalRepository, migrate_local_database
 from .system import DirectoryPicker, MacOSDirectoryPicker
 
@@ -46,12 +50,23 @@ def create_app(
     settings: LocalSettings | None = None,
     *,
     directory_picker: DirectoryPicker | None = None,
+    factory_transport: KimiTransport | None = None,
+    factory_settings: FactorySettings | None = None,
+    runtime_transport: RuntimeModelTransport | None = None,
+    runtime_settings: RuntimeSettings | None = None,
 ) -> FastAPI:
     """Create the local service application without starting a server."""
 
     resolved_settings = settings or LocalSettings()
     resolved_directory_picker = directory_picker or MacOSDirectoryPicker()
+    resolved_factory_settings = factory_settings or FactorySettings()
+    host_key_allowed = resolved_settings.mode not in {"production", "release"}
+    resolved_runtime_settings = runtime_settings or RuntimeSettings(
+        allow_process_environment_key=host_key_allowed
+    )
     database_path = _sqlite_database_path(resolved_settings.database_url)
+    catalog = ResourceCatalog()
+    runtime_client = RuntimeModelClient(resolved_runtime_settings, runtime_transport)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -66,16 +81,18 @@ def create_app(
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
-        factory_catalog = application.state.resource_catalog
-        factory_settings = FactorySettings()
         application.state.factory = FactoryService(
             FactorySessionRepository(database_path),
             projects,
-            factory_catalog,
-            KimiClient(factory_settings),
+            catalog,
+            KimiClient(resolved_factory_settings, factory_transport),
         )
         application.state.runtime = RuntimeService(
-            repository, projects, application.state.library, factory_catalog
+            repository,
+            projects,
+            application.state.library,
+            runtime_client,
+            ToolRuntime(catalog),
         )
         application.state.database_revision = "local_0008_factory_sessions"
         application.state.database_ready = True
@@ -92,7 +109,7 @@ def create_app(
     application.state.settings = resolved_settings
     application.state.database_ready = False
     application.state.database_revision = None
-    application.state.resource_catalog = ResourceCatalog()
+    application.state.resource_catalog = catalog
     application.add_exception_handler(TypedApiError, typed_error_response)
 
     application.include_router(
@@ -113,6 +130,8 @@ def create_app(
 
 # Factory construction only defines routes and a lifespan; it performs no
 # filesystem or database work until the ASGI server enters that lifespan.
+if "pytest" not in sys.modules:
+    load_host_process_env()
 app = create_app()
 
 
@@ -121,6 +140,7 @@ def main() -> None:
 
     import uvicorn
 
+    load_host_process_env()
     settings = LocalSettings()
     uvicorn.run(
         create_app(settings),
@@ -128,3 +148,7 @@ def main() -> None:
         port=settings.port,
         log_level=settings.log_level,
     )
+
+
+if __name__ == "__main__":
+    main()

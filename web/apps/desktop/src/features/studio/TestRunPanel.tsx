@@ -46,6 +46,33 @@ function eventLabel(kind: NonNullable<AgentRunResponse["events"]>[number]["kind"
   return label ? label[locale === "zh" ? 0 : 1] : kind;
 }
 
+function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: "zh" | "en" }) {
+  const [configured, setConfigured] = React.useState<boolean | null>(null);
+  const [userProvidedOnly, setUserProvidedOnly] = React.useState(false);
+  const zh = locale === "zh";
+  React.useEffect(() => {
+    let current = true;
+    void api.runtimeStatus?.()
+      .then((status) => {
+        if (!current) return;
+        setConfigured(status.configured);
+        setUserProvidedOnly(status.user_provided_only);
+      })
+      .catch(() => {
+        if (current) setConfigured(false);
+      });
+    return () => { current = false; };
+  }, [api]);
+  if (configured === null) return null;
+  if (userProvidedOnly) {
+    return <p className="studio-run-note">{zh ? "上线模式不会使用本机共享密钥。请提供你自己的 Runtime API 后再运行。" : "Release mode will not use the host shared key. Provide your own Runtime API before running."}</p>;
+  }
+  if (!configured) {
+    return <p className="studio-run-note">{zh ? "尚未配置 Runtime 模型。在进程环境中设置 MOONSHOT_API_KEY 后即可试跑 Agent 节点。" : "The Runtime model is not configured. Set MOONSHOT_API_KEY in the process environment to test-run Agent nodes."}</p>;
+  }
+  return <p className="studio-run-note">{zh ? "开发环境正使用本机 Runtime 密钥试跑。上线后用户 Agent 必须使用他们自己的 API。" : "Local development is using the host Runtime key. Production Agent runs will require the user's own API."}</p>;
+}
+
 export function TestRunPanel({ api, projectId, agentId, source, disabled, locale }: TestRunPanelProps) {
   const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialInputs(source));
   const [run, setRun] = React.useState<AgentRunResponse | null>(null);
@@ -125,6 +152,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
           </div>
           {disabled ? <p className="studio-run-note">{zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."}</p> : null}
           {!api.runAgent ? <p className="studio-run-note">{zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."}</p> : null}
+          {api.runtimeStatus && !disabled ? <RuntimeKeyNote api={api} locale={locale} /> : null}
         </div>
         <div className="studio-run-result" aria-live="polite">
           {error ? <div className="studio-alert bad">{error}</div> : null}

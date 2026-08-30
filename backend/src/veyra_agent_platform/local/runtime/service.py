@@ -21,7 +21,8 @@ from veyra_agent_platform.local.projects.service import ProjectError, ProjectSer
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
-from .provider import RuntimeModelClient, RuntimeProviderError
+from .client import RuntimeModelClient, RuntimeProviderError
+from .config import RuntimeSettings
 from .tools import ToolRuntime, ToolRuntimeError
 
 _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
@@ -45,14 +46,16 @@ class RuntimeService:
         repository: LocalRepository,
         projects: ProjectService,
         library: LibraryService,
-        catalog: ResourceCatalog | None = None,
-        model_client: RuntimeModelClient | None = None,
+        model: RuntimeModelClient | None = None,
+        tools: ToolRuntime | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
-        self.catalog = catalog or ResourceCatalog()
-        self.tools = ToolRuntime(self.catalog)
-        self.model = model_client or RuntimeModelClient()
+        self.model = model or RuntimeModelClient(RuntimeSettings())
+        self.tools = tools or ToolRuntime(ResourceCatalog())
         self.repository.interrupt_orphan_runs()
+
+    def status(self) -> dict[str, Any]:
+        return self.model.status()
 
     def components(self) -> dict[str, Any]:
         from veyra_agent_platform.local.components import component_registry
@@ -347,34 +350,30 @@ class RuntimeService:
                         ]
                     )
                     port = "next"
-                elif node.component_type is ComponentType.AGENT:
-                    assert node.model_ref is not None
-                    assert node.system_prompt is not None
-                    completion = self.model.complete(
-                        model_ref=node.model_ref,
-                        system_prompt=node.system_prompt,
-                        values=values,
-                    )
-                    values.update(
-                        _model_output_values(completion.content, source.outputs)
-                    )
-                    port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
                     result = self._validated_outputs(source, values)
                     events.append((node.id, "node.completed", {}))
                     return result, events, verifier_passed
-                elif node.component_type is ComponentType.HUMAN_APPROVAL:
+                elif node.component_type is ComponentType.AGENT:
+                    values.update(self._run_agent(node, source, values))
+                    port = "next"
+                elif node.component_type in {
+                    ComponentType.TOOL,
+                    ComponentType.HUMAN_APPROVAL,
+                }:
                     raise RuntimeError(
                         "runtime_not_supported",
-                        "HumanApproval is not supported by this local Runtime",
+                        f"{node.component_type.value} is not supported by "
+                        "this local Runtime",
                     )
                 else:
                     raise RuntimeError(
                         "runtime_not_supported",
-                        "Agent nodes require a configured provider",
+                        f"{node.component_type.value} is not supported by "
+                        "this local Runtime",
                     )
-            except (ToolRuntimeError, RuntimeProviderError) as exc:
+            except (RuntimeProviderError, ToolRuntimeError) as exc:
                 runtime_error = RuntimeError(exc.code, str(exc))
                 events.append((node.id, "node.failed", {"code": runtime_error.code}))
                 runtime_error.events = events
@@ -427,45 +426,76 @@ class RuntimeService:
             result[name] = values[name]
         return result
 
-
-def _model_output_values(content: str, outputs: Mapping[str, str]) -> dict[str, Any]:
-    """Map a model response to declared outputs without accepting extra fields."""
-    output_items = list(outputs.items())
-    if len(output_items) == 1:
-        output_name, output_type = output_items[0]
-        if output_type == "string":
-            value: Any = content
-        else:
-            try:
-                value = json.loads(content)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    "model_output_invalid", "Agent model did not return valid JSON"
-                ) from exc
-        if not _value_matches_type(value, output_type):
+    def _run_agent(
+        self,
+        node: Any,
+        source: AgentSource,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.model.configured:
             raise RuntimeError(
-                "model_output_invalid",
-                f"Agent model output {output_name} is not a {output_type}",
+                "runtime_not_configured",
+                "Agent nodes require a Runtime model API key",
             )
-        return {output_name: value}
+        if node.model_ref != "model.primary":
+            raise RuntimeError(
+                "runtime_model_unknown",
+                "Agent model_ref is not the host Runtime profile",
+            )
+        prompt = node.system_prompt or ""
+        if "{{" in prompt:
+            prompt = _interpolate(prompt, values)
+        completion = self.model.complete(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": _agent_user_message(source, values)},
+            ]
+        )
+        return _model_output_values(completion.content.strip(), source.outputs, values)
+
+
+def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for name, value in values.items():
+        parts.append(f"{name}: {value}")
+    if not parts:
+        raise RuntimeError(
+            "agent_input_missing", "Agent nodes need at least one input value"
+        )
+    return "\n".join(parts)
+
+
+def _model_output_values(
+    content: str, outputs: Mapping[str, str], values: dict[str, Any]
+) -> dict[str, Any]:
+    """Accept only values matching the declared outputs not already populated."""
+    targets = [
+        (name, field_type) for name, field_type in outputs.items() if name not in values
+    ]
+    if len(targets) == 1 and targets[0][1] == "string":
+        return {targets[0][0]: content}
     try:
-        parsed = json.loads(content)
+        parsed: Any = json.loads(content)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            "model_output_invalid", "Agent model did not return an output object"
+            "agent_output_invalid", "Agent model did not return valid JSON outputs"
         ) from exc
-    if not isinstance(parsed, dict) or set(parsed) != {
-        name for name, _ in output_items
-    }:
+    if len(targets) == 1:
+        name, field_type = targets[0]
+        if not _value_matches_type(parsed, field_type):
+            raise RuntimeError(
+                "agent_output_invalid", f"Agent output {name} is not a {field_type}"
+            )
+        return {name: parsed}
+    if not isinstance(parsed, dict) or set(parsed) != {name for name, _ in targets}:
         raise RuntimeError(
-            "model_output_invalid", "Agent model output fields do not match the Agent"
+            "agent_output_invalid", "Agent model output fields do not match the Agent"
         )
     if not all(
-        _value_matches_type(parsed[name], output_type)
-        for name, output_type in output_items
+        _value_matches_type(parsed[name], field_type) for name, field_type in targets
     ):
         raise RuntimeError(
-            "model_output_invalid", "Agent model output types are invalid"
+            "agent_output_invalid", "Agent model output types are invalid"
         )
     return parsed
 

@@ -573,7 +573,10 @@ from model output. It exposes immutable, versioned descriptors for:
   approvals, budgets, and verification. Policy is an overlay enforced during
   resolution and Runtime authorization, not a free-form Canvas node.
 - **Template** — a complete, Forkable Agent definition assembled from catalog
-  resources.
+  resources. V1 ships a blank Starter plus three LLM-first work templates:
+  document distiller, question researcher, and file-sort planner. They compile
+  built-in Skills into the Agent prompt and declare no Tool nodes. The
+  researcher does not browse; the file planner does not move files.
 
 Each descriptor declares stable resource ID, kind, version, name/description,
 origin, content hash, availability state, Factory selectability, Runtime
@@ -582,10 +585,12 @@ support, required permissions, and compatibility. Availability is explicit:
 `unavailable`. Factory cannot present a resource as runnable when its adapter or
 provider is absent.
 
-The first useful catalog contains the eight existing graph Components, a small
-set of versioned instruction Skills and default Policies, and only Tool/MCP
-entries backed by real adapters. The UI may display an unavailable Tool/MCP
-descriptor, but Factory cannot select it for a runnable Agent.
+The first useful catalog contains the eight existing graph Components, versioned
+instruction Skills (research, document analysis, need extraction, evidence
+ledger, content planning, file taxonomy) and default Policies, Forkable work
+templates, and only Tool/MCP entries backed by real adapters. The UI may display
+an unavailable Tool/MCP descriptor, but Factory cannot select it for a runnable
+Agent.
 
 If no registered resource satisfies a requirement, Factory returns a typed
 `MissingCapabilityProposal`. With explicit user approval, Kimi may produce a
@@ -614,11 +619,15 @@ Moving a Canvas node must not change `behavior_hash`. Changing prompt, tool, per
 
 ```text
 model           kimi-k3 (current configurable default)
-base URL        https://api.moonshot.ai/v1
+base URL        https://api.moonshot.cn/v1
 chat endpoint   /v1/chat/completions
 models endpoint /v1/models
 auth            Authorization: Bearer $MOONSHOT_API_KEY
 ```
+
+The default base URL is the China Kimi Open Platform endpoint. Override
+`VEYRA_FACTORY_MODEL_BASE_URL` to `https://api.moonshot.ai/v1` for the
+international site.
 
 Kimi Open Platform supports OpenAI-compatible Chat Completions, Structured
 Output, tool calling, streaming, reasoning, and a large context window. The
@@ -702,7 +711,7 @@ unvalidated graph.
 ### 6.4 Kimi configuration
 
 ```text
-VEYRA_FACTORY_MODEL_BASE_URL=https://api.moonshot.ai/v1
+VEYRA_FACTORY_MODEL_BASE_URL=https://api.moonshot.cn/v1
 VEYRA_FACTORY_MODEL_ID=kimi-k3
 VEYRA_FACTORY_MODEL_API_KEY_ENV=MOONSHOT_API_KEY
 VEYRA_FACTORY_REASONING_EFFORT=high
@@ -745,6 +754,11 @@ still be generated, validated, versioned, and exported, but model-based Run is
 disabled with an explicit configuration requirement. Provider secrets live in
 Keychain/process environment and Agent source stores only `model_ref` or
 `secretRef`.
+
+Local development may use the host process Runtime profile
+(`VEYRA_RUNTIME_*` / `MOONSHOT_API_KEY`) so Agent nodes can run for testing.
+Production and release modes do not use that shared host key for user-created
+or Factory-generated Agents; those runs require a user-provided Runtime API.
 
 ---
 
@@ -1609,14 +1623,12 @@ Stop expanding if:
 
 ## 20. Immediate Next Documentation/Implementation Tasks
 
-1. Implement ADR 0003 Resource Catalog and expose it through the real Resource
-   Library page.
-2. Add Project-scoped Factory conversations and an injected Kimi transport.
-3. Resolve only catalog resources, derive permissions/locks, and enforce the
-   three-attempt repair boundary.
-4. Hand the confirmed Agent Draft into the existing Studio without executing it.
-5. Add the provider-profile boundary required to run an Agent model node only
-   after the generation-to-Studio flow is stable.
+1. Resource Catalog, Factory conversation, catalog-only resolution, and
+   confirm-to-Draft (never execute) are in the local service.
+2. Local development may run Agent nodes through a host Runtime model profile.
+   Production still requires a user-provided Runtime API before Agent runs.
 
 All new work retains the clean-room legacy boundary. No implementation phase
 copies legacy Veyra directories or loads a Project `.env` automatically.
+The local sidecar may load a repository-root gitignored `.env` at process
+start for development credentials.

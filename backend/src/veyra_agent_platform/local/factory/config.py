@@ -19,7 +19,7 @@ class FactorySettings(BaseSettings):
         extra="ignore",
     )
 
-    model_base_url: str = "https://api.moonshot.ai/v1"
+    model_base_url: str = "https://api.moonshot.cn/v1"
     model_id: str = "kimi-k3"
     model_api_key_env: str = "MOONSHOT_API_KEY"
     reasoning_effort: Literal["low", "high", "max"] = "high"

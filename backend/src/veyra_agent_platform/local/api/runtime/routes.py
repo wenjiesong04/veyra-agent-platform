@@ -19,6 +19,10 @@ class RunRequest(BaseModel):
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["runtime"])
 
+    @router.get("/runtime/status")
+    def runtime_status(request: Request) -> dict[str, Any]:
+        return _runtime(request).status()
+
     @router.get("/components")
     def components(request: Request) -> dict[str, Any]:
         return _runtime(request).components()

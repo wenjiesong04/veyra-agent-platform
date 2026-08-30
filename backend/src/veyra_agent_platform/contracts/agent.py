@@ -575,13 +575,15 @@ class AgentBlueprint:
 class RequiredCapabilities:
     component_types: tuple[ComponentType, ...]
     tool_refs: tuple[str, ...]
+    skill_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> RequiredCapabilities:
         item = require_mapping(data, "required_capabilities")
         require_keys(
             item,
-            allowed={"component_types", "tool_refs"},
+            allowed={"component_types", "tool_refs", "skill_refs", "policy_refs"},
             required={"component_types", "tool_refs"},
         )
         raw_types = require_list(
@@ -602,6 +604,16 @@ class RequiredCapabilities:
             component_types,
             _strict_str_list(
                 item["tool_refs"], "required_capabilities.tool_refs", pattern=_REFERENCE
+            ),
+            _strict_str_list(
+                item.get("skill_refs", []),
+                "required_capabilities.skill_refs",
+                pattern=_REFERENCE,
+            ),
+            _strict_str_list(
+                item.get("policy_refs", []),
+                "required_capabilities.policy_refs",
+                pattern=_REFERENCE,
             ),
         )
 
@@ -624,6 +636,8 @@ class RequiredCapabilities:
                 component_type.value for component_type in self.component_types
             ],
             "tool_refs": list(self.tool_refs),
+            "skill_refs": list(self.skill_refs),
+            "policy_refs": list(self.policy_refs),
         }
 
 

@@ -13,11 +13,11 @@ from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalo
 
 _MAX_READ_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
-_FORBIDDEN_SUFFIXES = {".key", ".pem", ".p12", ".token"}
+_FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".token")
 
 
 class ToolRuntimeError(RuntimeError):
-    """A typed, non-retriable Tool Runtime failure."""
+    """A typed Tool Runtime failure safe to include in Run evidence."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -74,14 +74,13 @@ class ToolRuntime:
         self._authorize(source, resource)
         adapter = resource.get("spec", {}).get("adapter")
         input_digest = sha256_digest({"path": values.get("path")})
-        if adapter == "veyra.runtime.filesystem.read":
-            output, byte_length, relative_path = self._read_project_file(
-                project_root, values.get("path")
-            )
-        else:
+        if adapter != "veyra.runtime.filesystem.read":
             raise ToolRuntimeError(
                 "tool_runtime_unavailable", "Tool adapter is not installed"
             )
+        output, byte_length, relative_path = self._read_project_file(
+            project_root, values.get("path")
+        )
         receipt = {
             "tool_reference": node.uses,
             "adapter": adapter,
@@ -95,13 +94,12 @@ class ToolRuntime:
 
     @staticmethod
     def _authorize(source: AgentSource, resource: dict[str, Any]) -> None:
-        resource_id = resource["resource_id"]
         permissions = source.permissions
-        if resource_id not in permissions.tools:
+        required = resource["required_permissions"]
+        if not set(required.get("tools", [])) <= set(permissions.tools):
             raise ToolRuntimeError(
                 "tool_permission_denied", "Agent permissions do not include this Tool"
             )
-        required = resource["required_permissions"]
         if not set(required.get("network_hosts", [])) <= set(permissions.network_hosts):
             raise ToolRuntimeError(
                 "tool_permission_denied",
@@ -136,7 +134,7 @@ class ToolRuntime:
     ) -> tuple[dict[str, str], int, str]:
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ToolRuntimeError(
-                "tool_input_invalid", "Read Project File requires a relative path"
+                "tool_input_invalid", "Filesystem Read requires a relative path"
             )
         if "\x00" in raw_path or os.path.isabs(raw_path):
             raise ToolRuntimeError(
@@ -152,7 +150,7 @@ class ToolRuntime:
         relative_path = portable.as_posix()
         if any(
             part.lower() in _FORBIDDEN_NAMES
-            or part.lower().endswith(tuple(_FORBIDDEN_SUFFIXES))
+            or part.lower().endswith(_FORBIDDEN_SUFFIXES)
             for part in portable.parts
         ):
             raise ToolRuntimeError(
@@ -182,24 +180,19 @@ class ToolRuntime:
                 "tool_input_invalid", "Tool path is not a regular file"
             )
         try:
-            size = target.stat().st_size
-            if size > _MAX_READ_BYTES:
-                raise ToolRuntimeError(
-                    "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
-                )
             content = target.read_bytes()
-            if len(content) > _MAX_READ_BYTES:
-                raise ToolRuntimeError(
-                    "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
-                )
         except OSError as exc:
             raise ToolRuntimeError(
                 "tool_failed", "Tool could not read the Project file"
             ) from exc
+        if len(content) > _MAX_READ_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
+            )
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ToolRuntimeError(
                 "tool_output_invalid", "Tool file is not UTF-8 text"
             ) from exc
-        return {"result": text}, len(content), relative_path
+        return {"content": text}, len(content), relative_path

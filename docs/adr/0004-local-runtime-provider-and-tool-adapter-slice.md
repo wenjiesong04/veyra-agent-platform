@@ -5,13 +5,13 @@
 The first Runtime slice supports two real execution paths:
 
 - an `Agent` node calls one configured OpenAI-compatible model through the
-  process environment; and
+  host-side Runtime profile; and
 - `veyra.tool.filesystem.read@1.0.0` reads a UTF-8 file below the selected
   Project root.
 
 Both paths remain synchronous inside the existing local Run service until the
 durable command and event-stream wave is implemented. A run without a model
-credential fails with `runtime_provider_not_configured`; it is never simulated.
+credential fails with `runtime_not_configured`; it is never simulated.
 
 ## Boundaries
 
@@ -19,8 +19,8 @@ credential fails with `runtime_provider_not_configured`; it is never simulated.
   immutable content hash in the Agent lock, and have the required permission
   subset in the source.
 - The file adapter rejects absolute paths, traversal, symlinks, secret-like
-  names and files larger than 1 MiB. It returns the text as the declared
-  `result` value and records only digests and a relative path in the Run receipt.
+  names and files larger than 1 MiB. It returns text as the declared `content`
+  value and records only digests and a relative path in the Run receipt.
 - Model responses are mapped only to declared Agent outputs. String outputs use
   the final response text; object, array, number and boolean outputs require
   matching JSON values.

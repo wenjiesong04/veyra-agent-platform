@@ -8,9 +8,10 @@ from .client import (
     KimiTransport,
 )
 from .config import FactorySettings
-from .service import FactoryService
+from .service import FactoryError, FactoryService
 
 __all__ = [
+    "FactoryError",
     "FactoryProviderError",
     "FactoryProviderNotConfigured",
     "FactoryService",

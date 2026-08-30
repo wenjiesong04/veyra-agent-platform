@@ -28,12 +28,15 @@ def test_resource_routes_filter_and_return_immutable_detail(tmp_path: Path) -> N
             "Research Brief",
             "Document Analyzer",
             "Content Planner",
+            "Need Extractor",
+            "Evidence Ledger",
+            "File Taxonomy",
         }
         assert {item["kind"]: item["count"] for item in payload["kinds"]} == {
             "component": 0,
             "tool": 0,
             "mcp_tool": 0,
-            "skill": 3,
+            "skill": 6,
             "policy": 0,
             "template": 0,
         }

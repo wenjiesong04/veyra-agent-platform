@@ -1,18 +1,20 @@
 """Deterministic local Runtime execution."""
 
-from .provider import (
+from .client import (
     RuntimeCompletion,
     RuntimeModelClient,
+    RuntimeModelTransport,
     RuntimeProviderError,
     RuntimeProviderNotConfigured,
-    RuntimeSettings,
 )
+from .config import RuntimeSettings
 from .service import RuntimeService
 from .tools import ToolExecution, ToolRuntime, ToolRuntimeError
 
 __all__ = [
     "RuntimeCompletion",
     "RuntimeModelClient",
+    "RuntimeModelTransport",
     "RuntimeProviderError",
     "RuntimeProviderNotConfigured",
     "RuntimeService",

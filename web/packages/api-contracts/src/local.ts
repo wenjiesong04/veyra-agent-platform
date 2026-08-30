@@ -362,6 +362,12 @@ export type FactorySessionState =
   | "completed"
   | "abandoned";
 
+export type FactoryRunAvailability =
+  | "ready"
+  | "requires_configuration"
+  | "design_only"
+  | "unavailable";
+
 export type FactoryMessage = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   message_id: string;
@@ -371,6 +377,23 @@ export type FactoryMessage = {
   created_at: string;
 };
 
+export type FactoryResourcePlanItem = {
+  reference: string;
+  kind: ResourceKind;
+  availability: ResourceAvailability;
+  runtime_status: ResourceRuntimeStatus;
+};
+
+export type FactoryMissingCapability = {
+  kind: string;
+  reference: string;
+  reason: string;
+  proposal: {
+    action: "quarantined_resource_draft";
+    executable: false;
+  };
+};
+
 export type FactorySession = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   session_id: string;
@@ -378,14 +401,38 @@ export type FactorySession = {
   state: FactorySessionState;
   ready: boolean;
   next_prompt: string;
-  resource_plan: JsonObject[];
+  resource_plan: FactoryResourcePlanItem[];
   blueprint: JsonObject | null;
   diagnostics: string[];
-  missing_capabilities: JsonObject[];
+  missing_capabilities: FactoryMissingCapability[];
+  run_availability: FactoryRunAvailability;
+  executes_drafts: false;
   revision: number;
   created_at: string;
   updated_at: string;
   messages: FactoryMessage[];
+};
+
+export type FactoryStatus = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  configured: boolean;
+  model_id: string;
+  model_base_url: string;
+  model_api_key_env: string;
+  reasoning_effort: "low" | "high" | "max";
+  repair_attempts: number;
+  executes_drafts: false;
+};
+
+export type RuntimeStatus = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  configured: boolean;
+  model_id: string;
+  model_base_url: string;
+  model_api_key_env: string;
+  reasoning_effort: "low" | "high" | "max";
+  allow_process_environment_key: boolean;
+  user_provided_only: boolean;
 };
 
 export type ApplyFactoryDraftResponse = {

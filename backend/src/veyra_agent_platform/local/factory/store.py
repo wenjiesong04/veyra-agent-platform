@@ -125,7 +125,8 @@ class FactorySessionRepository:
         updated_at: str,
     ) -> None:
         current = connection.execute(
-            "SELECT * FROM factory_sessions WHERE session_id = ?", (session_id,)
+            "SELECT * FROM factory_sessions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
         if current is None:
             raise ValueError("unknown Factory session")

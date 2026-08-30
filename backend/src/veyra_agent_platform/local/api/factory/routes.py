@@ -1,4 +1,4 @@
-"""HTTP surface for the Project-scoped Factory conversation."""
+"""HTTP surface for Factory status and Project-scoped conversations."""
 
 from __future__ import annotations
 
@@ -8,10 +8,19 @@ from typing import Any, TypeVar, cast
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from veyra_agent_platform.local.api.projects.routes import TypedApiError
-from veyra_agent_platform.local.factory import FactoryProviderError, FactoryService
+from veyra_agent_platform.local.api.projects import TypedApiError
+from veyra_agent_platform.local.factory import (
+    FactoryError,
+    FactoryProviderError,
+    FactoryService,
+)
 
 _Result = TypeVar("_Result")
+_PROVIDER_UNAVAILABLE = {
+    "factory_provider_not_configured",
+    "factory_unavailable",
+    "factory_timeout",
+}
 
 
 class _ClosedModel(BaseModel):
@@ -33,9 +42,15 @@ class ApplyFactoryDraftRequest(_ClosedModel):
 
 
 def build_router() -> APIRouter:
-    router = APIRouter(prefix="/api/v1/projects/{project_id}/factory", tags=["factory"])
+    router = APIRouter(tags=["factory"])
 
-    @router.post("/sessions", status_code=status.HTTP_201_CREATED)
+    @router.get("/api/v1/factory/status")
+    def factory_status(request: Request) -> dict[str, Any]:
+        return _translate(lambda: _factory(request).status())
+
+    sessions = APIRouter(prefix="/api/v1/projects/{project_id}/factory")
+
+    @sessions.post("/sessions", status_code=status.HTTP_201_CREATED)
     def create_session(
         project_id: str, payload: CreateFactorySessionRequest, request: Request
     ) -> dict[str, Any]:
@@ -43,13 +58,13 @@ def build_router() -> APIRouter:
             lambda: _factory(request).create_session(project_id, payload.goal)
         )
 
-    @router.get("/sessions/{session_id}")
+    @sessions.get("/sessions/{session_id}")
     def get_session(
         project_id: str, session_id: str, request: Request
     ) -> dict[str, Any]:
         return _translate(lambda: _factory(request).get_session(project_id, session_id))
 
-    @router.post("/sessions/{session_id}/messages")
+    @sessions.post("/sessions/{session_id}/messages")
     def add_message(
         project_id: str,
         session_id: str,
@@ -62,11 +77,11 @@ def build_router() -> APIRouter:
             )
         )
 
-    @router.post("/sessions/{session_id}/generate")
+    @sessions.post("/sessions/{session_id}/generate")
     def generate(project_id: str, session_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _factory(request).generate(project_id, session_id))
 
-    @router.post("/sessions/{session_id}/apply-draft")
+    @sessions.post("/sessions/{session_id}/apply-draft")
     def apply_draft(
         project_id: str,
         session_id: str,
@@ -83,6 +98,7 @@ def build_router() -> APIRouter:
             )
         )
 
+    router.include_router(sessions)
     return router
 
 
@@ -96,16 +112,14 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
     try:
         return operation()
     except FactoryProviderError as exc:
-        unavailable = {
-            "factory_provider_not_configured",
-            "factory_unavailable",
-            "factory_timeout",
-        }
-        status_code = 503 if exc.code in unavailable else 502
+        status_code = 503 if exc.code in _PROVIDER_UNAVAILABLE else 502
+        raise TypedApiError(status_code, exc.code, str(exc)) from exc
+    except FactoryError as exc:
+        status_code = (
+            404
+            if exc.code in {"factory_session_not_found", "factory_project_not_found"}
+            else 422
+        )
         raise TypedApiError(status_code, exc.code, str(exc)) from exc
     except TypedApiError:
         raise
-    except Exception as exc:
-        code = getattr(exc, "code", "factory_invalid")
-        status_code = 404 if code == "factory_session_not_found" else 422
-        raise TypedApiError(status_code, code, str(exc)) from exc

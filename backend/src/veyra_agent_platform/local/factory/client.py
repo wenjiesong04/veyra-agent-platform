@@ -52,12 +52,17 @@ class KimiTransport(Protocol):
 class HttpKimiTransport:
     """Use the provider's HTTP API without loading a Project .env file."""
 
-    def __init__(self, settings: FactorySettings) -> None:
+    def __init__(
+        self,
+        settings: FactorySettings,
+        *,
+        http_client: httpx.Client | None = None,
+    ) -> None:
         self.settings = settings
         api_key = os.environ.get(settings.model_api_key_env, "").strip()
-        if not api_key:
+        if http_client is None and not api_key:
             raise FactoryProviderNotConfigured()
-        self._client = httpx.Client(
+        self._client = http_client or httpx.Client(
             base_url=settings.model_base_url,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=settings.timeout_seconds,
@@ -153,6 +158,7 @@ class KimiClient:
     ) -> None:
         self.settings = settings
         self.transport = transport
+        self._http: HttpKimiTransport | None = None
 
     @property
     def configured(self) -> bool:
@@ -163,7 +169,9 @@ class KimiClient:
     def _transport(self) -> KimiTransport:
         if self.transport is not None:
             return self.transport
-        return HttpKimiTransport(self.settings)
+        if self._http is None:
+            self._http = HttpKimiTransport(self.settings)
+        return self._http
 
     def ensure_model(self) -> None:
         models = self._transport().models()

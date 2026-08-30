@@ -26,23 +26,56 @@ def test_component_catalog_status_and_legacy_projection_are_honest() -> None:
 
     assert agent["availability"] == "requires_configuration"
     assert agent["runtime_status"] == "runtime_not_configured"
-    assert tool["availability"] == "design_only"
-    assert tool["runtime_status"] == "runtime_not_supported"
+    assert tool["availability"] == "ready"
+    assert tool["runtime_status"] == "supported"
     assert all(resource["factory_selectable"] for resource in components)
     assert catalog.components()[2] == {
         "type": "Tool",
         "fields": ["uses"],
         "output_ports": ["next"],
-        "runtime_status": "runtime_not_supported",
+        "runtime_status": "supported",
     }
-    tools = catalog.resources(kind="tool")["resources"]
-    assert [resource["reference"] for resource in tools] == [
-        "veyra.tool.filesystem.read@1.0.0"
-    ]
-    assert tools[0]["required_permissions"]["filesystem_read_roots"] == ["project"]
 
 
 def test_skill_resources_await_runtime_provider_configuration() -> None:
     skills = ResourceCatalog().resources(kind="skill")["resources"]
 
+    assert {skill["name"] for skill in skills} == {
+        "Research Brief",
+        "Document Analyzer",
+        "Content Planner",
+        "Need Extractor",
+        "Evidence Ledger",
+        "File Taxonomy",
+    }
     assert {skill["runtime_status"] for skill in skills} == {"runtime_not_configured"}
+
+
+def test_work_template_descriptors_point_at_forkable_agent_ids() -> None:
+    templates = ResourceCatalog().resources(kind="template")["resources"]
+    by_fork = {item["spec"]["template_id"]: item["name"] for item in templates}
+    assert by_fork == {
+        "veyra.starter-agent@1.0.0": "Starter Agent",
+        "veyra.document-distiller@1.0.0": "文档提炼",
+        "veyra.question-researcher@1.0.0": "问题研究",
+        "veyra.file-sort-planner@1.0.0": "文件整理",
+    }
+
+
+def test_catalog_exposes_honest_tools_and_unconfigured_mcp() -> None:
+    catalog = ResourceCatalog()
+    tools = catalog.resources(kind="tool")["resources"]
+    mcp = catalog.resources(kind="mcp_tool")["resources"]
+    by_name = {resource["name"]: resource for resource in tools}
+
+    assert by_name["Filesystem Read"]["availability"] == "ready"
+    assert by_name["Filesystem Read"]["factory_selectable"] is True
+    assert by_name["Filesystem Read"]["runtime_status"] == "supported"
+    assert by_name["GitHub Read"]["availability"] == "unavailable"
+    assert by_name["GitHub Read"]["factory_selectable"] is False
+    assert mcp[0]["availability"] == "requires_configuration"
+    assert mcp[0]["factory_selectable"] is False
+    snapshot = {item["reference"] for item in catalog.factory_snapshot()}
+    assert "veyra.tool.filesystem.read@1.0.0" in snapshot
+    assert "veyra.tool.github.read@1.0.0" not in snapshot
+    assert catalog.by_reference("veyra.skill.research-brief@1.0.0")["kind"] == "skill"

@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import json
 import threading
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint
-from veyra_agent_platform.contracts.common import new_uuid7
-from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
-from veyra_agent_platform.local.resources import ResourceCatalog
+from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.local.projects.service import ProjectService
+from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
 from .client import FactoryProviderError, KimiClient
-from .compiler import compile_blueprint
+from .compiler import (
+    BlueprintCompileError,
+    compile_blueprint,
+    resource_plan,
+    run_availability,
+)
 from .store import FactorySessionRepository
 
 _STATES = {
@@ -26,6 +32,7 @@ _STATES = {
     "completed",
     "abandoned",
 }
+_BLOCKED_AVAILABILITY = {"unavailable", "disabled", "quarantined"}
 _INITIAL_PROMPT = (
     "Tell me what this Agent should accomplish, what it receives, and what a "
     "successful result looks like."
@@ -34,9 +41,13 @@ _READY_PROMPT = (
     "The requirement is ready for a Blueprint. Review the resource plan, then "
     "generate a Draft when you are ready."
 )
+_CANNED_FOLLOW_UP = (
+    "What inputs should it receive, what does success look like, and which "
+    "catalog Components, Tools, or Skills should it use?"
+)
 
 
-class FactoryError(ProjectError):
+class FactoryError(Exception):
     """A safe, typed Factory failure translated by the HTTP boundary."""
 
     def __init__(self, code: str, message: str) -> None:
@@ -57,6 +68,19 @@ class FactoryService:
         self.catalog = catalog
         self.client = client
         self._writer_lock = threading.RLock()
+
+    def status(self) -> dict[str, Any]:
+        settings = self.client.settings
+        return {
+            "schema_version": "1.0",
+            "configured": self.client.configured,
+            "model_id": settings.model_id,
+            "model_base_url": settings.model_base_url,
+            "model_api_key_env": settings.model_api_key_env,
+            "reasoning_effort": settings.reasoning_effort,
+            "repair_attempts": settings.repair_attempts,
+            "executes_drafts": False,
+        }
 
     def create_session(
         self, project_id: str, goal: str | None = None
@@ -87,6 +111,8 @@ class FactoryService:
                     content=clean_goal,
                     created_at=now,
                 )
+        if clean_goal:
+            self._append_interview(session_id)
         return self.get_session(project_id, session_id)
 
     def get_session(self, project_id: str, session_id: str) -> dict[str, Any]:
@@ -100,7 +126,10 @@ class FactoryService:
             raise FactoryError(
                 "factory_session_invalid", "Factory session has an invalid state"
             )
-        return self.store.payload(row, self.store.messages(session_id))
+        payload = self.store.payload(row, self.store.messages(session_id))
+        payload["run_availability"] = self._run_availability(payload)
+        payload["executes_drafts"] = False
+        return payload
 
     def add_message(
         self, project_id: str, session_id: str, content: str
@@ -136,22 +165,7 @@ class FactoryService:
                     next_prompt=_READY_PROMPT,
                     updated_at=now,
                 )
-            if not self.client.configured:
-                raise FactoryProviderError(
-                    "factory_provider_not_configured",
-                    "Factory model provider is not configured",
-                )
-            reply = self._interview_reply(project_id, session_id)
-            with self.store.transaction() as connection:
-                self.store.append_message(
-                    connection,
-                    message_id=new_uuid7(),
-                    session_id=session_id,
-                    sequence=len(previous) + 1,
-                    role="assistant",
-                    content=reply,
-                    created_at=_now(),
-                )
+            self._append_interview(session_id)
             return self.get_session(project_id, session_id)
 
     def generate(self, project_id: str, session_id: str) -> dict[str, Any]:
@@ -169,83 +183,100 @@ class FactoryService:
                 )
             try:
                 self.client.ensure_model()
-                messages: list[dict[str, Any]] = [
-                    {"role": "system", "content": _generation_prompt(self.catalog)},
-                    *[
-                        {"role": row["role"], "content": row["content"]}
-                        for row in self.store.messages(session_id)
-                    ],
-                    {
-                        "role": "user",
-                        "content": (
-                            "Generate the AgentBlueprint JSON for this requirement."
-                        ),
-                    },
-                ]
-                response_format = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "agent_blueprint",
-                        "strict": True,
-                        "schema": _blueprint_schema(),
-                    },
-                }
-                diagnostics: list[str] = []
-                blueprint: AgentBlueprint | None = None
-                for attempt in range(1, 4):
-                    self._set_state(session_id, "generating", diagnostics=diagnostics)
+            except FactoryProviderError:
+                self._recover_generation(session_id)
+                raise
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": _generation_prompt(self.catalog)},
+                *[
+                    {"role": row["role"], "content": row["content"]}
+                    for row in self.store.messages(session_id)
+                ],
+                {
+                    "role": "user",
+                    "content": "Generate the AgentBlueprint JSON for this requirement.",
+                },
+            ]
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "agent_blueprint",
+                    "strict": True,
+                    "schema": _generation_schema(),
+                },
+            }
+            diagnostics: list[str] = []
+            attempts = self.client.settings.repair_attempts
+            for attempt in range(1, attempts + 1):
+                self._set_state(session_id, "generating", diagnostics=diagnostics)
+                try:
                     completion = self.client.complete(
                         messages, response_format=response_format
                     )
-                    try:
-                        parsed = json.loads(completion.content)
-                        blueprint = AgentBlueprint.from_dict(parsed)
-                    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                        diagnostics.append(
-                            f"attempt {attempt}: invalid AgentBlueprint "
-                            f"({type(exc).__name__})"
-                        )
-                        messages.append(completion.assistant_message)
-                        messages.append(
-                            {"role": "user", "content": _repair_prompt(diagnostics)}
-                        )
-                        continue
-                    missing = self._missing_capabilities(blueprint)
-                    if missing:
-                        payload = blueprint.to_dict()
-                        self._set_state(
-                            session_id,
-                            "missing_capability",
-                            blueprint=payload,
-                            diagnostics=[],
-                            missing_capabilities=missing,
-                            resource_plan=self._resource_plan(blueprint),
-                        )
-                        return self.get_session(project_id, session_id)
+                except FactoryProviderError:
+                    self._recover_generation(session_id)
+                    raise
+                try:
+                    parsed = json.loads(completion.content)
+                    blueprint = AgentBlueprint.from_dict(parsed)
+                except (
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                    ContractValidationError,
+                ) as exc:
+                    diagnostics.append(
+                        f"attempt {attempt}: invalid AgentBlueprint "
+                        f"({type(exc).__name__})"
+                    )
+                    messages.append(completion.assistant_message)
+                    messages.append(
+                        {"role": "user", "content": _repair_prompt(diagnostics)}
+                    )
+                    continue
+                missing = self._missing_capabilities(blueprint)
+                if missing:
                     self._set_state(
                         session_id,
-                        "review",
-                        ready=True,
-                        next_prompt=(
-                            "Review the Blueprint and Resource Plan. Apply it only "
-                            "when you explicitly confirm."
-                        ),
+                        "missing_capability",
                         blueprint=blueprint.to_dict(),
                         diagnostics=[],
-                        missing_capabilities=[],
-                        resource_plan=self._resource_plan(blueprint),
+                        missing_capabilities=missing,
+                        resource_plan=resource_plan(blueprint, self.catalog),
                     )
                     return self.get_session(project_id, session_id)
-            except FactoryProviderError:
+                try:
+                    compile_blueprint(blueprint, self.catalog)
+                except BlueprintCompileError as exc:
+                    diagnostics.extend(
+                        f"attempt {attempt}: {item}" for item in exc.diagnostics
+                    )
+                    messages.append(completion.assistant_message)
+                    messages.append(
+                        {"role": "user", "content": _repair_prompt(diagnostics)}
+                    )
+                    continue
                 self._set_state(
                     session_id,
-                    "ready",
+                    "review",
                     ready=True,
-                    next_prompt=_READY_PROMPT,
+                    next_prompt=(
+                        "Review the Blueprint and Resource Plan. Apply it only "
+                        "when you explicitly confirm. Factory will not run it."
+                    ),
+                    blueprint=blueprint.to_dict(),
                     diagnostics=[],
+                    missing_capabilities=[],
+                    resource_plan=resource_plan(blueprint, self.catalog),
                 )
-                raise
-            self._set_state(session_id, "review", ready=False, diagnostics=diagnostics)
+                return self.get_session(project_id, session_id)
+            self._set_state(
+                session_id,
+                "ready",
+                ready=True,
+                diagnostics=diagnostics,
+                next_prompt=_READY_PROMPT,
+            )
             raise FactoryError(
                 "factory_generation_invalid",
                 "Factory could not produce a valid Blueprint after three attempts",
@@ -284,20 +315,22 @@ class FactoryService:
                     "factory_blueprint_invalid",
                     "The stored Blueprint is no longer valid",
                 ) from exc
-            missing = self._missing_capabilities(blueprint)
-            if missing:
+            if self._missing_capabilities(blueprint):
                 raise FactoryError(
                     "factory_missing_capability",
                     "The Blueprint references resources that are not available",
                 )
-            source = compile_blueprint(
-                blueprint, self.catalog, name=name, description=description
-            )
+            try:
+                source, _, _ = compile_blueprint(
+                    blueprint, self.catalog, name=name, description=description
+                )
+            except BlueprintCompileError as exc:
+                raise FactoryError(
+                    "factory_generation_invalid",
+                    "; ".join(exc.diagnostics),
+                ) from exc
             agent = self.projects.create_agent_from_source(
-                project_id=project_id,
-                source=source,
-                name=name,
-                description=description,
+                project_id=project_id, source=source
             )
             self._set_state(
                 session_id,
@@ -313,7 +346,23 @@ class FactoryService:
                 "agent": agent,
             }
 
-    def _interview_reply(self, project_id: str, session_id: str) -> str:
+    def _append_interview(self, session_id: str) -> None:
+        previous = self.store.messages(session_id)
+        reply = self._interview_reply(session_id)
+        with self.store.transaction() as connection:
+            self.store.append_message(
+                connection,
+                message_id=new_uuid7(),
+                session_id=session_id,
+                sequence=len(previous),
+                role="assistant",
+                content=reply,
+                created_at=_now(),
+            )
+
+    def _interview_reply(self, session_id: str) -> str:
+        if not self.client.configured:
+            return _CANNED_FOLLOW_UP
         messages = [
             {"role": "system", "content": _interview_prompt(self.catalog)},
             *[
@@ -321,86 +370,69 @@ class FactoryService:
                 for row in self.store.messages(session_id)
             ],
         ]
-        self.client.ensure_model()
-        return self.client.complete(messages).content.strip()
+        try:
+            self.client.ensure_model()
+            return self.client.complete(messages).content.strip() or _CANNED_FOLLOW_UP
+        except FactoryProviderError:
+            return _CANNED_FOLLOW_UP
 
     def _missing_capabilities(self, blueprint: AgentBlueprint) -> list[dict[str, Any]]:
-        resources = self.catalog.resources()["resources"]
+        missing: list[dict[str, Any]] = []
         components = {
             resource["name"]: resource
-            for resource in resources
-            if resource["kind"] == "component"
+            for resource in self.catalog.resources(kind="component")["resources"]
         }
-        missing: list[dict[str, Any]] = []
         for component_type in blueprint.required_capabilities.component_types:
             resource = components.get(component_type.value)
             if resource is None or not resource["factory_selectable"]:
                 missing.append(
-                    {
-                        "kind": "component",
-                        "reference": component_type.value,
-                        "reason": "component is not selectable",
-                    }
+                    _missing_item("component", component_type.value, "not selectable")
                 )
-        for tool_ref in blueprint.required_capabilities.tool_refs:
-            resource_id, version = tool_ref.rsplit("@", 1)
-            try:
-                resource = self.catalog.detail(resource_id, version)
-            except ValueError:
-                missing.append(
-                    {
-                        "kind": "tool",
-                        "reference": tool_ref,
-                        "reason": "resource is not registered",
-                    }
-                )
-                continue
-            if (
-                resource["kind"] not in {"tool", "mcp_tool"}
-                or not resource["factory_selectable"]
-                or resource["availability"] != "ready"
-            ):
-                missing.append(
-                    {
-                        "kind": resource["kind"],
-                        "reference": tool_ref,
-                        "reason": "resource is not ready",
-                    }
-                )
+        expected_kinds = {
+            "tool": {"tool", "mcp_tool"},
+            "skill": {"skill"},
+            "policy": {"policy"},
+        }
+        grouped = (
+            ("tool", blueprint.required_capabilities.tool_refs),
+            ("skill", blueprint.required_capabilities.skill_refs),
+            ("policy", blueprint.required_capabilities.policy_refs),
+        )
+        for kind, references in grouped:
+            for reference in references:
+                item = self._missing_reference(kind, reference, expected_kinds[kind])
+                if item is not None:
+                    missing.append(item)
         return missing
 
-    def _resource_plan(self, blueprint: AgentBlueprint) -> list[dict[str, Any]]:
-        resources = self.catalog.resources()["resources"]
-        components = {
-            resource["name"]: resource
-            for resource in resources
-            if resource["kind"] == "component"
-        }
-        plan: list[dict[str, Any]] = []
-        for component_type in blueprint.required_capabilities.component_types:
-            resource = components.get(component_type.value)
-            if resource:
-                plan.append(
-                    {
-                        "reference": resource["reference"],
-                        "kind": resource["kind"],
-                        "availability": resource["availability"],
-                    }
-                )
-        for tool_ref in blueprint.required_capabilities.tool_refs:
-            resource_id, version = tool_ref.rsplit("@", 1)
-            try:
-                resource = self.catalog.detail(resource_id, version)
-            except ValueError:
-                continue
-            plan.append(
-                {
-                    "reference": resource["reference"],
-                    "kind": resource["kind"],
-                    "availability": resource["availability"],
-                }
-            )
-        return plan
+    def _missing_reference(
+        self, kind: str, reference: str, expected_kinds: set[str]
+    ) -> dict[str, Any] | None:
+        try:
+            resource = self.catalog.by_reference(reference)
+        except ResourceCatalogError:
+            return _missing_item(kind, reference, "resource is not registered")
+        if resource["kind"] not in expected_kinds:
+            return _missing_item(kind, reference, "resource kind does not match")
+        if (
+            not resource["factory_selectable"]
+            or resource["availability"] in _BLOCKED_AVAILABILITY
+        ):
+            return _missing_item(kind, reference, "resource is not selectable")
+        return None
+
+    def _run_availability(self, payload: dict[str, Any]) -> str:
+        plan = payload.get("resource_plan")
+        if isinstance(plan, list) and plan:
+            return run_availability(plan)
+        blueprint = payload.get("blueprint")
+        if not isinstance(blueprint, dict):
+            return "unavailable"
+        try:
+            parsed = AgentBlueprint.from_dict(blueprint)
+        except (TypeError, ValueError, ContractValidationError):
+            return "unavailable"
+        return run_availability(resource_plan(parsed, self.catalog))
 
     def _row(self, project_id: str, session_id: str) -> Any:
         self._require_project(project_id)
@@ -419,9 +451,29 @@ class FactoryService:
                 connection, session_id, state=state, updated_at=_now(), **values
             )
 
+    def _recover_generation(self, session_id: str) -> None:
+        self._set_state(
+            session_id,
+            "ready",
+            ready=True,
+            next_prompt=_READY_PROMPT,
+            diagnostics=[],
+        )
+
     def _require_project(self, project_id: str) -> None:
         if self.projects.repository.project(project_id) is None:
-            raise ProjectError("unknown Project")
+            raise FactoryError(
+                "factory_project_not_found", "Factory project was not found"
+            )
+
+
+def _missing_item(kind: str, reference: str, reason: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "reference": reference,
+        "reason": reason,
+        "proposal": {"action": "quarantined_resource_draft", "executable": False},
+    }
 
 
 def _clean_text(value: str | None) -> str:
@@ -442,45 +494,58 @@ def _repair_prompt(diagnostics: list[str]) -> str:
 
 
 def _interview_prompt(catalog: ResourceCatalog) -> str:
+    kinds = sorted({resource["kind"] for resource in catalog.factory_snapshot()})
     return (
         "You are the Veyra Factory interviewer. Ask one concise follow-up question "
         "at a time about goal, inputs, outputs, environment, risks, approvals, "
         "and success criteria. Never execute tools or invent resources. "
-        "Available resource kinds: "
-        + ", ".join(
-            sorted({resource["kind"] for resource in catalog.resources()["resources"]})
-        )
+        "Available resource kinds: " + ", ".join(kinds)
     )
 
 
 def _generation_prompt(catalog: ResourceCatalog) -> str:
-    resources = catalog.resources()["resources"]
     return (
         "You are the Veyra Factory planner. Return only an AgentBlueprint JSON "
-        "object matching the supplied schema. Use only the registered Component "
-        "and Tool references in this catalog snapshot. Keep permissions minimal, "
-        "require verification for consequential results, and never emit arbitrary "
-        "code, secret values, or unknown resources. The server will validate every "
-        "field and will not execute this Blueprint. Catalog snapshot:\n"
-        + json.dumps(resources, ensure_ascii=False, sort_keys=True)
+        "object matching the supplied schema. Use only the registered Component, "
+        "Tool, Skill, and Policy references in this catalog snapshot. Keep "
+        "permissions minimal, require verification for consequential results, and "
+        "never emit arbitrary code, secret values, or unknown resources. The "
+        "server will validate every field and will not execute this Blueprint. "
+        "Catalog snapshot:\n"
+        + json.dumps(catalog.factory_snapshot(), ensure_ascii=False, sort_keys=True)
     )
+
+
+def _generation_schema() -> dict[str, Any]:
+    schema = deepcopy(_blueprint_schema())
+    capabilities = schema["$defs"]["required_capabilities"]
+    capabilities["required"] = [
+        "component_types",
+        "tool_refs",
+        "skill_refs",
+        "policy_refs",
+    ]
+    return schema
 
 
 def _blueprint_schema() -> dict[str, Any]:
-    path = (
-        Path(__file__).resolve().parents[5]
-        / "contracts"
-        / "schemas"
-        / "agent-blueprint.schema.json"
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        path = parent / "contracts" / "schemas" / "agent-blueprint.schema.json"
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise FactoryError(
+                    "factory_schema_unavailable",
+                    "The AgentBlueprint schema is unavailable",
+                ) from exc
+            if not isinstance(loaded, dict):
+                raise FactoryError(
+                    "factory_schema_unavailable",
+                    "The AgentBlueprint schema is unavailable",
+                )
+            return loaded
+    raise FactoryError(
+        "factory_schema_unavailable", "The AgentBlueprint schema is unavailable"
     )
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise FactoryError(
-                "factory_schema_unavailable", "The AgentBlueprint schema is invalid"
-            )
-        return cast(dict[str, Any], payload)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise FactoryError(
-            "factory_schema_unavailable", "The AgentBlueprint schema is unavailable"
-        ) from exc

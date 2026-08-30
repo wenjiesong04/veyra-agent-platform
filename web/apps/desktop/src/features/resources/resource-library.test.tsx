@@ -7,7 +7,7 @@ import { ProjectWorkspaceProvider } from "../../api/project-workspace";
 import type { LocalProjectApi } from "../../api/local-client";
 import { ResourceLibraryPage } from "./resource-library";
 
-function descriptor(kind: "component" | "skill" | "policy" | "template", name: string, id: string, availability: "ready" | "runtime_not_configured" = "ready") {
+function descriptor(kind: "component" | "tool" | "mcp_tool" | "skill" | "policy" | "template", name: string, id: string, availability: "ready" | "design_only" | "unavailable" | "requires_configuration" = "ready") {
   return {
     schema_version: "1.0",
     resource_id: `veyra.${kind}.${id}`,
@@ -18,22 +18,33 @@ function descriptor(kind: "component" | "skill" | "policy" | "template", name: s
     description: `${name} description`,
     origin: "builtin",
     content_hash: "a".repeat(64),
-    availability: "ready",
-    factory_selectable: true,
-    runtime_status: availability === "ready" ? "supported" : "runtime_not_configured",
+    availability,
+    factory_selectable: availability !== "unavailable" && availability !== "requires_configuration",
+    runtime_status: availability === "ready" ? "supported" : availability === "requires_configuration" ? "runtime_not_configured" : "runtime_not_supported",
     required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
     tags: [kind, "builtin"],
     spec: { label: name },
   } as const;
 }
 
-const components = [descriptor("component", "Start", "start"), descriptor("component", "Agent", "agent", "runtime_not_configured")];
-const skills = [descriptor("skill", "Research Brief", "research-brief", "runtime_not_configured"), descriptor("skill", "Document Analyzer", "document-analyzer", "runtime_not_configured")];
+const components = [descriptor("component", "Start", "start"), descriptor("component", "Agent", "agent", "requires_configuration")];
+const skills = [descriptor("skill", "Research Brief", "research-brief", "requires_configuration"), descriptor("skill", "Document Analyzer", "document-analyzer", "requires_configuration")];
 const policies = [descriptor("policy", "Local Only", "local-only"), descriptor("policy", "Verification Required", "verification-required")];
+const tools = [
+  descriptor("tool", "Filesystem Read", "filesystem.read", "design_only"),
+  descriptor("tool", "GitHub Read", "github.read", "unavailable"),
+];
+const mcp = [descriptor("mcp_tool", "MCP Call", "call", "requires_configuration")];
 
 function apiFor(): LocalProjectApi & { listResources: ReturnType<typeof vi.fn>; getResource: ReturnType<typeof vi.fn> } {
   const listResources = vi.fn(async ({ kind }: { kind?: string } = {}): Promise<ListResourcesResponse> => {
-    const resources = kind === "component" ? components : kind === "skill" ? skills : kind === "policy" ? policies : [];
+    const resources =
+      kind === "component" ? components
+      : kind === "skill" ? skills
+      : kind === "policy" ? policies
+      : kind === "tool" ? tools
+      : kind === "mcp_tool" ? mcp
+      : [];
     return { schema_version: "1.0", resources: resources as never, kinds: ["component", "tool", "mcp_tool", "skill", "policy", "template"].map((item) => ({ kind: item, count: resources.filter((resource) => resource.kind === item).length })) as never };
   });
   const getResource = vi.fn(async (resourceId: string) => skills.find((resource) => resource.resource_id === resourceId));
@@ -65,13 +76,15 @@ describe("ResourceLibraryPage", () => {
     expect(api.listResources).toHaveBeenCalledWith({ kind: "policy" });
   });
 
-  it("shows an honest empty Tools and MCP category", async () => {
+  it("shows registered Tools including unavailable GitHub entries", async () => {
     const api = apiFor();
     const user = userEvent.setup();
     renderPage(api);
 
     await user.click(await screen.findByRole("tab", { name: "Tools / MCP" }));
-    expect(await screen.findByText("No resources in this category yet")).toBeInTheDocument();
+    expect(await screen.findByText("Filesystem Read")).toBeInTheDocument();
+    expect(screen.getByText("GitHub Read")).toBeInTheDocument();
+    expect(screen.getByText("MCP Call")).toBeInTheDocument();
     expect(screen.queryByText("Downloads")).not.toBeInTheDocument();
   });
 

@@ -174,6 +174,68 @@ describe("LocalApiClient Project requests", () => {
     expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/resources/veyra.skill.research-brief/versions/1.0.0");
   });
 
+  it("parses Factory status and apply-draft responses without treating generation as a run", async () => {
+    const session = {
+      schema_version: "1.0",
+      session_id: "session-1",
+      project_id: "project-1",
+      state: "completed",
+      ready: true,
+      next_prompt: "Open Studio",
+      resource_plan: [{ reference: "veyra.skill.research-brief@1.0.0", kind: "skill", availability: "ready", runtime_status: "runtime_not_configured" }],
+      blueprint: { schema_version: "1.0", goal: "Brief" },
+      diagnostics: [],
+      missing_capabilities: [],
+      run_availability: "requires_configuration",
+      executes_drafts: false,
+      revision: 3,
+      created_at: "2026-08-30T00:00:00Z",
+      updated_at: "2026-08-30T00:00:00Z",
+      messages: [{ schema_version: "1.0", message_id: "m1", sequence: 0, role: "user", content: "Write a brief", created_at: "2026-08-30T00:00:00Z" }],
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({
+        schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
+        model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
+      }))
+      .mockResolvedValueOnce(response({
+        schema_version: "1.0",
+        session,
+        agent: { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", slug: "brief", name: "Brief", description: "", source_path: "agents/brief/agent.vagent.yaml", source_file_hash: "file-hash" },
+      }));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.factoryStatus()).resolves.toMatchObject({ model_id: "kimi-k3", executes_drafts: false, configured: true });
+    await expect(client.applyFactoryDraft("project-1", "session-1", { confirm: true })).resolves.toMatchObject({
+      session: { state: "completed", executes_drafts: false },
+      agent: { agent_id: "agent-1" },
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/factory/status");
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/factory/sessions/session-1/apply-draft");
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ confirm: true });
+  });
+
+  it("parses Runtime status without treating a host key as a user-owned Agent secret", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0",
+      configured: true,
+      model_id: "kimi-k3",
+      model_base_url: "https://api.moonshot.cn/v1",
+      model_api_key_env: "MOONSHOT_API_KEY",
+      reasoning_effort: "high",
+      allow_process_environment_key: true,
+      user_provided_only: false,
+    }));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      model_id: "kimi-k3",
+      configured: true,
+      user_provided_only: false,
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/runtime/status");
+  });
+
   it("sends commit compare-and-swap headers and revision body", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({
       schema_version: "1.0", version_id: "version-1", agent_id: "agent-1", source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file",

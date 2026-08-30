@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
-from veyra_agent_platform.local.storage.bootstrap import HEAD_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -158,13 +157,18 @@ def test_project_agent_creation_templates_and_import(tmp_path: Path) -> None:
 
         templates = client.get(f"/api/v1/projects/{project_id}/agent-templates")
         assert templates.status_code == 200
-        template = templates.json()["templates"][0]
-        assert template == {
+        listed = templates.json()["templates"]
+        by_id = {item["template_id"]: item for item in listed}
+        assert listed[0] == {
             "template_id": "veyra.starter-agent@1.0.0",
             "name": "Starter Agent",
             "description": "A safe local-first starting point for a new Agent.",
             "default_slug": "starter-agent",
         }
+        assert by_id["veyra.document-distiller@1.0.0"]["name"] == "文档提炼"
+        assert by_id["veyra.question-researcher@1.0.0"]["name"] == "问题研究"
+        assert by_id["veyra.file-sort-planner@1.0.0"]["name"] == "文件整理"
+        template = listed[0]
 
         blank = client.post(
             f"/api/v1/projects/{project_id}/agents",
@@ -428,7 +432,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
-        assert health.json()["database_revision"] == HEAD_REVISION
+        assert health.json()["database_revision"] == "local_0008_factory_sessions"
         created = client.post(
             "/api/v1/projects",
             json={

@@ -315,6 +315,7 @@
 }
 
 .draft-note {
+  display: grid;
   margin-top: 9px;
 }
 
@@ -331,6 +332,61 @@
   flex-basis: 32px;
   width: 32px;
   height: 32px;
+}
+
+.factory-transcript {
+  display: grid;
+  gap: 10px;
+  min-height: 180px;
+  margin: 14px 0;
+}
+
+.factory-bubble {
+  display: grid;
+  gap: 4px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-soft);
+}
+
+.factory-bubble span {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.factory-bubble p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.factory-bubble.user {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-soft));
+}
+
+.factory-chat-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.factory-composer textarea {
+  width: 100%;
+  min-height: 88px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 10px 11px;
+  color: var(--ink);
+  background: var(--surface-soft);
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.factory-plan {
+  display: grid;
+  gap: 8px;
 }
 
 @media (max-width: 800px) {
