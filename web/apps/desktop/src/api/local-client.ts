@@ -46,6 +46,7 @@ import {
   type ResourceAvailability,
   type ResourceKind,
   type ResourceRuntimeStatus,
+  type RuntimeEvent,
   type UpdateProjectRequest,
   type UpdateAgentRequest,
   type ValidateResponse,
@@ -124,6 +125,17 @@ export type LocalProjectApi = {
   commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
   getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
+  watchAgentRunEvents?(
+    projectId: string,
+    agentId: string,
+    runId: string,
+    handlers: {
+      onEvent: (event: RuntimeEvent) => void;
+      onDone?: (status: AgentRunResponse["status"]) => void;
+      onError?: (error: Error) => void;
+    },
+    options?: { after?: number },
+  ): () => void;
   selectDirectory(): Promise<SelectDirectoryResponse>;
 };
 
@@ -1124,6 +1136,53 @@ export class LocalApiClient {
         requireIdempotencyKey: true,
       },
     );
+  }
+
+  watchAgentRunEvents(
+    projectId: string,
+    agentId: string,
+    runId: string,
+    handlers: {
+      onEvent: (event: RuntimeEvent) => void;
+      onDone?: (status: AgentRunResponse["status"]) => void;
+      onError?: (error: Error) => void;
+    },
+    options: { after?: number } = {},
+  ): () => void {
+    const after = options.after ?? 0;
+    const url = `${apiUrl(
+      this.baseUrl,
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/events`,
+    )}?after=${encodeURIComponent(String(after))}`;
+    const source = new EventSource(url, { withCredentials: true });
+    let closed = false;
+    const close = () => {
+      closed = true;
+      source.close();
+    };
+    source.addEventListener("runtime", (event) => {
+      try {
+        handlers.onEvent(runtimeEvent(JSON.parse(event.data)));
+      } catch (cause) {
+        handlers.onError?.(cause instanceof Error ? cause : new LocalApiClientError("The local service returned an invalid runtime event.", { status: 502, code: "invalid_response" }));
+      }
+    });
+    source.addEventListener("done", (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { status?: AgentRunResponse["status"] };
+        if (payload.status) handlers.onDone?.(payload.status);
+      } catch (cause) {
+        handlers.onError?.(cause instanceof Error ? cause : new LocalApiClientError("The local service returned an invalid stream status.", { status: 502, code: "invalid_response" }));
+      } finally {
+        close();
+      }
+    });
+    source.onerror = () => {
+      if (closed) return;
+      close();
+      handlers.onError?.(new LocalApiClientError("The local run event stream closed unexpectedly.", { status: 0, code: "unavailable" }));
+    };
+    return close;
   }
 
   exportAgent(projectId: string, agentId: string): Promise<ExportResponse> {

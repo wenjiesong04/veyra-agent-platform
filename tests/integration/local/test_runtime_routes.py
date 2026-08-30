@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -843,3 +844,91 @@ def test_filesystem_write_without_approval_is_denied(tmp_path: Path) -> None:
         assert response.json()["status"] == "failed"
         assert response.json()["error"]["code"] == "approval_required"
         assert not Path(project["root_path"], "resources", "out.txt").exists()
+
+
+def test_runtime_event_stream_replays_a_completed_run(tmp_path: Path) -> None:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {
+                "id": "transform",
+                "component_type": "Transform",
+                "mapping": {"result": "Hello {{name}}"},
+            },
+            {"id": "output", "component_type": "Output", "output_name": "result"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "transform"},
+            {"from": "transform", "port": "next", "to": "output"},
+        ],
+        {"name": "string"},
+    )
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        run_url = (
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        )
+        started = client.post(
+            run_url,
+            json={"inputs": {"name": "Ada"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        stream = client.get(f"{run_url}s/{started['run_id']}/events")
+        assert stream.status_code == 200
+        assert stream.headers["content-type"].startswith("text/event-stream")
+        assert "event: runtime" in stream.text
+        assert '"kind":"run.created"' in stream.text
+        assert '"kind":"run.completed"' in stream.text
+        assert "event: done" in stream.text
+        assert '"status":"unverified"' in stream.text
+
+
+def test_runtime_event_stream_follows_approval_then_completes(
+    tmp_path: Path,
+) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        source = _write_source(client)
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        run_url = (
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        )
+        waiting = client.post(
+            run_url,
+            json={"inputs": {"path": "resources/out.txt", "content": "saved"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert waiting["status"] == "waiting"
+        frames: list[str] = []
+        runtime = client.app.state.runtime
+
+        def consume() -> None:
+            for frame in runtime.follow_events(waiting["run_id"], 0):
+                frames.append(frame)
+                if "event: done" in frame:
+                    break
+
+        watcher = threading.Thread(target=consume, daemon=True)
+        watcher.start()
+        time.sleep(0.1)
+        completed = client.post(
+            f"{run_url}s/{waiting['run_id']}/commands",
+            json={"command": "approve"},
+            headers={"Idempotency-Key": new_uuid7()},
+        ).json()
+        assert completed["status"] == "unverified"
+        watcher.join(timeout=5)
+        assert watcher.is_alive() is False
+        body = "".join(frames)
+        assert "approval.requested" in body
+        assert "tool.completed" in body
+        assert "event: done" in body

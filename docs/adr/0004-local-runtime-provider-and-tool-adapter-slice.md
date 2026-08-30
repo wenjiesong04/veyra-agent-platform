@@ -17,9 +17,9 @@ that reaches `HumanApproval` becomes `waiting`, persists a checkpoint and
 approval request, and continues only through a durable `run_command`
 (`approve`, `reject`, `stop`, `retry`).
 
-Both model and Tool paths remain synchronous inside the existing local Run
-service until the event-stream wave is implemented. A run without a model
-credential fails with `runtime_not_configured`; it is never simulated.
+Both model and Tool paths remain synchronous for the opening POST, while
+node events are persisted as they happen and replayed over SSE. A run without
+a model credential fails with `runtime_not_configured`; it is never simulated.
 
 ## Boundaries
 
@@ -34,13 +34,16 @@ credential fails with `runtime_not_configured`; it is never simulated.
 - Model responses are mapped only to declared Agent outputs. String outputs use
   the final response text; object, array, number and boolean outputs require
   matching JSON values.
-- Shell, network, MCP, and streaming remain explicit unsupported states. They
-  are not represented as fake successful adapters. `resume` is not used for
-  approval waits; those waits continue through `approve` or `reject`.
+- Shell, network, MCP, and token streaming remain explicit unsupported states.
+  They are not represented as fake successful adapters. `resume` is not used
+  for approval waits; those waits continue through `approve` or `reject`.
+  `GET .../runs/{run_id}/events` is a replayable SSE follow of persisted
+  events. POST `/run` is still synchronous.
 
 ## Consequences
 
 The Resource Library can now honestly mark filesystem read and write as
 runnable, and Factory can select them. Write still requires a HumanApproval
-node before compilation. Later Runtime waves can add SSE, Run Canvas, and
-additional adapters without changing the portable Agent source format.
+node before compilation. The next Runtime wave can make POST `/run`
+asynchronous and paint node state onto the Studio graph without changing the
+portable Agent source format.

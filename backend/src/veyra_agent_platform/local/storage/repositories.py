@@ -812,11 +812,16 @@ class LocalRepository:
             ).fetchall()
 
     def run_events(self, run_id: str) -> list[dict[str, Any]]:
+        return self.run_events_after(run_id, 0)
+
+    def run_events_after(self, run_id: str, after: int) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT event_id, sequence, node_id, kind, payload_json, created_at
-                   FROM runtime_run_events WHERE run_id = ? ORDER BY sequence""",
-                (run_id,),
+                   FROM runtime_run_events
+                   WHERE run_id = ? AND sequence > ?
+                   ORDER BY sequence""",
+                (run_id, after),
             ).fetchall()
         return [
             {

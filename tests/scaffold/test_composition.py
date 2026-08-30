@@ -63,6 +63,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}/commands",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}/events",
         "/api/v1/projects/{project_id}/runtime-profile",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runtime-profile",
         "/api/v1/projects/{project_id}/factory/sessions",

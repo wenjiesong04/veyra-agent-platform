@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,6 +191,7 @@ class RuntimeService:
         try:
             outcome = self._execute(
                 project_id,
+                run_id,
                 source,
                 inputs,
                 self._model_for(project_id, agent_id),
@@ -278,6 +280,37 @@ class RuntimeService:
         payload["events"] = self.repository.run_events(run_id)
         return payload
 
+    def ensure_run(self, project_id: str, agent_id: str, run_id: str) -> None:
+        self.run_detail(project_id, agent_id, run_id)
+
+    def follow_events(self, run_id: str, after: int) -> Iterator[str]:
+        last = after
+        while True:
+            events = self.repository.run_events_after(run_id, last)
+            for event in events:
+                last = int(event["sequence"])
+                yield _sse_frame("runtime", event, event_id=str(last))
+            row = self.repository.run(run_id)
+            if row is None:
+                raise ProjectError("unknown Agent run")
+            if row["status"] not in {"running", "waiting"} and not events:
+                yield _sse_frame("done", {"status": row["status"]})
+                return
+            if not events:
+                time.sleep(0.05)
+
+    def _persist_event(
+        self,
+        run_id: str,
+        node_id: str | None,
+        kind: str,
+        payload: dict[str, Any],
+    ) -> None:
+        with self.repository.transaction() as connection:
+            self.repository.add_run_events(
+                connection, run_id, [(node_id, kind, payload)]
+            )
+
     def _commit_outcome(
         self,
         run_id: str,
@@ -288,7 +321,6 @@ class RuntimeService:
         digest: str | None,
         extra_events: list[tuple[str | None, str, dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        events = list(extra_events or []) + outcome.events
         if outcome.pause is not None:
             return self._pause_run(
                 run_id,
@@ -296,7 +328,7 @@ class RuntimeService:
                     node_id=outcome.pause.node_id,
                     prompt=outcome.pause.prompt,
                     values=outcome.pause.values,
-                    events=events,
+                    events=[],
                     tool_calls=outcome.pause.tool_calls,
                 ),
                 scope=scope,
@@ -304,7 +336,9 @@ class RuntimeService:
                 digest=digest,
             )
         with self.repository.transaction() as connection:
-            self.repository.add_run_events(connection, run_id, events)
+            self.repository.add_run_events(
+                connection, run_id, list(extra_events or [])
+            )
             self._store_tool_calls(connection, run_id, outcome.tool_calls)
             final_status = "verified" if outcome.verified else "unverified"
             self.repository.add_run_events(
@@ -342,7 +376,7 @@ class RuntimeService:
             self.repository.add_run_events(
                 connection,
                 run_id,
-                exc.events + [(None, "run.failed", {"code": exc.code})],
+                [(None, "run.failed", {"code": exc.code})],
             )
             self._store_tool_calls(connection, run_id, exc.tool_calls)
             self.repository.finish_run(
@@ -373,7 +407,6 @@ class RuntimeService:
     ) -> dict[str, Any]:
         now = _now()
         with self.repository.transaction() as connection:
-            self.repository.add_run_events(connection, run_id, pause.events)
             self._store_tool_calls(connection, run_id, pause.tool_calls)
             self.repository.insert_approval_request(
                 connection,
@@ -625,6 +658,7 @@ class RuntimeService:
         try:
             outcome = self._execute(
                 row["project_id"],
+                row["run_id"],
                 source,
                 values,
                 self._model_for(row["project_id"], row["agent_id"]),
@@ -697,6 +731,7 @@ class RuntimeService:
     def _execute(
         self,
         project_id: str,
+        run_id: str,
         source: AgentSource,
         inputs: dict[str, Any],
         model: RuntimeModelClient,
@@ -719,10 +754,17 @@ class RuntimeService:
         verifier_passed = False
         events: list[tuple[str | None, str, dict[str, Any]]] = []
         tool_calls: list[_ToolCallRecord] = []
+
+        def emit(node_id: str | None, kind: str, payload: dict[str, Any]) -> None:
+            events.append((node_id, kind, payload))
+            self._persist_event(run_id, node_id, kind, payload)
+
         for _ in range(len(nodes) + 1):
             node = nodes[current]
-            events.append(
-                (node.id, "node.started", {"component_type": node.component_type.value})
+            emit(
+                node.id,
+                "node.started",
+                {"component_type": node.component_type.value},
             )
             try:
                 if node.component_type is ComponentType.START:
@@ -746,9 +788,7 @@ class RuntimeService:
                         _check(check, result) for check in node.checks
                     )
                     port = "passed" if verifier_passed else "failed"
-                    events.append(
-                        (node.id, "verifier.result", {"passed": verifier_passed})
-                    )
+                    emit(node.id, "verifier.result", {"passed": verifier_passed})
                 elif node.component_type is ComponentType.TOOL:
                     project = self.repository.project(project_id)
                     if project is None:
@@ -756,17 +796,15 @@ class RuntimeService:
                     authorization = self.tools.authorize(
                         source=source, node=node, values=values
                     )
-                    events.append(
-                        (
-                            node.id,
-                            "tool.requested",
-                            {
-                                "tool_reference": authorization.tool_reference,
-                                "input_digest": authorization.input_digest,
-                                "permission": authorization.decision,
-                                "code": authorization.code,
-                            },
-                        )
+                    emit(
+                        node.id,
+                        "tool.requested",
+                        {
+                            "tool_reference": authorization.tool_reference,
+                            "input_digest": authorization.input_digest,
+                            "permission": authorization.decision,
+                            "code": authorization.code,
+                        },
                     )
                     record = _ToolCallRecord(
                         node_id=node.id,
@@ -788,16 +826,12 @@ class RuntimeService:
                         authorization=authorization,
                         approved=approved,
                     )
-                    events.extend(
-                        [
-                            (
-                                node.id,
-                                "tool.started",
-                                {"tool_reference": authorization.tool_reference},
-                            ),
-                            (node.id, "tool.completed", execution.receipt),
-                        ]
+                    emit(
+                        node.id,
+                        "tool.started",
+                        {"tool_reference": authorization.tool_reference},
                     )
+                    emit(node.id, "tool.completed", execution.receipt)
                     tool_calls[-1] = _ToolCallRecord(
                         node_id=record.node_id,
                         tool_reference=record.tool_reference,
@@ -812,7 +846,7 @@ class RuntimeService:
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
                     result = self._validated_outputs(source, values)
-                    events.append((node.id, "node.completed", {}))
+                    emit(node.id, "node.completed", {})
                     return _ExecutionOutcome(
                         events=events,
                         tool_calls=tuple(tool_calls),
@@ -827,20 +861,10 @@ class RuntimeService:
                     prompt = node.prompt or ""
                     if "{{" in prompt:
                         prompt = _interpolate(prompt, values)
-                    events.extend(
-                        [
-                            (node.id, "node.waiting", {"reason": "approval"}),
-                            (
-                                node.id,
-                                "approval.requested",
-                                {"prompt": prompt},
-                            ),
-                            (
-                                node.id,
-                                "checkpoint.created",
-                                {"waiting_kind": "approval"},
-                            ),
-                        ]
+                    emit(node.id, "node.waiting", {"reason": "approval"})
+                    emit(node.id, "approval.requested", {"prompt": prompt})
+                    emit(
+                        node.id, "checkpoint.created", {"waiting_kind": "approval"}
                     )
                     return _ExecutionOutcome(
                         events=events,
@@ -863,12 +887,12 @@ class RuntimeService:
                     )
             except (RuntimeProviderError, ToolRuntimeError) as exc:
                 runtime_error = RuntimeError(exc.code, str(exc))
-                events.append((node.id, "node.failed", {"code": runtime_error.code}))
+                emit(node.id, "node.failed", {"code": runtime_error.code})
                 runtime_error.events = events
                 runtime_error.tool_calls = tuple(tool_calls)
                 raise runtime_error from exc
             except RuntimeError as exc:
-                events.append((node.id, "node.failed", {"code": exc.code}))
+                emit(node.id, "node.failed", {"code": exc.code})
                 exc.events = events
                 exc.tool_calls = tuple(tool_calls)
                 raise
@@ -876,11 +900,11 @@ class RuntimeService:
                 runtime_error = RuntimeError(
                     "executor_failed", "local Runtime execution failed"
                 )
-                events.append((node.id, "node.failed", {"code": runtime_error.code}))
+                emit(node.id, "node.failed", {"code": runtime_error.code})
                 runtime_error.events = events
                 runtime_error.tool_calls = tuple(tool_calls)
                 raise runtime_error from None
-            events.append((node.id, "node.completed", {"port": port}))
+            emit(node.id, "node.completed", {"port": port})
             current = edges.get((node.id, port), "")
             if not current:
                 raise RuntimeError(
@@ -1069,3 +1093,13 @@ def _check(check: str, values: dict[str, Any]) -> bool:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _sse_frame(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {payload}")
+    return "\n".join(lines) + "\n\n"

@@ -176,6 +176,49 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ command: "approve" });
   });
 
+  it("opens a replayable run event stream", async () => {
+    const event = {
+      schema_version: "1.0",
+      event_id: "event-1",
+      run_id: "run-1",
+      sequence: 1,
+      kind: "run.created",
+      node_id: null,
+      payload: {},
+      timestamp: "2026-08-28T10:00:00Z",
+    };
+    const listeners: Record<string, (event: MessageEvent) => void> = {};
+    let created: { url: string; closed: boolean } | undefined;
+    class FakeEventSource {
+      url: string;
+      closed = false;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        created = this;
+      }
+      addEventListener(type: string, handler: (event: MessageEvent) => void) {
+        listeners[type] = handler;
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const client = new LocalApiClient({ fetcher: vi.fn() });
+    const onEvent = vi.fn();
+    const onDone = vi.fn();
+    const stop = client.watchAgentRunEvents("project-1", "agent-1", "run-1", { onEvent, onDone }, { after: 2 });
+    expect(created?.url).toBe("/api/v1/projects/project-1/agents/agent-1/runs/run-1/events?after=2");
+    expect(listeners.runtime).toBeDefined();
+    listeners.runtime({ data: JSON.stringify(event) } as MessageEvent);
+    listeners.done({ data: JSON.stringify({ status: "unverified" }) } as MessageEvent);
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ kind: "run.created", sequence: 1 }));
+    expect(onDone).toHaveBeenCalledWith("unverified");
+    stop();
+    vi.unstubAllGlobals();
+  });
+
   it("lists filtered Resource Catalog entries and reads an immutable detail", async () => {
     const resource = {
       schema_version: "1.0",

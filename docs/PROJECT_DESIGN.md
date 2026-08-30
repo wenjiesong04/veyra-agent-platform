@@ -927,8 +927,10 @@ Terminal runs never return to running. Resume creates a child run referencing an
 Current local slice: a run may become `waiting` at `HumanApproval`, persist an
 approval request plus checkpoint, and continue on the **same run** through
 `approve` or `reject`. `stop` cancels the run. `retry` starts a new run from
-stored inputs. `resume` is not used for approval waits. SSE and Run Canvas
-remain later.
+stored inputs. `resume` is not used for approval waits. Node events are
+persisted as they happen and can be replayed through
+`GET /api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}/events`.
+POST `/run` is still synchronous. A full Studio graph Run Canvas remains later.
 
 ### 8.2 Runtime guarantees
 

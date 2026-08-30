@@ -46,6 +46,29 @@ function eventLabel(kind: NonNullable<AgentRunResponse["events"]>[number]["kind"
   return label ? label[locale === "zh" ? 0 : 1] : kind;
 }
 
+type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
+
+function nodeRunStates(source: AgentSource, events: NonNullable<AgentRunResponse["events"]>): { id: string; state: NodeRunState }[] {
+  return source.nodes.map((node) => {
+    let state: NodeRunState = "pending";
+    for (const event of events) {
+      if (event.node_id !== node.id) continue;
+      if (event.kind === "node.failed") state = "failed";
+      else if (event.kind === "node.waiting") state = "waiting";
+      else if (event.kind === "node.completed") state = "completed";
+      else if (event.kind === "node.started" && state === "pending") state = "running";
+    }
+    return { id: node.id, state };
+  });
+}
+
+function nodeStateLabel(state: NodeRunState, locale: "zh" | "en"): string {
+  const labels = locale === "zh"
+    ? { pending: "未开始", running: "运行中", waiting: "等待", completed: "完成", failed: "失败" }
+    : { pending: "Pending", running: "Running", waiting: "Waiting", completed: "Done", failed: "Failed" };
+  return labels[state];
+}
+
 function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: "zh" | "en" }) {
   const [configured, setConfigured] = React.useState<boolean | null>(null);
   const [userProvidedOnly, setUserProvidedOnly] = React.useState(false);
@@ -121,6 +144,36 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
   };
 
   const approvalPrompt = [...(run?.events ?? [])].reverse().find((event) => event.kind === "approval.requested")?.payload.prompt;
+  const nodes = nodeRunStates(source, run?.events ?? []);
+
+  React.useEffect(() => {
+    if (!run?.run_id || !api.watchAgentRunEvents) return;
+    const after = run.events?.at(-1)?.sequence ?? 0;
+    return api.watchAgentRunEvents(
+      projectId,
+      agentId,
+      run.run_id,
+      {
+        onEvent: (event) => {
+          setRun((current) => {
+            if (!current || current.run_id !== event.run_id) return current;
+            const events = [...(current.events ?? [])];
+            if (events.some((item) => item.event_id === event.event_id || item.sequence === event.sequence)) {
+              return current;
+            }
+            events.push(event);
+            events.sort((left, right) => left.sequence - right.sequence);
+            return { ...current, events };
+          });
+        },
+        onDone: () => {
+          if (!api.getAgentRun || !run.run_id) return;
+          void api.getAgentRun(projectId, agentId, run.run_id).then(setRun);
+        },
+      },
+      { after },
+    );
+  }, [api, projectId, agentId, run?.run_id]);
 
   return (
     <Panel className="studio-run-panel">
@@ -185,6 +238,16 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
           {error ? <div className="studio-alert bad">{error}</div> : null}
           {run?.error ? <div className="studio-alert bad"><span>{run.error.message}</span><small>{zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`}</small></div> : null}
           {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
+          {run ? (
+            <ol className="studio-run-nodes" aria-label={zh ? "节点运行状态" : "Node run states"}>
+              {nodes.map((node) => (
+                <li key={node.id} data-state={node.state}>
+                  <strong>{node.id}</strong>
+                  <small>{nodeStateLabel(node.state, locale)}</small>
+                </li>
+              ))}
+            </ol>
+          ) : null}
           {run?.events?.length ? (
             <ol className="studio-event-list">
               {run.events.map((event) => (

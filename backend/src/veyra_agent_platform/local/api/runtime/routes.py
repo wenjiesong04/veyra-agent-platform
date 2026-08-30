@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from veyra_agent_platform.local.api.projects.routes import TypedApiError, _translate
@@ -139,6 +140,30 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _runtime(request).run_detail(project_id, agent_id, run_id)
+        )
+
+    @router.get("/projects/{project_id}/agents/{agent_id}/runs/{run_id}/events")
+    def event_stream(
+        project_id: str,
+        agent_id: str,
+        run_id: str,
+        request: Request,
+        after: int = Query(default=0, ge=0),
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ) -> StreamingResponse:
+        start = after
+        if last_event_id is not None and last_event_id.isdigit():
+            start = max(start, int(last_event_id))
+        runtime = _runtime(request)
+        _translate(lambda: runtime.ensure_run(project_id, agent_id, run_id))
+        return StreamingResponse(
+            runtime.follow_events(run_id, start),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @router.post("/projects/{project_id}/agents/{agent_id}/runs/{run_id}/commands")

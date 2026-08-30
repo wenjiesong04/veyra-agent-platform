@@ -19,8 +19,8 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`d3641ea`（节点目录、child-Agent 关系和 Project/Agent Runtime API profile 已提交；后续交接文档提交不改变该功能基线）。
-- 当前远端分支与本地一致。
+- 最新功能代码基线：本提交落地可回放 SSE 与 Test Run 节点状态条；上一刀 Wave A（Tool 授权 + Run 控制）为 `fe0690d`。
+- 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
 - Python：3.11.15，解释器通常是 `/opt/anaconda3/envs/veyra-agent-platform/bin/python`
@@ -29,7 +29,7 @@
 
 ### 当前可见服务
 
-这些服务在最后一次验证时都应使用同一个功能提交 SHA `d3641ea`：
+这些服务在最后一次验证时都应使用同一个功能提交（可回放 SSE）；重启无 `--reload` 的 8771 sidecar 后才会载入本提交：
 
 - Desktop Vite：`http://127.0.0.1:5173/`，唯一的日常主要界面。
 - Local API：`http://127.0.0.1:8771/`，本机 Project、Factory、Studio 和 Runtime sidecar。
@@ -306,9 +306,10 @@ Community 目前还没有 Agent registry、发布 quarantine、公开版本、�
 - `GET .../runs`
 - `GET .../runs/{run_id}`
 - `POST .../runs/{run_id}/commands`（`approve` | `reject` | `stop` | `resume` | `retry`，需要 `Idempotency-Key`）
+- `GET .../runs/{run_id}/events`（replayable SSE，waiting 时保持跟随直到终态）
 - `POST /api/v1/system/select-directory`
 
-Local Run 当前同步执行；已有 idempotency、immutable version binding、ordered events、Tool authorization/receipt、`waiting` 审批暂停，以及 durable `run_command`（approve/reject/stop/retry）。SSE 和 Run Canvas 尚未实现。`resume` 对审批等待不适用。
+Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落库，并可通过 SSE 回放/跟随。已有 idempotency、immutable version binding、Tool authorization/receipt、`waiting` 审批暂停，以及 durable `run_command`。完整 Studio 图上的 Run Canvas 尚未实现。`resume` 对审批等待不适用。
 
 ### Community API
 
@@ -333,7 +334,7 @@ Local Run 当前同步执行；已有 idempotency、immutable version binding、
 - Project/Agent 创建和编辑表单支持可选 Runtime API profile；Agent 旁的加号可直接创建 child-Agent。
 - Resource Library：组件、Tool/MCP、Skills、Policies、Templates；显示 availability、Runtime 状态、权限和 hash。
 - Factory Conversation：需求输入、对话、生成 Blueprint、Resource Plan、missing capability、确认创建 Draft、打开 Studio。
-- Studio Test Run：输入表单、真实 Run、结果、事件列表、Runtime key 提示；`waiting` 时显示审批文案和批准/拒绝/停止。
+- Studio Test Run：输入表单、真实 Run、结果、节点状态条、事件列表、Runtime key 提示；`waiting` 时显示审批文案和批准/拒绝/停止；可订阅 run event stream。
 - Account/auth 页面和 Connected Account package。
 - Desktop/Community 共享 UI package，浅色/深色、中英文和响应式 Shell。
 
@@ -351,7 +352,7 @@ Local Run 当前同步执行；已有 idempotency、immutable version binding、
 当前不能宣称“完整 V1”。未完成项：
 
 1. Tool Runtime 其余适配器：Shell、HTTP、GitHub、Browser、MCP。filesystem.read/write 已落地。
-2. SSE/event reducer 和真正的 Run Canvas 可视化控制。审批控制面（waiting、approve/reject/stop/retry、checkpoint）已落地；`resume` 对审批等待明确不适用。
+2. POST `/run` 仍同步；完整 Studio 图 Run Canvas 和 token 流尚未做。可回放 SSE 与 Test Run 节点状态条已落地。审批控制面（waiting、approve/reject/stop/retry、checkpoint）已落地；`resume` 对审批等待明确不适用。
 3. Agent conversation 的持久化多轮交互、context、run history 和可恢复会话。
 4. Orchestrator：WorkItem、依赖、lease、worktree、retry、stall/reconcile。
 5. Monitor/Runs 从静态页面切换到真实 API。
@@ -369,11 +370,11 @@ Local Run 当前同步执行；已有 idempotency、immutable version binding、
 1. Tool call 已提升为 authorization/receipt 边界。
 2. `filesystem.write` 已落地，默认要求 HumanApproval，限制在 Project workspace。
 3. durable `run_commands`、approval request、checkpoint、stop/retry 已落地；审批等待用 approve/reject 继续同一 run。
-4. 下一波再做 SSE 和 Run Canvas。
+4. 可回放 SSE 与 Test Run 节点状态条已落地；POST `/run` 仍同步。
 
-### 下一波 A：SSE 与 Run Canvas
+### 下一波 A：异步 Run + Studio Run Canvas
 
-控制面稳定后再做事件流和 Run Canvas；不要先做装饰性大屏。
+让 POST `/run` 立即返回 `running`，用 SSE 在第一次执行过程中推节点事件；再把节点状态画回 Studio Canvas，而不是新做装饰性大屏。
 
 ### 下一波 B：Agent conversation
 
