@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：本提交落地可回放 SSE 与 Test Run 节点状态条；上一刀 Wave A（Tool 授权 + Run 控制）为 `fe0690d`。
+- 最新功能代码基线：本提交把 Resource Catalog 收成 `node.yaml` 包；上一刀 SSE 为 `5b07373`。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -29,7 +29,7 @@
 
 ### 当前可见服务
 
-这些服务在最后一次验证时都应使用同一个功能提交（可回放 SSE）；重启无 `--reload` 的 8771 sidecar 后才会载入本提交：
+这些服务在最后一次验证时都应使用同一个功能提交（node.yaml Catalog）；重启无 `--reload` 的 8771 sidecar 后才会载入本提交：
 
 - Desktop Vite：`http://127.0.0.1:5173/`，唯一的日常主要界面。
 - Local API：`http://127.0.0.1:8771/`，本机 Project、Factory、Studio 和 Runtime sidecar。
@@ -135,7 +135,7 @@ docs/
   adr/                 已接受的架构决策
 
 resources/nodes/
-  catalog.v1.json      平台拥有的 Component/Tool/MCP/Skill/Policy/Template 节点定义
+  <family>/<id>/node.yaml  平台拥有的 Component/Tool/MCP/Skill/Policy/Template 节点包
 ```
 
 遵守根目录 `AGENTS.md`：不要创建 catch-all `utils.py`、`services.py`、`helpers.ts` 或巨型入口；共享 contracts、依赖锁和 migration head 一次只允许一个明确 writer；不要把旧 Veyra 仓库加入 `PYTHONPATH` 或包路径。
@@ -176,7 +176,7 @@ AgentSource 会保存：输入/输出、节点/连线、模型引用、工具引
 
 ### 5.3 Resource Catalog
 
-当前 Catalog 总计 29 个 immutable builtin descriptors，源定义位于 `resources/nodes/catalog.v1.json`：
+当前 Catalog 总计 29 个 immutable builtin descriptors，源定义位于 `resources/nodes/<family>/<id>/node.yaml`：
 
 - 8 个 Component
 - 7 个 Tool
@@ -194,7 +194,7 @@ AgentSource 会保存：输入/输出、节点/连线、模型引用、工具引
 - `veyra.mcp.call@1.0.0`：`requires_configuration` + `runtime_not_configured`，尚无 MCP 执行。
 - Agent Component：`requires_configuration` + `runtime_not_configured`，设计可以继续，运行需要模型。
 - Skills 是非执行指令资产；Policies 是解析和 Runtime 授权的 overlay；Templates 是可 Fork 的完整 Agent 定义。
-- node 文件由本地 Resource Catalog 校验并计算 content hash；Factory 只能组装 `factory_selectable` 节点。特殊节点只作为隔离的声明式缺失能力提案，不会自动生成或执行任意代码。
+- `node.yaml` 由本地 Resource Catalog 校验并计算 content hash；`spec.ui` 只给 Studio 调色板，不进入 Factory snapshot，也不进入 lock hash。Factory 只能组装 `factory_selectable` 节点。特殊节点只作为隔离的声明式缺失能力提案，不会自动生成或执行任意代码。
 
 关键修复：Resource Catalog 的 `required_permissions.tools` 必须使用完整资源 ID，例如 `veyra.tool.filesystem.read`，因为 AgentSource 合约会将 Tool node 的 `uses` 去掉版本后进行精确匹配。短名 `filesystem.read` 会导致项目创建或编译失败。
 
@@ -365,32 +365,41 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 
 不要同时铺开所有 V1 页面。建议按用户能看见的闭环推进：
 
-### 已完成：Tool authorization + Run control
+### 已完成：Tool authorization + Run control + node.yaml catalog
 
 1. Tool call 已提升为 authorization/receipt 边界。
 2. `filesystem.write` 已落地，默认要求 HumanApproval，限制在 Project workspace。
 3. durable `run_commands`、approval request、checkpoint、stop/retry 已落地；审批等待用 approve/reject 继续同一 run。
 4. 可回放 SSE 与 Test Run 节点状态条已落地；POST `/run` 仍同步。
+5. Resource Catalog 以 `resources/nodes/<family>/<id>/node.yaml` 为唯一事实源；手写 `catalog.v1.json` 和 in-code fallback 已移除。AgentSource 的 8 个图组件类型没有改。
 
-### 下一波 A：异步 Run + Studio Run Canvas
+### 下一波 A：Catalog 驱动 Studio 调色板
+
+Studio 从 Catalog（含 `spec.ui`）投影节点卡片。Tool 在画布上可以显示成 Read File / Write File，源文件仍是 `component_type: Tool` + `uses`。
+
+### 下一波 B：异步 Run + Studio Run Canvas
 
 让 POST `/run` 立即返回 `running`，用 SSE 在第一次执行过程中推节点事件；再把节点状态画回 Studio Canvas，而不是新做装饰性大屏。
 
-### 下一波 B：Agent conversation
+### 下一波 C：MCP adapter
+
+在包格式、授权和画布稳定后，把 MCP server 配置、tool 发现和规范化 Tool 描述符做成第一个新适配器。
+
+### 下一波 D：Agent conversation
 
 1. Factory conversation 与 Agent conversation 继续分开。
 2. Agent conversation 只服务已有 Agent 的输入、Run、历史和证据，不重新生成 Agent source。
 3. 复用 Runtime provider boundary；没有用户 API 时只允许设计/查看，明确禁止运行。
 
-### 下一波 C：真实 Monitor/Runs
+### 下一波 E：真实 Monitor/Runs
 
 把静态 `monitor.tsx`、`runs.tsx` 替换为真实 Local API 数据，显示运行状态、等待审批、失败、验证和 receipt；不要先做装饰性大屏。
 
-### 下一波 D：Community registry
+### 下一波 F：Community registry
 
 先实现 Agent/template 不可变版本的 quarantine、hash/secret/path/symlink 扫描、下载、目标 Project 导入和 Fork lineage，再做 Star/Review/Report/审核。
 
-### 下一波 E：发行与部署
+### 下一波 G：发行与部署
 
 只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。
 

@@ -1,12 +1,19 @@
-# Veyra node catalog
+# Veyra node packages
 
-`catalog.v1.json` is the checked-in, versioned definition of the platform
-nodes that Factory and Studio may resolve. It contains graph Components, Tools,
-MCP descriptors, Skills, Policies, and Forkable Templates.
+Each platform capability is a directory:
 
-The local Resource Catalog validates this file and computes each descriptor's
-content hash at load time. A model may reference only entries marked
-`factory_selectable`; `runtime_status` and `availability` are authoritative.
-Adding a new executable node requires a platform-owned adapter and review. A
-model-generated special node remains a quarantined declarative proposal until a
-separate human-reviewed promotion flow exists.
+```text
+resources/nodes/<family>/<id>/node.yaml
+```
+
+`node.yaml` is the only authored source for Components, Tools, MCP
+descriptors, Skills, Policies, and Templates. The local Resource Catalog
+scans these packages at process start, validates them, and computes each
+descriptor's content hash. `spec.ui` is Studio palette metadata; it is not
+sent to Factory and does not change the lock hash.
+
+A model may reference only entries marked `factory_selectable`.
+`runtime_status` and `availability` are authoritative. Adding an executable
+node requires a platform-owned adapter and review. A model-generated special
+node remains a quarantined declarative proposal until a separate
+human-reviewed promotion flow exists.

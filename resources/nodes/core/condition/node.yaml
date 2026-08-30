@@ -1,0 +1,28 @@
+# veyra.component.condition@1.0.0
+availability: ready
+description: Platform-owned Condition graph component.
+factory_selectable: true
+kind: component
+name: Condition
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.condition
+runtime_status: supported
+spec:
+  fields:
+  - expression
+  output_ports:
+  - 'true'
+  - 'false'
+  ui:
+    category: core
+    icon: git-branch
+    title: Condition
+tags:
+- graph
+- builtin
+version: 1.0.0

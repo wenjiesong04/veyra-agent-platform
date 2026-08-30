@@ -438,14 +438,15 @@ Source is human-readable and Git-friendly. Package is an immutable archive conta
 
 ### 5.1.1 Node definition files
 
-The platform-owned node catalog is checked into
-`resources/nodes/catalog.v1.json`. Each descriptor is a versioned node file
-record for a Component, Tool, MCP descriptor, Skill, Policy, or Template. The
-local Resource Catalog loads and validates this file before using its code
-fallback, then computes the immutable content hash. Factory may assemble only
-catalogued records. A special node produced for an unusual requirement is a
-declarative, non-executable proposal until a separate human-reviewed adapter
-promotion flow exists.
+The platform-owned node catalog is checked in as packages under
+`resources/nodes/<family>/<id>/node.yaml`. Each package is a versioned
+record for a Component, Tool, MCP descriptor, Skill, Policy, or Template.
+The local Resource Catalog loads every `node.yaml`, validates family/kind
+alignment, and computes the immutable content hash. Studio palette fields
+live under `spec.ui` and do not participate in the lock hash. Factory may
+assemble only catalogued records. A special node produced for an unusual
+requirement is a declarative, non-executable proposal until a separate
+human-reviewed adapter promotion flow exists.
 
 ### 5.2 Standards strategy
 
@@ -1652,8 +1653,8 @@ Stop expanding if:
 
 ## 20. Immediate Next Documentation/Implementation Tasks
 
-1. Resource Catalog node definitions are now file-backed at
-   `resources/nodes/catalog.v1.json`; Factory resolves only those records.
+1. Resource Catalog node definitions are file-backed packages at
+   `resources/nodes/<family>/<id>/node.yaml`; Factory resolves only those records.
 2. Project and Agent child relationships use stable `parent_agent_id` references
    while keeping the filesystem flat.
 3. Project/Agent Runtime API profiles are optional, editable, non-secret, and

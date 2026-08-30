@@ -1,0 +1,28 @@
+# veyra.component.agent@1.0.0
+availability: requires_configuration
+description: Platform-owned Agent graph component.
+factory_selectable: true
+kind: component
+name: Agent
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.agent
+runtime_status: runtime_not_configured
+spec:
+  fields:
+  - model_ref
+  - system_prompt
+  output_ports:
+  - next
+  ui:
+    category: model
+    icon: bot
+    title: LLM Agent
+tags:
+- graph
+- builtin
+version: 1.0.0

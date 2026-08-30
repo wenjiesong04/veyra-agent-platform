@@ -1,0 +1,31 @@
+# veyra.tool.http.request@1.0.0
+availability: design_only
+description: Call an allowlisted HTTP host. Hosts are derived, never invented.
+factory_selectable: true
+kind: tool
+name: HTTP Request
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.http.request
+resource_id: veyra.tool.http.request
+runtime_status: runtime_not_supported
+spec:
+  approval_required: false
+  input_schema:
+    method: string
+    url: string
+  output_schema:
+    body: string
+    status: integer
+  tool_name: http.request
+  ui:
+    category: web
+    icon: globe
+    title: HTTP Request
+tags:
+- network
+version: 1.0.0

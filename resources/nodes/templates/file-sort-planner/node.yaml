@@ -1,0 +1,31 @@
+# veyra.template.file-sort-planner@1.0.0
+availability: ready
+description: 根据文件清单给出分类、命名和目录方案。当前不会真正移动、重命名或删除文件。
+factory_selectable: true
+kind: template
+name: 文件整理
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.template.file-sort-planner
+runtime_status: runtime_not_configured
+spec:
+  component_references:
+  - veyra.component.start@1.0.0
+  - veyra.component.agent@1.0.0
+  - veyra.component.output@1.0.0
+  skill_references:
+  - veyra.skill.file-taxonomy@1.0.0
+  - veyra.skill.content-planner@1.0.0
+  template_id: veyra.file-sort-planner@1.0.0
+  ui:
+    category: template
+    icon: layout-template
+    title: 文件整理
+tags:
+- template
+- forkable
+version: 1.0.0

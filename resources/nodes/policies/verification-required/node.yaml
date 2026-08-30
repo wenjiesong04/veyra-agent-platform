@@ -1,0 +1,24 @@
+# veyra.policy.verification-required@1.0.0
+availability: ready
+description: Require verification before completion.
+factory_selectable: true
+kind: policy
+name: Verification Required
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.policy.verification-required
+runtime_status: supported
+spec:
+  ui:
+    category: policy
+    icon: badge-check
+    title: Verification Required
+  verification: required
+tags:
+- policy
+- builtin
+version: 1.0.0

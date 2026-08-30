@@ -1,0 +1,27 @@
+# veyra.tool.github.read@1.0.0
+availability: unavailable
+description: Read GitHub issues or repositories after a GitHub adapter exists.
+factory_selectable: false
+kind: tool
+name: GitHub Read
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts:
+  - api.github.com
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.github.read
+resource_id: veyra.tool.github.read
+runtime_status: runtime_not_supported
+spec:
+  adapter: missing
+  tool_name: github.read
+  ui:
+    category: git
+    icon: github
+    title: GitHub Read
+tags:
+- github
+- network
+version: 1.0.0

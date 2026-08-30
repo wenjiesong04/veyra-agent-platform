@@ -1,0 +1,28 @@
+# veyra.tool.github.write@1.0.0
+availability: unavailable
+description: Write GitHub comments or issues after a GitHub adapter exists.
+factory_selectable: false
+kind: tool
+name: GitHub Write
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts:
+  - api.github.com
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.github.write
+resource_id: veyra.tool.github.write
+runtime_status: runtime_not_supported
+spec:
+  adapter: missing
+  approval_required: true
+  tool_name: github.write
+  ui:
+    category: git
+    icon: github
+    title: GitHub Write
+tags:
+- github
+- approval
+version: 1.0.0

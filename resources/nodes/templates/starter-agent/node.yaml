@@ -1,0 +1,29 @@
+# veyra.template.starter-agent@1.0.0
+availability: ready
+description: A safe local-first starting point for a new Agent.
+factory_selectable: true
+kind: template
+name: Starter Agent
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.template.starter-agent
+runtime_status: runtime_not_configured
+spec:
+  component_references:
+  - veyra.component.start@1.0.0
+  - veyra.component.agent@1.0.0
+  - veyra.component.output@1.0.0
+  skill_references: []
+  template_id: veyra.starter-agent@1.0.0
+  ui:
+    category: template
+    icon: layout-template
+    title: Starter Agent
+tags:
+- template
+- forkable
+version: 1.0.0

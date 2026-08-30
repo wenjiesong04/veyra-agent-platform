@@ -1,0 +1,25 @@
+# veyra.tool.browser.navigate@1.0.0
+availability: unavailable
+description: Navigate and read pages after the browser Runtime is stable.
+factory_selectable: false
+kind: tool
+name: Browser Navigate
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.browser.navigate
+resource_id: veyra.tool.browser.navigate
+runtime_status: runtime_not_supported
+spec:
+  adapter: deferred
+  tool_name: browser.navigate
+  ui:
+    category: web
+    icon: app-window
+    title: Browser Navigate
+tags:
+- browser
+version: 1.0.0

@@ -1,0 +1,26 @@
+# veyra.skill.evidence-ledger@1.0.0
+availability: ready
+description: Keep claims tied to supplied evidence and mark gaps explicitly.
+factory_selectable: true
+kind: skill
+name: Evidence Ledger
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.skill.evidence-ledger
+runtime_status: runtime_not_configured
+spec:
+  instruction: Use only evidence present in the user message. Label each point as
+    quote, paraphrase, or inference. List missing facts and what to collect next.
+    Never fabricate sources.
+  ui:
+    category: skill
+    icon: library
+    title: Evidence Ledger
+tags:
+- evidence
+- instruction
+version: 1.0.0

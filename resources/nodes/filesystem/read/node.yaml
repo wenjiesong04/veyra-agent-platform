@@ -1,0 +1,32 @@
+# veyra.tool.filesystem.read@1.0.0
+availability: ready
+description: Read a bounded Project path and return file contents.
+factory_selectable: true
+kind: tool
+name: Filesystem Read
+required_permissions:
+  filesystem_read_roots:
+  - project
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.filesystem.read
+resource_id: veyra.tool.filesystem.read
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.filesystem.read
+  approval_required: false
+  input_schema:
+    path: string
+  output_schema:
+    content: string
+  tool_name: filesystem.read
+  ui:
+    category: filesystem
+    icon: file-text
+    title: Read File
+tags:
+- filesystem
+- local
+version: 1.0.0

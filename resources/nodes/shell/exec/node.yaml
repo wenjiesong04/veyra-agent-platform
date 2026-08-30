@@ -1,0 +1,30 @@
+# veyra.tool.shell.exec@1.0.0
+availability: design_only
+description: Run a workspace-scoped command after approval.
+factory_selectable: true
+kind: tool
+name: Workspace Shell
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: true
+  tools:
+  - veyra.tool.shell.exec
+resource_id: veyra.tool.shell.exec
+runtime_status: runtime_not_supported
+spec:
+  approval_required: true
+  input_schema:
+    command: string
+  output_schema:
+    stdout: string
+  tool_name: shell.exec
+  ui:
+    category: shell
+    icon: terminal
+    title: Workspace Shell
+tags:
+- shell
+- approval
+version: 1.0.0

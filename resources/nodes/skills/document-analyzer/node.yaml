@@ -1,0 +1,26 @@
+# veyra.skill.document-analyzer@1.0.0
+availability: ready
+description: Extract claims, decisions, risks, and traceable citations from documents.
+factory_selectable: true
+kind: skill
+name: Document Analyzer
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.skill.document-analyzer
+runtime_status: runtime_not_configured
+spec:
+  instruction: Separate quoted evidence from inference and uncertainty. Capture decisions,
+    owners, dates, numbers, and risks. If the source is too long, keep only what the
+    stated need requires.
+  ui:
+    category: skill
+    icon: file-search
+    title: Document Analyzer
+tags:
+- document
+- instruction
+version: 1.0.0

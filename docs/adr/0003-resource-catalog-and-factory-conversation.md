@@ -15,7 +15,8 @@ the platform cannot resolve or run.
 ## Decision
 
 - A server-owned Resource Catalog is the only capability source for Factory and
-  Studio.
+  Studio. Each catalog entry is a `resources/nodes/<family>/<id>/node.yaml`
+  package; there is no hand-maintained catalog JSON or in-code node table.
 - Components define graph structure; Tools/MCP define executable capabilities;
   Skills are non-executable instruction assets; Policies constrain generation
   and Runtime; Templates are complete Forkable definitions.

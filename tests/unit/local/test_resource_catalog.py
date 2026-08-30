@@ -15,6 +15,14 @@ def test_resource_catalog_has_unique_stable_references_and_hashes() -> None:
     assert all(resource["content_hash"].islower() for resource in first)
     first[0]["spec"]["fields"].append("mutated")
     assert "mutated" not in catalog.resources()["resources"][0]["spec"]["fields"]
+    assert catalog.resources()["resources"][0]["name"] == "Start"
+    assert "ui" in catalog.detail("veyra.tool.filesystem.read", "1.0.0")["spec"]
+    snapshot = next(
+        item
+        for item in catalog.factory_snapshot()
+        if item["reference"] == "veyra.tool.filesystem.read@1.0.0"
+    )
+    assert "ui" not in snapshot["spec"]
 
 
 def test_component_catalog_status_and_legacy_projection_are_honest() -> None:

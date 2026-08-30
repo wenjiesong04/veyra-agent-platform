@@ -1,0 +1,33 @@
+# veyra.tool.filesystem.write@1.0.0
+availability: ready
+description: Write inside a Project workspace. Approval is required by default.
+factory_selectable: true
+kind: tool
+name: Filesystem Write
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots:
+  - project
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.filesystem.write
+resource_id: veyra.tool.filesystem.write
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.filesystem.write
+  approval_required: true
+  input_schema:
+    content: string
+    path: string
+  output_schema:
+    written: boolean
+  tool_name: filesystem.write
+  ui:
+    category: filesystem
+    icon: file-pen
+    title: Write File
+tags:
+- filesystem
+- approval
+version: 1.0.0
