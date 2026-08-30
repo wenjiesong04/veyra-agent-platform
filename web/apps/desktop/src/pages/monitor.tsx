@@ -1,25 +1,127 @@
-import { Check, CircleStop, Clock3, ExternalLink, MessageSquare, Pause, ShieldCheck, SkipForward } from "lucide-react";
-import { Button, LinkButton, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
-
-const timeline = [
-  { time: "14:08:04", title: "Run queued", detail: "Release Check v0.2 pinned", state: "verified" as const },
-  { time: "14:08:06", title: "Workspace prepared", detail: "Lease acquired for Release Room", state: "verified" as const },
-  { time: "14:09:18", title: "Checklist completed", detail: "5 checks returned structured results", state: "verified" as const },
-  { time: "14:16:46", title: "Approval requested", detail: "Publish release note?", state: "waiting" as const },
-];
+import { CircleStop, Clock3, Gauge, Play } from "lucide-react";
+import { Button, EmptyState, ErrorState, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { useCallback, useEffect, useState } from "react";
+import type { OrchestratorStatus, WorkItem } from "@veyra/api-contracts";
+import { useProjectWorkspace } from "../api/project-workspace";
 
 export function MonitorPage() {
   const { locale } = useLocale();
-  const copy = locale === "zh" ? {
-    eyebrow: "实时工作流", title: "看见工作，也保留控制权。", description: "Monitor 聚焦现在需要关注的内容：等待、阻塞、过期和失败的工作。", waiting: "1 个等待中", run: "运行", runMeta: "Release Room · run-1042 · 版本 v0.2", waitingApproval: "等待审批", running: "已运行 08:42", verifierPending: "验证器待处理", stop: "停止", approve: "批准", reply: "回复", canvas: "运行 Canvas", events: "有序事件", streamDetail: "当前状态由事件流推导。", currentNode: "当前节点", needsDecision: "需要你的决策", approvalGate: "审批门", sideDetail: "下一次外部写入会保持暂停，直到记录人工决策。", approveGate: "批准门", reject: "拒绝并停止", evidence: "证据", verifierState: "验证器状态", notEstablished: "尚未建立", afterGate: "门禁解决后运行验证。", openRuns: "打开不可变运行记录", timeline: ["运行已排队", "工作区已准备", "检查清单已完成", "已请求审批"], timelineDetail: ["Release Check v0.2 已固定", "已为 Release Room 获取租约", "5 项检查返回结构化结果", "发布版本说明？"],
-  } : {
-    eyebrow: "Live workflow", title: "See the work. Keep the controls.", description: "Monitor focuses on what needs attention now: waiting, blocked, stale, and failed work.", waiting: "1 waiting", run: "Run", runMeta: "Release Room · run-1042 · version v0.2", waitingApproval: "Waiting for approval", running: "running for 08:42", verifierPending: "verifier pending", stop: "Stop", approve: "Approve", reply: "Reply", canvas: "Run canvas", events: "Ordered events", streamDetail: "The current state is derived from the event stream.", currentNode: "Current node", needsDecision: "Needs your decision", approvalGate: "Approval gate", sideDetail: "The next external write remains paused until a human decision is recorded.", approveGate: "Approve gate", reject: "Reject and stop", evidence: "Evidence", verifierState: "Verifier state", notEstablished: "Not established", afterGate: "Verification runs after the gate resolves.", openRuns: "Open immutable runs", timeline: ["Run queued", "Workspace prepared", "Checklist completed", "Approval requested"], timelineDetail: ["Release Check v0.2 pinned", "Lease acquired for Release Room", "5 checks returned structured results", "Publish release note?"],
+  const zh = locale === "zh";
+  const { api, projects, status: workspaceStatus } = useProjectWorkspace();
+  const [plane, setPlane] = useState<OrchestratorStatus | null>(null);
+  const [items, setItems] = useState<WorkItem[]>([]);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const project = projects[0];
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const next = api.orchestratorStatus ? await api.orchestratorStatus() : null;
+      setPlane(next);
+      if (project && api.listWorkItems) {
+        setItems((await api.listWorkItems(project.project_id)).work_items);
+      } else {
+        setItems(next?.active ?? []);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "编排器暂时不可用。" : "The orchestrator is unavailable."));
+    }
+  }, [api, project, zh]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const dispatch = async (workItemId: string) => {
+    if (!api.dispatchWorkItem) return;
+    setBusyId(workItemId);
+    try {
+      await api.dispatchWorkItem(workItemId);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "派发失败。" : "Dispatch failed."));
+    } finally {
+      setBusyId(null);
+    }
   };
+
+  const cancel = async (workItemId: string) => {
+    if (!api.cancelWorkItem) return;
+    setBusyId(workItemId);
+    try {
+      await api.cancelWorkItem(workItemId);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "取消失败。" : "Cancel failed."));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const copy = zh
+    ? {
+      eyebrow: "本机编排",
+      title: "看见工作，也保留控制权。",
+      description: "WorkItem 只在本机 Runtime 上派发。Community 不会执行下载的 Agent。",
+      local: "仅本机执行",
+      empty: "还没有 WorkItem",
+      emptyDetail: "在当前项目里创建 WorkItem 后，可以派发到已提交的 Agent。",
+      dispatch: "派发",
+      cancel: "取消",
+      counts: "工作项",
+    }
+    : {
+      eyebrow: "Local orchestrator",
+      title: "See the work. Keep the controls.",
+      description: "Work items dispatch only to the local Runtime. Community never executes downloaded Agents.",
+      local: "Local execution only",
+      empty: "No work items yet",
+      emptyDetail: "Create a WorkItem in the current project, then dispatch it to a committed Agent.",
+      dispatch: "Dispatch",
+      cancel: "Cancel",
+      counts: "Work items",
+    };
+
   return (
     <div className="page-stack">
-      <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div><StatusBadge label={copy.waiting} tone="warn" /></div>
-      <Panel className="monitor-hero"><div><div className="monitor-title"><span className="run-state-icon active"><Pause size={16} /></span><div><h2>Release Check</h2><p>{copy.runMeta}</p></div></div><div className="monitor-meta"><Tag tone="warn">{copy.waitingApproval}</Tag><span><Clock3 size={13} /> {copy.running}</span><span><ShieldCheck size={13} /> {copy.verifierPending}</span></div></div><div className="monitor-actions"><Button icon={CircleStop} variant="danger">{copy.stop}</Button><Button icon={Check} variant="primary">{copy.approve}</Button><Button icon={MessageSquare}>{copy.reply}</Button></div></Panel>
-      <div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.canvas} title={copy.events} detail={copy.streamDetail} /><div className="timeline">{timeline.map((event, index) => <div className="timeline-item" key={event.time}><div className={`timeline-dot ${event.state}`}><Check size={12} /></div>{index < timeline.length - 1 ? <span className="timeline-line" aria-hidden="true" /> : null}<div className="timeline-copy"><span>{event.time}</span><strong>{copy.timeline[index]}</strong><p>{copy.timelineDetail[index]}</p></div></div>)}</div></Panel><div className="monitor-side"><Panel><SectionHeading eyebrow={copy.currentNode} title={copy.approvalGate} /><StatusBadge label={copy.needsDecision} tone="warn" /><p className="side-detail">{copy.sideDetail}</p><div className="button-stack"><Button icon={Check} variant="primary">{copy.approveGate}</Button><Button icon={SkipForward}>{copy.reject}</Button></div></Panel><Panel><SectionHeading eyebrow={copy.evidence} title={copy.verifierState} /><div className="evidence-row"><ShieldCheck size={17} /><span><strong>{copy.notEstablished}</strong><small>{copy.afterGate}</small></span></div><LinkButton href="#/runs" icon={ExternalLink} size="sm">{copy.openRuns}</LinkButton></Panel></div></div>
+      <div className="page-intro">
+        <div>
+          <span className="ui-eyebrow">{copy.eyebrow}</span>
+          <h2>{copy.title}</h2>
+          <p>{copy.description}</p>
+        </div>
+        <StatusBadge label={copy.local} tone="good" />
+      </div>
+      {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
+      {workspaceStatus === "loading" || (!plane && !error) ? <Panel><LoadingState label={zh ? "正在加载编排状态…" : "Loading orchestrator…"} /></Panel> : null}
+      {plane ? (
+        <Panel>
+          <SectionHeading eyebrow={copy.counts} title={`${plane.active.length} active`} detail={`backlog ${plane.counts.backlog} · ready ${plane.counts.ready} · running ${plane.counts.running} · waiting ${plane.counts.waiting}`} />
+          {items.length ? (
+            <div className="run-list">
+              {items.map((item) => (
+                <div className="run-row" key={item.work_item_id}>
+                  <span className="run-state-icon"><Gauge size={17} /></span>
+                  <span className="row-copy">
+                    <strong>{item.title}</strong>
+                    <small>{item.agent_id} · {item.status}</small>
+                  </span>
+                  <Tag>{item.status}</Tag>
+                  {item.status === "ready" || item.status === "backlog" ? (
+                    <Button size="sm" icon={Play} disabled={busyId === item.work_item_id} onClick={() => void dispatch(item.work_item_id)}>{copy.dispatch}</Button>
+                  ) : null}
+                  {item.status === "running" || item.status === "waiting" || item.status === "ready" || item.status === "backlog" ? (
+                    <Button size="sm" icon={CircleStop} variant="danger" disabled={busyId === item.work_item_id} onClick={() => void cancel(item.work_item_id)}>{copy.cancel}</Button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Clock3} title={copy.empty} detail={copy.emptyDetail} />
+          )}
+        </Panel>
+      ) : null}
     </div>
   );
 }

@@ -55,6 +55,13 @@ def test_work_templates_are_local_llm_graphs_with_compiled_skills() -> None:
             "Output",
         ]
         assert source.permissions.tools == ()
+        assert source.skill_refs == tuple(descriptor["spec"]["skill_references"])
+        binding_refs = {
+            binding["reference"]
+            for binding in (source.ui.get("bindings") or {}).values()
+            if binding["kind"] == "skill"
+        }
+        assert binding_refs == set(source.skill_refs)
         for skill_ref in descriptor["spec"]["skill_references"]:
             skill = catalog.by_reference(skill_ref)
             assert f"[{skill['name']}]" in prompt

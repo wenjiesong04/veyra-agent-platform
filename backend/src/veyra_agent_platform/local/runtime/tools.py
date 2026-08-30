@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -9,6 +10,7 @@ from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
+from veyra_agent_platform.local.mcp.service import McpError, McpService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
 _MAX_FILE_BYTES = 1_000_000
@@ -16,6 +18,7 @@ _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
 _FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".token")
 _READ_ADAPTER = "veyra.runtime.filesystem.read"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
+_MCP_ADAPTER = "veyra.runtime.mcp.call"
 
 
 class ToolRuntimeError(RuntimeError):
@@ -49,8 +52,9 @@ class ToolExecution:
 class ToolRuntime:
     """Resolve exact catalog references and execute only registered adapters."""
 
-    def __init__(self, catalog: ResourceCatalog) -> None:
+    def __init__(self, catalog: ResourceCatalog, mcp: McpService | None = None) -> None:
         self.catalog = catalog
+        self.mcp = mcp
 
     def authorize(
         self, *, source: AgentSource, node: FlowNode, values: dict[str, Any]
@@ -109,11 +113,19 @@ class ToolRuntime:
         except ToolRuntimeError as exc:
             return self._denied(node.uses, exc.code, str(exc), values, resource)
         adapter = resource.get("spec", {}).get("adapter")
-        if adapter not in {_READ_ADAPTER, _WRITE_ADAPTER}:
+        if adapter not in {_READ_ADAPTER, _WRITE_ADAPTER, _MCP_ADAPTER}:
             return self._denied(
                 node.uses,
                 "tool_runtime_unavailable",
                 "Tool adapter is not installed",
+                values,
+                resource,
+            )
+        if adapter == _MCP_ADAPTER and self.mcp is None:
+            return self._denied(
+                node.uses,
+                "tool_runtime_unavailable",
+                "MCP Runtime adapter is not installed",
                 values,
                 resource,
             )
@@ -159,6 +171,10 @@ class ToolRuntime:
         elif adapter == _WRITE_ADAPTER:
             output, byte_length, relative_path = self._write_project_file(
                 project_root, values.get("path"), values.get("content")
+            )
+        elif adapter == _MCP_ADAPTER:
+            output, byte_length, relative_path = self._call_mcp(
+                authorization.resource, values
             )
         else:
             raise ToolRuntimeError(
@@ -289,6 +305,39 @@ class ToolRuntime:
                 "tool_failed", "Tool could not write the Project file"
             ) from exc
         return {"written": True}, len(encoded), relative_path
+
+    def _call_mcp(
+        self, resource: dict[str, Any], values: dict[str, Any]
+    ) -> tuple[dict[str, Any], int, str]:
+        if self.mcp is None:
+            raise ToolRuntimeError(
+                "tool_runtime_unavailable", "MCP Runtime adapter is not installed"
+            )
+        spec = resource.get("spec") or {}
+        server_id = spec.get("mcp_server_id")
+        tool_name = spec.get("mcp_tool_name")
+        if not isinstance(server_id, str) or not isinstance(tool_name, str):
+            raise ToolRuntimeError(
+                "tool_runtime_unavailable", "MCP tool descriptor is incomplete"
+            )
+        arguments = {
+            name: values.get(name)
+            for name in (spec.get("input_schema") or {})
+            if name in values
+        }
+        try:
+            result = self.mcp.call(server_id, tool_name, arguments)
+        except McpError as exc:
+            raise ToolRuntimeError(exc.code, str(exc)) from exc
+        if result.get("isError"):
+            raise ToolRuntimeError("mcp_tool_failed", "MCP tool returned an error")
+        output = {"result": result}
+        encoded = json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        if len(encoded) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "MCP tool output exceeds the 1 MiB limit"
+            )
+        return output, len(encoded), ""
 
     @staticmethod
     def _project_target(

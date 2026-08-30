@@ -176,6 +176,15 @@ def test_generate_repairs_then_applies_draft_without_running(tmp_path: Path) -> 
         assert draft.status_code == 200
         source = draft.json()["source"]
         assert "Research Brief" in source["nodes"][1]["system_prompt"]
+        assert source["extensions"]["veyra"]["skill_refs"] == [
+            "veyra.skill.research-brief@1.0.0"
+        ]
+        bindings = source["ui"].get("bindings") or {}
+        assert any(
+            item["kind"] == "skill"
+            and item["reference"] == "veyra.skill.research-brief@1.0.0"
+            for item in bindings.values()
+        )
         runs = client.get(f"/api/v1/projects/{project_id}/agents/{agent_id}/runs")
         assert runs.status_code == 200
         assert runs.json()["runs"] == []
@@ -230,6 +239,27 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
         )
         assert applied.status_code == 422
         assert applied.json()["code"] == "factory_blueprint_missing"
+        drafted = client.post(
+            "/api/v1/resources/drafts",
+            json={
+                "confirm": True,
+                "kind": "tool",
+                "requested_reference": "veyra.tool.github.read@1.0.0",
+                "name": "GitHub Read proposal",
+            },
+        )
+        assert drafted.status_code == 201
+        resource = drafted.json()["resource"]
+        assert resource["availability"] == "quarantined"
+        assert resource["factory_selectable"] is False
+        assert resource["origin"] == "workshop"
+        assert drafted.json()["executable"] is False
+        listed = client.get("/api/v1/resources", params={"availability": "quarantined"})
+        assert listed.status_code == 200
+        assert any(
+            item["resource_id"] == resource["resource_id"]
+            for item in listed.json()["resources"]
+        )
 
 
 def test_exhausted_repairs_stay_retryable(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ import "@xyflow/react/dist/style.css";
 import {
   BadgeCheck,
   Bot,
+  BookOpen,
   Box,
   CirclePlay,
   FilePen,
@@ -11,7 +12,10 @@ import {
   GitBranch,
   Github,
   Globe,
+  LayoutTemplate,
   LogOut,
+  Plug,
+  Shield,
   ShieldCheck,
   Shuffle,
   Terminal,
@@ -24,6 +28,7 @@ import { graphDiagnostics, sourceWithGraph, toCanvas, type CanvasNodeData } from
 import { nodeRunStates, useLiveRun } from "./live-run";
 import {
   attachCatalogResource,
+  attachCatalogBinding,
   fallbackPalette,
   newCatalogNode,
   nodeDisplayTitle,
@@ -49,6 +54,10 @@ const PALETTE_ICONS: Record<string, LucideIcon> = {
   terminal: Terminal,
   globe: Globe,
   github: Github,
+  "book-open": BookOpen,
+  shield: Shield,
+  "layout-template": LayoutTemplate,
+  plug: Plug,
 };
 
 function PaletteIcon({ name }: { name: string }) {
@@ -57,6 +66,7 @@ function PaletteIcon({ name }: { name: string }) {
 }
 
 function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "agentNode">>) {
+  if (!data.flow) return null;
   const component = componentFor(data.flow.component_type);
   const title = data.title ?? component.label;
   return (
@@ -71,7 +81,18 @@ function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "agentNode
   );
 }
 
-const nodeTypes = { agentNode: AgentNode };
+function BindingNode({ data, selected }: NodeProps<Node<CanvasNodeData, "bindingNode">>) {
+  const binding = data.binding;
+  if (!binding) return null;
+  return (
+    <div className={`agent-flow-node catalog-binding ${selected ? "selected" : ""}`}>
+      <strong>{binding.kind}</strong>
+      <small>{binding.reference}</small>
+    </div>
+  );
+}
+
+const nodeTypes = { agentNode: AgentNode, bindingNode: BindingNode };
 
 function runtimeBadge(item: PaletteItem, locale: "zh" | "en"): { label: string; className: string } {
   const zh = locale === "zh";
@@ -119,6 +140,7 @@ export function StudioWorkbench({
   React.useEffect(() => { setNodes(initial.nodes); setEdges(initial.edges); }, [initial, setNodes, setEdges]);
   React.useEffect(() => {
     setNodes((current) => current.map((node) => {
+      if (!node.data.flow) return node;
       const runState = states[node.id] ?? "pending";
       const title = nodeDisplayTitle(node.data.flow, catalog, locale);
       if (node.data.runState === runState && node.data.title === title) return node;
@@ -129,10 +151,16 @@ export function StudioWorkbench({
   const emit = React.useCallback((nextNodes: Node<CanvasNodeData>[], nextEdges: Edge[]) => onChange(sourceWithGraph(source, nextNodes, nextEdges)), [onChange, source]);
   const addItem = (item: PaletteItem, position?: { x: number; y: number }) => {
     if (!item.draggable) return;
-    const id = `${item.componentType.toLowerCase()}-${crypto.randomUUID().slice(0, 8)}`;
     const nextPosition = position ?? { x: 120 + (source.nodes.length % 3) * 220, y: 100 + Math.floor(source.nodes.length / 3) * 160 };
+    if ((item.group === "skill" || item.group === "policy" || item.group === "template") && item.resource) {
+      const id = `bind_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+      onChange(attachCatalogBinding(source, item.resource, id, nextPosition));
+      setSelected(id);
+      return;
+    }
+    const id = `${item.componentType.toLowerCase()}-${crypto.randomUUID().slice(0, 8)}`;
     const flow = newCatalogNode(item, id);
-    if (item.group === "tool" && item.resource) {
+    if ((item.group === "tool" || item.group === "mcp") && item.resource) {
       onChange(attachCatalogResource(source, item.resource, flow, nextPosition));
     } else {
       onChange({
@@ -155,10 +183,15 @@ export function StudioWorkbench({
   };
   const updateNode = (field: keyof FlowNode, value: string) => {
     if (!selected) return;
-    const nextNodes = nodes.map((node) => node.id === selected ? { ...node, data: { flow: { ...node.data.flow, [field]: field === "checks" ? value.split("\n").filter(Boolean) : field === "mapping" ? JSON.parse(value || "{}") : value }, runState: node.data.runState, title: node.data.title } } : node);
+    const nextNodes = nodes.map((node) => {
+      if (node.id !== selected || !node.data.flow) return node;
+      const parsed = field === "checks" ? value.split("\n").filter(Boolean) : field === "mapping" ? JSON.parse(value || "{}") : value;
+      return { ...node, data: { ...node.data, flow: { ...node.data.flow, [field]: parsed } } };
+    });
     setNodes(nextNodes); emit(nextNodes, edges);
   };
   const flow = nodes.find((node) => node.id === selected)?.data.flow;
+  const binding = nodes.find((node) => node.id === selected)?.data.binding;
   const dropPalette = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const raw = event.dataTransfer.getData(PALETTE_MIME);
@@ -169,12 +202,20 @@ export function StudioWorkbench({
   };
   const components = palette.filter((item) => item.group === "component");
   const tools = palette.filter((item) => item.group === "tool");
+  const skills = palette.filter((item) => item.group === "skill");
+  const policies = palette.filter((item) => item.group === "policy");
+  const templates = palette.filter((item) => item.group === "template");
+  const mcp = palette.filter((item) => item.group === "mcp");
   return <div className="studio-layout">
     <Panel className="component-rail"><SectionHeading eyebrow={locale === "zh" ? "组件库" : "Palette"} title={locale === "zh" ? "Catalog" : "Catalog"} />
       <p className="rail-section-label">{locale === "zh" ? "组件" : "Components"}</p>
       <PaletteList items={components} locale={locale} onAdd={addItem} />
       {tools.length ? <><p className="rail-section-label">{locale === "zh" ? "工具" : "Tools"}</p><PaletteList items={tools} locale={locale} onAdd={addItem} /></> : null}
-      <p className="rail-note">{locale === "zh" ? "从 Catalog 拖入组件或工具。Write File 需要人工审批节点后才能运行。" : "Drag Catalog components or tools. Write File needs a Human approval node before it can run."}</p>
+      {mcp.length ? <><p className="rail-section-label">MCP</p><PaletteList items={mcp} locale={locale} onAdd={addItem} /></> : null}
+      {skills.length ? <><p className="rail-section-label">Skills</p><PaletteList items={skills} locale={locale} onAdd={addItem} /></> : null}
+      {policies.length ? <><p className="rail-section-label">{locale === "zh" ? "策略" : "Policies"}</p><PaletteList items={policies} locale={locale} onAdd={addItem} /></> : null}
+      {templates.length ? <><p className="rail-section-label">{locale === "zh" ? "模板" : "Templates"}</p><PaletteList items={templates} locale={locale} onAdd={addItem} /></> : null}
+      <p className="rail-note">{locale === "zh" ? "Skill / Policy / Template 会作为 Catalog 绑定放到画布上，不会新增第 9 种流程图节点。MCP 需先配置服务器才能运行。" : "Skills, Policies, and Templates attach as catalog bindings, not a ninth Flow type. MCP needs a configured server before it can run."}</p>
     </Panel>
     <Panel className="canvas-panel">
       <div className="studio-canvas" onDragOver={(event) => event.preventDefault()} onDrop={dropPalette}>
@@ -182,8 +223,8 @@ export function StudioWorkbench({
         <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
       </div>
     </Panel>
-    <Panel className="inspector-panel"><SectionHeading eyebrow={locale === "zh" ? "检查器" : "Inspector"} title={flow ? nodeDisplayTitle(flow, catalog, locale) : (locale === "zh" ? "选择节点" : "Select a node")} />
-      {flow ? <div className="inspector-fields"><Tag>{flow.component_type}</Tag><label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>{fieldFor(flow, updateNode, locale)}{flow.component_type === "Tool" ? <><label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label><label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label></> : null}<Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点以编辑。" : "Select a canvas node to edit its source fields."}</p>}
+    <Panel className="inspector-panel"><SectionHeading eyebrow={locale === "zh" ? "检查器" : "Inspector"} title={flow ? nodeDisplayTitle(flow, catalog, locale) : binding ? (locale === "zh" ? "Catalog 绑定" : "Catalog binding") : (locale === "zh" ? "选择节点" : "Select a node")} />
+      {flow ? <div className="inspector-fields"><Tag>{flow.component_type}</Tag><label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>{fieldFor(flow, updateNode, locale)}{flow.component_type === "Tool" ? <><label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label><label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label></> : null}<Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button></div> : binding ? <div className="inspector-fields"><Tag>{binding.kind}</Tag><label>{locale === "zh" ? "引用" : "Reference"}<input value={binding.reference} readOnly /></label><p className="rail-note">{locale === "zh" ? "这是 Catalog 绑定，不是 Flow 组件。移动它不会改变 behavior hash。" : "This is a catalog binding, not a Flow component. Moving it does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除绑定" : "Delete binding"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点以编辑。" : "Select a canvas node to edit its source fields."}</p>}
     </Panel>
   </div>;
 }

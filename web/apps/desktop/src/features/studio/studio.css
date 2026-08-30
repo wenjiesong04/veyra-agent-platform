@@ -184,7 +184,10 @@
   animation: veyra-node-pulse 1.2s ease-in-out infinite;
 }
 .agent-flow-node[data-state="completed"] { border-color: color-mix(in srgb, var(--good, #1f8a5b) 45%, var(--line)); }
-.agent-flow-node[data-state="failed"] { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--bad-soft); }
+.agent-flow-node.catalog-binding {
+  border-style: dashed;
+  background: var(--surface-soft);
+}
 @keyframes veyra-node-pulse {
   50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-strong) 22%, transparent); }
 }

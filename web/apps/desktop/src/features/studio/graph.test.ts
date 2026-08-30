@@ -34,6 +34,21 @@ describe("Studio graph adapter", () => {
     expect(isAgentSourceCandidate(source)).toBe(true);
   });
 
+  it("round-trips catalog bindings without turning them into Flow nodes", () => {
+    const bound = {
+      ...source,
+      extensions: { veyra: { ...source.extensions.veyra, skill_refs: ["veyra.skill.research-brief@1.0.0"] } },
+      lock: { "veyra.skill.research-brief@1.0.0": "a".repeat(64) },
+      ui: { positions: source.ui.positions, bindings: { bind_skill: { kind: "skill" as const, reference: "veyra.skill.research-brief@1.0.0", x: 40, y: 80 } } },
+    };
+    const graph = toCanvas(bound);
+    expect(graph.nodes.some((node) => node.id === "bind_skill" && node.type === "bindingNode")).toBe(true);
+    const next = sourceWithGraph(bound, graph.nodes.map((node) => node.id === "bind_skill" ? { ...node, position: { x: 99.4, y: 12.6 } } : node), graph.edges);
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "out"]);
+    expect(next.ui.bindings?.bind_skill).toEqual({ kind: "skill", reference: "veyra.skill.research-brief@1.0.0", x: 99, y: 13 });
+    expect(next.extensions.veyra.skill_refs).toEqual(["veyra.skill.research-brief@1.0.0"]);
+  });
+
   it("blocks saving a write tool until a HumanApproval node exists", () => {
     const write: ResourceDescriptor = {
       schema_version: "1.0",

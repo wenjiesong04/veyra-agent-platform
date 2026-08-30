@@ -48,6 +48,8 @@ def behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
         "secret_refs": veyra["secret_refs"],
         "permissions": veyra["permissions"],
         "verification": veyra["verification"],
+        "skill_refs": list(veyra.get("skill_refs") or ()),
+        "policy_refs": list(veyra.get("policy_refs") or ()),
     }
 
 

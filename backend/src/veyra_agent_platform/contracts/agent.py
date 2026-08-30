@@ -36,6 +36,7 @@ HARD_MAX_NODES = 128
 HARD_MAX_TRANSITIONS = 256
 HARD_MAX_CONCURRENT_RUNS = 16
 HARD_MAX_RUN_SECONDS = 86_400
+_BINDING_KINDS = frozenset({"skill", "policy", "template", "mcp_tool"})
 
 
 class ComponentType(StrEnum):
@@ -690,7 +691,7 @@ def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
 
 def _ui_layout(value: Any) -> Mapping[str, Any]:
     item = require_mapping(value, "ui")
-    require_keys(item, allowed={"positions"}, required={"positions"})
+    require_keys(item, allowed={"positions", "bindings"}, required={"positions"})
     positions = require_mapping(item["positions"], "ui.positions")
     parsed: dict[str, dict[str, int]] = {}
     for node_id, point in positions.items():
@@ -703,7 +704,42 @@ def _ui_layout(value: Any) -> Mapping[str, Any]:
         ):
             raise ContractValidationError("ui positions must have integer x and y")
         parsed[node_id] = {"x": x, "y": y}
-    return cast(Mapping[str, Any], freeze_json({"positions": parsed}))
+    layout: dict[str, Any] = {"positions": parsed}
+    if "bindings" in item:
+        layout["bindings"] = _ui_bindings(item["bindings"])
+    return cast(Mapping[str, Any], freeze_json(layout))
+
+
+def _ui_bindings(value: Any) -> dict[str, dict[str, Any]]:
+    item = require_mapping(value, "ui.bindings")
+    parsed: dict[str, dict[str, Any]] = {}
+    for binding_id, payload in item.items():
+        require_string(binding_id, "ui.bindings id", pattern=NODE_ID_RE)
+        entry = require_mapping(payload, "ui.bindings entry")
+        require_keys(
+            entry,
+            allowed={"kind", "reference", "x", "y"},
+            required={"kind", "reference", "x", "y"},
+        )
+        kind = require_string(entry["kind"], "ui.bindings.kind")
+        if kind not in _BINDING_KINDS:
+            raise ContractValidationError(
+                "ui.bindings.kind must be skill, policy, template, or mcp_tool"
+            )
+        x, y = entry["x"], entry["y"]
+        if any(
+            isinstance(number, bool) or not isinstance(number, int) for number in (x, y)
+        ):
+            raise ContractValidationError("ui bindings must have integer x and y")
+        parsed[binding_id] = {
+            "kind": kind,
+            "reference": require_string(
+                entry["reference"], "ui.bindings.reference", pattern=_REFERENCE
+            ),
+            "x": x,
+            "y": y,
+        }
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -723,6 +759,8 @@ class AgentSource:
     secret_refs: tuple[str, ...]
     permissions: PermissionContract
     verification: VerifierContract
+    skill_refs: tuple[str, ...]
+    policy_refs: tuple[str, ...]
     ui: Mapping[str, Any]
     lock: Mapping[str, str]
 
@@ -756,7 +794,14 @@ class AgentSource:
         veyra = require_mapping(extensions["veyra"], "extensions.veyra")
         require_keys(
             veyra,
-            allowed={"runtime_profile", "secret_refs", "permissions", "verification"},
+            allowed={
+                "runtime_profile",
+                "secret_refs",
+                "permissions",
+                "verification",
+                "skill_refs",
+                "policy_refs",
+            },
             required={"runtime_profile", "secret_refs", "permissions", "verification"},
         )
         ui = _ui_layout(item["ui"])
@@ -795,6 +840,12 @@ class AgentSource:
             ),
             permissions=PermissionContract.from_dict(veyra["permissions"]),
             verification=VerifierContract.from_dict(veyra["verification"]),
+            skill_refs=_strict_str_list(
+                veyra.get("skill_refs", []), "skill_refs", pattern=_REFERENCE
+            ),
+            policy_refs=_strict_str_list(
+                veyra.get("policy_refs", []), "policy_refs", pattern=_REFERENCE
+            ),
             ui=ui,
             lock=freeze_json(dict(lock)),
         )
@@ -810,9 +861,19 @@ class AgentSource:
                 "every Tool node must be included in permissions.tools"
             )
         exact_tool_references = {node.uses for node in source.nodes if node.uses}
-        if not exact_tool_references.issubset(set(source.lock)):
+        catalog_references = (
+            exact_tool_references
+            | set(source.skill_refs)
+            | set(source.policy_refs)
+            | {
+                str(binding["reference"])
+                for binding in (source.ui.get("bindings") or {}).values()
+            }
+        )
+        if not catalog_references.issubset(set(source.lock)):
             raise ContractValidationError(
-                "every Tool node's exact versioned uses reference must be locked"
+                "every Tool, Skill, Policy, and catalog binding "
+                "reference must be locked"
             )
         return source
 
@@ -835,6 +896,8 @@ class AgentSource:
                     "secret_refs": list(self.secret_refs),
                     "permissions": self.permissions.to_dict(),
                     "verification": self.verification.to_dict(),
+                    "skill_refs": list(self.skill_refs),
+                    "policy_refs": list(self.policy_refs),
                 }
             },
             "ui": thaw_json(self.ui),
@@ -900,6 +963,13 @@ def _validate_ui_node_references(
         unknown_nodes = ", ".join(sorted(unknown))
         raise ContractValidationError(
             f"{field}.positions references unknown node(s): {unknown_nodes}"
+        )
+    bindings = ui.get("bindings") or {}
+    overlap = set(bindings) & {node.id for node in nodes}
+    if overlap:
+        colliding = ", ".join(sorted(overlap))
+        raise ContractValidationError(
+            f"{field}.bindings collide with Flow node id(s): {colliding}"
         )
 
 

@@ -70,12 +70,22 @@ export type AgentSource = {
       secret_refs: string[];
       permissions: PermissionContract;
       verification: VerificationContract;
+      skill_refs?: string[];
+      policy_refs?: string[];
     };
   };
   ui: {
     positions: Record<string, { x: number; y: number }>;
+    bindings?: Record<string, CatalogBinding>;
   };
   lock: Record<string, string>;
+};
+
+export type CatalogBinding = {
+  kind: "skill" | "policy" | "template" | "mcp_tool";
+  reference: string;
+  x: number;
+  y: number;
 };
 
 export type RuntimeApiProfileInput = {
@@ -374,6 +384,8 @@ export type ResourceRuntimeStatus =
   | "runtime_not_configured"
   | "runtime_not_supported";
 
+export type ResourceOrigin = "builtin" | "workshop" | "discovered";
+
 export type ResourcePermissions = {
   network_hosts: string[];
   tools: string[];
@@ -390,7 +402,7 @@ export type ResourceDescriptor = {
   reference: string;
   name: string;
   description: string;
-  origin: "builtin";
+  origin: ResourceOrigin;
   content_hash: string;
   availability: ResourceAvailability;
   factory_selectable: boolean;
@@ -579,4 +591,74 @@ export type LocalErrorEnvelope = {
   message: string;
   request_id: string;
   details?: Record<string, string>;
+};
+
+export type ResourceDraftResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  draft_id: string;
+  executable: false;
+  resource: ResourceDescriptor;
+};
+
+export type McpServer = {
+  server_id: string;
+  name: string;
+  command: string;
+  args: string[];
+  env_names: Record<string, string>;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ListMcpServersResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  servers: McpServer[];
+};
+
+export type CreateMcpServerRequest = {
+  name: string;
+  command: string;
+  args?: string[];
+  env_names?: Record<string, string>;
+  enabled?: boolean;
+};
+
+export type WorkItemStatus =
+  | "backlog"
+  | "ready"
+  | "running"
+  | "waiting"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type WorkItem = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  work_item_id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  agent_id: string;
+  depends_on: string[];
+  inputs: JsonObject;
+  status: WorkItemStatus;
+  run_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ListWorkItemsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  execution_plane: "local";
+  work_items: WorkItem[];
+};
+
+export type OrchestratorStatus = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  execution_plane: "local";
+  cloud_execution: false;
+  counts: Record<WorkItemStatus, number>;
+  active: WorkItem[];
 };

@@ -21,7 +21,7 @@ from veyra_agent_platform.contracts.common import (
 )
 from veyra_agent_platform.local.library.service import LibraryService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
-from veyra_agent_platform.local.resources import ResourceCatalog
+from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 from .client import RuntimeModelClient, RuntimeProviderError
@@ -1011,7 +1011,7 @@ class RuntimeService:
                 "runtime_model_unknown",
                 "Agent model_ref is not the host Runtime profile",
             )
-        prompt = node.system_prompt or ""
+        prompt = self._agent_system_prompt(node, source)
         if "{{" in prompt:
             prompt = _interpolate(prompt, values)
         completion = model.complete(
@@ -1034,6 +1034,30 @@ class RuntimeService:
             }
         )
         return RuntimeModelClient(settings)
+
+    def _agent_system_prompt(self, node: Any, source: AgentSource) -> str:
+        prompt = node.system_prompt or ""
+        for reference in source.skill_refs:
+            try:
+                resource = self.tools.catalog.by_reference(reference)
+            except ResourceCatalogError as exc:
+                raise RuntimeError(
+                    "skill_not_registered",
+                    "Skill reference is not registered in the catalog",
+                ) from exc
+            if source.lock.get(reference) != resource["content_hash"]:
+                raise RuntimeError(
+                    "skill_lock_invalid",
+                    "Skill lock does not match the catalog version",
+                )
+            if resource["kind"] != "skill":
+                raise RuntimeError("skill_invalid", "Locked skill_ref is not a Skill")
+            instruction = str(resource["spec"].get("instruction", "")).strip()
+            marker = f"[{resource['name']}]"
+            if instruction and marker not in prompt:
+                block = f"{marker} {instruction}"
+                prompt = f"{prompt}\n\n{block}" if prompt else block
+        return prompt
 
 
 def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:

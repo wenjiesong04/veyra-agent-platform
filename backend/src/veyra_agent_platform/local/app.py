@@ -12,6 +12,8 @@ from fastapi import FastAPI
 
 from .api.factory import build_router as build_factory_router
 from .api.health import build_router
+from .api.mcp import build_router as build_mcp_router
+from .api.orchestrator import build_router as build_orchestrator_router
 from .api.projects import TypedApiError, typed_error_response
 from .api.projects import build_router as build_projects_router
 from .api.resources import build_router as build_resources_router
@@ -23,8 +25,11 @@ from .factory.client import KimiTransport
 from .factory.store import FactorySessionRepository
 from .host_env import load_host_process_env
 from .library import LibraryService
+from .mcp import McpServerStore, McpService
+from .mcp.transport import TransportFactory
+from .orchestrator import OrchestratorService, OrchestratorStore
 from .projects import ProjectService
-from .resources import ResourceCatalog
+from .resources import ResourceCatalog, ResourceWorkshop
 from .runtime import (
     RuntimeModelClient,
     RuntimeProfileStore,
@@ -61,6 +66,7 @@ def create_app(
     factory_settings: FactorySettings | None = None,
     runtime_transport: RuntimeModelTransport | None = None,
     runtime_settings: RuntimeSettings | None = None,
+    mcp_transport_factory: TransportFactory | None = None,
 ) -> FastAPI:
     """Create the local service application without starting a server."""
 
@@ -76,7 +82,8 @@ def create_app(
             update={"allow_process_environment_key": False}
         )
     database_path = _sqlite_database_path(resolved_settings.database_url)
-    catalog = ResourceCatalog()
+    overlay_root = database_path.parent / "overlays"
+    catalog = ResourceCatalog(overlay_root=overlay_root)
     runtime_client = RuntimeModelClient(resolved_runtime_settings, runtime_transport)
 
     @asynccontextmanager
@@ -100,13 +107,26 @@ def create_app(
             catalog,
             KimiClient(resolved_factory_settings, factory_transport),
         )
+        mcp = McpService(
+            McpServerStore(database_path),
+            overlay_root,
+            catalog,
+            mcp_transport_factory,
+        )
+        application.state.mcp = mcp
+        application.state.workshop = ResourceWorkshop(overlay_root, catalog)
         application.state.runtime = RuntimeService(
             repository,
             projects,
             application.state.library,
             runtime_client,
-            ToolRuntime(catalog),
+            ToolRuntime(catalog, mcp=mcp),
             runtime_profiles,
+        )
+        application.state.orchestrator = OrchestratorService(
+            OrchestratorStore(database_path),
+            projects,
+            application.state.runtime,
         )
         application.state.database_revision = HEAD_REVISION
         application.state.database_ready = True
@@ -138,6 +158,8 @@ def create_app(
     application.include_router(build_runtime_router())
     application.include_router(build_factory_router())
     application.include_router(build_resources_router())
+    application.include_router(build_mcp_router())
+    application.include_router(build_orchestrator_router())
 
     return application
 

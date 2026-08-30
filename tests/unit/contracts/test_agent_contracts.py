@@ -129,6 +129,37 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(original.behavior_hash, moved.behavior_hash)
         self.assertEqual(original.lock_hash, moved.lock_hash)
 
+    def test_ui_bindings_move_without_changing_behavior_hash(self) -> None:
+        data = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
+        data["extensions"]["veyra"]["skill_refs"] = [  # type: ignore[index]
+            "veyra.skill.research-brief@1.0.0"
+        ]
+        data["lock"]["veyra.skill.research-brief@1.0.0"] = "a" * 64  # type: ignore[index]
+        data["ui"]["bindings"] = {  # type: ignore[index]
+            "bind_skill": {
+                "kind": "skill",
+                "reference": "veyra.skill.research-brief@1.0.0",
+                "x": 10,
+                "y": 20,
+            }
+        }
+        original = AgentSource.from_dict(data)
+        data["ui"]["bindings"]["bind_skill"]["x"] = 99  # type: ignore[index]
+        moved = AgentSource.from_dict(data)
+        self.assertEqual(original.skill_refs, ("veyra.skill.research-brief@1.0.0",))
+        self.assertEqual(original.behavior_hash, moved.behavior_hash)
+        self.assertNotEqual(original.source_hash, moved.source_hash)
+
+    def test_skill_refs_change_behavior_hash(self) -> None:
+        data = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
+        original = AgentSource.from_dict(data)
+        data["extensions"]["veyra"]["skill_refs"] = [  # type: ignore[index]
+            "veyra.skill.research-brief@1.0.0"
+        ]
+        data["lock"]["veyra.skill.research-brief@1.0.0"] = "a" * 64  # type: ignore[index]
+        with_skill = AgentSource.from_dict(data)
+        self.assertNotEqual(original.behavior_hash, with_skill.behavior_hash)
+
     def test_behavior_hash_excludes_local_identity_and_presentation(self) -> None:
         source = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
         original = AgentSource.from_dict(source)

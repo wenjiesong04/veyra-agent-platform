@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from threading import RLock
 from typing import Any, Final, Literal
 
 from veyra_agent_platform.contracts.agent import ComponentType
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION
 
-from .registry import load_node_packages
+from .registry import load_node_packages, load_overlay_packages
 
 ResourceKind = Literal["component", "tool", "mcp_tool", "skill", "policy", "template"]
 Availability = Literal[
@@ -45,53 +46,81 @@ class ResourceCatalogError(ValueError):
 class ResourceCatalog:
     """Expose copies of node.yaml packages; callers cannot mutate catalog state."""
 
-    def __init__(self, nodes_root: Path | None = None) -> None:
-        resources = [
-            self._descriptor(package.definition)
+    def __init__(
+        self,
+        nodes_root: Path | None = None,
+        overlay_root: Path | None = None,
+    ) -> None:
+        self._nodes_root = nodes_root
+        self._overlay_root = overlay_root
+        self._lock = RLock()
+        self._builtin = tuple(
+            self._descriptor(package.definition, origin="builtin")
             for package in load_node_packages(nodes_root)
-        ]
+        )
+        self._rebuild()
+
+    def reload_overlays(self) -> None:
+        """Re-read application-data overlays without mutating builtin packages."""
+        with self._lock:
+            self._rebuild()
+
+    def _rebuild(self) -> None:
+        overlays: list[dict[str, Any]] = []
+        builtin_keys = {
+            (resource["resource_id"], resource["version"]) for resource in self._builtin
+        }
+        for package in load_overlay_packages(self._overlay_root):
+            origin = "workshop" if package.family == "workshop" else "discovered"
+            descriptor = self._descriptor(package.definition, origin=origin)
+            key = (descriptor["resource_id"], descriptor["version"])
+            if key in builtin_keys:
+                continue
+            overlays.append(descriptor)
+            builtin_keys.add(key)
+        resources = list(self._builtin) + overlays
         resources.sort(key=_resource_sort_key)
         self._resources = tuple(resources)
         self._by_reference = {
             (resource["resource_id"], resource["version"]): resource
             for resource in self._resources
         }
-        if len(self._by_reference) != len(self._resources):
-            raise RuntimeError("resource catalog references must be unique")
 
     def resources(
         self, *, kind: str | None = None, availability: str | None = None
     ) -> dict[str, Any]:
-        self._validate_kind(kind)
-        self._validate_availability(availability)
-        selected = [
-            resource
-            for resource in self._resources
-            if (kind is None or resource["kind"] == kind)
-            and (availability is None or resource["availability"] == availability)
-        ]
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "resources": deepcopy(selected),
-            "kinds": [
-                {
-                    "kind": resource_kind,
-                    "count": sum(
-                        resource["kind"] == resource_kind for resource in selected
-                    ),
-                }
-                for resource_kind in RESOURCE_KINDS
-            ],
-        }
+        with self._lock:
+            self._validate_kind(kind)
+            self._validate_availability(availability)
+            selected = [
+                resource
+                for resource in self._resources
+                if (kind is None or resource["kind"] == kind)
+                and (availability is None or resource["availability"] == availability)
+            ]
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "resources": deepcopy(selected),
+                "kinds": [
+                    {
+                        "kind": resource_kind,
+                        "count": sum(
+                            resource["kind"] == resource_kind for resource in selected
+                        ),
+                    }
+                    for resource_kind in RESOURCE_KINDS
+                ],
+            }
 
     def detail(self, resource_id: str, version: str) -> dict[str, Any]:
-        resource = self._by_reference.get((resource_id, version))
-        if resource is None:
-            raise ResourceCatalogError(
-                "resource_not_found",
-                "resource version is not registered in this catalog",
-            )
-        return deepcopy(resource)
+        with self._lock:
+            resource = self._by_reference.get((resource_id, version))
+            if resource is None:
+                raise ResourceCatalogError(
+                    "resource_not_found",
+                    "resource version is not registered in this catalog",
+                )
+            return deepcopy(resource)
 
     def by_reference(self, reference: str) -> dict[str, Any]:
         if not isinstance(reference, str) or "@" not in reference:
@@ -105,7 +134,9 @@ class ResourceCatalog:
     def factory_snapshot(self) -> list[dict[str, Any]]:
         """Return the bounded descriptors Factory may send to a model."""
         snapshot = []
-        for resource in self._resources:
+        with self._lock:
+            resources = self._resources
+        for resource in resources:
             if not resource["factory_selectable"]:
                 continue
             spec = deepcopy(resource["spec"])
@@ -119,9 +150,7 @@ class ResourceCatalog:
                     "description": resource["description"],
                     "availability": resource["availability"],
                     "runtime_status": resource["runtime_status"],
-                    "required_permissions": deepcopy(
-                        resource["required_permissions"]
-                    ),
+                    "required_permissions": deepcopy(resource["required_permissions"]),
                     "spec": spec,
                 }
             )
@@ -129,6 +158,8 @@ class ResourceCatalog:
 
     def components(self) -> list[dict[str, Any]]:
         """Project component Resources into the legacy Studio endpoint shape."""
+        with self._lock:
+            resources = self._resources
         return [
             {
                 "type": resource["name"],
@@ -136,16 +167,18 @@ class ResourceCatalog:
                 "output_ports": deepcopy(resource["spec"]["output_ports"]),
                 "runtime_status": resource["runtime_status"],
             }
-            for resource in self._resources
+            for resource in resources
             if resource["kind"] == "component"
         ]
 
     @staticmethod
-    def _descriptor(resource: dict[str, Any]) -> dict[str, Any]:
+    def _descriptor(
+        resource: dict[str, Any], *, origin: str = "builtin"
+    ) -> dict[str, Any]:
         material = deepcopy(resource)
         material["schema_version"] = SCHEMA_VERSION
         material["reference"] = f"{material['resource_id']}@{material['version']}"
-        material["origin"] = "builtin"
+        material["origin"] = origin
         hashed = deepcopy(material)
         spec = hashed.get("spec")
         if isinstance(spec, dict):

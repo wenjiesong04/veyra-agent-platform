@@ -5,7 +5,7 @@ export const PALETTE_MIME = "application/x-veyra-palette";
 
 export type PaletteItem = {
   key: string;
-  group: "component" | "tool";
+  group: "component" | "tool" | "skill" | "policy" | "template" | "mcp";
   componentType: FlowNode["component_type"];
   title: string;
   titleZh: string;
@@ -41,6 +41,8 @@ const ZH_TITLE: Record<string, string> = {
   "GitHub Read": "GitHub 读取",
   "GitHub Write": "GitHub 写入",
   "LLM Agent": "LLM Agent",
+  "MCP Call": "MCP 调用",
+  "Research Brief": "研究简报",
 };
 
 function unique(values: string[]): string[] {
@@ -61,15 +63,16 @@ export function catalogToolRequiresApproval(resource: ResourceDescriptor): boole
 }
 
 function canDrag(resource: ResourceDescriptor): boolean {
-  return resource.factory_selectable
-    && resource.availability !== "unavailable"
-    && resource.availability !== "quarantined"
-    && resource.availability !== "disabled";
+  if (resource.availability === "unavailable" || resource.availability === "quarantined" || resource.availability === "disabled") {
+    return false;
+  }
+  if (resource.kind === "mcp_tool") return true;
+  return resource.factory_selectable;
 }
 
 export function paletteFromCatalog(resources: ResourceDescriptor[]): PaletteItem[] {
   const components: PaletteItem[] = [];
-  const tools: PaletteItem[] = [];
+  const rest: PaletteItem[] = [];
   for (const resource of resources) {
     const ui = resourceUi(resource);
     const title = ui?.title ?? resource.name;
@@ -92,18 +95,18 @@ export function paletteFromCatalog(resources: ResourceDescriptor[]): PaletteItem
         availability: resource.availability,
         resource,
       });
-    } else if (resource.kind === "tool") {
-      tools.push({
+    } else if (resource.kind === "tool" || resource.kind === "mcp_tool" || resource.kind === "skill" || resource.kind === "policy" || resource.kind === "template") {
+      rest.push({
         key: resource.reference,
-        group: "tool",
-        componentType: "Tool",
+        group: resource.kind === "mcp_tool" ? "mcp" : resource.kind,
+        componentType: resource.kind === "tool" || resource.kind === "mcp_tool" ? "Tool" : "Agent",
         title,
         titleZh: ZH_TITLE[title] ?? title,
         detail: resource.description,
         detailZh: resource.description,
-        category: ui?.category ?? "tool",
-        icon: ui?.icon ?? "wrench",
-        ports: ["next"],
+        category: ui?.category ?? resource.kind,
+        icon: ui?.icon ?? "box",
+        ports: resource.kind === "tool" || resource.kind === "mcp_tool" ? ["next"] : [],
         draggable: canDrag(resource),
         runtimeStatus: resource.runtime_status,
         availability: resource.availability,
@@ -113,7 +116,7 @@ export function paletteFromCatalog(resources: ResourceDescriptor[]): PaletteItem
   }
   const order = studioComponents.map((item) => item.type);
   components.sort((left, right) => order.indexOf(left.componentType) - order.indexOf(right.componentType));
-  return [...components, ...tools];
+  return [...components, ...rest];
 }
 
 export function fallbackPalette(): PaletteItem[] {
@@ -142,7 +145,7 @@ export function attachCatalogResource(
 ): AgentSource {
   const permissions = source.extensions.veyra.permissions;
   const required = resource.required_permissions;
-  const lock = resource.kind === "tool"
+  const lock = resource.kind === "tool" || resource.kind === "mcp_tool"
     ? { ...source.lock, [resource.reference]: resource.content_hash }
     : source.lock;
   return {
@@ -170,8 +173,49 @@ export function attachCatalogResource(
   };
 }
 
+export function attachCatalogBinding(
+  source: AgentSource,
+  resource: ResourceDescriptor,
+  bindingId: string,
+  position: { x: number; y: number },
+): AgentSource {
+  const veyra = source.extensions.veyra;
+  const point = { x: Math.round(position.x), y: Math.round(position.y) };
+  const skillRefs = unique([
+    ...(veyra.skill_refs ?? []),
+    ...(resource.kind === "skill" ? [resource.reference] : []),
+  ]);
+  const policyRefs = unique([
+    ...(veyra.policy_refs ?? []),
+    ...(resource.kind === "policy" ? [resource.reference] : []),
+  ]);
+  return {
+    ...source,
+    extensions: {
+      ...source.extensions,
+      veyra: {
+        ...veyra,
+        skill_refs: skillRefs,
+        policy_refs: policyRefs,
+      },
+    },
+    lock: { ...source.lock, [resource.reference]: resource.content_hash },
+    ui: {
+      ...source.ui,
+      bindings: {
+        ...(source.ui.bindings ?? {}),
+        [bindingId]: {
+          kind: resource.kind === "mcp_tool" ? "mcp_tool" : resource.kind as "skill" | "policy" | "template",
+          reference: resource.reference,
+          ...point,
+        },
+      },
+    },
+  };
+}
+
 export function newCatalogNode(item: PaletteItem, id: string): FlowNode {
-  if (item.group === "tool" && item.resource) {
+  if ((item.group === "tool" || item.group === "mcp") && item.resource) {
     return { id, component_type: "Tool", uses: item.resource.reference };
   }
   return newNode(item.componentType, id);

@@ -1,10 +1,15 @@
-import type { AgentSource, FlowNode, FlowTransition, ResourceDescriptor } from "@veyra/api-contracts";
+import type { AgentSource, CatalogBinding, FlowNode, FlowTransition, ResourceDescriptor } from "@veyra/api-contracts";
 import type { Edge, Node } from "@xyflow/react";
 import { catalogToolRequiresApproval } from "./palette";
 import { componentFor } from "./registry";
 import type { NodeRunState } from "./live-run";
 
-export type CanvasNodeData = { flow: FlowNode; runState?: NodeRunState; title?: string };
+export type CanvasNodeData = {
+  flow?: FlowNode;
+  binding?: Omit<CatalogBinding, "x" | "y">;
+  runState?: NodeRunState;
+  title?: string;
+};
 
 export type GraphDiagnosticCode =
   | "start_count"
@@ -68,28 +73,84 @@ export function isAgentSourceCandidate(value: unknown): value is AgentSource {
     || ("filesystem_write_roots" in permissions && (!Array.isArray(permissions.filesystem_write_roots) || !permissions.filesystem_write_roots.every((item) => typeof item === "string")))
     || ("shell_workspace_only" in permissions && typeof permissions.shell_workspace_only !== "boolean")
     || !record(verification) || typeof verification.required !== "boolean" || !Array.isArray(verification.checks) || !verification.checks.every((item) => typeof item === "string")
+    || ("skill_refs" in veyra && (!Array.isArray(veyra.skill_refs) || !veyra.skill_refs.every((item) => typeof item === "string")))
+    || ("policy_refs" in veyra && (!Array.isArray(veyra.policy_refs) || !veyra.policy_refs.every((item) => typeof item === "string")))
     || !record(value.ui.positions)) return false;
+  if ("bindings" in value.ui) {
+    if (!record(value.ui.bindings)) return false;
+    for (const binding of Object.values(value.ui.bindings)) {
+      if (!record(binding) || typeof binding.kind !== "string" || typeof binding.reference !== "string"
+        || typeof binding.x !== "number" || !Number.isFinite(binding.x)
+        || typeof binding.y !== "number" || !Number.isFinite(binding.y)) return false;
+    }
+  }
   return Object.values(value.ui.positions).every((position) => record(position)
     && typeof position.x === "number" && Number.isFinite(position.x)
     && typeof position.y === "number" && Number.isFinite(position.y));
 }
 
 export function toCanvas(source: AgentSource): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
+  const flowNodes = source.nodes.map((flow, index) => ({
+    id: flow.id,
+    type: "agentNode",
+    position: source.ui.positions[flow.id] ?? { x: 90 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 170 },
+    data: { flow, runState: "pending" as const },
+  }));
+  const bindingNodes = Object.entries(source.ui.bindings ?? {}).map(([id, binding]) => ({
+    id,
+    type: "bindingNode",
+    position: { x: binding.x, y: binding.y },
+    data: { binding: { kind: binding.kind, reference: binding.reference } },
+  }));
   return {
-    nodes: source.nodes.map((flow, index) => ({ id: flow.id, type: "agentNode", position: source.ui.positions[flow.id] ?? { x: 90 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 170 }, data: { flow, runState: "pending" as const } })),
+    nodes: [...flowNodes, ...bindingNodes],
     edges: source.transitions.map((transition) => ({ id: `${transition.from}:${transition.port}:${transition.to}`, source: transition.from, target: transition.to, sourceHandle: transition.port, label: transition.port })),
   };
 }
 
 export function sourceWithGraph(source: AgentSource, nodes: Node<CanvasNodeData>[], edges: Edge[]): AgentSource {
-  const positions = Object.fromEntries(nodes.map((node) => [node.id, { x: Math.round(node.position.x), y: Math.round(node.position.y) }]));
-  const flowNodes = nodes.map((node) => node.data.flow);
+  const flowCanvas = nodes.filter((node) => node.data.flow);
+  const bindingCanvas = nodes.filter((node) => node.data.binding && !node.data.flow);
+  const positions = Object.fromEntries(flowCanvas.map((node) => [node.id, { x: Math.round(node.position.x), y: Math.round(node.position.y) }]));
+  const flowNodes = flowCanvas.map((node) => node.data.flow as FlowNode);
+  const bindings = Object.fromEntries(bindingCanvas.map((node) => {
+    const binding = node.data.binding as NonNullable<CanvasNodeData["binding"]>;
+    return [node.id, { ...binding, x: Math.round(node.position.x), y: Math.round(node.position.y) }];
+  }));
   const transitions: FlowTransition[] = edges.flatMap((edge) => {
     const from = flowNodes.find((node) => node.id === edge.source);
     const port = edge.sourceHandle;
     return from && port && componentFor(from.component_type).ports.includes(port) ? [{ from: edge.source, port: port as FlowTransition["port"], to: edge.target }] : [];
   });
-  return { ...source, nodes: flowNodes, transitions, ui: { ...source.ui, positions } };
+  const boundSkills = Object.values(bindings).filter((binding) => binding.kind === "skill").map((binding) => binding.reference);
+  const boundPolicies = Object.values(bindings).filter((binding) => binding.kind === "policy").map((binding) => binding.reference);
+  const originalBindings = Object.values(source.ui.bindings ?? {});
+  const keepRef = (reference: string, kind: "skill" | "policy", current: string[]) => {
+    const hadBinding = originalBindings.some((binding) => binding.kind === kind && binding.reference === reference);
+    return current.includes(reference) || !hadBinding;
+  };
+  const skillRefs = [...new Set([
+    ...(source.extensions.veyra.skill_refs ?? []).filter((reference) => keepRef(reference, "skill", boundSkills)),
+    ...boundSkills,
+  ])];
+  const policyRefs = [...new Set([
+    ...(source.extensions.veyra.policy_refs ?? []).filter((reference) => keepRef(reference, "policy", boundPolicies)),
+    ...boundPolicies,
+  ])];
+  return {
+    ...source,
+    nodes: flowNodes,
+    transitions,
+    extensions: {
+      ...source.extensions,
+      veyra: {
+        ...source.extensions.veyra,
+        skill_refs: skillRefs,
+        policy_refs: policyRefs,
+      },
+    },
+    ui: { ...source.ui, positions, ...(Object.keys(bindings).length ? { bindings } : { bindings: undefined }) },
+  };
 }
 
 export function graphDiagnostics(source: AgentSource, catalog: ResourceDescriptor[] = []): GraphDiagnostic[] {

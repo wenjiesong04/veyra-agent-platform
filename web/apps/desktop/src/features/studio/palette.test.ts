@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachCatalogResource, catalogToolRequiresApproval, paletteFromCatalog } from "./palette";
+import { attachCatalogBinding, attachCatalogResource, catalogToolRequiresApproval, paletteFromCatalog } from "./palette";
 
 const source: AgentSource = {
   schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "",
@@ -51,5 +51,33 @@ describe("Studio catalog palette", () => {
     expect(next.extensions.veyra.permissions.tools).toEqual(["veyra.tool.filesystem.read"]);
     expect(next.extensions.veyra.permissions.filesystem_read_roots).toEqual(["project"]);
     expect(next.ui.positions["read-1"]).toEqual({ x: 40, y: 81 });
+  });
+
+  it("attaches Skills as catalog bindings without adding a Flow node", () => {
+    const skill: ResourceDescriptor = {
+      schema_version: "1.0",
+      resource_id: "veyra.skill.research-brief",
+      kind: "skill",
+      version: "1.0.0",
+      reference: "veyra.skill.research-brief@1.0.0",
+      name: "Research Brief",
+      description: "Brief",
+      origin: "builtin",
+      content_hash: "c".repeat(64),
+      availability: "requires_configuration",
+      factory_selectable: true,
+      runtime_status: "runtime_not_configured",
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      tags: ["research"],
+      spec: { ui: { category: "skill", icon: "book-open", title: "Research Brief" } },
+    };
+    const items = paletteFromCatalog([skill]);
+    expect(items[0]?.group).toBe("skill");
+    expect(items[0]?.draggable).toBe(true);
+    const next = attachCatalogBinding(source, skill, "bind_skill1", { x: 12.2, y: 18.8 });
+    expect(next.nodes).toEqual(source.nodes);
+    expect(next.extensions.veyra.skill_refs).toEqual([skill.reference]);
+    expect(next.lock[skill.reference]).toBe(skill.content_hash);
+    expect(next.ui.bindings?.bind_skill1).toEqual({ kind: "skill", reference: skill.reference, x: 12, y: 19 });
   });
 });

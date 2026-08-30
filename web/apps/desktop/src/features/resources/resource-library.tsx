@@ -10,6 +10,7 @@ import {
 import {
   desktopRoutePaths,
   libraryRoutePaths,
+  type McpServer,
   type ResourceDescriptor,
   type ResourceKind,
   type ResourceRuntimeStatus,
@@ -23,10 +24,12 @@ import {
   SectionHeading,
   StatusBadge,
   Tag,
+  Button,
   useLocale,
 } from "@veyra/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useProjectWorkspace } from "../../api/project-workspace";
+import type { LocalProjectApi } from "../../api/local-client";
 
 type ResourceTab = "component" | "tooling" | "skill" | "policy" | "template";
 
@@ -164,6 +167,66 @@ export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
           <div className="resource-detail-block"><strong>{copy.spec}</strong><pre className="resource-spec"><code>{JSON.stringify(selectedResource.spec, null, 2)}</code></pre></div>
         </Panel> : null}
       </div> : null}
+      {tab === "tooling" ? <McpServerPanel api={api} zh={zh} onChanged={() => void load()} /> : null}
     </div>
+  );
+}
+
+function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: boolean; onChanged: () => void }) {
+  const [servers, setServers] = useState<McpServer[]>([]);
+  const [name, setName] = useState("demo");
+  const [command, setCommand] = useState("npx");
+  const [args, setArgs] = useState("");
+  const [error, setError] = useState("");
+  const loadServers = useCallback(async () => {
+    if (!api.listMcpServers) return;
+    try {
+      setServers((await api.listMcpServers()).servers);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "无法加载 MCP 服务器。" : "Could not load MCP servers."));
+    }
+  }, [api, zh]);
+  useEffect(() => { void loadServers(); }, [loadServers]);
+  const create = async () => {
+    if (!api.createMcpServer) return;
+    setError("");
+    try {
+      await api.createMcpServer({
+        name,
+        command,
+        args: args.split(" ").map((item) => item.trim()).filter(Boolean),
+      });
+      await loadServers();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "无法保存 MCP 服务器。" : "Could not save the MCP server."));
+    }
+  };
+  const discover = async (serverId: string) => {
+    if (!api.discoverMcpServer) return;
+    setError("");
+    try {
+      await api.discoverMcpServer(serverId);
+      onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "MCP 发现失败。" : "MCP discovery failed."));
+    }
+  };
+  return (
+    <Panel>
+      <SectionHeading eyebrow="MCP" title={zh ? "本机 MCP 服务器" : "Local MCP servers"} detail={zh ? "命令和参数保存在应用数据里，不会写入 Project 目录。" : "Commands stay in application data, not in Project directories."} />
+      {error ? <p className="resource-detail-muted">{error}</p> : null}
+      <div className="inspector-fields">
+        <label>{zh ? "名称" : "Name"}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label>{zh ? "命令" : "Command"}<input value={command} onChange={(event) => setCommand(event.target.value)} /></label>
+        <label>{zh ? "参数" : "Args"}<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-everything" /></label>
+        <Button onClick={() => void create()} disabled={!api.createMcpServer}>{zh ? "保存服务器" : "Save server"}</Button>
+      </div>
+      {servers.map((server) => (
+        <div className="resource-row" key={server.server_id}>
+          <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}</small></span>
+          <Button size="sm" onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
+        </div>
+      ))}
+    </Panel>
   );
 }

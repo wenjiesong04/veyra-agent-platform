@@ -51,7 +51,16 @@ def test_compile_derives_permissions_and_compiles_skills() -> None:
     assert availability == "requires_configuration"
     assert source.permissions.tools == ()
     assert "Research Brief" in (source.nodes[1].system_prompt or "")
+    assert source.skill_refs == ("veyra.skill.research-brief@1.0.0",)
+    assert source.policy_refs == ("veyra.policy.local-only@1.0.0",)
     assert "veyra.skill.research-brief@1.0.0" in source.lock
+    bindings = source.ui.get("bindings") or {}
+    assert {
+        (binding["kind"], binding["reference"]) for binding in bindings.values()
+    } >= {
+        ("skill", "veyra.skill.research-brief@1.0.0"),
+        ("policy", "veyra.policy.local-only@1.0.0"),
+    }
     assert {item["kind"] for item in plan} >= {"component", "skill", "policy"}
 
 

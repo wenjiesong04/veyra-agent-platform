@@ -69,6 +69,7 @@ _FAMILY_KINDS: Final[dict[str, str]] = {
     "policies": "policy",
     "templates": "template",
 }
+_OVERLAY_FAMILIES: Final[frozenset[str]] = frozenset({"workshop", "discovered"})
 _COMPONENT_NAMES: Final[frozenset[str]] = frozenset(
     item.value for item in ComponentType
 )
@@ -91,6 +92,9 @@ def default_nodes_root() -> Path:
     return Path(__file__).resolve().parents[5] / "resources" / "nodes"
 
 
+_OVERLAY_FAMILIES: Final[frozenset[str]] = frozenset({"workshop", "discovered"})
+
+
 def load_node_packages(root: Path | None = None) -> tuple[NodePackage, ...]:
     """Load every `node.yaml` package under the platform node root."""
     nodes_root = root or default_nodes_root()
@@ -102,6 +106,16 @@ def load_node_packages(root: Path | None = None) -> tuple[NodePackage, ...]:
     packages = tuple(_load_package(nodes_root, path) for path in paths)
     _check_unique(packages)
     _check_components(packages)
+    return packages
+
+
+def load_overlay_packages(root: Path | None) -> tuple[NodePackage, ...]:
+    """Load quarantined workshop drafts and discovered MCP tools from app data."""
+    if root is None or not root.is_dir():
+        return ()
+    paths = sorted(root.glob("*/*/node.yaml"))
+    packages = tuple(_load_overlay_package(root, path) for path in paths)
+    _check_unique(packages)
     return packages
 
 
@@ -132,7 +146,7 @@ def _load_package(root: Path, path: Path) -> NodePackage:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise NodePackageError(f"{path}: node.yaml could not be read") from exc
-    definition = _validated(path, payload, family)
+    definition = _validated(path, payload, family, overlay=False)
     return NodePackage(
         path=path,
         family=family,
@@ -141,7 +155,32 @@ def _load_package(root: Path, path: Path) -> NodePackage:
     )
 
 
-def _validated(path: Path, payload: object, family: str) -> dict[str, Any]:
+def _load_overlay_package(root: Path, path: Path) -> NodePackage:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise NodePackageError(f"overlay package is outside {root}: {path}") from exc
+    if len(relative.parts) != 3 or relative.name != "node.yaml":
+        raise NodePackageError(f"{path}: overlay packages must be family/id/node.yaml")
+    family, package_id, _name = relative.parts
+    if family not in _OVERLAY_FAMILIES:
+        raise NodePackageError(f"{path}: unknown overlay family {family}")
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise NodePackageError(f"{path}: node.yaml could not be read") from exc
+    definition = _validated(path, payload, family, overlay=True)
+    return NodePackage(
+        path=path,
+        family=family,
+        package_id=package_id,
+        definition=definition,
+    )
+
+
+def _validated(
+    path: Path, payload: object, family: str, *, overlay: bool = False
+) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise NodePackageError(f"{path}: node.yaml must be a mapping")
     extra = set(payload) - _REQUIRED_KEYS
@@ -159,11 +198,19 @@ def _validated(path: Path, payload: object, family: str) -> dict[str, Any]:
     kind = _text(path, "kind", payload["kind"])
     if kind not in _KINDS:
         raise NodePackageError(f"{path}: kind is not a catalog kind")
-    expected_kind = _FAMILY_KINDS[family]
-    if kind != expected_kind:
-        raise NodePackageError(
-            f"{path}: family {family} must declare kind {expected_kind}"
-        )
+    if overlay:
+        if kind == "component":
+            raise NodePackageError(
+                f"{path}: overlay packages cannot declare graph components"
+            )
+        if family == "discovered" and kind != "tool":
+            raise NodePackageError(f"{path}: discovered overlays must be tools")
+    else:
+        expected_kind = _FAMILY_KINDS[family]
+        if kind != expected_kind:
+            raise NodePackageError(
+                f"{path}: family {family} must declare kind {expected_kind}"
+            )
     name = _text(path, "name", payload["name"])
     if kind == "component" and name not in _COMPONENT_NAMES:
         raise NodePackageError(f"{path}: component name is not a V1 graph type")
@@ -241,9 +288,7 @@ def _check_unique(packages: tuple[NodePackage, ...]) -> None:
     for package in packages:
         key = (package.definition["resource_id"], package.definition["version"])
         if key in seen:
-            raise NodePackageError(
-                f"{package.path}: duplicate node {key[0]}@{key[1]}"
-            )
+            raise NodePackageError(f"{package.path}: duplicate node {key[0]}@{key[1]}")
         seen.add(key)
 
 

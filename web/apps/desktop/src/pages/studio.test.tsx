@@ -122,7 +122,7 @@ describe("StudioPage source and conflict safety", () => {
     };
     const listResources = vi.fn(async ({ kind }: { kind?: string } = {}) => ({
       schema_version: "1.0",
-      resources: kind === "tool" ? [read, github] : kind === "component" ? [start] : [],
+      resources: kind === "tool" ? [read, github] : kind === "component" ? [start] : [start, read, github],
       kinds: [],
     }));
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), listResources } as unknown as LocalProjectApi;

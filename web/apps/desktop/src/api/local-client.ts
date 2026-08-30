@@ -30,10 +30,14 @@ import {
   type ListAgentsResponse,
   type ListAgentTemplatesResponse,
   type ListComponentsResponse,
+  type ListMcpServersResponse,
   type ListResourceFilters,
   type ListResourcesResponse,
   type ListProjectsResponse,
+  type ListWorkItemsResponse,
   type LocalErrorEnvelope,
+  type CreateMcpServerRequest,
+  type McpServer,
   type OpenProjectRequest,
   type ProjectAgentRecord,
   type ProjectFileContentResponse,
@@ -48,12 +52,16 @@ import {
   type RunCommandRequest,
   type ResourceDescriptor,
   type ResourceAvailability,
+  type ResourceDraftResponse,
   type ResourceKind,
+  type ResourceOrigin,
   type ResourceRuntimeStatus,
   type RuntimeEvent,
   type UpdateProjectRequest,
   type UpdateAgentRequest,
   type ValidateResponse,
+  type OrchestratorStatus,
+  type WorkItem,
 } from "@veyra/api-contracts";
 import { newUuidV7 } from "./uuid";
 
@@ -129,6 +137,16 @@ export type LocalProjectApi = {
   addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
   generateFactoryBlueprint?(projectId: string, sessionId: string): Promise<FactorySession>;
   applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string }): Promise<ApplyFactoryDraftResponse>;
+  createResourceDraft?(input: { confirm: boolean; kind: string; requested_reference: string; name?: string; description?: string }): Promise<ResourceDraftResponse>;
+  listMcpServers?(): Promise<ListMcpServersResponse>;
+  createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
+  discoverMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }>;
+  deleteMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; deleted: boolean }>;
+  orchestratorStatus?(): Promise<OrchestratorStatus>;
+  listWorkItems?(projectId: string): Promise<ListWorkItemsResponse>;
+  createWorkItem?(projectId: string, input: { title: string; agent_id: string; description?: string; depends_on?: string[]; inputs?: JsonObject }): Promise<WorkItem>;
+  dispatchWorkItem?(workItemId: string): Promise<WorkItem>;
+  cancelWorkItem?(workItemId: string): Promise<WorkItem>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
@@ -604,6 +622,7 @@ function listedComponents(value: unknown, status = 502): ListComponentsResponse 
 const resourceKinds = new Set<ResourceKind>(["component", "tool", "mcp_tool", "skill", "policy", "template"]);
 const resourceAvailability = new Set<ResourceAvailability>(["ready", "requires_configuration", "design_only", "quarantined", "disabled", "unavailable"]);
 const resourceRuntimeStatuses = new Set<ResourceRuntimeStatus>(["supported", "runtime_not_configured", "runtime_not_supported"]);
+const resourceOrigins = new Set<ResourceOrigin>(["builtin", "workshop", "discovered"]);
 
 function resourcePermissions(value: unknown, status = 502): ResourceDescriptor["required_permissions"] {
   const record = asRecord(value, status);
@@ -623,7 +642,7 @@ function resource(value: unknown, status = 502): ResourceDescriptor {
   const kind = asString(record.kind, "resource.kind", status) as ResourceKind;
   const availability = asString(record.availability, "resource.availability", status) as ResourceAvailability;
   const runtimeStatus = asString(record.runtime_status, "resource.runtime_status", status) as ResourceRuntimeStatus;
-  if (!resourceKinds.has(kind) || !resourceAvailability.has(availability) || !resourceRuntimeStatuses.has(runtimeStatus) || record.origin !== "builtin" || typeof record.factory_selectable !== "boolean") {
+  if (!resourceKinds.has(kind) || !resourceAvailability.has(availability) || !resourceRuntimeStatuses.has(runtimeStatus) || !resourceOrigins.has(record.origin as ResourceOrigin) || typeof record.factory_selectable !== "boolean") {
     throw new LocalApiClientError("The local service returned an invalid Resource descriptor.", { status, code: "invalid_response" });
   }
   return {
@@ -634,7 +653,7 @@ function resource(value: unknown, status = 502): ResourceDescriptor {
     reference: asString(record.reference, "resource.reference", status),
     name: asString(record.name, "resource.name", status),
     description: asText(record.description, "resource.description", status),
-    origin: "builtin",
+    origin: record.origin as ResourceOrigin,
     content_hash: asString(record.content_hash, "resource.content_hash", status),
     availability,
     factory_selectable: record.factory_selectable,
@@ -654,6 +673,118 @@ function listedResources(value: unknown, status = 502): ListResourcesResponse {
     return { kind, count: asNumber(kindRecord.count, `resource kind ${kind} count`, status) };
   });
   return { schema_version: LOCAL_API_SCHEMA_VERSION, resources: asArray(record.resources, "resources", status).map((item) => resource(item, status)), kinds };
+}
+
+function resourceDraft(value: unknown, status = 502): ResourceDraftResponse {
+  const record = schemaRecord(value, status);
+  if (record.executable !== false) {
+    throw new LocalApiClientError("The local service returned an executable Resource Draft.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    draft_id: asString(record.draft_id, "resource_draft.draft_id", status),
+    executable: false,
+    resource: resource(record.resource, status),
+  };
+}
+
+function mcpServer(value: unknown, status = 502): McpServer {
+  const record = asRecord(value, status);
+  return {
+    server_id: asString(record.server_id, "mcp.server_id", status),
+    name: asString(record.name, "mcp.name", status),
+    command: asString(record.command, "mcp.command", status),
+    args: asArray(record.args, "mcp.args", status).map((item) => asString(item, "mcp.args", status)),
+    env_names: Object.fromEntries(
+      Object.entries(asRecord(record.env_names, status)).map(([key, item]) => [key, asString(item, "mcp.env_names", status)]),
+    ),
+    enabled: asBoolean(record.enabled, "mcp.enabled", status),
+    created_at: asString(record.created_at, "mcp.created_at", status),
+    updated_at: asString(record.updated_at, "mcp.updated_at", status),
+  };
+}
+
+function listedMcpServers(value: unknown, status = 502): ListMcpServersResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    servers: asArray(record.servers, "mcp.servers", status).map((item) => mcpServer(item, status)),
+  };
+}
+
+function createdMcpServer(value: unknown, status = 502): { schema_version: "1.0"; server: McpServer } {
+  const record = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, server: mcpServer(record.server, status) };
+}
+
+function discoveredMcpTools(value: unknown, status = 502): { schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] } {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    server_id: asString(record.server_id, "mcp.server_id", status),
+    tools: asArray(record.tools, "mcp.tools", status).map((item) => resource(item, status)),
+  };
+}
+
+function deletedMcpServer(value: unknown, status = 502): { schema_version: "1.0"; server_id: string; deleted: boolean } {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    server_id: asString(record.server_id, "mcp.server_id", status),
+    deleted: asBoolean(record.deleted, "mcp.deleted", status),
+  };
+}
+
+const workItemStatuses = new Set(["backlog", "ready", "running", "waiting", "done", "failed", "cancelled"]);
+
+function workItem(value: unknown, status = 502): WorkItem {
+  const record = schemaRecord(value, status);
+  const itemStatus = asString(record.status, "work_item.status", status);
+  if (!workItemStatuses.has(itemStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid work item status.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    work_item_id: asString(record.work_item_id, "work_item.work_item_id", status),
+    project_id: asString(record.project_id, "work_item.project_id", status),
+    title: asString(record.title, "work_item.title", status),
+    description: asText(record.description, "work_item.description", status),
+    agent_id: asString(record.agent_id, "work_item.agent_id", status),
+    depends_on: asArray(record.depends_on, "work_item.depends_on", status).map((item) => asString(item, "work_item.depends_on", status)),
+    inputs: asRecord(record.inputs, status) as JsonObject,
+    status: itemStatus as WorkItem["status"],
+    run_id: record.run_id === null ? null : asString(record.run_id, "work_item.run_id", status),
+    created_at: asString(record.created_at, "work_item.created_at", status),
+    updated_at: asString(record.updated_at, "work_item.updated_at", status),
+  };
+}
+
+function listedWorkItems(value: unknown, status = 502): ListWorkItemsResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "work_items.project_id", status),
+    execution_plane: "local",
+    work_items: asArray(record.work_items, "work_items", status).map((item) => workItem(item, status)),
+  };
+}
+
+function parsedOrchestratorStatus(value: unknown, status = 502): OrchestratorStatus {
+  const record = schemaRecord(value, status);
+  if (record.execution_plane !== "local" || record.cloud_execution !== false) {
+    throw new LocalApiClientError("The local service returned an invalid orchestrator plane.", { status, code: "invalid_response" });
+  }
+  const countsRecord = asRecord(record.counts, status);
+  const counts = Object.fromEntries(
+    [...workItemStatuses].map((key) => [key, asNumber(countsRecord[key] ?? 0, `orchestrator.counts.${key}`, status)]),
+  ) as OrchestratorStatus["counts"];
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    execution_plane: "local",
+    cloud_execution: false,
+    counts,
+    active: asArray(record.active, "orchestrator.active", status).map((item) => workItem(item, status)),
+  };
 }
 
 const factoryStates = new Set<FactorySessionState>(["collecting", "ready", "generating", "review", "missing_capability", "completed", "abandoned"]);
@@ -1164,6 +1295,55 @@ export class LocalApiClient {
       appliedFactoryDraft,
       { method: "POST", body: input },
     );
+  }
+
+  createResourceDraft(input: {
+    confirm: boolean;
+    kind: string;
+    requested_reference: string;
+    name?: string;
+    description?: string;
+  }): Promise<ResourceDraftResponse> {
+    return this.request("resources/drafts", resourceDraft, { method: "POST", body: input });
+  }
+
+  listMcpServers(): Promise<ListMcpServersResponse> {
+    return this.request("mcp/servers", listedMcpServers);
+  }
+
+  createMcpServer(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }> {
+    return this.request("mcp/servers", createdMcpServer, { method: "POST", body: input });
+  }
+
+  discoverMcpServer(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }> {
+    return this.request(`mcp/servers/${encodeURIComponent(serverId)}/discover`, discoveredMcpTools, { method: "POST" });
+  }
+
+  deleteMcpServer(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; deleted: boolean }> {
+    return this.request(`mcp/servers/${encodeURIComponent(serverId)}`, deletedMcpServer, { method: "DELETE" });
+  }
+
+  orchestratorStatus(): Promise<OrchestratorStatus> {
+    return this.request("orchestrator/status", parsedOrchestratorStatus);
+  }
+
+  listWorkItems(projectId: string): Promise<ListWorkItemsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/work-items`, listedWorkItems);
+  }
+
+  createWorkItem(
+    projectId: string,
+    input: { title: string; agent_id: string; description?: string; depends_on?: string[]; inputs?: JsonObject },
+  ): Promise<WorkItem> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/work-items`, workItem, { method: "POST", body: input });
+  }
+
+  dispatchWorkItem(workItemId: string): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}/dispatch`, workItem, { method: "POST" });
+  }
+
+  cancelWorkItem(workItemId: string): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}/cancel`, workItem, { method: "POST" });
   }
 
   runAgent(

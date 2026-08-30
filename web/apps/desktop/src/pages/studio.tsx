@@ -48,10 +48,7 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
     if (!api.listResources) return;
-    void Promise.all([
-      api.listResources({ kind: "component" }),
-      api.listResources({ kind: "tool" }),
-    ]).then(([components, tools]) => setCatalog([...components.resources, ...tools.resources])).catch(() => setCatalog([]));
+    void api.listResources().then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
   }, [api]);
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: AgentSource) => { setSource(next); setDirty(JSON.stringify(next) !== cleanSnapshot.current); setStatus("ready"); }, []);

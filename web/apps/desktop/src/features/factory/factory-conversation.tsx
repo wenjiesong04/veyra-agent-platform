@@ -18,6 +18,9 @@ const copy = {
     generating: "正在生成…",
     apply: "确认创建 Draft",
     applying: "正在创建…",
+    quarantine: "写入隔离草稿",
+    quarantining: "正在写入…",
+    quarantined: "已写入隔离 Catalog，不可执行、不可被 Factory 选用。",
     review: "资源计划",
     missing: "缺少能力",
     diagnostics: "修复诊断",
@@ -40,6 +43,9 @@ const copy = {
     generating: "Generating…",
     apply: "Create Draft",
     applying: "Creating…",
+    quarantine: "Create quarantined drafts",
+    quarantining: "Writing drafts…",
+    quarantined: "Wrote quarantined catalog drafts. They are not executable and Factory cannot select them.",
     review: "Resource plan",
     missing: "Missing capabilities",
     diagnostics: "Repair diagnostics",
@@ -68,8 +74,9 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
   const [session, setSession] = useState<FactorySession | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"message" | "generate" | "apply" | null>(null);
+  const [busy, setBusy] = useState<"message" | "generate" | "apply" | "draft" | null>(null);
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+  const [drafted, setDrafted] = useState(false);
 
   useEffect(() => {
     let current = true;
@@ -125,6 +132,26 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
       const result = await api.applyFactoryDraft(projectId, session.session_id, { confirm: true });
       setSession(result.session);
       setCreatedAgentId(result.agent.agent_id);
+    } catch (cause) {
+      setError(errorText(cause, locale));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const quarantine = async () => {
+    if (!session?.missing_capabilities.length || !api.createResourceDraft || busy) return;
+    setBusy("draft");
+    setError("");
+    try {
+      for (const item of session.missing_capabilities) {
+        await api.createResourceDraft({
+          confirm: true,
+          kind: item.kind,
+          requested_reference: item.reference,
+        });
+      }
+      setDrafted(true);
     } catch (cause) {
       setError(errorText(cause, locale));
     } finally {
@@ -194,6 +221,7 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
           <div className="draft-note">
             <strong>{text.missing}</strong>
             {session.missing_capabilities.map((item) => <p key={item.reference}>{item.reference}: {item.reason}</p>)}
+            {drafted ? <p>{text.quarantined}</p> : null}
           </div>
         ) : null}
         {session?.diagnostics.length ? (
@@ -205,6 +233,9 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
           </Button>
           <Button disabled={!canApply || Boolean(busy)} onClick={() => void apply()}>
             {busy === "apply" ? text.applying : text.apply}
+          </Button>
+          <Button disabled={!session?.missing_capabilities.length || !api.createResourceDraft || Boolean(busy)} onClick={() => void quarantine()}>
+            {busy === "draft" ? text.quarantining : text.quarantine}
           </Button>
         </div>
         {createdAgentId ? (

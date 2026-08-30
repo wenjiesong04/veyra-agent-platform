@@ -6,6 +6,7 @@ from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.local.domain.agent_definition import merge_catalog_bindings
 from veyra_agent_platform.local.resources import ResourceCatalog
 
 STARTER_TEMPLATE_ID = "veyra.starter-agent@1.0.0"
@@ -55,6 +56,8 @@ _STARTER_SOURCE: dict[str, Any] = {
             "secret_refs": [],
             "permissions": dict(_EMPTY_PERMISSIONS),
             "verification": {"required": False, "checks": []},
+            "skill_refs": [],
+            "policy_refs": [],
         }
     },
     "ui": {
@@ -204,6 +207,11 @@ def _work_template(
 ) -> AgentSource:
     suffix, skill_lock = _compiled_skills(catalog, skill_refs)
     system_prompt = prompt if not suffix else f"{prompt}\n\n{suffix}"
+    bindings = merge_catalog_bindings(
+        existing=None,
+        skill_refs=skill_refs,
+        reserved_ids=("start", "agent", "output"),
+    )
     payload: dict[str, Any] = {
         "schema_version": "1.0",
         "agentspec_version": "26.1",
@@ -238,6 +246,8 @@ def _work_template(
                 "secret_refs": [],
                 "permissions": dict(_EMPTY_PERMISSIONS),
                 "verification": {"required": False, "checks": []},
+                "skill_refs": list(skill_refs),
+                "policy_refs": [],
             }
         },
         "ui": {
@@ -245,7 +255,8 @@ def _work_template(
                 "start": {"x": 0, "y": 80},
                 "agent": {"x": 240, "y": 80},
                 "output": {"x": 480, "y": 80},
-            }
+            },
+            **({"bindings": bindings} if bindings else {}),
         },
         "lock": {
             **skill_lock,
