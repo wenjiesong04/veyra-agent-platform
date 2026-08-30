@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, TypeVar, cast
 
@@ -15,6 +16,12 @@ from veyra_agent_platform.local.projects.service import (
     MAX_AGENT_IMPORT_BYTES,
     ProjectError,
     ProjectService,
+)
+from veyra_agent_platform.local.runtime.profiles import (
+    RuntimeApiProfile,
+    RuntimeApiProfileInput,
+    RuntimeProfileError,
+    RuntimeProfileStore,
 )
 from veyra_agent_platform.local.storage import IdempotencyConflict
 
@@ -30,6 +37,7 @@ class CreateProjectRequest(_ClosedModel):
     description: str = ""
     agents: list[dict[str, Any]] = Field(default_factory=list)
     templates: list[dict[str, str]] = Field(default_factory=list)
+    runtime_profile: RuntimeApiProfileInput | None = None
 
 
 class OpenProjectRequest(_ClosedModel):
@@ -40,6 +48,7 @@ class UpdateProjectRequest(_ClosedModel):
     name: str | None = None
     description: str | None = None
     pinned: StrictBool | None = None
+    runtime_profile: RuntimeApiProfileInput | None = None
 
     @model_validator(mode="after")
     def require_update(self) -> UpdateProjectRequest:
@@ -62,6 +71,8 @@ class CreateAgentRequest(_ClosedModel):
     template_id: str | None = None
     name: str | None = None
     description: str | None = None
+    parent_agent_id: str | None = None
+    runtime_profile: RuntimeApiProfileInput | None = None
 
     @model_validator(mode="after")
     def require_template_for_template_mode(self) -> CreateAgentRequest:
@@ -73,7 +84,14 @@ class CreateAgentRequest(_ClosedModel):
 
 
 class UpdateAgentRequest(_ClosedModel):
-    pinned: Literal[True]
+    pinned: Literal[True] | None = None
+    runtime_profile: RuntimeApiProfileInput | None = None
+
+    @model_validator(mode="after")
+    def require_update(self) -> UpdateAgentRequest:
+        if not self.model_fields_set:
+            raise ValueError("at least one Agent field is required")
+        return self
 
 
 class TypedApiError(Exception):
@@ -105,7 +123,7 @@ def build_router() -> APIRouter:
         return {
             "schema_version": "1.0",
             "projects": [
-                projects.project_summary(row["project_id"])
+                _project_response(request, projects.project_summary(row["project_id"]))
                 for row in projects.repository.projects()
             ],
         }
@@ -115,42 +133,72 @@ def build_router() -> APIRouter:
         payload: CreateProjectRequest, request: Request
     ) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(
-            lambda: projects.create_managed(
+
+        def operation() -> dict[str, Any]:
+            project = projects.create_managed(
                 name=payload.name,
                 description=payload.description,
                 sources=payload.agents,
                 template_selections=payload.templates,
             )
-        )
+            if payload.runtime_profile is not None:
+                _profiles(request).set_project(
+                    project["project_id"], payload.runtime_profile.profile()
+                )
+            return _project_response(request, project)
+
+        return _translate(operation)
 
     @router.post("/open")
     def open_project(payload: OpenProjectRequest, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(lambda: projects.index(payload.root_path))
+        return _translate(
+            lambda: _project_response(request, projects.index(payload.root_path))
+        )
 
     @router.get("/{project_id}")
     def get_project(project_id: str, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(lambda: projects.project_summary(project_id))
+        return _translate(
+            lambda: _project_response(request, projects.project_summary(project_id))
+        )
 
     @router.patch("/{project_id}")
     def update_project(
         project_id: str, payload: UpdateProjectRequest, request: Request
     ) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(
-            lambda: projects.edit(
-                project_id,
-                name=payload.name if "name" in payload.model_fields_set else None,
-                description=(
-                    payload.description
-                    if "description" in payload.model_fields_set
-                    else None
-                ),
-                pinned=payload.pinned if "pinned" in payload.model_fields_set else None,
+
+        def operation() -> dict[str, Any]:
+            has_metadata = bool(
+                {"name", "description", "pinned"} & payload.model_fields_set
             )
-        )
+            project = (
+                projects.edit(
+                    project_id,
+                    name=payload.name if "name" in payload.model_fields_set else None,
+                    description=(
+                        payload.description
+                        if "description" in payload.model_fields_set
+                        else None
+                    ),
+                    pinned=payload.pinned
+                    if "pinned" in payload.model_fields_set
+                    else None,
+                )
+                if has_metadata
+                else projects.project_summary(project_id)
+            )
+            if "runtime_profile" in payload.model_fields_set:
+                _profiles(request).set_project(
+                    project_id,
+                    payload.runtime_profile.profile()
+                    if payload.runtime_profile is not None
+                    else None,
+                )
+            return _project_response(request, project)
+
+        return _translate(operation)
 
     @router.delete("/{project_id}")
     def delete_project(project_id: str, request: Request) -> dict[str, Any]:
@@ -173,9 +221,23 @@ def build_router() -> APIRouter:
         project_id: str, payload: CreateAgentRequest, request: Request
     ) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(
-            lambda: projects.create_agent(project_id=project_id, **payload.model_dump())
-        )
+
+        def operation() -> dict[str, Any]:
+            agent_payload = payload.model_dump(
+                exclude={"runtime_profile"}, exclude_none=True
+            )
+            agent = projects.create_agent(project_id=project_id, **agent_payload)
+            if "runtime_profile" in payload.model_fields_set:
+                _profiles(request).set_agent(
+                    project_id,
+                    agent["agent_id"],
+                    payload.runtime_profile.profile()
+                    if payload.runtime_profile is not None
+                    else None,
+                )
+            return _agent_response(request, agent)
+
+        return _translate(operation)
 
     @router.post("/{project_id}/agents/import", status_code=status.HTTP_201_CREATED)
     def import_agent(
@@ -184,6 +246,7 @@ def build_router() -> APIRouter:
         file: Annotated[UploadFile, File()],
         name: Annotated[str | None, Form()] = None,
         description: Annotated[str | None, Form()] = None,
+        parent_agent_id: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         projects, _ = _services(request)
         contents = file.file.read(MAX_AGENT_IMPORT_BYTES + 1)
@@ -194,6 +257,7 @@ def build_router() -> APIRouter:
                 contents=contents,
                 name=name,
                 description=description,
+                parent_agent_id=parent_agent_id,
             )
         )
 
@@ -203,7 +267,9 @@ def build_router() -> APIRouter:
         return _translate(
             lambda: {
                 "schema_version": "1.0",
-                "agents": projects.project_summary(project_id)["agents"],
+                "agents": _project_response(
+                    request, projects.project_summary(project_id)
+                )["agents"],
             }
         )
 
@@ -215,14 +281,36 @@ def build_router() -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(lambda: projects.pin_agent(project_id, agent_id))
+
+        def operation() -> dict[str, Any]:
+            if payload.pinned is True:
+                project = projects.pin_agent(project_id, agent_id)
+            else:
+                project = projects.project_summary(project_id)
+            if "runtime_profile" in payload.model_fields_set:
+                _profiles(request).set_agent(
+                    project_id,
+                    agent_id,
+                    payload.runtime_profile.profile()
+                    if payload.runtime_profile is not None
+                    else None,
+                )
+            return _project_response(request, project)
+
+        return _translate(operation)
 
     @router.delete("/{project_id}/agents/{agent_id}")
     def delete_agent(
         project_id: str, agent_id: str, request: Request
     ) -> dict[str, Any]:
         projects, _ = _services(request)
-        return _translate(lambda: projects.remove_agent(project_id, agent_id))
+
+        def operation() -> dict[str, Any]:
+            result = projects.remove_agent(project_id, agent_id)
+            result["project"] = _project_response(request, result["project"])
+            return result
+
+        return _translate(operation)
 
     @router.get("/{project_id}/agents/{agent_id}/draft")
     def get_draft(
@@ -308,6 +396,52 @@ def _services(request: Request) -> tuple[ProjectService, LibraryService]:
     return request.app.state.projects, request.app.state.library
 
 
+def _profiles(request: Request) -> RuntimeProfileStore:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(RuntimeProfileStore, request.app.state.runtime_profiles)
+
+
+def _profile_summary(
+    request: Request, profile: RuntimeApiProfile | None
+) -> dict[str, Any] | None:
+    if profile is None:
+        return None
+    settings = request.app.state.runtime.model.settings
+    return profile.to_dict(
+        configured=bool(
+            settings.allow_process_environment_key
+            and os.environ.get(profile.api_key_env, "").strip()
+        )
+    )
+
+
+def _project_response(request: Request, project: dict[str, Any]) -> dict[str, Any]:
+    result = dict(project)
+    profiles = _profiles(request)
+    result["runtime_profile"] = _profile_summary(
+        request, profiles.get_project(project["project_id"])
+    )
+    result["agents"] = [
+        {
+            **agent,
+            "runtime_profile": _profile_summary(
+                request, profiles.get_agent(project["project_id"], agent["agent_id"])
+            ),
+        }
+        for agent in project["agents"]
+    ]
+    return result
+
+
+def _agent_response(request: Request, agent: dict[str, Any]) -> dict[str, Any]:
+    result = dict(agent)
+    result["runtime_profile"] = _profile_summary(
+        request, _profiles(request).get_agent(agent["project_id"], agent["agent_id"])
+    )
+    return result
+
+
 def _translate(operation: Callable[[], _Result]) -> _Result:
     try:
         return operation()
@@ -315,6 +449,9 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         raise TypedApiError(409, "draft_conflict", str(exc)) from exc
     except IdempotencyConflict as exc:
         raise TypedApiError(409, "idempotency_conflict", str(exc)) from exc
+    except RuntimeProfileError as exc:
+        status_code = 404 if exc.code.endswith("_not_found") else 422
+        raise TypedApiError(status_code, exc.code, str(exc)) from exc
     except ProjectError as exc:
         code = getattr(exc, "code", "project_invalid")
         if code != "project_invalid":

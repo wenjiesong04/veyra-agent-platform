@@ -420,8 +420,10 @@ external directory.
 
 V1 permits an empty Project: `agents` may be empty and then
 `default_agent_id` is `null`. When Agents exist, `default_agent_id` identifies
-one listed Agent. Agents remain flat at `agents/<slug>`; a future child-Agent
-hierarchy will use stable-ID references rather than nested Agent directories.
+one listed Agent. Agents remain flat at `agents/<slug>`; an optional
+`parent_agent_id` on a manifest entry creates a child-Agent relationship without
+coupling the filesystem path to the hierarchy. Parent references must identify
+another listed Agent and must not contain cycles.
 
 ### 5.1 Source and package files
 
@@ -433,6 +435,17 @@ Component package  *.vcomponent (publishing deferred)
 ```
 
 Source is human-readable and Git-friendly. Package is an immutable archive containing canonical source, lock data, documentation, icons, test fixtures, and signatures.
+
+### 5.1.1 Node definition files
+
+The platform-owned node catalog is checked into
+`resources/nodes/catalog.v1.json`. Each descriptor is a versioned node file
+record for a Component, Tool, MCP descriptor, Skill, Policy, or Template. The
+local Resource Catalog loads and validates this file before using its code
+fallback, then computes the immutable content hash. Factory may assemble only
+catalogued records. A special node produced for an unusual requirement is a
+declarative, non-executable proposal until a separate human-reviewed adapter
+promotion flow exists.
 
 ### 5.2 Standards strategy
 
@@ -754,6 +767,13 @@ still be generated, validated, versioned, and exported, but model-based Run is
 disabled with an explicit configuration requirement. Provider secrets live in
 Keychain/process environment and Agent source stores only `model_ref` or
 `secretRef`.
+
+Project and Agent creation may optionally save a non-secret Runtime API profile
+(`provider`, API base URL, model ID, and API-key environment-variable name) in
+application SQLite. An Agent profile overrides its Project profile; a Project
+profile overrides the default Runtime profile. The API-key value itself remains
+in the host Keychain/environment and is never written to a Project manifest,
+Agent source, SQLite profile JSON, browser storage, or logs.
 
 Local development may use the host process Runtime profile
 (`VEYRA_RUNTIME_*` / `MOONSHOT_API_KEY`) so Agent nodes can run for testing.
@@ -1093,6 +1113,7 @@ Draft is mutable with revision. Version is immutable. Every run materializes or 
 - `files`
 - `file_versions`
 - `agent_version_files`
+- `runtime_api_profiles` (non-secret Project/Agent provider metadata)
 - `run_artifacts`
 
 Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or long stdout.
@@ -1623,10 +1644,14 @@ Stop expanding if:
 
 ## 20. Immediate Next Documentation/Implementation Tasks
 
-1. Resource Catalog, Factory conversation, catalog-only resolution, and
-   confirm-to-Draft (never execute) are in the local service.
-2. Local development may run Agent nodes through a host Runtime model profile.
-   Production still requires a user-provided Runtime API before Agent runs.
+1. Resource Catalog node definitions are now file-backed at
+   `resources/nodes/catalog.v1.json`; Factory resolves only those records.
+2. Project and Agent child relationships use stable `parent_agent_id` references
+   while keeping the filesystem flat.
+3. Project/Agent Runtime API profiles are optional, editable, non-secret, and
+   selected in the order Agent override → Project profile → default profile.
+4. Local development may run Agent nodes through a host Runtime model profile;
+   production still requires a user-provided Runtime API before Agent runs.
 
 All new work retains the clean-room legacy boundary. No implementation phase
 copies legacy Veyra directories or loads a Project `.env` automatically.

@@ -329,13 +329,14 @@ class ProjectAgentDirectory:
     agent_id: str
     slug: str
     path: str
+    parent_agent_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> ProjectAgentDirectory:
         item = require_mapping(data, "project agent")
         require_keys(
             item,
-            allowed={"agent_id", "slug", "path"},
+            allowed={"agent_id", "slug", "path", "parent_agent_id"},
             required={"agent_id", "slug", "path"},
         )
         path = require_string(item["path"], "project agent.path")
@@ -348,10 +349,20 @@ class ProjectAgentDirectory:
             agent_id=require_uuid7(item["agent_id"], "project agent.agent_id"),
             slug=slug,
             path=path,
+            parent_agent_id=(
+                None
+                if item.get("parent_agent_id") is None
+                else require_uuid7(
+                    item["parent_agent_id"], "project agent.parent_agent_id"
+                )
+            ),
         )
 
     def to_dict(self) -> dict[str, str]:
-        return {"agent_id": self.agent_id, "slug": self.slug, "path": self.path}
+        result = {"agent_id": self.agent_id, "slug": self.slug, "path": self.path}
+        if self.parent_agent_id is not None:
+            result["parent_agent_id"] = self.parent_agent_id
+        return result
 
 
 @dataclass(frozen=True)
@@ -405,6 +416,27 @@ class ProjectManifest:
             raise ContractValidationError(
                 "project agents must have unique IDs, slugs, and paths"
             )
+        agent_ids = {agent.agent_id for agent in agents}
+        for agent in agents:
+            parent_id = agent.parent_agent_id
+            if parent_id is None:
+                continue
+            if parent_id not in agent_ids or parent_id == agent.agent_id:
+                raise ContractValidationError(
+                    "project agent.parent_agent_id must identify another listed Agent"
+                )
+            seen: set[str] = {agent.agent_id}
+            current: str | None = parent_id
+            while current is not None:
+                if current in seen:
+                    raise ContractValidationError(
+                        "project Agent parent references must not contain cycles"
+                    )
+                seen.add(current)
+                parent = next(
+                    (item for item in agents if item.agent_id == current), None
+                )
+                current = parent.parent_agent_id if parent is not None else None
         raw_default_agent_id = item["default_agent_id"]
         if not agents and raw_default_agent_id is not None:
             raise ContractValidationError(

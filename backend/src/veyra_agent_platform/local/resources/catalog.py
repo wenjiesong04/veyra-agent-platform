@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Final, Literal
 
 from veyra_agent_platform.contracts.canonical import sha256_digest
@@ -60,12 +62,14 @@ class ResourceCatalog:
     """Expose copies of a closed in-code catalog; callers cannot mutate its state."""
 
     def __init__(self) -> None:
-        resources = [self._component(*definition) for definition in _COMPONENTS]
-        resources.extend(self._tool_resources())
-        resources.extend(self._mcp_resources())
-        resources.extend(self._skill_resources())
-        resources.extend(self._policy_resources())
-        resources.extend(self._template_resources())
+        resources = self._load_node_file()
+        if resources is None:
+            resources = [self._component(*definition) for definition in _COMPONENTS]
+            resources.extend(self._tool_resources())
+            resources.extend(self._mcp_resources())
+            resources.extend(self._skill_resources())
+            resources.extend(self._policy_resources())
+            resources.extend(self._template_resources())
         self._resources = tuple(self._descriptor(resource) for resource in resources)
         self._by_reference = {
             (resource["resource_id"], resource["version"]): resource
@@ -73,6 +77,50 @@ class ResourceCatalog:
         }
         if len(self._by_reference) != len(self._resources):
             raise RuntimeError("resource catalog references must be unique")
+
+    @staticmethod
+    def _load_node_file() -> list[dict[str, Any]] | None:
+        """Load the committed node definitions before using the code fallback."""
+        path = (
+            Path(__file__).resolve().parents[5]
+            / "resources"
+            / "nodes"
+            / "catalog.v1.json"
+        )
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Resource node catalog could not be read") from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != SCHEMA_VERSION
+            or payload.get("catalog_version") != "1"
+        ):
+            raise RuntimeError("Resource node catalog has an unsupported schema")
+        nodes = payload.get("nodes")
+        if (
+            not isinstance(nodes, list)
+            or not nodes
+            or not all(isinstance(node, dict) for node in nodes)
+        ):
+            raise RuntimeError("Resource node catalog must contain node descriptors")
+        required = {
+            "resource_id",
+            "kind",
+            "name",
+            "description",
+            "availability",
+            "factory_selectable",
+            "runtime_status",
+            "required_permissions",
+            "tags",
+            "spec",
+        }
+        if any(set(node) != required for node in nodes):
+            raise RuntimeError("Resource node catalog contains an invalid descriptor")
+        return [deepcopy(node) for node in nodes]
 
     def resources(
         self, *, kind: str | None = None, availability: str | None = None

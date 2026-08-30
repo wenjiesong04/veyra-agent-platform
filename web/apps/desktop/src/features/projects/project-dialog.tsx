@@ -1,9 +1,10 @@
 import { Box, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
-import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectSummaryResponse } from "@veyra/api-contracts";
+import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectSummaryResponse, RuntimeApiProfileInput } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { LocalApiClientError } from "../../api/local-client";
 import { useProjectWorkspace } from "../../api/project-workspace";
+import { RuntimeProfileFields, profileInput } from "./runtime-profile-fields";
 
 export type ProjectDialogMode = "create" | "open";
 export type AgentCreateMode = "blank" | "template" | "file";
@@ -18,6 +19,7 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
   const { api, refresh, upsertProject } = useProjectWorkspace();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -56,7 +58,7 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
     setSaving(true); setError(null);
     try {
       const project = mode === "create"
-        ? await api.createProject({ ...(name.trim() ? { name: name.trim() } : {}), description: description.trim() })
+        ? await api.createProject({ ...(name.trim() ? { name: name.trim() } : {}), description: description.trim(), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) })
         : await api.openProject({ root_path: selectedPath! });
       upsertProject(project); onClose(); void refresh().catch(() => undefined);
     } catch (cause) {
@@ -68,7 +70,7 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
     <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
       <div className="project-modal-header"><h2 id="project-modal-title">{copy.title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={copy.close} disabled={busy}><X size={18} /></button></div>
       <form className="project-form" onSubmit={submit}>
-        {mode === "create" ? <><label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" /></label><label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} /><small>{description.length}/500</small></label></> : null}
+        {mode === "create" ? <><label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" /></label><label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} /><small>{description.length}/500</small></label><RuntimeProfileFields value={runtimeProfile} onChange={setRuntimeProfile} locale={locale} /></> : null}
         {mode === "open" ? <button className={`folder-selection ${selectedPath ? "is-selected" : ""}`} type="button" onClick={() => void chooseFolder()} disabled={busy} aria-label={selectedPath ? copy.chooseAgain : copy.select} aria-busy={picking}>
           <FolderOpen size={24} aria-hidden="true" /><div><strong>{selectedPath ? `${copy.selected}: ${folderName(selectedPath)}` : copy.select}</strong><p>{selectedPath ? copy.chooseAgain : copy.selectHint}</p></div>
         </button> : null}
@@ -85,6 +87,8 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
   const { api, upsertProject } = useProjectWorkspace();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description);
+  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(profileInput(project.runtime_profile));
+  const [runtimeProfileDirty, setRuntimeProfileDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [allocatedName, setAllocatedName] = useState<string | null>(null);
@@ -102,7 +106,7 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
     event.preventDefault();
     setSaving(true); setError(null);
     try {
-      const updated = await api.updateProject(project.project_id, { name: name.trim(), description: description.trim() });
+      const updated = await api.updateProject(project.project_id, { name: name.trim(), description: description.trim(), ...(runtimeProfileDirty ? { runtime_profile: runtimeProfile } : {}) });
       upsertProject(updated);
       setAllocatedName(updated.name);
     } catch {
@@ -113,7 +117,7 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={saving}>
     <form className="project-form" onSubmit={submit}>
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" /></label>
-      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} /></label><RuntimeProfileFields value={runtimeProfile} onChange={(value) => { setRuntimeProfile(value); setRuntimeProfileDirty(true); }} locale={locale} />
       {allocatedName ? <p className="project-form-success" role="status">{copy.allocated}: <strong>{allocatedName}</strong></p> : null}
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
       <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{allocatedName ? copy.done : copy.cancel}</Button>{allocatedName ? null : <Button variant="primary" type="submit" disabled={saving}>{saving ? "…" : copy.save}</Button>}</div>
@@ -151,6 +155,8 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
   const [etag, setEtag] = useState("");
   const [name, setName] = useState(agent.name || agent.slug);
   const [description, setDescription] = useState(agent.description);
+  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
+  const [runtimeProfileDirty, setRuntimeProfileDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +177,15 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
   }, [agent.agent_id, api, copy.failed, project.project_id]);
 
   useEffect(() => {
+    if (!api.getAgentRuntimeProfile) return;
+    let current = true;
+    void api.getAgentRuntimeProfile(project.project_id, agent.agent_id).then((response) => {
+      if (current) setRuntimeProfile(profileInput(response.profile));
+    }).catch(() => undefined);
+    return () => { current = false; };
+  }, [agent.agent_id, api, project.project_id]);
+
+  useEffect(() => {
     if (!loading) nameRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
     document.addEventListener("keydown", onKeyDown);
@@ -184,6 +199,7 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
     setSaving(true); setError(null);
     try {
       const saved = await api.saveDraft(project.project_id, agent.agent_id, { source: { ...source, name: nextName, description: description.trim() }, expected_revision: revision }, { etag });
+      if (runtimeProfileDirty && api.setAgentRuntimeProfile) await api.setAgentRuntimeProfile(project.project_id, agent.agent_id, runtimeProfile);
       setRevision(saved.revision);
       setEtag(saved.etag);
       try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, agents: project.agents.map((item) => item.agent_id === agent.agent_id ? { ...item, name: saved.source.name, description: saved.source.description } : item) }); }
@@ -196,7 +212,7 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={loading || saving}>
     {loading ? <p className="project-modal-hint">{copy.loading}</p> : source ? <form className="project-form" onSubmit={(event) => void submit(event)}>
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" disabled={saving} /></label>
-      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label><RuntimeProfileFields value={runtimeProfile} onChange={(value) => { setRuntimeProfile(value); setRuntimeProfileDirty(true); }} locale={locale} />
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
       <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button variant="primary" type="submit" disabled={saving || !api.saveDraft}>{saving ? "…" : copy.save}</Button></div>
     </form> : <p className="project-form-error" role="alert">{error ?? copy.failed}</p>}
@@ -220,12 +236,13 @@ export function AgentDeleteDialog({ project, agent, onClose, onDeleted }: { proj
   </Modal>;
 }
 
-export function AgentCreateDialog({ project, mode, onClose, onCreated }: { project: ProjectSummaryResponse; mode: AgentCreateMode; onClose: () => void; onCreated: (projectId: string) => void }) {
+export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCreated }: { project: ProjectSummaryResponse; mode: AgentCreateMode; parentAgentId?: string; onClose: () => void; onCreated: (projectId: string) => void }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api, refresh, upsertProject } = useProjectWorkspace();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -234,10 +251,10 @@ export function AgentCreateDialog({ project, mode, onClose, onCreated }: { proje
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const copy = zh ? {
-    title: mode === "blank" ? "创建空白 Agent" : mode === "template" ? "从模板导入 Agent" : "导入 Agent 文件",
+    title: parentAgentId ? "创建子 Agent" : mode === "blank" ? "创建空白 Agent" : mode === "template" ? "从模板导入 Agent" : "导入 Agent 文件",
     name: "Agent 名称（可选）", description: "描述（可选）", namePlaceholder: "留空使用默认名称", descriptionPlaceholder: "这个 Agent 要完成什么？", cancel: "取消", close: "关闭对话框", create: "创建 Agent", import: "导入 Agent", template: "选择模板", loading: "正在加载模板…", noTemplates: "尚无可用模板。", file: "选择 Agent 文件", drop: "拖放 .vagent.yaml、.yaml 或 .yml 文件到此处", selected: "已选择", fileRequired: "请选择一个 Agent 文件。", templateRequired: "请选择一个模板。", failed: "无法创建 Agent，请检查输入后重试。",
   } : {
-    title: mode === "blank" ? "Create blank Agent" : mode === "template" ? "Import Agent from template" : "Import Agent file",
+    title: parentAgentId ? "Create child Agent" : mode === "blank" ? "Create blank Agent" : mode === "template" ? "Import Agent from template" : "Import Agent file",
     name: "Agent name (optional)", description: "Description (optional)", namePlaceholder: "Leave blank for the default name", descriptionPlaceholder: "What should this Agent do?", cancel: "Cancel", close: "Close dialog", create: "Create Agent", import: "Import Agent", template: "Select a template", loading: "Loading templates…", noTemplates: "No registered templates are available.", file: "Choose Agent file", drop: "Drop a .vagent.yaml, .yaml, or .yml file here", selected: "Selected", fileRequired: "Choose an Agent file.", templateRequired: "Select a template.", failed: "The Agent could not be created. Check the input and try again.",
   };
 
@@ -273,10 +290,19 @@ export function AgentCreateDialog({ project, mode, onClose, onCreated }: { proje
     if (mode === "template" && !templateId) return setError(copy.templateRequired);
     if (mode === "file" && !file) return setError(copy.fileRequired);
     setSaving(true); setError(null);
-    const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}) };
+    const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}), ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) };
     try {
-      if (mode === "file") await api.importAgent(project.project_id, { file: file!, ...overrides });
-      else await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
+      if (mode === "file") {
+        const imported = await api.importAgent(project.project_id, {
+          file: file!,
+          ...(name.trim() ? { name: name.trim() } : {}),
+          ...(description.trim() ? { description: description.trim() } : {}),
+          ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
+        });
+        if (runtimeProfile && api.setAgentRuntimeProfile) {
+          await api.setAgentRuntimeProfile(project.project_id, imported.agent_id, runtimeProfile);
+        }
+      } else await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
       const updated = await api.getProject(project.project_id);
       upsertProject(updated);
       onCreated(project.project_id);
@@ -292,7 +318,7 @@ export function AgentCreateDialog({ project, mode, onClose, onCreated }: { proje
       {mode === "template" ? <label><span>{copy.template}</span><select aria-label={copy.template} value={templateId} onChange={(event) => setTemplateId(event.target.value)} disabled={loadingTemplates || saving}>{loadingTemplates ? <option>{copy.loading}</option> : templates.length ? templates.map((template) => <option key={template.template_id} value={template.template_id}>{template.name}</option>) : <option value="">{copy.noTemplates}</option>}</select>{templates.find((template) => template.template_id === templateId)?.description ? <small className="agent-template-detail">{templates.find((template) => template.template_id === templateId)?.description}</small> : null}</label> : null}
       {mode === "file" ? <label className={`agent-file-drop ${file ? "is-selected" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files.item(0)); }}><input type="file" aria-label={copy.file} accept=".vagent.yaml,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)} /><span className="agent-file-icon"><FileUp size={18} aria-hidden="true" /></span><strong>{file ? `${copy.selected}: ${file.name}` : copy.file}</strong><small>{copy.drop}</small></label> : null}
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" disabled={saving} /></label>
-      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} disabled={saving} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} disabled={saving} /></label><RuntimeProfileFields value={runtimeProfile} onChange={setRuntimeProfile} locale={locale} />
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
       <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button icon={mode === "blank" ? Plus : mode === "template" ? Box : FileUp} variant="primary" type="submit" disabled={saving || loadingTemplates || (mode === "template" && templates.length === 0)}>{saving ? "…" : mode === "blank" ? copy.create : copy.import}</Button></div>
     </form>

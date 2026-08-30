@@ -70,6 +70,7 @@ export const dictionary: Dictionary = {
   editAgentDetail: { zh: "修改 Agent 名称和描述", en: "Change the Agent name and description" },
   deleteAgentDetail: { zh: "移到 Veyra 回收区", en: "Move to Veyra Trash" },
   addAgent: { zh: "添加 Agent", en: "Add Agent" },
+  addChildAgent: { zh: "添加子 Agent", en: "Add child Agent" },
   expandProject: { zh: "展开项目", en: "Expand Project" },
   collapseProject: { zh: "收起项目", en: "Collapse Project" },
   recent: { zh: "最近", en: "Recent" },

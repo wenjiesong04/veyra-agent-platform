@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
 
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel, ConfigDict
 
 from veyra_agent_platform.local.api.projects.routes import TypedApiError, _translate
+from veyra_agent_platform.local.runtime.profiles import (
+    RuntimeApiProfileInput,
+    RuntimeProfileError,
+    RuntimeProfileStore,
+)
 from veyra_agent_platform.local.runtime.service import RuntimeService
+
+_ProfileResult = TypeVar("_ProfileResult")
 
 
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     inputs: dict[str, Any]
+
+
+class SetRuntimeApiProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: RuntimeApiProfileInput | None
 
 
 def build_router() -> APIRouter:
@@ -22,6 +36,75 @@ def build_router() -> APIRouter:
     @router.get("/runtime/status")
     def runtime_status(request: Request) -> dict[str, Any]:
         return _runtime(request).status()
+
+    @router.get("/projects/{project_id}/runtime-profile")
+    def get_project_profile(project_id: str, request: Request) -> dict[str, Any]:
+        profiles = _profiles(request)
+        profile = _profile_translate(lambda: profiles.get_project(project_id))
+        settings = _runtime(request).model.settings
+        return RuntimeProfileStore.payload(
+            project_id,
+            None,
+            profile,
+            source="project",
+            allow_process_environment_key=settings.allow_process_environment_key,
+        )
+
+    @router.patch("/projects/{project_id}/runtime-profile")
+    def set_project_profile(
+        project_id: str, payload: SetRuntimeApiProfileRequest, request: Request
+    ) -> dict[str, Any]:
+        profiles = _profiles(request)
+        profile = _profile_translate(
+            lambda: payload.profile.profile() if payload.profile else None
+        )
+        saved = _profile_translate(lambda: profiles.set_project(project_id, profile))
+        settings = _runtime(request).model.settings
+        return RuntimeProfileStore.payload(
+            project_id,
+            None,
+            saved,
+            source="project",
+            allow_process_environment_key=settings.allow_process_environment_key,
+        )
+
+    @router.get("/projects/{project_id}/agents/{agent_id}/runtime-profile")
+    def get_agent_profile(
+        project_id: str, agent_id: str, request: Request
+    ) -> dict[str, Any]:
+        profiles = _profiles(request)
+        profile = _profile_translate(lambda: profiles.get_agent(project_id, agent_id))
+        settings = _runtime(request).model.settings
+        return RuntimeProfileStore.payload(
+            project_id,
+            agent_id,
+            profile,
+            source="agent",
+            allow_process_environment_key=settings.allow_process_environment_key,
+        )
+
+    @router.patch("/projects/{project_id}/agents/{agent_id}/runtime-profile")
+    def set_agent_profile(
+        project_id: str,
+        agent_id: str,
+        payload: SetRuntimeApiProfileRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        profiles = _profiles(request)
+        profile = _profile_translate(
+            lambda: payload.profile.profile() if payload.profile else None
+        )
+        saved = _profile_translate(
+            lambda: profiles.set_agent(project_id, agent_id, profile)
+        )
+        settings = _runtime(request).model.settings
+        return RuntimeProfileStore.payload(
+            project_id,
+            agent_id,
+            saved,
+            source="agent",
+            allow_process_environment_key=settings.allow_process_environment_key,
+        )
 
     @router.get("/components")
     def components(request: Request) -> dict[str, Any]:
@@ -60,3 +143,17 @@ def _runtime(request: Request) -> RuntimeService:
     if not bool(getattr(request.app.state, "database_ready", False)):
         raise TypedApiError(503, "database_unavailable", "local database is starting")
     return cast(RuntimeService, request.app.state.runtime)
+
+
+def _profiles(request: Request) -> RuntimeProfileStore:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(RuntimeProfileStore, request.app.state.runtime_profiles)
+
+
+def _profile_translate(operation: Callable[[], _ProfileResult]) -> _ProfileResult:
+    try:
+        return operation()
+    except RuntimeProfileError as exc:
+        status_code = 404 if exc.code.endswith("_not_found") else 422
+        raise TypedApiError(status_code, exc.code, str(exc)) from exc

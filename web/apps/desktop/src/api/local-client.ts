@@ -19,6 +19,9 @@ import {
   type FactorySessionState,
   type FactoryStatus,
   type RuntimeStatus,
+  type RuntimeApiProfileInput,
+  type RuntimeApiProfileSummary,
+  type RuntimeProfileResponse,
   type ApplyFactoryDraftResponse,
   type FactoryMessage,
   type JsonObject,
@@ -95,7 +98,7 @@ export type LocalProjectApi = {
   deleteAgent(projectId: string, agentId: string): Promise<DeleteAgentResponse>;
   listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse>;
   createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse>;
-  importAgent(projectId: string, input: { file: File; name?: string; description?: string }): Promise<CreatedAgentResponse>;
+  importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; }): Promise<CreatedAgentResponse>;
   getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
   /** Studio mutations are optional so narrow consumers can still supply read-only APIs. */
   saveDraft?(projectId: string, agentId: string, input: SaveDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveDraftResponse>;
@@ -107,6 +110,10 @@ export type LocalProjectApi = {
   getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
   factoryStatus?(): Promise<FactoryStatus>;
   runtimeStatus?(): Promise<RuntimeStatus>;
+  getProjectRuntimeProfile?(projectId: string): Promise<RuntimeProfileResponse>;
+  setProjectRuntimeProfile?(projectId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
+  getAgentRuntimeProfile?(projectId: string, agentId: string): Promise<RuntimeProfileResponse>;
+  setAgentRuntimeProfile?(projectId: string, agentId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
   createFactorySession?(projectId: string, input?: { goal?: string }): Promise<FactorySession>;
   getFactorySession?(projectId: string, sessionId: string): Promise<FactorySession>;
   addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
@@ -215,6 +222,32 @@ function asBoolean(value: unknown, field: string, status = 502): boolean {
   return value;
 }
 
+function runtimeProfile(value: unknown, status = 502): RuntimeApiProfileSummary {
+  const record = asRecord(value, status);
+  return {
+    provider: asString(record.provider, "runtime_profile.provider", status),
+    base_url: asString(record.base_url, "runtime_profile.base_url", status),
+    model_id: asString(record.model_id, "runtime_profile.model_id", status),
+    api_key_env: asString(record.api_key_env, "runtime_profile.api_key_env", status),
+    configured: asBoolean(record.configured, "runtime_profile.configured", status),
+  };
+}
+
+function runtimeProfileResponse(value: unknown, status = 502): RuntimeProfileResponse {
+  const record = schemaRecord(value, status);
+  const agentId = record.agent_id === null ? null : asString(record.agent_id, "runtime_profile.agent_id", status);
+  if (record.source !== "project" && record.source !== "agent") {
+    throw new LocalApiClientError("The local service returned an invalid Runtime profile.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "runtime_profile.project_id", status),
+    agent_id: agentId,
+    source: record.source,
+    profile: record.profile === null ? null : runtimeProfile(record.profile, status),
+  };
+}
+
 function schemaRecord(value: unknown, status = 502): Record<string, unknown> {
   const record = asRecord(value, status);
   if (record.schema_version !== LOCAL_API_SCHEMA_VERSION) {
@@ -266,6 +299,16 @@ function projectAgent(value: unknown, status = 502): ProjectAgentRecord {
     pinned: record.pinned === true,
     source_path: asString(record.source_path, "source_path", status),
     source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    ...(record.parent_agent_id === undefined ? {} : {
+      parent_agent_id: record.parent_agent_id === null
+        ? null
+        : asString(record.parent_agent_id, "parent_agent_id", status),
+    }),
+    ...(record.runtime_profile === undefined ? {} : {
+      runtime_profile: record.runtime_profile === null
+        ? null
+        : runtimeProfile(record.runtime_profile, status),
+    }),
   };
 }
 
@@ -284,6 +327,11 @@ function projectSummary(value: unknown, status = 502): ProjectSummaryResponse {
     default_agent_id: record.default_agent_id === null ? null : asString(record.default_agent_id, "default_agent_id", status),
     agent_count: asNumber(record.agent_count, "agent_count", status),
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
+    ...(record.runtime_profile === undefined ? {} : {
+      runtime_profile: record.runtime_profile === null
+        ? null
+        : runtimeProfile(record.runtime_profile, status),
+    }),
   };
 }
 
@@ -339,6 +387,16 @@ function createdAgent(value: unknown, status = 502): CreatedAgentResponse {
     description: asText(record.description, "description", status),
     source_path: asString(record.source_path, "source_path", status),
     source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    ...(record.parent_agent_id === undefined ? {} : {
+      parent_agent_id: record.parent_agent_id === null
+        ? null
+        : asString(record.parent_agent_id, "parent_agent_id", status),
+    }),
+    ...(record.runtime_profile === undefined ? {} : {
+      runtime_profile: record.runtime_profile === null
+        ? null
+        : runtimeProfile(record.runtime_profile, status),
+    }),
   };
 }
 
@@ -836,11 +894,12 @@ export class LocalApiClient {
     });
   }
 
-  importAgent(projectId: string, input: { file: File; name?: string; description?: string }): Promise<CreatedAgentResponse> {
+  importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string }): Promise<CreatedAgentResponse> {
     const formData = new FormData();
     formData.append("file", input.file);
     if (input.name) formData.append("name", input.name);
     if (input.description) formData.append("description", input.description);
+    if (input.parent_agent_id) formData.append("parent_agent_id", input.parent_agent_id);
     return this.request(`projects/${encodeURIComponent(projectId)}/agents/import`, createdAgent, {
       method: "POST",
       formData,
@@ -933,6 +992,49 @@ export class LocalApiClient {
 
   runtimeStatus(): Promise<RuntimeStatus> {
     return this.request("runtime/status", runtimeStatus);
+  }
+
+  getProjectRuntimeProfile(projectId: string): Promise<RuntimeProfileResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/runtime-profile`,
+      runtimeProfileResponse,
+    );
+  }
+
+  setProjectRuntimeProfile(
+    projectId: string,
+    profile: RuntimeApiProfileInput | null,
+  ): Promise<RuntimeProfileResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/runtime-profile`,
+      runtimeProfileResponse,
+      { method: "PATCH", body: { profile } },
+    );
+  }
+
+  getAgentRuntimeProfile(
+    projectId: string,
+    agentId: string,
+  ): Promise<RuntimeProfileResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-profile`,
+      runtimeProfileResponse,
+    );
+  }
+
+  setAgentRuntimeProfile(
+    projectId: string,
+    agentId: string,
+    profile: RuntimeApiProfileInput | null,
+  ): Promise<RuntimeProfileResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-profile`,
+      runtimeProfileResponse,
+      {
+        method: "PATCH",
+        body: { profile },
+      },
+    );
   }
 
   createFactorySession(projectId: string, input: { goal?: string } = {}): Promise<FactorySession> {

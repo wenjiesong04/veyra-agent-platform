@@ -25,9 +25,16 @@ from .host_env import load_host_process_env
 from .library import LibraryService
 from .projects import ProjectService
 from .resources import ResourceCatalog
-from .runtime import RuntimeModelClient, RuntimeService, RuntimeSettings, ToolRuntime
+from .runtime import (
+    RuntimeModelClient,
+    RuntimeProfileStore,
+    RuntimeService,
+    RuntimeSettings,
+    ToolRuntime,
+)
 from .runtime.client import RuntimeModelTransport
 from .storage import LocalRepository, migrate_local_database
+from .storage.bootstrap import HEAD_REVISION
 from .system import DirectoryPicker, MacOSDirectoryPicker
 
 
@@ -85,6 +92,8 @@ def create_app(
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
+        runtime_profiles = RuntimeProfileStore(repository)
+        application.state.runtime_profiles = runtime_profiles
         application.state.factory = FactoryService(
             FactorySessionRepository(database_path),
             projects,
@@ -97,8 +106,9 @@ def create_app(
             application.state.library,
             runtime_client,
             ToolRuntime(catalog),
+            runtime_profiles,
         )
-        application.state.database_revision = "local_0008_factory_sessions"
+        application.state.database_revision = HEAD_REVISION
         application.state.database_ready = True
         try:
             yield

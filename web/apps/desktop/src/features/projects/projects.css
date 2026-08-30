@@ -140,6 +140,9 @@
 .project-row-actions { position: relative; display: inline-flex; align-items: center; gap: 0; }
 .project-row-actions > button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 7px; color: var(--subtle); background: transparent; cursor: pointer; }
 .project-row-actions > button:hover, .project-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
+.agent-row-actions { display: inline-flex; align-items: center; gap: 1px; }
+.agent-row-actions > button { display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 7px; color: var(--subtle); background: transparent; cursor: pointer; }
+.agent-row-actions > button:hover, .agent-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
 .sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
 .sidebar-project-menu, .sidebar-agent-menu, .agent-add-chooser { width: min(240px, calc(100vw - 16px)); padding: 5px; }
 .sidebar-action-menu { display: grid; gap: 0; }
@@ -314,6 +317,63 @@ a.project-agent-row:hover { color: var(--accent-strong); background: var(--surfa
   border-bottom: 0;
 }
 
+.runtime-profile-fields {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px;
+  background: var(--surface-soft);
+}
+
+.runtime-profile-toggle {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-profile-toggle input {
+  accent-color: var(--accent);
+}
+
+.runtime-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-profile-grid .wide,
+.runtime-profile-note {
+  grid-column: 1 / -1;
+}
+
+.runtime-profile-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-profile-grid label > span {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.runtime-profile-grid input {
+  min-height: 34px;
+  padding: 0 9px;
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.runtime-profile-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 @media (max-width: 800px) {
   .project-action-grid,
   .project-overview-grid {
@@ -354,4 +414,8 @@ a.project-agent-row:hover { color: var(--accent-strong); background: var(--surfa
   .project-modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .project-modal-actions .ui-button { justify-content: center; }
   .folder-selection { align-items: flex-start; flex-wrap: wrap; }
+
+  .runtime-profile-grid { grid-template-columns: 1fr; }
+  .runtime-profile-grid .wide,
+  .runtime-profile-note { grid-column: auto; }
 }

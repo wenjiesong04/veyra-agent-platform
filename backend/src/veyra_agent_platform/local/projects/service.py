@@ -264,6 +264,7 @@ class ProjectService:
         template_id: str | None = None,
         name: str | None = None,
         description: str | None = None,
+        parent_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Create one blank or catalog-based Agent inside an existing Project."""
         with self._writer_lock:
@@ -276,6 +277,7 @@ class ProjectService:
                     description=description,
                     slug="new-agent",
                     default_name="New Agent",
+                    parent_agent_id=parent_agent_id,
                 )
             if mode == "template":
                 if template_id is None:
@@ -286,15 +288,24 @@ class ProjectService:
                     source=source,
                     name=name,
                     description=description,
+                    parent_agent_id=parent_agent_id,
                 )
             raise ProjectError("Agent creation mode is unknown")
 
     def create_agent_from_source(
-        self, *, project_id: str, source: AgentSource
+        self,
+        *,
+        project_id: str,
+        source: AgentSource,
+        parent_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Install a previously validated Factory source as a new Agent Draft."""
         with self._writer_lock:
-            return self._install_prepared_source(project_id=project_id, source=source)
+            return self._install_prepared_source(
+                project_id=project_id,
+                source=source,
+                parent_agent_id=parent_agent_id,
+            )
 
     def import_agent(
         self,
@@ -304,6 +315,7 @@ class ProjectService:
         contents: bytes,
         name: str | None = None,
         description: str | None = None,
+        parent_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Safely validate and install one portable Agent source file."""
         if not isinstance(filename, str) or not filename.lower().endswith(
@@ -323,6 +335,7 @@ class ProjectService:
                 source=source,
                 name=name,
                 description=description,
+                parent_agent_id=parent_agent_id,
             )
 
     def add_agent(
@@ -342,6 +355,7 @@ class ProjectService:
         description: str | None = None,
         slug: str | None = None,
         default_name: str | None = None,
+        parent_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Allocate project-local identity before atomically installing one source."""
         project = self.repository.project(project_id)
@@ -355,6 +369,10 @@ class ProjectService:
         )
         if manifest.project_id != project_id:
             raise ProjectError("Project manifest identity does not match its index")
+        if parent_agent_id is not None and not any(
+            entry.agent_id == parent_agent_id for entry in manifest.agents
+        ):
+            raise ProjectError("parent Agent was not found in this Project")
 
         source = self._allocate_agent_identity(
             root=root,
@@ -372,6 +390,7 @@ class ProjectService:
             previous_manifest_text=previous_manifest_text,
             manifest=manifest,
             source=source,
+            parent_agent_id=parent_agent_id,
         )
 
     def _install_source(
@@ -383,6 +402,7 @@ class ProjectService:
         previous_manifest_text: str,
         manifest: ProjectManifest,
         source: AgentSource,
+        parent_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Install source, manifest, and SQLite index with filesystem rollback."""
         existing_ids = {entry.agent_id for entry in manifest.agents}
@@ -403,6 +423,11 @@ class ProjectService:
                 "agent_id": source.agent_id,
                 "slug": source.slug,
                 "path": f"agents/{source.slug}",
+                **(
+                    {"parent_agent_id": parent_agent_id}
+                    if parent_agent_id is not None
+                    else {}
+                ),
             }
         )
         if not manifest.agents:
@@ -566,6 +591,11 @@ class ProjectService:
             )
             for source, source_path, source_text in records:
                 current_hash = file_hash(source_text)
+                manifest_entry = next(
+                    entry
+                    for entry in manifest.agents
+                    if entry.agent_id == source.agent_id
+                )
                 existing = connection.execute(
                     "SELECT * FROM agents WHERE agent_id = ?", (source.agent_id,)
                 ).fetchone()
@@ -584,6 +614,7 @@ class ProjectService:
                         source_path=relative,
                         source_file_hash=current_hash,
                         indexed_at=now,
+                        parent_agent_id=manifest_entry.parent_agent_id,
                     )
                 else:
                     self.repository.refresh_agent(
@@ -593,6 +624,7 @@ class ProjectService:
                         source_path=relative,
                         source_file_hash=current_hash,
                         indexed_at=now,
+                        parent_agent_id=manifest_entry.parent_agent_id,
                     )
                 if self.repository.draft(source.agent_id) is None:
                     self.repository.insert_draft(
@@ -650,6 +682,7 @@ class ProjectService:
                     "name": source.name,
                     "description": source.description,
                     "pinned": source.agent_id == manifest.default_agent_id,
+                    "parent_agent_id": entry.parent_agent_id,
                     "source_path": row["source_path"],
                     "source_file_hash": file_hash(source_text),
                 }
@@ -928,6 +961,7 @@ class ProjectService:
             "slug": source.slug,
             "name": source.name,
             "description": source.description,
+            "parent_agent_id": agent["parent_agent_id"],
             "source_path": agent["source_path"],
             "source_file_hash": file_hash(source_text),
             "node_count": len(source.nodes),

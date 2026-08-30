@@ -263,6 +263,7 @@ describe("desktop Project workspace", () => {
     expect(projectRow?.querySelector(".sidebar-nav-item-leading-action")).not.toBeNull();
     expect(projectRow?.parentElement?.querySelector(":scope > .sidebar-nav-children")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Agent actions: Tree Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add child Agent: Tree Agent" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Agent actions: Tree Agent" }));
     expect(screen.getByRole("menu", { name: "Agent actions: Tree Agent" })).toBeInTheDocument();
     expect(screen.getAllByRole("menuitem")).toHaveLength(3);

@@ -78,6 +78,17 @@ export type AgentSource = {
   lock: Record<string, string>;
 };
 
+export type RuntimeApiProfileInput = {
+  provider: string;
+  base_url: string;
+  model_id: string;
+  api_key_env: string;
+};
+
+export type RuntimeApiProfileSummary = RuntimeApiProfileInput & {
+  configured: boolean;
+};
+
 export type ProjectAgentRecord = {
   agent_id: string;
   slug: string;
@@ -86,6 +97,8 @@ export type ProjectAgentRecord = {
   pinned: boolean;
   source_path: string;
   source_file_hash: string;
+  parent_agent_id?: string | null;
+  runtime_profile?: RuntimeApiProfileSummary | null;
 };
 
 export type ProjectSummaryResponse = {
@@ -101,6 +114,7 @@ export type ProjectSummaryResponse = {
   default_agent_id: string | null;
   agent_count: number;
   agents: ProjectAgentRecord[];
+  runtime_profile?: RuntimeApiProfileSummary | null;
 };
 
 export type AgentTemplate = {
@@ -151,6 +165,7 @@ export type CreateProjectRequest = {
   /** Empty or omitted names are allocated by the local service. */
   name?: string;
   description: string;
+  runtime_profile?: RuntimeApiProfileInput | null;
 };
 
 /** Mutable local Project presentation state. The manifest remains authoritative. */
@@ -158,6 +173,7 @@ export type UpdateProjectRequest = {
   name?: string;
   description?: string;
   pinned?: boolean;
+  runtime_profile?: RuntimeApiProfileInput | null;
 };
 
 export type DeleteProjectResponse = {
@@ -169,7 +185,8 @@ export type DeleteProjectResponse = {
 
 /** Agent presentation mutations are intentionally closed in V1. */
 export type UpdateAgentRequest = {
-  pinned: true;
+  pinned?: true;
+  runtime_profile?: RuntimeApiProfileInput | null;
 };
 
 export type DeleteAgentResponse = {
@@ -186,12 +203,16 @@ export type CreateAgentRequest =
     mode: "blank";
     name?: string;
     description?: string;
+    parent_agent_id?: string | null;
+    runtime_profile?: RuntimeApiProfileInput | null;
   }
   | {
     mode: "template";
     template_id: string;
     name?: string;
     description?: string;
+    parent_agent_id?: string | null;
+    runtime_profile?: RuntimeApiProfileInput | null;
   };
 
 /** The create and import endpoints return the created Agent's durable identity. */
@@ -204,6 +225,16 @@ export type CreatedAgentResponse = {
   description: string;
   source_path: string;
   source_file_hash: string;
+  parent_agent_id?: string | null;
+  runtime_profile?: RuntimeApiProfileSummary | null;
+};
+
+export type RuntimeProfileResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  agent_id: string | null;
+  source: "project" | "agent";
+  profile: RuntimeApiProfileSummary | null;
 };
 
 export type OpenProjectRequest = {

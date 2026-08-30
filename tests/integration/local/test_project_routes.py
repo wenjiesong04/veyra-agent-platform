@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.storage.bootstrap import HEAD_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -432,7 +433,7 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/v1/health")
         assert health.json()["database_ready"] is True
-        assert health.json()["database_revision"] == "local_0008_factory_sessions"
+        assert health.json()["database_revision"] == HEAD_REVISION
         created = client.post(
             "/api/v1/projects",
             json={

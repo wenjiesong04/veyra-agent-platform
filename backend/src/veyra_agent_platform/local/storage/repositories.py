@@ -172,15 +172,25 @@ class LocalRepository:
         source_path: str,
         source_file_hash: str,
         indexed_at: str,
+        parent_agent_id: str | None = None,
     ) -> None:
         connection.execute(
             """
             INSERT INTO agents(
-              agent_id, project_id, slug, source_path, source_file_hash, indexed_at
+              agent_id, project_id, slug, source_path, source_file_hash,
+              parent_agent_id, indexed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (agent_id, project_id, slug, source_path, source_file_hash, indexed_at),
+            (
+                agent_id,
+                project_id,
+                slug,
+                source_path,
+                source_file_hash,
+                parent_agent_id,
+                indexed_at,
+            ),
         )
 
     def refresh_agent(
@@ -192,11 +202,20 @@ class LocalRepository:
         source_path: str,
         source_file_hash: str,
         indexed_at: str,
+        parent_agent_id: str | None = None,
     ) -> None:
         connection.execute(
             """UPDATE agents SET slug = ?, source_path = ?, source_file_hash = ?,
-               indexed_at = ?, removed_at = NULL WHERE agent_id = ?""",
-            (slug, source_path, source_file_hash, indexed_at, agent_id),
+               parent_agent_id = ?, indexed_at = ?, removed_at = NULL
+               WHERE agent_id = ?""",
+            (
+                slug,
+                source_path,
+                source_file_hash,
+                parent_agent_id,
+                indexed_at,
+                agent_id,
+            ),
         )
 
     def remove_agent(self, agent_id: str, removed_at: str) -> bool:

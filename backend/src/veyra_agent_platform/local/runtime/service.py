@@ -23,6 +23,7 @@ from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 from .client import RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
+from .profiles import RuntimeProfileStore
 from .tools import ToolRuntime, ToolRuntimeError
 
 _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
@@ -48,10 +49,12 @@ class RuntimeService:
         library: LibraryService,
         model: RuntimeModelClient | None = None,
         tools: ToolRuntime | None = None,
+        profiles: RuntimeProfileStore | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
         self.tools = tools or ToolRuntime(ResourceCatalog())
+        self.profiles = profiles or RuntimeProfileStore(repository)
         self.repository.interrupt_orphan_runs()
 
     def status(self) -> dict[str, Any]:
@@ -153,7 +156,12 @@ class RuntimeService:
                 ),
             )
         try:
-            result, events, verified = self._execute(project_id, source, inputs)
+            result, events, verified = self._execute(
+                project_id,
+                source,
+                inputs,
+                self._model_for(project_id, agent_id),
+            )
             with self.repository.transaction() as connection:
                 self.repository.add_run_events(connection, run_id, events)
                 final_status = "verified" if verified else "unverified"
@@ -274,7 +282,11 @@ class RuntimeService:
                 )
 
     def _execute(
-        self, project_id: str, source: AgentSource, inputs: dict[str, Any]
+        self,
+        project_id: str,
+        source: AgentSource,
+        inputs: dict[str, Any],
+        model: RuntimeModelClient,
     ) -> tuple[dict[str, Any], list[tuple[str | None, str, dict[str, Any]]], bool]:
         nodes = {node.id: node for node in source.nodes}
         edges = {
@@ -356,7 +368,7 @@ class RuntimeService:
                     events.append((node.id, "node.completed", {}))
                     return result, events, verifier_passed
                 elif node.component_type is ComponentType.AGENT:
-                    values.update(self._run_agent(node, source, values))
+                    values.update(self._run_agent(node, source, values, model))
                     port = "next"
                 elif node.component_type in {
                     ComponentType.HUMAN_APPROVAL,
@@ -430,8 +442,9 @@ class RuntimeService:
         node: Any,
         source: AgentSource,
         values: dict[str, Any],
+        model: RuntimeModelClient,
     ) -> dict[str, Any]:
-        if not self.model.configured:
+        if not model.configured:
             raise RuntimeError(
                 "runtime_not_configured",
                 "Agent nodes require a Runtime model API key",
@@ -444,13 +457,26 @@ class RuntimeService:
         prompt = node.system_prompt or ""
         if "{{" in prompt:
             prompt = _interpolate(prompt, values)
-        completion = self.model.complete(
+        completion = model.complete(
             [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": _agent_user_message(source, values)},
             ]
         )
         return _model_output_values(completion.content.strip(), source.outputs, values)
+
+    def _model_for(self, project_id: str, agent_id: str) -> RuntimeModelClient:
+        profile, _ = self.profiles.effective(project_id, agent_id)
+        if profile is None or self.model.transport is not None:
+            return self.model
+        settings = self.model.settings.model_copy(
+            update={
+                "model_base_url": profile.base_url,
+                "model_id": profile.model_id,
+                "model_api_key_env": profile.api_key_env,
+            }
+        )
+        return RuntimeModelClient(settings)
 
 
 def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:

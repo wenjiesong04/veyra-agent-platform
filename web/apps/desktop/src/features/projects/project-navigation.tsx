@@ -1,7 +1,7 @@
 import { Bot, Box, ChevronDown, ChevronRight, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, type LucideIcon } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { ProjectAgentRecord } from "@veyra/api-contracts";
-import type { NavigationGroup } from "@veyra/ui";
+import type { NavigationGroup, NavigationItem } from "@veyra/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useLocale } from "@veyra/ui";
@@ -9,7 +9,7 @@ import { useProjectWorkspace } from "../../api/project-workspace";
 import { AgentCreateDialog, AgentDeleteDialog, AgentEditDialog, ProjectDeleteDialog, ProjectDialog, ProjectEditDialog, type AgentCreateMode, type ProjectDialogMode } from "./project-dialog";
 
 type ProjectNavigationProps = { scopedProjectId?: string; activeAgentId?: string; routeKey?: string };
-type ProjectModal = { kind: "create" | "open" } | { kind: "edit" | "delete" | "agent-create"; project: ProjectSummaryResponse; agentMode?: AgentCreateMode } | { kind: "agent-edit" | "agent-delete"; project: ProjectSummaryResponse; agent: ProjectAgentRecord } | null;
+type ProjectModal = { kind: "create" | "open" } | { kind: "edit" | "delete" | "agent-create"; project: ProjectSummaryResponse; agentMode?: AgentCreateMode; parentAgentId?: string } | { kind: "agent-edit" | "agent-delete"; project: ProjectSummaryResponse; agent: ProjectAgentRecord } | null;
 type SidebarPopover =
   | { kind: "project-actions" | "agent-chooser"; project: ProjectSummaryResponse; anchor: HTMLButtonElement }
   | { kind: "agent-actions"; project: ProjectSummaryResponse; agent: ProjectAgentRecord; anchor: HTMLButtonElement }
@@ -28,7 +28,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
   const pinned = useMemo(() => projects.filter((project) => project.pinned).sort(byIndexedAt).slice(0, 1), [projects]);
   const normal = useMemo(() => projects.filter((project) => !project.pinned).sort(byIndexedAt), [projects]);
   const statusValue = status === "ready" && projects.length > 0 ? undefined : status === "ready" ? "empty" : status;
-  const chooseAgentMode = (project: ProjectSummaryResponse, agentMode: AgentCreateMode) => { setPopover(null); setModal({ kind: "agent-create", project, agentMode }); };
+  const chooseAgentMode = (project: ProjectSummaryResponse, agentMode: AgentCreateMode, parentAgentId?: string) => { setPopover(null); setModal({ kind: "agent-create", project, agentMode, parentAgentId }); };
   const pinAgent = (project: ProjectSummaryResponse, agent: ProjectAgentRecord) => {
     setPopover(null);
     void api.updateAgent(project.project_id, agent.agent_id, { pinned: true }).then(upsertProject).catch(() => undefined);
@@ -55,16 +55,22 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
       const anchor = event.currentTarget;
       setPopover((current) => current?.kind === "agent-actions" && current.project.project_id === project.project_id && current.agent.agent_id === agent.agent_id ? null : { kind: "agent-actions", project, agent, anchor });
     };
+    const agentItem = (agent: ProjectAgentRecord): NavigationItem => ({
+      href: projectRoutePaths.agentDesign(project.project_id, agent.agent_id),
+      label: agent.name || agent.slug,
+      icon: Bot,
+      active: isScopedProject && agent.agent_id === activeAgentId,
+      trailingAction: <span className="agent-row-actions"><button type="button" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={14} aria-hidden="true" /></button></span>,
+    });
+    const rootAgents = project.agents.filter((agent) => !agent.parent_agent_id);
     return {
       href: projectRoutePaths.project(project.project_id), label: project.name, icon: FolderKanban, active: isProjectRoute, expanded,
       leadingAction: <button type="button" aria-label={`${expanded ? t("collapseProject") : t("expandProject")}: ${project.name}`} aria-expanded={expanded} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setExpandedProjectIds((current) => { const next = new Set(current); if (next.has(project.project_id)) next.delete(project.project_id); else next.add(project.project_id); return next; }); }}>{expanded ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}</button>,
       trailingAction: <span className="project-row-actions"><button type="button" aria-label={`${t("projectActions")}: ${project.name}`} title={t("projectActions")} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("project-actions")} onClick={(event) => toggleProjectPopover("project-actions", event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addAgent")}: ${project.name}`} title={`${t("addAgent")}: ${project.name}`} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("agent-chooser")} onClick={(event) => toggleProjectPopover("agent-chooser", event)}><Plus size={15} aria-hidden="true" /></button></span>,
-      children: project.agents.length ? project.agents.map((agent) => ({
-        href: projectRoutePaths.agentDesign(project.project_id, agent.agent_id),
-        label: agent.name || agent.slug,
-        icon: Bot,
-        active: isScopedProject && agent.agent_id === activeAgentId,
-        trailingAction: <button type="button" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button>,
+      children: rootAgents.length ? rootAgents.map((agent) => ({
+        ...agentItem(agent),
+        children: project.agents.filter((child) => child.parent_agent_id === agent.agent_id).map(agentItem),
+        expanded: true,
       })) : undefined,
     };
   };
@@ -77,7 +83,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
     {modal?.kind === "create" || modal?.kind === "open" ? <ProjectDialog mode={modal.kind as ProjectDialogMode} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "edit" ? <ProjectEditDialog project={modal.project} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "delete" ? <ProjectDeleteDialog project={modal.project} onClose={() => setModal(null)} onDeleted={modal.project.project_id === scopedProjectId ? () => { window.location.hash = desktopRoutePaths.projects; } : undefined} /> : null}
-    {modal?.kind === "agent-create" ? <AgentCreateDialog project={modal.project} mode={modal.agentMode!} onCreated={(projectId) => setExpandedProjectIds((current) => current.has(projectId) ? current : new Set(current).add(projectId))} onClose={() => setModal(null)} /> : null}
+    {modal?.kind === "agent-create" ? <AgentCreateDialog project={modal.project} mode={modal.agentMode!} parentAgentId={modal.parentAgentId} onCreated={(projectId) => setExpandedProjectIds((current) => current.has(projectId) ? current : new Set(current).add(projectId))} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "agent-edit" ? <AgentEditDialog project={modal.project} agent={modal.agent} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "agent-delete" ? <AgentDeleteDialog project={modal.project} agent={modal.agent} onClose={() => setModal(null)} onDeleted={modal.project.project_id === scopedProjectId && modal.agent.agent_id === activeAgentId ? () => { window.location.hash = projectRoutePaths.project(modal.project.project_id); } : undefined} /> : null}
   </>;
