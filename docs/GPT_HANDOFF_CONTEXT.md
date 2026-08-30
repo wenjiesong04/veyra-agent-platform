@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 当前 HEAD：`61f44989e9992eee94a8034ae4cfb9bda71c5fdf`
+- 最新功能代码基线：`61f44989e9992eee94a8034ae4cfb9bda71c5fdf`（本交接文档只增加上下文，不改变该功能基线）。
 - 当前远端分支与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -408,7 +408,7 @@ npm run dev --workspace=@veyra/desktop
 - Backend `make check`：168 tests passed。
 - Desktop：54 Vitest tests passed，typecheck/build passed。
 - Community：8 Vitest tests passed，typecheck/build passed。
-- GitHub Actions backend/frontend：通过，精确 HEAD `61f44989e9992eee94a8034ae4cfb9bda71c5fdf`。
+- GitHub Actions backend/frontend：通过，精确功能基线 `61f44989e9992eee94a8034ae4cfb9bda71c5fdf`；交接文档提交不改代码。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则
