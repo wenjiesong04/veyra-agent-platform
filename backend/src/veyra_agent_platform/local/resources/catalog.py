@@ -61,6 +61,7 @@ class ResourceCatalog:
 
     def __init__(self) -> None:
         resources = [self._component(*definition) for definition in _COMPONENTS]
+        resources.extend(self._tool_resources())
         resources.extend(self._skill_resources())
         resources.extend(self._policy_resources())
         resources.extend(self._template_resources())
@@ -214,6 +215,38 @@ class ResourceCatalog:
                     "instruction": "Produce a reviewable plan before drafting content."
                 },
             },
+        ]
+
+    @staticmethod
+    def _tool_resources() -> list[dict[str, Any]]:
+        """Return only tools backed by a local, read-only Runtime adapter."""
+        resource_id = "veyra.tool.filesystem.read"
+        return [
+            {
+                "resource_id": resource_id,
+                "kind": "tool",
+                "name": "Read Project File",
+                "description": (
+                    "Read a UTF-8 text file inside the selected Project directory."
+                ),
+                "availability": "ready",
+                "factory_selectable": True,
+                "runtime_status": "supported",
+                "required_permissions": {
+                    "network_hosts": [],
+                    "tools": [resource_id],
+                    "filesystem_read_roots": ["project"],
+                    "filesystem_write_roots": [],
+                    "shell_workspace_only": False,
+                },
+                "tags": ["filesystem", "read-only", "builtin"],
+                "spec": {
+                    "adapter": "veyra.runtime.filesystem.read",
+                    "input_schema": {"path": "string"},
+                    "output_schema": {"result": "string"},
+                    "max_bytes": 1_000_000,
+                },
+            }
         ]
 
     @staticmethod

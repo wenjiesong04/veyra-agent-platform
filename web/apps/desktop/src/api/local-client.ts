@@ -36,6 +36,9 @@ import {
   type UpdateProjectRequest,
   type UpdateAgentRequest,
   type ValidateResponse,
+  type ApplyFactoryDraftResponse,
+  type FactorySession,
+  type FactorySessionState,
 } from "@veyra/api-contracts";
 import { newUuidV7 } from "./uuid";
 
@@ -96,6 +99,11 @@ export type LocalProjectApi = {
   listComponents?(): Promise<ListComponentsResponse>;
   listResources?(filters?: ListResourceFilters): Promise<ListResourcesResponse>;
   getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
+  createFactorySession?(projectId: string, input?: { goal?: string }): Promise<FactorySession>;
+  getFactorySession?(projectId: string, sessionId: string): Promise<FactorySession>;
+  sendFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
+  generateFactoryDraft?(projectId: string, sessionId: string): Promise<FactorySession>;
+  applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string }): Promise<ApplyFactoryDraftResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
   getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
@@ -504,6 +512,69 @@ function listedResources(value: unknown, status = 502): ListResourcesResponse {
   return { schema_version: LOCAL_API_SCHEMA_VERSION, resources: asArray(record.resources, "resources", status).map((item) => resource(item, status)), kinds };
 }
 
+const factoryStates = new Set<FactorySessionState>([
+  "collecting",
+  "ready",
+  "generating",
+  "review",
+  "missing_capability",
+  "completed",
+  "abandoned",
+]);
+
+function factoryMessage(value: unknown, status = 502): FactorySession["messages"][number] {
+  const record = asRecord(value, status);
+  const role = record.role;
+  if (role !== "user" && role !== "assistant") {
+    throw new LocalApiClientError("The local service returned an invalid Factory message.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    message_id: asString(record.message_id, "factory.message_id", status),
+    sequence: asNumber(record.sequence, "factory.sequence", status),
+    role,
+    content: asText(record.content, "factory.content", status),
+    created_at: asString(record.created_at, "factory.created_at", status),
+  };
+}
+
+function jsonObjects(value: unknown, field: string, status = 502): JsonObject[] {
+  return asArray(value, field, status).map((item) => asJsonValue(asRecord(item, status), field, status) as JsonObject);
+}
+
+function factorySession(value: unknown, status = 502): FactorySession {
+  const record = schemaRecord(value, status);
+  const state = asString(record.state, "factory.state", status) as FactorySessionState;
+  if (!factoryStates.has(state) || typeof record.ready !== "boolean") {
+    throw new LocalApiClientError("The local service returned an invalid Factory session.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    session_id: asString(record.session_id, "factory.session_id", status),
+    project_id: asString(record.project_id, "factory.project_id", status),
+    state,
+    ready: record.ready,
+    next_prompt: asText(record.next_prompt, "factory.next_prompt", status),
+    resource_plan: jsonObjects(record.resource_plan, "factory.resource_plan", status),
+    blueprint: record.blueprint === null ? null : asJsonValue(asRecord(record.blueprint, status), "factory.blueprint", status) as JsonObject,
+    diagnostics: asArray(record.diagnostics, "factory.diagnostics", status).map((item) => asString(item, "factory.diagnostic", status)),
+    missing_capabilities: jsonObjects(record.missing_capabilities, "factory.missing_capabilities", status),
+    revision: asNumber(record.revision, "factory.revision", status),
+    created_at: asString(record.created_at, "factory.created_at", status),
+    updated_at: asString(record.updated_at, "factory.updated_at", status),
+    messages: asArray(record.messages, "factory.messages", status).map((item) => factoryMessage(item, status)),
+  };
+}
+
+function appliedFactoryDraft(value: unknown, status = 502): ApplyFactoryDraftResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    session: factorySession(record.session, status),
+    agent: createdAgent(record.agent, status),
+  };
+}
+
 function runtimeEvent(value: unknown, status = 502): NonNullable<AgentRunResponse["events"]>[number] {
   const record = schemaRecord(value, status);
   const kind = asString(record.kind, "event.kind", status) as NonNullable<AgentRunResponse["events"]>[number]["kind"];
@@ -783,6 +854,49 @@ export class LocalApiClient {
 
   getResource(resourceId: string, version: string): Promise<ResourceDescriptor> {
     return this.request(`resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}`, resource);
+  }
+
+  createFactorySession(projectId: string, input: { goal?: string } = {}): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions`,
+      factorySession,
+      { method: "POST", body: input },
+    );
+  }
+
+  getFactorySession(projectId: string, sessionId: string): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}`,
+      factorySession,
+    );
+  }
+
+  sendFactoryMessage(projectId: string, sessionId: string, content: string): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/messages`,
+      factorySession,
+      { method: "POST", body: { content } },
+    );
+  }
+
+  generateFactoryDraft(projectId: string, sessionId: string): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/generate`,
+      factorySession,
+      { method: "POST" },
+    );
+  }
+
+  applyFactoryDraft(
+    projectId: string,
+    sessionId: string,
+    input: { confirm: boolean; name?: string; description?: string },
+  ): Promise<ApplyFactoryDraftResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/apply-draft`,
+      appliedFactoryDraft,
+      { method: "POST", body: input },
+    );
   }
 
   runAgent(

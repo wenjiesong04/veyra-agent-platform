@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
@@ -17,7 +18,11 @@ from veyra_agent_platform.contracts.common import (
 )
 from veyra_agent_platform.local.library.service import LibraryService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
+from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.storage.repositories import LocalRepository
+
+from .provider import RuntimeModelClient, RuntimeProviderError
+from .tools import ToolRuntime, ToolRuntimeError
 
 _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 _COMPARE = re.compile(
@@ -40,8 +45,13 @@ class RuntimeService:
         repository: LocalRepository,
         projects: ProjectService,
         library: LibraryService,
+        catalog: ResourceCatalog | None = None,
+        model_client: RuntimeModelClient | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
+        self.catalog = catalog or ResourceCatalog()
+        self.tools = ToolRuntime(self.catalog)
+        self.model = model_client or RuntimeModelClient()
         self.repository.interrupt_orphan_runs()
 
     def components(self) -> dict[str, Any]:
@@ -140,7 +150,7 @@ class RuntimeService:
                 ),
             )
         try:
-            result, events, verified = self._execute(source, inputs)
+            result, events, verified = self._execute(project_id, source, inputs)
             with self.repository.transaction() as connection:
                 self.repository.add_run_events(connection, run_id, events)
                 final_status = "verified" if verified else "unverified"
@@ -250,6 +260,8 @@ class RuntimeService:
             and not isinstance(value, bool),
             "number": lambda value: isinstance(value, int | float)
             and not isinstance(value, bool),
+            "object": lambda value: isinstance(value, dict),
+            "array": lambda value: isinstance(value, list),
         }
         for field, field_type in source.inputs.items():
             validator = validators.get(field_type)
@@ -259,7 +271,7 @@ class RuntimeService:
                 )
 
     def _execute(
-        self, source: AgentSource, inputs: dict[str, Any]
+        self, project_id: str, source: AgentSource, inputs: dict[str, Any]
     ) -> tuple[dict[str, Any], list[tuple[str | None, str, dict[str, Any]]], bool]:
         nodes = {node.id: node for node in source.nodes}
         edges = {
@@ -305,25 +317,68 @@ class RuntimeService:
                     events.append(
                         (node.id, "verifier.result", {"passed": verifier_passed})
                     )
+                elif node.component_type is ComponentType.TOOL:
+                    project = self.repository.project(project_id)
+                    if project is None:
+                        raise RuntimeError("project_invalid", "Project is unavailable")
+                    execution = self.tools.execute(
+                        project_root=Path(project["root_path"]),
+                        source=source,
+                        node=node,
+                        values=values,
+                    )
+                    values.update(execution.output)
+                    events.extend(
+                        [
+                            (
+                                node.id,
+                                "tool.requested",
+                                {
+                                    "tool_reference": node.uses,
+                                    "input_digest": execution.receipt["input_digest"],
+                                },
+                            ),
+                            (
+                                node.id,
+                                "tool.started",
+                                {"tool_reference": node.uses},
+                            ),
+                            (node.id, "tool.completed", execution.receipt),
+                        ]
+                    )
+                    port = "next"
+                elif node.component_type is ComponentType.AGENT:
+                    assert node.model_ref is not None
+                    assert node.system_prompt is not None
+                    completion = self.model.complete(
+                        model_ref=node.model_ref,
+                        system_prompt=node.system_prompt,
+                        values=values,
+                    )
+                    values.update(
+                        _model_output_values(completion.content, source.outputs)
+                    )
+                    port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
                     result = self._validated_outputs(source, values)
                     events.append((node.id, "node.completed", {}))
                     return result, events, verifier_passed
-                elif node.component_type in {
-                    ComponentType.TOOL,
-                    ComponentType.HUMAN_APPROVAL,
-                }:
+                elif node.component_type is ComponentType.HUMAN_APPROVAL:
                     raise RuntimeError(
                         "runtime_not_supported",
-                        f"{node.component_type.value} is not supported by "
-                        "this local Runtime",
+                        "HumanApproval is not supported by this local Runtime",
                     )
                 else:
                     raise RuntimeError(
                         "runtime_not_supported",
                         "Agent nodes require a configured provider",
                     )
+            except (ToolRuntimeError, RuntimeProviderError) as exc:
+                runtime_error = RuntimeError(exc.code, str(exc))
+                events.append((node.id, "node.failed", {"code": runtime_error.code}))
+                runtime_error.events = events
+                raise runtime_error from exc
             except RuntimeError as exc:
                 events.append((node.id, "node.failed", {"code": exc.code}))
                 exc.events = events
@@ -357,6 +412,8 @@ class RuntimeService:
             and not isinstance(value, bool),
             "number": lambda value: isinstance(value, int | float)
             and not isinstance(value, bool),
+            "object": lambda value: isinstance(value, dict),
+            "array": lambda value: isinstance(value, list),
         }
         result: dict[str, Any] = {}
         for name, output_type in source.outputs.items():
@@ -369,6 +426,62 @@ class RuntimeService:
                 )
             result[name] = values[name]
         return result
+
+
+def _model_output_values(content: str, outputs: Mapping[str, str]) -> dict[str, Any]:
+    """Map a model response to declared outputs without accepting extra fields."""
+    output_items = list(outputs.items())
+    if len(output_items) == 1:
+        output_name, output_type = output_items[0]
+        if output_type == "string":
+            value: Any = content
+        else:
+            try:
+                value = json.loads(content)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "model_output_invalid", "Agent model did not return valid JSON"
+                ) from exc
+        if not _value_matches_type(value, output_type):
+            raise RuntimeError(
+                "model_output_invalid",
+                f"Agent model output {output_name} is not a {output_type}",
+            )
+        return {output_name: value}
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "model_output_invalid", "Agent model did not return an output object"
+        ) from exc
+    if not isinstance(parsed, dict) or set(parsed) != {
+        name for name, _ in output_items
+    }:
+        raise RuntimeError(
+            "model_output_invalid", "Agent model output fields do not match the Agent"
+        )
+    if not all(
+        _value_matches_type(parsed[name], output_type)
+        for name, output_type in output_items
+    ):
+        raise RuntimeError(
+            "model_output_invalid", "Agent model output types are invalid"
+        )
+    return parsed
+
+
+def _value_matches_type(value: Any, field_type: str) -> bool:
+    validators: dict[str, Callable[[Any], bool]] = {
+        "string": lambda item: isinstance(item, str),
+        "boolean": lambda item: isinstance(item, bool),
+        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+        "number": lambda item: isinstance(item, int | float)
+        and not isinstance(item, bool),
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+    }
+    validator = validators.get(field_type)
+    return validator(value) if validator is not None else False
 
 
 def _interpolate(template: str, values: dict[str, Any]) -> str:

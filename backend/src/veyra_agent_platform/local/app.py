@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from .api.factory import build_router as build_factory_router
 from .api.health import build_router
 from .api.projects import TypedApiError, typed_error_response
 from .api.projects import build_router as build_projects_router
@@ -16,6 +17,8 @@ from .api.resources import build_router as build_resources_router
 from .api.runtime import build_router as build_runtime_router
 from .api.system import build_router as build_system_router
 from .config import LocalSettings
+from .factory import FactoryService, FactorySettings, KimiClient
+from .factory.store import FactorySessionRepository
 from .library import LibraryService
 from .projects import ProjectService
 from .resources import ResourceCatalog
@@ -63,10 +66,18 @@ def create_app(
         application.state.repository = repository
         application.state.projects = projects
         application.state.library = LibraryService(repository, projects)
-        application.state.runtime = RuntimeService(
-            repository, projects, application.state.library
+        factory_catalog = application.state.resource_catalog
+        factory_settings = FactorySettings()
+        application.state.factory = FactoryService(
+            FactorySessionRepository(database_path),
+            projects,
+            factory_catalog,
+            KimiClient(factory_settings),
         )
-        application.state.database_revision = "local_0007_agent_lifecycle"
+        application.state.runtime = RuntimeService(
+            repository, projects, application.state.library, factory_catalog
+        )
+        application.state.database_revision = "local_0008_factory_sessions"
         application.state.database_ready = True
         try:
             yield
@@ -94,6 +105,7 @@ def create_app(
     application.include_router(build_projects_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())
+    application.include_router(build_factory_router())
     application.include_router(build_resources_router())
 
     return application

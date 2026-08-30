@@ -490,20 +490,20 @@ describe("desktop Project workspace", () => {
   it("keeps the New chat surface and shell controls bilingual", async () => {
     const user = userEvent.setup();
     render(<DesktopApp api={apiFor()} />);
-    expect(await screen.findByText("Chat and Agent generation will be enabled in the Factory phase.")).toBeInTheDocument();
+    expect(await screen.findByText("Open a Project first, then use Factory to create an Agent.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
-    expect(await screen.findByText("聊天与 Agent 生成会在 Factory 阶段启用。")).toBeInTheDocument();
+    expect(await screen.findByText("请先进入项目，再通过 Factory 创建 Agent。")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "新聊天" })).toHaveAttribute("href", "#/chat");
     expect(screen.getByRole("link", { name: "运行工作台" })).toHaveAttribute("href", "#/monitor");
     expect(screen.getByRole("link", { name: "资源库" })).toHaveAttribute("href", "#/components");
     expect(screen.getByRole("link", { name: "知识库" })).toHaveAttribute("href", "#/files");
   });
 
-  it("renders the Factory-phase new chat placeholder instead of a generic route error", async () => {
+  it("renders the New chat placeholder instead of a generic route error", async () => {
     window.location.hash = "#/chat";
     render(<DesktopApp api={apiFor()} />);
     expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText("Chat and Agent generation will be enabled in the Factory phase.")).toBeInTheDocument();
+    expect(screen.getByText("Open a Project first, then use Factory to create an Agent.")).toBeInTheDocument();
     expect(screen.queryByText("Route not found")).not.toBeInTheDocument();
   });
 

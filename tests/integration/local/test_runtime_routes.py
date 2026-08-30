@@ -10,6 +10,7 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.contracts.wire import RunEvent
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.runtime.provider import RuntimeCompletion
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -177,7 +178,11 @@ def test_runtime_rejects_tool_and_approval(tmp_path: Path) -> None:
                 headers={"Idempotency-Key": new_uuid7()},
             )
             assert response.json()["status"] == "failed"
-            assert response.json()["error"]["code"] == "runtime_not_supported"
+            assert response.json()["error"]["code"] == (
+                "tool_not_registered"
+                if component_type == "Tool"
+                else "runtime_not_supported"
+            )
             detail = client.get(
                 f"/api/v1/projects/{project['project_id']}/agents/"
                 f"{agent['agent_id']}/runs/{response.json()['run_id']}"
@@ -187,6 +192,113 @@ def test_runtime_rejects_tool_and_approval(tmp_path: Path) -> None:
                 "run.failed",
             ]
             assert all(RunEvent.from_dict(event) for event in detail["events"])
+
+
+def test_runtime_executes_catalogued_project_read_tool_and_records_receipt(
+    tmp_path: Path,
+) -> None:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {
+                "id": "read",
+                "component_type": "Tool",
+                "uses": "veyra.tool.filesystem.read@1.0.0",
+            },
+            {"id": "output", "component_type": "Output", "output_name": "result"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "read"},
+            {"from": "read", "port": "next", "to": "output"},
+        ],
+        {"path": "string"},
+    )
+    source["extensions"]["veyra"]["permissions"] = {
+        "network_hosts": [],
+        "tools": ["veyra.tool.filesystem.read"],
+        "filesystem_read_roots": ["project"],
+        "filesystem_write_roots": [],
+        "shell_workspace_only": False,
+    }
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        source["lock"]["veyra.tool.filesystem.read@1.0.0"] = (
+            client.app.state.resource_catalog.detail(
+                "veyra.tool.filesystem.read", "1.0.0"
+            )["content_hash"]
+        )
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        Path(project["root_path"], "resources", "note.txt").write_text(
+            "hello from the Project", encoding="utf-8"
+        )
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = client.post(
+            url,
+            json={"inputs": {"path": "resources/note.txt"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert response.status_code == 200
+        assert response.json()["result"] == {"result": "hello from the Project"}
+        detail = client.get(url + "s/" + response.json()["run_id"]).json()
+        event_kinds = [event["kind"] for event in detail["events"]]
+        assert [kind for kind in event_kinds if kind.startswith("tool.")] == [
+            "tool.requested",
+            "tool.started",
+            "tool.completed",
+        ]
+        receipt = next(
+            event["payload"]
+            for event in detail["events"]
+            if event["kind"] == "tool.completed"
+        )
+        assert receipt["permission"] == "allowed"
+        assert receipt["relative_path"] == "resources/note.txt"
+        assert receipt["output_digest"]
+
+
+def test_runtime_executes_configured_agent_model_node(tmp_path: Path) -> None:
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {
+                "id": "agent",
+                "component_type": "Agent",
+                "model_ref": "model.primary",
+                "system_prompt": "Return a concise answer.",
+            },
+            {"id": "output", "component_type": "Output", "output_name": "result"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "agent"},
+            {"from": "agent", "port": "next", "to": "output"},
+        ],
+        {"request": "string"},
+    )
+
+    class _FakeModel:
+        def complete(self, **_: object) -> RuntimeCompletion:
+            return RuntimeCompletion(content="model answer")
+
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        client.app.state.runtime.model = _FakeModel()
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = client.post(
+            url,
+            json={"inputs": {"request": "hello"}},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert response.status_code == 200
+        assert response.json()["result"] == {"result": "model answer"}
 
 
 def test_runtime_condition_and_output_failures_are_terminal(tmp_path: Path) -> None:

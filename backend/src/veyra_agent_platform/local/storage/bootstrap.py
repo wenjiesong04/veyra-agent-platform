@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0007_agent_lifecycle"
+HEAD_REVISION = "local_0008_factory_sessions"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

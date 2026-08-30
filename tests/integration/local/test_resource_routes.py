@@ -42,6 +42,9 @@ def test_resource_routes_filter_and_return_immutable_detail(tmp_path: Path) -> N
         )
         assert detail.status_code == 200
         assert detail.json()["reference"] == "veyra.skill.research-brief@1.0.0"
+        tool = client.get("/api/v1/resources/veyra.tool.filesystem.read/versions/1.0.0")
+        assert tool.status_code == 200
+        assert tool.json()["runtime_status"] == "supported"
 
 
 def test_resource_routes_use_typed_errors_and_preserve_components(

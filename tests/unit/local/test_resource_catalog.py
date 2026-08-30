@@ -35,6 +35,11 @@ def test_component_catalog_status_and_legacy_projection_are_honest() -> None:
         "output_ports": ["next"],
         "runtime_status": "runtime_not_supported",
     }
+    tools = catalog.resources(kind="tool")["resources"]
+    assert [resource["reference"] for resource in tools] == [
+        "veyra.tool.filesystem.read@1.0.0"
+    ]
+    assert tools[0]["required_permissions"]["filesystem_read_roots"] == ["project"]
 
 
 def test_skill_resources_await_runtime_provider_configuration() -> None:

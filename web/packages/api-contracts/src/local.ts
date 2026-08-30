@@ -353,6 +353,47 @@ export type ListResourceFilters = {
   availability?: ResourceAvailability;
 };
 
+export type FactorySessionState =
+  | "collecting"
+  | "ready"
+  | "generating"
+  | "review"
+  | "missing_capability"
+  | "completed"
+  | "abandoned";
+
+export type FactoryMessage = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  message_id: string;
+  sequence: number;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+};
+
+export type FactorySession = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  session_id: string;
+  project_id: string;
+  state: FactorySessionState;
+  ready: boolean;
+  next_prompt: string;
+  resource_plan: JsonObject[];
+  blueprint: JsonObject | null;
+  diagnostics: string[];
+  missing_capabilities: JsonObject[];
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  messages: FactoryMessage[];
+};
+
+export type ApplyFactoryDraftResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  session: FactorySession;
+  agent: CreatedAgentResponse;
+};
+
 export type RuntimeRunStatus = "running" | "verified" | "unverified" | "failed" | "interrupted";
 
 export type RuntimeEventKind =

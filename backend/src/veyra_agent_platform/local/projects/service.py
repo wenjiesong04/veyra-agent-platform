@@ -289,6 +289,25 @@ class ProjectService:
                 )
             raise ProjectError("Agent creation mode is unknown")
 
+    def create_agent_from_source(
+        self,
+        *,
+        project_id: str,
+        source: AgentSource,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Install a previously validated Factory source as a new Agent Draft."""
+        with self._writer_lock:
+            return self._install_prepared_source(
+                project_id=project_id,
+                source=source,
+                name=name,
+                description=description,
+                slug="generated-agent",
+                default_name="Generated Agent",
+            )
+
     def import_agent(
         self,
         *,

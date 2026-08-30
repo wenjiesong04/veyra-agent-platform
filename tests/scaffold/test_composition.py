@@ -62,6 +62,11 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/agents/{agent_id}/run",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}",
+        "/api/v1/projects/{project_id}/factory/sessions",
+        "/api/v1/projects/{project_id}/factory/sessions/{session_id}",
+        "/api/v1/projects/{project_id}/factory/sessions/{session_id}/messages",
+        "/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate",
+        "/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
         "/api/v1/system/select-directory",
     }
     assert local_paths == expected_local_paths

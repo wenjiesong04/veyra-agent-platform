@@ -95,6 +95,136 @@
   font-size: 12px;
 }
 
+.factory-transcript {
+  display: grid;
+  max-height: 330px;
+  gap: 10px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.factory-muted {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.factory-message {
+  display: grid;
+  gap: 4px;
+  max-width: 92%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-soft);
+}
+
+.factory-message.user {
+  justify-self: end;
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--line));
+  background: var(--accent-soft);
+}
+
+.factory-message span {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.factory-message p {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.factory-message-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.factory-message-box .ui-button {
+  justify-self: end;
+}
+
+.resource-plan {
+  display: grid;
+  gap: 8px;
+}
+
+.resource-plan-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 0;
+}
+
+.resource-plan-row:last-child {
+  border-bottom: 0;
+}
+
+.resource-plan-row > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--good);
+  background: var(--accent-soft);
+}
+
+.resource-plan-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resource-plan-row strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-plan-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.draft-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.factory-apply {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.factory-apply input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 10px 11px;
+  color: var(--ink);
+  outline: 0;
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+
+.factory-apply input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
 .draft-outline {
   display: grid;
   gap: 8px;
@@ -216,6 +346,14 @@
   }
 
   .factory-form-footer .ui-button {
+    width: 100%;
+  }
+
+  .factory-apply {
+    grid-template-columns: 1fr;
+  }
+
+  .factory-apply .ui-button {
     width: 100%;
   }
 }
