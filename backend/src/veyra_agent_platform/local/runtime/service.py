@@ -359,7 +359,6 @@ class RuntimeService:
                     values.update(self._run_agent(node, source, values))
                     port = "next"
                 elif node.component_type in {
-                    ComponentType.TOOL,
                     ComponentType.HUMAN_APPROVAL,
                 }:
                     raise RuntimeError(

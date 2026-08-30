@@ -64,6 +64,10 @@ def create_app(
     resolved_runtime_settings = runtime_settings or RuntimeSettings(
         allow_process_environment_key=host_key_allowed
     )
+    if not host_key_allowed and resolved_runtime_settings.allow_process_environment_key:
+        resolved_runtime_settings = resolved_runtime_settings.model_copy(
+            update={"allow_process_environment_key": False}
+        )
     database_path = _sqlite_database_path(resolved_settings.database_url)
     catalog = ResourceCatalog()
     runtime_client = RuntimeModelClient(resolved_runtime_settings, runtime_transport)
