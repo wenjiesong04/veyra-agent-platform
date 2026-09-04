@@ -188,16 +188,16 @@ def _remap_identities(
         occupied_slugs.add(slug)
         name = _unique_name(source.name, occupied_names)
         occupied_names.add(name)
-        payload = source.to_dict()
-        payload.update({"agent_id": id_map[old_id], "slug": slug, "name": name})
-        remapped_sources.append(AgentSource.from_dict(payload))
+        source_payload = source.to_dict()
+        source_payload.update({"agent_id": id_map[old_id], "slug": slug, "name": name})
+        remapped_sources.append(AgentSource.from_dict(source_payload))
         slug_map[old_id] = slug
         entry = next(item for item in manifest.agents if item.agent_id == old_id)
         if entry.parent_agent_id is not None:
             parents[id_map[old_id]] = id_map[entry.parent_agent_id]
     rewritten_extras: dict[str, bytes] = {}
-    for path, payload in extra_files.items():
-        rewritten_extras[_rewrite_extra_path(path, slug_map, manifest)] = payload
+    for path, body in extra_files.items():
+        rewritten_extras[_rewrite_extra_path(path, slug_map, manifest)] = body
     default_agent_id = (
         id_map[manifest.default_agent_id]
         if manifest.default_agent_id is not None

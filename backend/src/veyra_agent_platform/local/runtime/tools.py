@@ -252,7 +252,7 @@ class ToolRuntime:
     @classmethod
     def _read_project_file(
         cls, project_root: Path, raw_path: Any
-    ) -> tuple[dict[str, str], int, str]:
+    ) -> tuple[dict[str, Any], int, str]:
         target, relative_path = cls._project_target(
             project_root, raw_path, create_parents=False
         )
@@ -281,7 +281,7 @@ class ToolRuntime:
     @classmethod
     def _write_project_file(
         cls, project_root: Path, raw_path: Any, raw_content: Any
-    ) -> tuple[dict[str, bool], int, str]:
+    ) -> tuple[dict[str, Any], int, str]:
         if not isinstance(raw_content, str):
             raise ToolRuntimeError(
                 "tool_input_invalid", "Filesystem Write requires UTF-8 text content"

@@ -47,6 +47,10 @@ _FORBIDDEN_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".token"}
 class ProjectError(ValueError):
     """A selected Project is unsafe, invalid, or unavailable."""
 
+    def __init__(self, message: str, code: str = "project_invalid") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class ProjectService:
     """Keep source files authoritative; SQLite is a bounded, rebuildable index."""
@@ -1466,9 +1470,7 @@ def _etag(revision: int, current_file_hash: str) -> str:
 
 
 def _package_error(exc: ProjectPackageError) -> ProjectError:
-    error = ProjectError(str(exc))
-    error.code = exc.code
-    return error
+    return ProjectError(str(exc), exc.code)
 
 
 def _archive_filename(name: str) -> str:

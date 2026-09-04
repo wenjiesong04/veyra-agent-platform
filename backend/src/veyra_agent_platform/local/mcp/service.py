@@ -88,9 +88,12 @@ class McpService:
                 enabled=enabled,
                 created_at=now,
             )
+        row = self.store.get(server_id)
+        if row is None:
+            raise McpError("mcp_server_not_found", "MCP server was not found")
         return {
             "schema_version": SCHEMA_VERSION,
-            "server": McpServerStore.payload(self.store.get(server_id)),
+            "server": McpServerStore.payload(row),
         }
 
     def delete_server(self, server_id: str) -> dict[str, Any]:

@@ -92,9 +92,6 @@ def default_nodes_root() -> Path:
     return Path(__file__).resolve().parents[5] / "resources" / "nodes"
 
 
-_OVERLAY_FAMILIES: Final[frozenset[str]] = frozenset({"workshop", "discovered"})
-
-
 def load_node_packages(root: Path | None = None) -> tuple[NodePackage, ...]:
     """Load every `node.yaml` package under the platform node root."""
     nodes_root = root or default_nodes_root()
