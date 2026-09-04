@@ -15,6 +15,7 @@ export type NavigationItem = {
   label: string;
   icon: LucideIcon;
   active?: boolean;
+  contextual?: boolean;
   onClick?: () => void;
   trailingAction?: ReactNode;
   leadingAction?: ReactNode;
@@ -31,6 +32,7 @@ export type NavigationGroup = {
   action?: ReactNode;
   status?: NavigationGroupStatus;
   statusText?: string;
+  backLink?: { href: string; label: string };
 };
 
 /** Sidebar account chip + popover. Local mode stays useful without a remote identity. */

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderKanban } from "lucide-react";
@@ -111,6 +111,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.location.hash = "";
+  document.cookie = "veyra-csrf=; Max-Age=0; path=/";
 });
 
 describe("desktop Project workspace", () => {
@@ -121,8 +122,8 @@ describe("desktop Project workspace", () => {
     api.getProject.mockImplementation(async (projectId: string) => [first, second].find((item) => item.project_id === projectId) ?? first);
     render(<DesktopApp api={api} />);
 
-    expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("href", "#/chat");
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in a new project?", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Run workspace" })).toHaveAttribute("href", "#/monitor");
     expect(screen.getByRole("link", { name: "Resource library" })).toHaveAttribute("href", "#/components");
     expect(screen.getByRole("link", { name: "Knowledge base" })).toHaveAttribute("href", "#/files");
@@ -156,7 +157,7 @@ describe("desktop Project workspace", () => {
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ description: "" }));
     expect(api.selectDirectory).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#/projects");
-    expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in a new project?", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByText("refresh unavailable")).not.toBeInTheDocument();
   });
@@ -322,7 +323,8 @@ describe("desktop Project workspace", () => {
     await user.type(screen.getByRole("textbox", { name: "Project name" }), "Requested name");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("editable", { name: "Requested name", description: "" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Server-assigned name: Allocated edit");
+    const editDialog = await screen.findByRole("dialog", { name: "Edit project" });
+    expect(within(editDialog).getByRole("status")).toHaveTextContent("Server-assigned name: Allocated edit");
     expect(await screen.findByRole("link", { name: "Allocated edit" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Done" }));
     await user.click(screen.getByRole("button", { name: "Project actions: Allocated edit" }));
@@ -433,7 +435,9 @@ describe("desktop Project workspace", () => {
 
     expect(await screen.findByLabelText("Breadcrumb")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("href", "#/projects");
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", projectRoutePaths.project("crumb"));
     expect(screen.getByText("Breadcrumb Project", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Back" })).not.toBeInTheDocument();
     cleanup();
     window.location.hash = "#/projects";
     render(<DesktopApp api={apiFor()} />);
@@ -442,6 +446,45 @@ describe("desktop Project workspace", () => {
     const menu = screen.getByRole("button", { name: "Open navigation" });
     await userEvent.click(menu);
     expect(screen.getAllByRole("button", { name: "Close navigation" })).toHaveLength(2);
+  });
+
+  it("uses Project-context navigation when a Project is opened from the sidebar", async () => {
+    const scoped = project({ project_id: "project-open", name: "Opened Project" });
+    window.location.hash = projectRoutePaths.project(scoped.project_id);
+    render(<DesktopApp api={apiFor([scoped])} />);
+
+    const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
+    expect(await within(sidebar).findByRole("link", { name: "Back to home" })).toHaveAttribute("href", "#/projects");
+    expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.projectChat("project-open"));
+    expect(within(sidebar).getByRole("link", { name: "Overview" })).toHaveAttribute("href", projectRoutePaths.project("project-open"));
+    expect(within(sidebar).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
+    expect(within(sidebar).getByRole("link", { name: "Data analysis" })).toHaveAttribute("href", projectRoutePaths.projectAnalysis("project-open"));
+    expect(screen.queryByRole("link", { name: "Run workspace" })).not.toBeInTheDocument();
+    expect(document.querySelector(".nav-group-recent")).toBeInTheDocument();
+    const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("project-open") + "\"]");
+    expect(projectTreeLink).not.toHaveAttribute("aria-current");
+    expect(projectTreeLink).toHaveClass("contextual");
+  });
+
+  it("renders nested Agent breadcrumbs as Home / context / Project / ancestry", async () => {
+    const nested = project({
+      project_id: "nested-crumb",
+      name: "Nested Project",
+      agents: [
+        { agent_id: "parent", slug: "parent-agent", name: "Parent Agent", description: "", pinned: false, source_path: "agents/parent/agent.vagent.yaml", source_file_hash: "p" },
+        { agent_id: "child", slug: "child-agent", name: "Child Agent", description: "", pinned: false, source_path: "agents/child/agent.vagent.yaml", source_file_hash: "c", parent_agent_id: "parent" },
+      ],
+      agent_count: 2,
+    });
+    window.location.hash = projectRoutePaths.agent("nested-crumb", "child");
+    render(<DesktopApp api={apiFor([nested])} />);
+
+    const breadcrumbs = await screen.findByLabelText("Breadcrumb");
+    expect(within(breadcrumbs).getByRole("link", { name: "Home" })).toHaveAttribute("href", "#/projects");
+    expect(within(breadcrumbs).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.agent("nested-crumb", "child"));
+    expect(within(breadcrumbs).getByRole("link", { name: "Nested Project" })).toHaveAttribute("href", projectRoutePaths.project("nested-crumb"));
+    expect(within(breadcrumbs).getByRole("link", { name: "Parent Agent" })).toHaveAttribute("href", projectRoutePaths.agentDesign("nested-crumb", "parent"));
+    expect(within(breadcrumbs).getByText("Child Agent", { selector: "[aria-current=page]" })).toBeInTheDocument();
   });
 
   it("uses Agent-context navigation in English while preserving the real Project tree", async () => {
@@ -453,22 +496,24 @@ describe("desktop Project workspace", () => {
     window.location.hash = projectRoutePaths.agent(scoped.project_id, "agent-one");
     render(<DesktopApp api={apiFor([scoped])} />);
 
-    const contextLinks = await screen.findAllByRole("link", { name: /^(New chat|Orchestration|Data analysis)$/ });
+    const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
+    const contextLinks = await within(sidebar).findAllByRole("link", { name: /^(New chat|Orchestration|Data analysis)$/ });
     expect(contextLinks.map((link) => link.textContent)).toEqual(["New chat", "Orchestration", "Data analysis"]);
-    expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.agent("agent-project", "agent-one"));
-    expect(screen.getByRole("link", { name: "Orchestration" })).toHaveAttribute("href", projectRoutePaths.agentDesign("agent-project", "agent-one"));
-    expect(screen.getByRole("link", { name: "Data analysis" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project", "agent-one"));
-    expect(screen.getByRole("link", { name: "New chat" })).toHaveAttribute("aria-current", "page");
+    expect(within(sidebar).getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "#/projects");
+    expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.agent("agent-project", "agent-one"));
+    expect(within(sidebar).getByRole("link", { name: "Orchestration" })).toHaveAttribute("href", projectRoutePaths.agentDesign("agent-project", "agent-one"));
+    expect(within(sidebar).getByRole("link", { name: "Data analysis" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project", "agent-one"));
+    expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("aria-current", "page");
     const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agentDesign("agent-project", "agent-one") + "\"]");
     const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("agent-project") + "\"]");
-    expect(agentTreeLink).toHaveAttribute("aria-current", "page");
+    expect(agentTreeLink).not.toHaveAttribute("aria-current");
     expect(projectTreeLink).not.toHaveAttribute("aria-current");
     expect(document.querySelector(".nav-group-recent")).toBeInTheDocument();
     expect(screen.getByText("No recent conversations or runs yet.")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("link", { name: "Data analysis" }));
+    await userEvent.click(within(sidebar).getByRole("link", { name: "Data analysis" }));
     expect(await screen.findByRole("heading", { name: "Data analysis", level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Data analysis" })).toHaveAttribute("aria-current", "page");
+    expect(within(document.querySelector(".nav-group-fixed") as HTMLElement).getByRole("link", { name: "Data analysis" })).toHaveAttribute("aria-current", "page");
   });
 
   it("localizes Agent-context navigation and analysis empty state in Chinese", async () => {
@@ -481,18 +526,20 @@ describe("desktop Project workspace", () => {
     window.location.hash = projectRoutePaths.agentAnalysis(scoped.project_id, "agent-zh");
     render(<DesktopApp api={apiFor([scoped])} />);
 
-    const contextLinks = await screen.findAllByRole("link", { name: /^(新聊天|编排|数据分析)$/ });
+    const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
+    const contextLinks = await within(sidebar).findAllByRole("link", { name: /^(新聊天|编排|数据分析)$/ });
     expect(contextLinks.map((link) => link.textContent)).toEqual(["新聊天", "编排", "数据分析"]);
-    expect(screen.getByRole("link", { name: "数据分析" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project-zh", "agent-zh"));
-    expect(screen.getByRole("link", { name: "数据分析" })).toHaveAttribute("aria-current", "page");
+    expect(within(sidebar).getByRole("link", { name: "返回主页" })).toHaveAttribute("href", "#/projects");
+    expect(within(sidebar).getByRole("link", { name: "数据分析" })).toHaveAttribute("href", projectRoutePaths.agentAnalysis("agent-project-zh", "agent-zh"));
+    expect(within(sidebar).getByRole("link", { name: "数据分析" })).toHaveAttribute("aria-current", "page");
     const agentTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.agentDesign("agent-project-zh", "agent-zh") + "\"]");
     const projectTreeLink = document.querySelector(".nav-group-projects a[href=\"" + projectRoutePaths.project("agent-project-zh") + "\"]");
-    expect(agentTreeLink).toHaveAttribute("aria-current", "page");
+    expect(agentTreeLink).not.toHaveAttribute("aria-current");
     expect(projectTreeLink).not.toHaveAttribute("aria-current");
     expect(screen.getByText("暂无最近聊天或运行记录。")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "数据分析", level: 2 })).toBeInTheDocument();
     expect(screen.getByText("暂无可分析的运行记录")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "主页" })).toHaveAttribute("href", "#/projects");
+    expect(within(await screen.findByLabelText("面包屑")).getByRole("link", { name: "主页" })).toHaveAttribute("href", "#/projects");
   });
 
   it("preserves account controls, theme choices, and responsive sidebar focus behavior", async () => {
@@ -522,9 +569,9 @@ describe("desktop Project workspace", () => {
   it("keeps the New chat surface and shell controls bilingual", async () => {
     const user = userEvent.setup();
     render(<DesktopApp api={apiFor()} />);
-    expect(await screen.findByText("Open a Project first, then use Factory to create an Agent.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in a new project?", level: 2 })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
-    expect(await screen.findByText("请先进入项目，再通过 Factory 创建 Agent。")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "你想在 新项目 实现什么？", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "新聊天" })).toHaveAttribute("href", "#/chat");
     expect(screen.getByRole("link", { name: "运行工作台" })).toHaveAttribute("href", "#/monitor");
     expect(screen.getByRole("link", { name: "资源库" })).toHaveAttribute("href", "#/components");
@@ -534,9 +581,69 @@ describe("desktop Project workspace", () => {
   it("renders the New chat placeholder instead of a generic route error", async () => {
     window.location.hash = "#/chat";
     render(<DesktopApp api={apiFor()} />);
-    expect(await screen.findByRole("heading", { name: "New chat", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText("Open a Project first, then use Factory to create an Agent.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in a new project?", level: 2 })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Type freely")).toBeInTheDocument();
     expect(screen.queryByText("Route not found")).not.toBeInTheDocument();
+  });
+
+  it("starts a new Project conversation from the composer by default", async () => {
+    const created = project({ project_id: "created-project", name: "Created Project", root_path: "/tmp/created-project" });
+    const api = apiFor();
+    api.createProject.mockResolvedValue(created);
+    api.getProject.mockImplementation(async (projectId: string) => (
+      projectId === created.project_id ? created : project({ project_id: projectId, name: projectId })
+    ));
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+    await user.type(await screen.findByRole("textbox", { name: "Message" }), "Write a brief");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ description: "" }));
+    expect(window.location.hash).toBe("#/projects/created-project/chat");
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in Created Project?", level: 2 })).toBeInTheDocument();
+  });
+
+  it("opens the selected Project chat immediately and switches the sidebar", async () => {
+    const first = project({
+      project_id: "p-one",
+      name: "Alpha Project",
+      default_agent_id: "agent-1",
+      agent_count: 1,
+      agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "hash" }],
+    });
+    const api = apiFor([first]);
+    api.getProject.mockResolvedValue(first);
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+    await user.click(await screen.findByRole("button", { name: "Choose project" }));
+    await user.click(await screen.findByRole("option", { name: /^Alpha Project/ }));
+    expect(window.location.hash).toBe("#/projects/p-one/chat");
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in Alpha Project?", level: 2 })).toBeInTheDocument();
+    const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
+    expect(within(sidebar).getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "#/projects");
+    expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.projectChat("p-one"));
+    expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("aria-current", "page");
+    expect(within(sidebar).getByRole("link", { name: "Overview" })).toHaveAttribute("href", projectRoutePaths.project("p-one"));
+  });
+
+  it("opens the selected Agent conversation from the composer picker", async () => {
+    const first = project({
+      project_id: "p-one",
+      name: "Alpha Project",
+      default_agent_id: "agent-1",
+      agent_count: 1,
+      agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "hash" }],
+    });
+    const api = apiFor([first]);
+    api.getProject.mockResolvedValue(first);
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} />);
+    await user.click(await screen.findByRole("button", { name: "Choose project" }));
+    await user.click(await screen.findByRole("option", { name: /Reviewer/ }));
+    expect(window.location.hash).toBe("#/projects/p-one/agents/agent-1");
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in Reviewer?", level: 2 })).toBeInTheDocument();
+    const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
+    expect(within(sidebar).getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "#/projects");
+    expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.agent("p-one", "agent-1"));
   });
 
   it.each([
@@ -556,7 +663,8 @@ describe("desktop Project workspace", () => {
     expect(screen.getByText("/ Agent Platform", { selector: "small" })).toBeInTheDocument();
     expect(screen.queryByText("Veyra Community")).not.toBeInTheDocument();
     if (hash === "#/login") expect(screen.getByText("Sign in to Veyra with your email and password.")).toBeInTheDocument();
-    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/community-api/api/v1/account/me", expect.objectContaining({ credentials: "include" })));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^(Sign in|Send verification code|Send reset code)$/ })).toBeEnabled());
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("restores a Community session, drives the account menu, and completes avatar lifecycle", async () => {
@@ -582,6 +690,7 @@ describe("desktop Project workspace", () => {
       if (url.endsWith("/auth/logout") && method === "POST") return new Response(null, { status: 204 });
       return jsonResponse(404, { detail: "not_found" });
     });
+    document.cookie = "veyra-csrf=test-csrf; path=/";
     const user = userEvent.setup();
     render(<DesktopApp api={apiFor()} communityApi={accountApi(fetcher)} />);
 
@@ -646,6 +755,8 @@ describe("desktop route parser", () => {
     expect(parseDesktopRoute("#/chat").kind).toBe("chat");
     expect(parseDesktopRoute("#/projects").kind).toBe("projects");
     expect(parseDesktopRoute(projectRoutePaths.project("p")).kind).toBe("project");
+    expect(parseDesktopRoute(projectRoutePaths.projectChat("p")).kind).toBe("project-chat");
+    expect(parseDesktopRoute(projectRoutePaths.projectAnalysis("p")).kind).toBe("project-analysis");
     expect(parseDesktopRoute(projectRoutePaths.agents("p")).kind).toBe("project-agents");
     expect(parseDesktopRoute(projectRoutePaths.agent("p", "a")).kind).toBe("agent-detail");
     expect(parseDesktopRoute(projectRoutePaths.agentVersion("p", "a", "v1")).kind).toBe("agent-version");

@@ -48,6 +48,24 @@ export function agentTree<T extends AgentHierarchyRecord>(agents: readonly T[]):
   return roots;
 }
 
+export function agentAncestryPath<T extends AgentHierarchyRecord>(
+  agents: readonly T[],
+  agentId: string,
+): T[] {
+  const byId = new Map(agents.map((agent) => [agent.agent_id, agent]));
+  const chain: T[] = [];
+  const visiting = new Set<string>();
+  let current = byId.get(agentId);
+  while (current) {
+    if (visiting.has(current.agent_id)) break;
+    visiting.add(current.agent_id);
+    chain.unshift(current);
+    const parentId = current.parent_agent_id ?? undefined;
+    current = parentId ? byId.get(parentId) : undefined;
+  }
+  return chain;
+}
+
 export function agentRelationEdges<T extends AgentHierarchyRecord>(
   agents: readonly T[],
 ): Array<{ parent: T; child: T }> {

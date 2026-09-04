@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { communityRoutePaths } from "@veyra/api-contracts";
@@ -33,7 +33,7 @@ describe("community workspace", () => {
     await user.click(screen.getByRole("button", { name: "Open account menu" }));
     expect(screen.getByRole("menuitem", { name: "Sign in or register" })).toHaveAttribute("href", "#/account");
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).not.toBeInTheDocument();
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/v1/account/me", expect.objectContaining({ credentials: "include" })));
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("opens Meeting Synthesis from the catalog using the canonical detail ID", async () => {

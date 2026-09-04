@@ -9,14 +9,14 @@ import { useProjectWorkspace } from "../../api/project-workspace";
 import { AgentCreateDialog, AgentDeleteDialog, AgentEditDialog, ProjectDeleteDialog, ProjectDialog, ProjectEditDialog, type AgentCreateMode, type ProjectDialogMode } from "./project-dialog";
 import { agentTree, type AgentTreeNode } from "./agent-tree";
 
-type ProjectNavigationProps = { scopedProjectId?: string; activeAgentId?: string; routeKey?: string };
+type ProjectNavigationProps = { scopedProjectId?: string; activeAgentId?: string; routeKey?: string; suppressAgentHighlight?: boolean; suppressProjectHighlight?: boolean };
 type ProjectModal = { kind: "create" | "open" } | { kind: "edit" | "delete" | "agent-create"; project: ProjectSummaryResponse; agentMode?: AgentCreateMode; parentAgentId?: string } | { kind: "agent-edit" | "agent-delete"; project: ProjectSummaryResponse; agent: ProjectAgentRecord } | null;
 type SidebarPopover =
   | { kind: "project-actions" | "agent-chooser"; project: ProjectSummaryResponse; anchor: HTMLButtonElement }
   | { kind: "agent-actions"; project: ProjectSummaryResponse; agent: ProjectAgentRecord; anchor: HTMLButtonElement }
   | null;
 
-export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey }: ProjectNavigationProps): { navigation: NavigationGroup[]; dialogs: ReactNode } {
+export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey, suppressAgentHighlight = false, suppressProjectHighlight = false }: ProjectNavigationProps): { navigation: NavigationGroup[]; dialogs: ReactNode } {
   const { t, locale } = useLocale();
   const { api, projects, status, setProjectPinned, upsertProject, refresh } = useProjectWorkspace();
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set(scopedProjectId ? [scopedProjectId] : []));
@@ -70,13 +70,17 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
       const anchor = event.currentTarget;
       setPopover((current) => current?.kind === "agent-actions" && current.project.project_id === project.project_id && current.agent.agent_id === agent.agent_id ? null : { kind: "agent-actions", project, agent, anchor });
     };
-    const agentItem = (agent: ProjectAgentRecord): NavigationItem => ({
-      href: projectRoutePaths.agentDesign(project.project_id, agent.agent_id),
-      label: agent.name || agent.slug,
-      icon: Bot,
-      active: isScopedProject && agent.agent_id === activeAgentId,
-      trailingAction: <span className="agent-row-actions"><button type="button" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={14} aria-hidden="true" /></button></span>,
-    });
+    const agentItem = (agent: ProjectAgentRecord): NavigationItem => {
+      const isCurrentAgent = isScopedProject && agent.agent_id === activeAgentId;
+      return {
+        href: projectRoutePaths.agentDesign(project.project_id, agent.agent_id),
+        label: agent.name || agent.slug,
+        icon: Bot,
+        active: !suppressAgentHighlight && isCurrentAgent,
+        contextual: suppressAgentHighlight && isCurrentAgent,
+        trailingAction: <span className="agent-row-actions"><button type="button" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={15} aria-hidden="true" /></button></span>,
+      };
+    };
     const toNavItem = (node: AgentTreeNode<ProjectAgentRecord>): NavigationItem => ({
       ...agentItem(node),
       children: node.children.length ? node.children.map(toNavItem) : undefined,
@@ -84,7 +88,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, routeKey 
     });
     const treeNodes = agentTree(project.agents);
     return {
-      href: projectRoutePaths.project(project.project_id), label: project.name, icon: FolderKanban, active: isProjectRoute, expanded,
+      href: projectRoutePaths.project(project.project_id), label: project.name, icon: FolderKanban, active: !suppressProjectHighlight && isProjectRoute, contextual: suppressProjectHighlight && isProjectRoute, expanded,
       leadingAction: <button type="button" aria-label={`${expanded ? t("collapseProject") : t("expandProject")}: ${project.name}`} aria-expanded={expanded} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setExpandedProjectIds((current) => { const next = new Set(current); if (next.has(project.project_id)) next.delete(project.project_id); else next.add(project.project_id); return next; }); }}>{expanded ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}</button>,
       trailingAction: <span className="project-row-actions"><button type="button" aria-label={`${t("projectActions")}: ${project.name}`} title={t("projectActions")} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("project-actions")} onClick={(event) => toggleProjectPopover("project-actions", event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addAgent")}: ${project.name}`} title={`${t("addAgent")}: ${project.name}`} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("agent-chooser")} onClick={(event) => toggleProjectPopover("agent-chooser", event)}><Plus size={15} aria-hidden="true" /></button></span>,
       children: treeNodes.length ? treeNodes.map(toNavItem) : undefined,

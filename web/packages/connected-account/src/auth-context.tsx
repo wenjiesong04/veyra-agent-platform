@@ -32,11 +32,11 @@ const defaultApi = createCommunityApi({ baseUrl: "/api/v1" });
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function bootstrapAccount(api: CommunityApi): Promise<CommunityAccount | null> {
+  if (!api.hasRefreshEvidence()) return null;
   try {
     return await api.me();
   } catch (error) {
     if (!(error instanceof CommunityApiError) || error.status !== 401) throw error;
-    if (!api.hasRefreshEvidence()) return null;
     try {
       return await api.refresh();
     } catch (refreshError) {

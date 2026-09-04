@@ -1,84 +1,115 @@
-import { ArrowUp, LockKeyhole, Sparkles } from "lucide-react";
-import { projectRoutePaths, type FactorySession, type FactoryStatus } from "@veyra/api-contracts";
-import { Button, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge } from "@veyra/ui";
-import { useEffect, useState } from "react";
+import * as React from "react";
+import { Sparkles } from "lucide-react";
+import { projectRoutePaths, type FactorySession, type FactoryStatus, type ProjectSummaryResponse } from "@veyra/api-contracts";
+import { ErrorState } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../../api/local-client";
+import { assembleGreeting, ConversationGreetingTitle, ConversationHeroMark } from "../agents/chat/conversation-greeting";
+import { ConversationComposer, ConversationStage, ConversationTyping } from "../agents/chat/conversation-stage";
+import { ConversationScopePicker } from "../agents/chat/conversation-scope";
+import { ConversationGuides } from "../agents/chat/conversation-guides";
+import { ConversationAttachmentList } from "../agents/chat/conversation-attachments";
+import { composeFactoryPrompt, isConversationFile, readConversationFile, type ConversationAttachment } from "../agents/chat/conversation-attachment";
+import { takePendingFactoryPrompt } from "../agents/chat/pending-factory-prompt";
+import type { ChatTarget } from "../agents/chat/chat-scope";
+import { FactoryAssemblyCanvas, FactoryCanvasCard } from "./factory-assembly-canvas";
+import { revisionFactoryGoal } from "./factory-blueprint";
+import { FactoryTestRun } from "./factory-test-run";
 
 type Locale = "zh" | "en";
+type Busy = "message" | "generate" | "apply" | "draft" | null;
+
+export type FactoryFocusAgent = {
+  agentId: string;
+  name: string;
+  description: string;
+};
 
 const copy = {
   zh: {
-    eyebrow: "Factory 对话",
-    title: "用资源库组装 Agent",
-    detail: "根据需求从组件、工具、Skills 和策略里组装草稿。Factory 只生成 Draft，不会执行。",
-    placeholder: "例如：根据本地文档写一份研究简报，并在写出文件前请求审批。",
+    placeholder: "随心输入",
     send: "发送",
     sending: "正在回复…",
-    generate: "生成 Blueprint",
-    generating: "正在生成…",
-    apply: "确认创建 Draft",
-    applying: "正在创建…",
-    quarantine: "写入隔离草稿",
-    quarantining: "正在写入…",
-    quarantined: "已写入隔离 Catalog，不可执行、不可被 Factory 选用。",
-    review: "资源计划",
-    missing: "缺少能力",
-    diagnostics: "修复诊断",
-    empty: "先描述需求。Factory 只会引用资源库里已登记的能力。",
-    unconfigured: "尚未配置 Factory 模型。仍可收集需求；生成 Blueprint 需要进程环境中的 MOONSHOT_API_KEY。",
-    configured: "Kimi K3 已配置，只用于生成 Draft。",
-    noRun: "创建后请到 Studio 检查。开发环境可用本机 Runtime 密钥试跑；上线后必须由用户提供自己的 API。",
-    studio: "打开 Studio",
-    created: "Draft 已创建",
-    availability: "运行可用性",
+    message: "消息",
+    unconfigured: "尚未配置 Veyra Agent。仍可收集需求；组装 Blueprint 需要进程环境中的 MOONSHOT_API_KEY。",
+    configured: "Veyra Agent 已配置，只组装 Draft。",
+    canvas: "组装画布",
+    you: "你",
+    factory: "Veyra Agent",
+    attach: "添加文件",
+    skipped: "只能添加文本、PDF 或 Word 文档。",
   },
   en: {
-    eyebrow: "Factory conversation",
-    title: "Assemble an Agent from the catalog",
-    detail: "Assemble a Draft from Components, Tools, Skills, and Policies. Factory never executes it.",
-    placeholder: "For example: write a research brief from local documents and request approval before writing a file.",
+    placeholder: "Type freely",
     send: "Send",
     sending: "Replying…",
-    generate: "Generate Blueprint",
-    generating: "Generating…",
-    apply: "Create Draft",
-    applying: "Creating…",
-    quarantine: "Create quarantined drafts",
-    quarantining: "Writing drafts…",
-    quarantined: "Wrote quarantined catalog drafts. They are not executable and Factory cannot select them.",
-    review: "Resource plan",
-    missing: "Missing capabilities",
-    diagnostics: "Repair diagnostics",
-    empty: "Describe the requirement first. Factory can only reference registered catalog resources.",
-    unconfigured: "The Factory model is not configured. You can still collect requirements; generating a Blueprint needs MOONSHOT_API_KEY in the process environment.",
-    configured: "Kimi K3 is configured for Draft generation only.",
-    noRun: "Open Studio to review the Draft. Local development may test-run with the host Runtime key; production requires the user's own API.",
-    studio: "Open Studio",
-    created: "Draft created",
-    availability: "Run availability",
+    message: "Message",
+    unconfigured: "Veyra Agent is not configured. You can still collect requirements; assembling a Blueprint needs MOONSHOT_API_KEY in the process environment.",
+    configured: "Veyra Agent is configured for Draft generation only.",
+    canvas: "Assembly canvas",
+    you: "You",
+    factory: "Veyra Agent",
+    attach: "Attach files",
+    skipped: "Attach text, PDF, or Word documents only.",
   },
 } as const;
+
+const autoStartedKeys = new Set<string>();
 
 function errorText(error: unknown, locale: Locale): string {
   if (error instanceof LocalApiClientError) return error.message;
   return error instanceof Error ? error.message : copy[locale].unconfigured;
 }
 
-function availabilityTone(value: FactorySession["run_availability"]): "good" | "warn" | "bad" | "neutral" {
-  return value === "ready" ? "good" : value === "unavailable" ? "bad" : "warn";
+function goalFor(content: string, focusAgent: FactoryFocusAgent | undefined, locale: Locale): string {
+  if (!focusAgent) return content;
+  return revisionFactoryGoal({
+    agentName: focusAgent.name,
+    agentId: focusAgent.agentId,
+    description: focusAgent.description,
+    prompt: content,
+    locale,
+  });
 }
 
-export function FactoryConversation({ api, projectId, locale }: { api: LocalProjectApi; projectId: string; locale: Locale }) {
-  const text = copy[locale];
-  const [status, setStatus] = useState<FactoryStatus | null>(null);
-  const [session, setSession] = useState<FactorySession | null>(null);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"message" | "generate" | "apply" | "draft" | null>(null);
-  const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
-  const [drafted, setDrafted] = useState(false);
+export type FactoryConversationScope = {
+  current: ChatTarget;
+  projects: ProjectSummaryResponse[];
+  onSelect: (target: ChatTarget) => void | Promise<void>;
+  onCreateProject: () => void | Promise<void>;
+};
 
-  useEffect(() => {
+export function FactoryConversation({
+  api,
+  projectId,
+  locale,
+  initialPrompt,
+  projectName,
+  focusAgent,
+  scope,
+}: {
+  api: LocalProjectApi;
+  projectId: string;
+  locale: Locale;
+  initialPrompt?: string;
+  projectName?: string;
+  focusAgent?: FactoryFocusAgent;
+  scope?: FactoryConversationScope;
+}) {
+  const text = copy[locale];
+  const [status, setStatus] = React.useState<FactoryStatus | null>(null);
+  const [session, setSession] = React.useState<FactorySession | null>(null);
+  const [draft, setDraft] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [busy, setBusy] = React.useState<Busy>(null);
+  const [createdAgentId, setCreatedAgentId] = React.useState<string | null>(null);
+  const [drafted, setDrafted] = React.useState(false);
+  const [canvasOpen, setCanvasOpen] = React.useState(false);
+  const [canvasDismissed, setCanvasDismissed] = React.useState(false);
+  const [attachments, setAttachments] = React.useState<ConversationAttachment[]>([]);
+  const [attachHint, setAttachHint] = React.useState("");
+  const attachmentSeq = React.useRef(0);
+
+  React.useEffect(() => {
     let current = true;
     void api.factoryStatus?.()
       .then((next) => { if (current) setStatus(next); })
@@ -86,28 +117,58 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
     return () => { current = false; };
   }, [api, locale]);
 
-  const send = async () => {
-    const content = draft.trim();
-    if (!content || !api.createFactorySession || !api.addFactoryMessage || busy) return;
+  const sendContent = React.useCallback(async (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed || busy) return;
+    const createSession = api.createFactorySession;
+    const addMessage = api.addFactoryMessage;
+    if (session) {
+      if (!addMessage) return;
+    } else if (!createSession) {
+      return;
+    }
     setBusy("message");
     setError("");
     try {
-      const next = session
-        ? await api.addFactoryMessage(projectId, session.session_id, content)
-        : await api.createFactorySession(projectId, { goal: content });
+      const goal = goalFor(trimmed, focusAgent, locale);
+      const next = session && addMessage
+        ? await addMessage(projectId, session.session_id, trimmed)
+        : createSession
+          ? await createSession(projectId, { goal })
+          : null;
+      if (!next) return;
       setSession(next);
       setDraft("");
+      setAttachments([]);
+      setAttachHint("");
+      if (!canvasDismissed) setCanvasOpen(true);
     } catch (cause) {
       setError(errorText(cause, locale));
     } finally {
       setBusy(null);
     }
-  };
+  }, [api, busy, canvasDismissed, focusAgent, locale, projectId, session]);
+
+  React.useEffect(() => {
+    if (!api.createFactorySession) return;
+    const prompt = initialPrompt?.trim() || takePendingFactoryPrompt() || "";
+    if (!prompt) return;
+    const key = `${projectId}:${focusAgent?.agentId ?? ""}:${prompt}`;
+    if (autoStartedKeys.has(key)) return;
+    autoStartedKeys.add(key);
+    void sendContent(prompt);
+  }, [api.createFactorySession, focusAgent?.agentId, initialPrompt, projectId, sendContent]);
+
+  React.useEffect(() => {
+    if (session && !canvasDismissed) setCanvasOpen(true);
+  }, [session, canvasDismissed, session?.revision]);
 
   const generate = async () => {
     if (!session || !api.generateFactoryBlueprint || busy) return;
     setBusy("generate");
     setError("");
+    setCanvasOpen(true);
+    setSession((current) => current ? { ...current, state: "generating" } : current);
     try {
       setSession(await api.generateFactoryBlueprint(projectId, session.session_id));
     } catch (cause) {
@@ -129,7 +190,10 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
     setBusy("apply");
     setError("");
     try {
-      const result = await api.applyFactoryDraft(projectId, session.session_id, { confirm: true });
+      const result = await api.applyFactoryDraft(projectId, session.session_id, {
+        confirm: true,
+        ...(focusAgent ? { parent_agent_id: focusAgent.agentId } : {}),
+      });
       setSession(result.session);
       setCreatedAgentId(result.agent.agent_id);
     } catch (cause) {
@@ -159,93 +223,110 @@ export function FactoryConversation({ api, projectId, locale }: { api: LocalProj
     }
   };
 
-  const canGenerate = Boolean(api.generateFactoryBlueprint && session?.ready && status?.configured && session.state !== "completed");
+  const canGenerate = Boolean(api.generateFactoryBlueprint && session?.ready && status?.configured && session.state !== "completed" && session.state !== "generating");
   const canApply = Boolean(api.applyFactoryDraft && session?.state === "review" && session.blueprint);
+  const empty = !session && !error;
+  const studioHref = createdAgentId ? projectRoutePaths.agentDesign(projectId, createdAgentId) : null;
+  const modelNote = status ? (status.configured ? text.configured : text.unconfigured) : null;
+  const attach = async (files: File[]) => {
+    const accepted = files.filter((file) => isConversationFile(file.name));
+    setAttachHint(accepted.length !== files.length ? text.skipped : "");
+    const next = await Promise.all(accepted.map((file) => {
+      attachmentSeq.current += 1;
+      return readConversationFile(file, `att-${attachmentSeq.current}`);
+    }));
+    setAttachments((current) => [...current, ...next]);
+  };
+
+  const greetingTitle = (
+    <ConversationGreetingTitle locale={locale} projectName={projectName} agentName={focusAgent?.name} />
+  );
 
   return (
-    <div className="factory-layout">
-      <Panel className="factory-prompt-panel">
-        <SectionHeading eyebrow={text.eyebrow} title={text.title} detail={text.detail} />
-        {status ? <div className="factory-boundary"><LockKeyhole size={14} /><span>{status.configured ? text.configured : text.unconfigured}</span></div> : null}
-        <div className="factory-transcript" aria-live="polite">
-          {session?.messages.map((message) => (
-            <article className={`factory-bubble ${message.role}`} key={message.message_id}>
-              <span>{message.role === "user" ? (locale === "zh" ? "你" : "You") : "Factory"}</span>
-              <p>{message.content}</p>
-            </article>
-          ))}
-          {!session ? <p className="factory-chat-empty">{text.empty}</p> : null}
-        </div>
-        <form className="factory-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-          <textarea
-            aria-label={text.placeholder}
-            value={draft}
-            placeholder={text.placeholder}
-            disabled={Boolean(busy) || session?.state === "completed"}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <div className="factory-form-footer">
-            <span><LockKeyhole size={14} />{text.noRun}</span>
-            <Button icon={ArrowUp} variant="primary" type="submit" disabled={!draft.trim() || Boolean(busy) || session?.state === "completed"}>
-              {busy === "message" ? text.sending : text.send}
-            </Button>
-          </div>
-        </form>
-      </Panel>
-      <Panel className="factory-result-panel">
-        <SectionHeading
-          eyebrow="02"
-          title={text.review}
-          action={session ? <StatusBadge label={session.state} tone={session.state === "completed" ? "good" : session.state === "missing_capability" ? "bad" : "warn"} /> : undefined}
+    <ConversationStage
+      empty={empty}
+      canvasOpen={canvasOpen}
+      mark={<ConversationHeroMark />}
+      greetingTitle={greetingTitle}
+      greetingLabel={assembleGreeting(locale, projectName, focusAgent?.name)}
+      suggestions={empty ? (
+        <>
+          <ConversationGuides locale={locale} revising={Boolean(focusAgent)} onPick={setDraft} />
+          {modelNote ? <p className="agent-convo-hint">{modelNote}</p> : null}
+        </>
+      ) : undefined}
+      contextBar={scope ? (
+        <ConversationScopePicker
+          locale={locale}
+          current={scope.current}
+          projects={scope.projects}
+          onSelect={scope.onSelect}
+          onCreateProject={scope.onCreateProject}
         />
-        {error ? <ErrorState message={error} /> : null}
-        {busy === "generate" ? <LoadingState label={text.generating} /> : null}
-        {session?.resource_plan.length ? (
-          <div className="factory-plan">
-            {session.resource_plan.map((item) => (
-              <div className="draft-node" key={item.reference}>
-                <span>{item.kind}</span>
-                <div><strong>{item.reference}</strong><small>{item.availability} · {item.runtime_status}</small></div>
-              </div>
-            ))}
-            <StatusBadge label={`${text.availability}: ${session.run_availability}`} tone={availabilityTone(session.run_availability)} />
-          </div>
-        ) : <div className="factory-empty"><span><Sparkles size={22} /></span><strong>{text.review}</strong><p>{text.empty}</p></div>}
-        {session?.missing_capabilities.length ? (
-          <div className="draft-note">
-            <strong>{text.missing}</strong>
-            {session.missing_capabilities.map((item) => <p key={item.reference}>{item.reference}: {item.reason}</p>)}
-            {drafted ? <p>{text.quarantined}</p> : null}
-          </div>
-        ) : null}
-        {session?.diagnostics.length ? (
-          <div className="draft-note"><strong>{text.diagnostics}</strong>{session.diagnostics.map((item) => <p key={item}>{item}</p>)}</div>
-        ) : null}
-        <div className="factory-form-footer">
-          <Button icon={Sparkles} variant="primary" disabled={!canGenerate || Boolean(busy)} onClick={() => void generate()}>
-            {busy === "generate" ? text.generating : text.generate}
-          </Button>
-          <Button disabled={!canApply || Boolean(busy)} onClick={() => void apply()}>
-            {busy === "apply" ? text.applying : text.apply}
-          </Button>
-          <Button disabled={!session?.missing_capabilities.length || !api.createResourceDraft || Boolean(busy)} onClick={() => void quarantine()}>
-            {busy === "draft" ? text.quarantining : text.quarantine}
-          </Button>
-        </div>
-        {createdAgentId ? (
-          <div className="draft-note">
-            <strong>{text.created}</strong>
-            <p>{text.noRun}</p>
-            <LinkButton href={projectRoutePaths.agentDesign(projectId, createdAgentId)}>{text.studio}</LinkButton>
-          </div>
-        ) : null}
-      </Panel>
-    </div>
+      ) : undefined}
+      data-project-id={projectId}
+      data-factory="veyra-agent"
+      composer={(
+        <ConversationComposer
+          locale={locale}
+          value={draft}
+          onChange={setDraft}
+          onSubmit={() => void sendContent(composeFactoryPrompt(draft, attachments, locale))}
+          disabled={(!draft.trim() && attachments.length === 0) || Boolean(busy) || session?.state === "completed" || !api.createFactorySession}
+          placeholder={text.placeholder}
+          sendLabel={busy === "message" ? text.sending : text.send}
+          sending={busy === "message"}
+          textboxLabel={text.message}
+          attachLabel={text.attach}
+          onAttachFiles={(files) => void attach(files)}
+          extraFields={(
+            <>
+              {attachHint ? <p className="agent-convo-hint" role="status">{attachHint}</p> : null}
+              <ConversationAttachmentList items={attachments} locale={locale} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} />
+            </>
+          )}
+          footerLeft={scope ? undefined : (
+            <span className="agent-convo-agent-chip">
+              <Sparkles size={13} aria-hidden="true" />
+              {text.factory}
+              {projectName ? ` · ${projectName}` : ""}
+              {focusAgent ? ` · ${focusAgent.name}` : ""}
+            </span>
+          )}
+        />
+      )}
+      canvas={(
+        <FactoryAssemblyCanvas
+          locale={locale}
+          session={session}
+          busy={busy}
+          canGenerate={canGenerate}
+          canApply={canApply}
+          studioHref={studioHref}
+          createdAgentId={createdAgentId}
+          drafted={drafted}
+          focusChild={Boolean(focusAgent)}
+          onClose={() => { setCanvasOpen(false); setCanvasDismissed(true); }}
+          onGenerate={() => void generate()}
+          onApply={() => void apply()}
+          onQuarantine={() => void quarantine()}
+          testRun={createdAgentId ? (
+            <FactoryTestRun api={api} projectId={projectId} agentId={createdAgentId} locale={locale} />
+          ) : null}
+        />
+      )}
+    >
+      {session?.messages.map((message) => (
+        <article className={`agent-chat-bubble ${message.role} agent-convo-enter`} key={message.message_id}>
+          <span>{message.role === "user" ? text.you : text.factory}</span>
+          <p>{message.content}</p>
+        </article>
+      ))}
+      {error ? <ErrorState message={error} /> : null}
+      {busy === "message" ? <ConversationTyping label={text.sending} /> : null}
+      {session && !canvasOpen ? (
+        <FactoryCanvasCard title={text.canvas} locale={locale} onOpen={() => { setCanvasDismissed(false); setCanvasOpen(true); }} />
+      ) : null}
+    </ConversationStage>
   );
 }

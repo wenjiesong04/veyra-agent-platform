@@ -21,6 +21,8 @@ describe("AgentChatSurface", () => {
     const user = userEvent.setup(); await user.type(await screen.findByRole("textbox", { name: "request" }), "Check this"); await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(runAgent).toHaveBeenCalledWith("project-1", "agent-1", { inputs: { request: "Check this" } }));
     await waitFor(() => expect(resultText()).toBeInTheDocument()); expect(screen.getByText("Verified")).toBeInTheDocument(); expect(getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1");
+    expect(screen.queryByLabelText("Result canvas")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Run canvas")).not.toBeInTheDocument();
   });
 
   it("shows that Runtime support is unavailable without inventing an answer", async () => {
@@ -94,5 +96,21 @@ describe("AgentChatSurface", () => {
     expect(screen.getByText("Write notes.txt?")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve" }));
+    expect(screen.getByRole("complementary", { name: "Run canvas" })).toBeInTheDocument();
+  });
+
+  it("opens a result canvas for structured Runtime output", async () => {
+    const structured = { ...run, result: { title: "Brief", score: 4, notes: ["keep"] } };
+    renderSurface({ getDraft: vi.fn().mockResolvedValue(draft), runAgent: vi.fn().mockResolvedValue(structured) } as unknown as LocalProjectApi);
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole("textbox", { name: "request" }), "Summarize");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("complementary", { name: "Result canvas" })).toBeInTheDocument();
+    expect(screen.getByText("Opened in canvas.")).toBeInTheDocument();
+    expect(screen.getByText("Brief")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close canvas" }));
+    expect(screen.queryByRole("complementary", { name: "Result canvas" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open in canvas" }));
+    expect(screen.getByRole("complementary", { name: "Result canvas" })).toBeInTheDocument();
   });
 });

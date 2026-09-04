@@ -5,6 +5,7 @@ import type { AgentSource, DraftResponse, ProjectSummaryResponse, ResourceDescri
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
+import { STUDIO_RAILS_STORAGE_KEY } from "../features/studio/StudioWorkbench";
 import { StudioPage } from "./studio";
 
 class TestResizeObserver {
@@ -14,7 +15,10 @@ class TestResizeObserver {
 }
 
 globalThis.ResizeObserver = TestResizeObserver;
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.removeItem(STUDIO_RAILS_STORAGE_KEY);
+});
 
 const source: AgentSource = {
   schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "",
@@ -41,6 +45,8 @@ describe("StudioPage source and conflict safety", () => {
     await user.clear(editor);
     fireEvent.change(editor, { target: { value: '{"schema_version":"1.0"}' } });
     expect(await screen.findByText(/Source cannot be applied/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save draft" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Canvas" }));
     expect(screen.getByRole("button", { name: "Save draft" })).toBeDisabled();
     expect(editor).toHaveValue('{"schema_version":"1.0"}');
   });
@@ -71,10 +77,31 @@ describe("StudioPage source and conflict safety", () => {
     await user.click(screen.getByRole("tab", { name: "Form" }));
     await user.clear(screen.getByRole("textbox", { name: "Name" }));
     await user.type(screen.getByRole("textbox", { name: "Name" }), "Changed");
+    await user.click(screen.getByRole("tab", { name: "Canvas" }));
     await user.click(screen.getByRole("button", { name: "Save draft" }));
     await user.click(await screen.findByRole("button", { name: "Load disk version" }));
     await waitFor(() => expect(reloadDraft).toHaveBeenCalledWith("project-1", "agent-1"));
   });
+
+  it("autosaves a dirty draft after idle debounce without a manual save click", async () => {
+    const saveDraft = vi.fn().mockResolvedValue(draft({ revision: 2, etag: '"etag-2"', source: { ...source, name: "Changed" } }));
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), saveDraft } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("tab", { name: "Form" }));
+    await user.clear(screen.getByRole("textbox", { name: "Name" }));
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "Changed");
+    expect(saveDraft).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
+      "project-1",
+      "agent-1",
+      { source: expect.objectContaining({ name: "Changed" }), expected_revision: 1 },
+      { etag: '"etag-1"' },
+    ), { timeout: 3500 });
+    await user.click(screen.getByRole("tab", { name: "Canvas" }));
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(screen.queryByText("Draft saved with the current revision.")).not.toBeInTheDocument();
+  }, 8000);
 
   it("renders stable graph diagnostic codes as localized Studio copy", async () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft({ source: { ...source, nodes: [{ id: "out", component_type: "Output", output_name: "result" }], transitions: [] } })) } as unknown as LocalProjectApi;
@@ -133,5 +160,48 @@ describe("StudioPage source and conflict safety", () => {
     await user.click(screen.getByRole("button", { name: /Read File/ }));
     expect((await screen.findAllByDisplayValue("veyra.tool.filesystem.read@1.0.0")).length).toBeGreaterThan(1);
     expect(screen.getByDisplayValue("veyra.tool.filesystem.read")).toBeInTheDocument();
+  });
+
+  it("collapses catalog and inspector rails and restores them from the edge strips", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: /Start Entry point/ })).toBeInTheDocument();
+    expect(screen.getByText("Select a canvas node to edit its source fields.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Collapse catalog" }));
+    expect(screen.queryByRole("button", { name: /Start Entry point/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand catalog" })).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "Collapse inspector" }));
+    expect(screen.queryByText("Select a canvas node to edit its source fields.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand catalog" }));
+    expect(screen.getByRole("button", { name: /Start Entry point/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand inspector" }));
+    expect(screen.getByText("Select a canvas node to edit its source fields.")).toBeInTheDocument();
+  });
+
+  it("overlays a collapsible test run panel without removing the run controls until collapsed", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: "Test run" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Collapse test panel" }));
+    expect(screen.queryByRole("button", { name: "Test run" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand test panel" })).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
+    expect(screen.getByRole("button", { name: "Test run" })).toBeInTheDocument();
+  });
+
+  it("remembers collapsed studio rails after remount", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    const { unmount } = renderPage(api);
+    await user.click(await screen.findByRole("button", { name: "Collapse catalog" }));
+    await waitFor(() => {
+      expect(window.localStorage.getItem(STUDIO_RAILS_STORAGE_KEY)).toContain('"paletteCollapsed":true');
+    });
+    unmount();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: "Expand catalog" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Start Entry point/ })).not.toBeInTheDocument();
   });
 });

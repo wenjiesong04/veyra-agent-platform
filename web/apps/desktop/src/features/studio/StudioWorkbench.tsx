@@ -14,6 +14,10 @@ import {
   Globe,
   LayoutTemplate,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plug,
   Shield,
   ShieldCheck,
@@ -38,6 +42,7 @@ import {
 } from "./palette";
 import { componentFor } from "./registry";
 import { RunApprovalBar } from "./RunApprovalBar";
+import { useStudioChrome } from "./studio-chrome";
 import type { LocalProjectApi } from "../../api/local-client";
 
 const PALETTE_ICONS: Record<string, LucideIcon> = {
@@ -59,6 +64,8 @@ const PALETTE_ICONS: Record<string, LucideIcon> = {
   "layout-template": LayoutTemplate,
   plug: Plug,
 };
+
+const CANVAS_FIT_VIEW = { padding: 0.46, minZoom: 0.22, maxZoom: 0.62 } as const;
 
 function PaletteIcon({ name }: { name: string }) {
   const Icon = PALETTE_ICONS[name] ?? Box;
@@ -94,6 +101,59 @@ function BindingNode({ data, selected }: NodeProps<Node<CanvasNodeData, "binding
 
 const nodeTypes = { agentNode: AgentNode, bindingNode: BindingNode };
 
+export { STUDIO_CHROME_STORAGE_KEY as STUDIO_RAILS_STORAGE_KEY } from "./studio-chrome";
+
+function StudioRail({
+  id,
+  side,
+  collapsed,
+  onToggle,
+  eyebrow,
+  title,
+  locale,
+  children,
+}: {
+  id: string;
+  side: "palette" | "inspector";
+  collapsed: boolean;
+  onToggle: () => void;
+  eyebrow: string;
+  title: string;
+  locale: "zh" | "en";
+  children: React.ReactNode;
+}) {
+  const zh = locale === "zh";
+  const expandedLabel = side === "palette" ? (zh ? "折叠组件库" : "Collapse catalog") : (zh ? "折叠检查器" : "Collapse inspector");
+  const collapsedLabel = side === "palette" ? (zh ? "展开组件库" : "Expand catalog") : (zh ? "展开检查器" : "Expand inspector");
+  const CloseIcon = side === "palette" ? PanelLeftClose : PanelRightClose;
+  const OpenIcon = side === "palette" ? PanelLeftOpen : PanelRightOpen;
+  return (
+    <Panel className={`studio-rail ${side === "palette" ? "component-rail" : "inspector-panel"}${collapsed ? " is-collapsed" : ""}`}>
+      {collapsed ? (
+        <button type="button" className="studio-rail-expand" aria-expanded={false} aria-controls={id} aria-label={collapsedLabel} onClick={onToggle}>
+          <OpenIcon size={16} aria-hidden="true" />
+          <span>{eyebrow}</span>
+        </button>
+      ) : (
+        <>
+          <div className="studio-rail-header">
+            <SectionHeading
+              eyebrow={eyebrow}
+              title={title}
+              action={
+                <button type="button" className="studio-rail-toggle" aria-expanded={true} aria-controls={id} aria-label={expandedLabel} onClick={onToggle}>
+                  <CloseIcon size={16} aria-hidden="true" />
+                </button>
+              }
+            />
+          </div>
+          <div id={id} className="studio-rail-body">{children}</div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
 function runtimeBadge(item: PaletteItem, locale: "zh" | "en"): { label: string; className: string } {
   const zh = locale === "zh";
   if (!item.draggable || item.availability === "unavailable") {
@@ -126,6 +186,7 @@ export function StudioWorkbench({
   agentId: string;
 }) {
   const live = useLiveRun({ api, projectId, agentId, locale });
+  const { chrome, setChrome } = useStudioChrome();
   const initial = React.useMemo(() => toCanvas(source), [source]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<CanvasNodeData>>(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
@@ -148,6 +209,12 @@ export function StudioWorkbench({
     }));
   }, [states, catalog, locale, setNodes]);
 
+  const onFlowInit = React.useCallback((instance: ReactFlowInstance<Node<CanvasNodeData>, Edge>) => {
+    setFlowInstance(instance);
+    window.requestAnimationFrame(() => {
+      instance.fitView(CANVAS_FIT_VIEW);
+    });
+  }, []);
   const emit = React.useCallback((nextNodes: Node<CanvasNodeData>[], nextEdges: Edge[]) => onChange(sourceWithGraph(source, nextNodes, nextEdges)), [onChange, source]);
   const addItem = (item: PaletteItem, position?: { x: number; y: number }) => {
     if (!item.draggable) return;
@@ -206,27 +273,50 @@ export function StudioWorkbench({
   const policies = palette.filter((item) => item.group === "policy");
   const templates = palette.filter((item) => item.group === "template");
   const mcp = palette.filter((item) => item.group === "mcp");
-  return <div className="studio-layout">
-    <Panel className="component-rail"><SectionHeading eyebrow={locale === "zh" ? "组件库" : "Palette"} title={locale === "zh" ? "Catalog" : "Catalog"} />
-      <p className="rail-section-label">{locale === "zh" ? "组件" : "Components"}</p>
-      <PaletteList items={components} locale={locale} onAdd={addItem} />
-      {tools.length ? <><p className="rail-section-label">{locale === "zh" ? "工具" : "Tools"}</p><PaletteList items={tools} locale={locale} onAdd={addItem} /></> : null}
-      {mcp.length ? <><p className="rail-section-label">MCP</p><PaletteList items={mcp} locale={locale} onAdd={addItem} /></> : null}
-      {skills.length ? <><p className="rail-section-label">Skills</p><PaletteList items={skills} locale={locale} onAdd={addItem} /></> : null}
-      {policies.length ? <><p className="rail-section-label">{locale === "zh" ? "策略" : "Policies"}</p><PaletteList items={policies} locale={locale} onAdd={addItem} /></> : null}
-      {templates.length ? <><p className="rail-section-label">{locale === "zh" ? "模板" : "Templates"}</p><PaletteList items={templates} locale={locale} onAdd={addItem} /></> : null}
-      <p className="rail-note">{locale === "zh" ? "Skill / Policy / Template 会作为 Catalog 绑定放到画布上，不会新增第 9 种流程图节点。MCP 需先配置服务器才能运行。" : "Skills, Policies, and Templates attach as catalog bindings, not a ninth Flow type. MCP needs a configured server before it can run."}</p>
-    </Panel>
-    <Panel className="canvas-panel">
-      <div className="studio-canvas" onDragOver={(event) => event.preventDefault()} onDrop={dropPalette}>
-        <ReactFlow<Node<CanvasNodeData>, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodesDelete={(deleted) => { const ids = new Set(deleted.map((node) => node.id)); const nextNodes = nodes.filter((node) => !ids.has(node.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)); setNodes(nextNodes); setEdges(nextEdges); emit(nextNodes, nextEdges); }} onEdgesDelete={(deleted) => { const ids = new Set(deleted.map((edge) => edge.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.id)); setEdges(nextEdges); emit(nodes, nextEdges); }} onNodeDragStop={(_, node) => { const next = nodes.map((item) => item.id === node.id ? { ...item, position: node.position } : item); setNodes(next); emit(next, edges); }} onConnect={connect} onNodeClick={(_, node) => setSelected(node.id)} onPaneClick={() => setSelected(null)} fitView><Background /><Controls /><MiniMap /></ReactFlow>
-        <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
-      </div>
-    </Panel>
-    <Panel className="inspector-panel"><SectionHeading eyebrow={locale === "zh" ? "检查器" : "Inspector"} title={flow ? nodeDisplayTitle(flow, catalog, locale) : binding ? (locale === "zh" ? "Catalog 绑定" : "Catalog binding") : (locale === "zh" ? "选择节点" : "Select a node")} />
-      {flow ? <div className="inspector-fields"><Tag>{flow.component_type}</Tag><label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>{fieldFor(flow, updateNode, locale)}{flow.component_type === "Tool" ? <><label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label><label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label></> : null}<Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button></div> : binding ? <div className="inspector-fields"><Tag>{binding.kind}</Tag><label>{locale === "zh" ? "引用" : "Reference"}<input value={binding.reference} readOnly /></label><p className="rail-note">{locale === "zh" ? "这是 Catalog 绑定，不是 Flow 组件。移动它不会改变 behavior hash。" : "This is a catalog binding, not a Flow component. Moving it does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除绑定" : "Delete binding"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点以编辑。" : "Select a canvas node to edit its source fields."}</p>}
-    </Panel>
-  </div>;
+  const inspectorTitle = flow
+    ? nodeDisplayTitle(flow, catalog, locale)
+    : binding
+      ? (locale === "zh" ? "Catalog 绑定" : "Catalog binding")
+      : (locale === "zh" ? "选择节点" : "Select a node");
+  return (
+    <div className={`studio-layout${chrome.paletteCollapsed ? " palette-collapsed" : ""}${chrome.inspectorCollapsed ? " inspector-collapsed" : ""}`}>
+      <Panel className="canvas-panel">
+        <div className="studio-canvas" onDragOver={(event) => event.preventDefault()} onDrop={dropPalette}>
+          <ReactFlow<Node<CanvasNodeData>, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={onFlowInit} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodesDelete={(deleted) => { const ids = new Set(deleted.map((node) => node.id)); const nextNodes = nodes.filter((node) => !ids.has(node.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)); setNodes(nextNodes); setEdges(nextEdges); emit(nextNodes, nextEdges); }} onEdgesDelete={(deleted) => { const ids = new Set(deleted.map((edge) => edge.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.id)); setEdges(nextEdges); emit(nodes, nextEdges); }} onNodeDragStop={(_, node) => { const next = nodes.map((item) => item.id === node.id ? { ...item, position: node.position } : item); setNodes(next); emit(next, edges); }} onConnect={connect} onNodeClick={(_, node) => setSelected(node.id)} onPaneClick={() => setSelected(null)} fitView fitViewOptions={CANVAS_FIT_VIEW} minZoom={0.15} maxZoom={1.8} defaultViewport={{ x: 0, y: 0, zoom: 0.62 }} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><MiniMap pannable zoomable style={{ width: 148, height: 98 }} /></ReactFlow>
+          <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
+        </div>
+      </Panel>
+      <StudioRail
+        id="studio-catalog-rail"
+        side="palette"
+        collapsed={chrome.paletteCollapsed}
+        onToggle={() => setChrome({ paletteCollapsed: !chrome.paletteCollapsed })}
+        eyebrow={locale === "zh" ? "组件库" : "Palette"}
+        title="Catalog"
+        locale={locale}
+      >
+        <p className="rail-section-label">{locale === "zh" ? "组件" : "Components"}</p>
+        <PaletteList items={components} locale={locale} onAdd={addItem} />
+        {tools.length ? <><p className="rail-section-label">{locale === "zh" ? "工具" : "Tools"}</p><PaletteList items={tools} locale={locale} onAdd={addItem} /></> : null}
+        {mcp.length ? <><p className="rail-section-label">MCP</p><PaletteList items={mcp} locale={locale} onAdd={addItem} /></> : null}
+        {skills.length ? <><p className="rail-section-label">Skills</p><PaletteList items={skills} locale={locale} onAdd={addItem} /></> : null}
+        {policies.length ? <><p className="rail-section-label">{locale === "zh" ? "策略" : "Policies"}</p><PaletteList items={policies} locale={locale} onAdd={addItem} /></> : null}
+        {templates.length ? <><p className="rail-section-label">{locale === "zh" ? "模板" : "Templates"}</p><PaletteList items={templates} locale={locale} onAdd={addItem} /></> : null}
+        <p className="rail-note">{locale === "zh" ? "Skill / Policy / Template 会作为 Catalog 绑定放到画布上，不会新增第 9 种流程图节点。MCP 需先配置服务器才能运行。" : "Skills, Policies, and Templates attach as catalog bindings, not a ninth Flow type. MCP needs a configured server before it can run."}</p>
+      </StudioRail>
+      <StudioRail
+        id="studio-inspector-rail"
+        side="inspector"
+        collapsed={chrome.inspectorCollapsed}
+        onToggle={() => setChrome({ inspectorCollapsed: !chrome.inspectorCollapsed })}
+        eyebrow={locale === "zh" ? "检查器" : "Inspector"}
+        title={inspectorTitle}
+        locale={locale}
+      >
+        {flow ? <div className="inspector-fields"><Tag>{flow.component_type}</Tag><label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>{fieldFor(flow, updateNode, locale)}{flow.component_type === "Tool" ? <><label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label><label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label></> : null}<Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button></div> : binding ? <div className="inspector-fields"><Tag>{binding.kind}</Tag><label>{locale === "zh" ? "引用" : "Reference"}<input value={binding.reference} readOnly /></label><p className="rail-note">{locale === "zh" ? "这是 Catalog 绑定，不是 Flow 组件。移动它不会改变 behavior hash。" : "This is a catalog binding, not a Flow component. Moving it does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除绑定" : "Delete binding"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点以编辑。" : "Select a canvas node to edit its source fields."}</p>}
+      </StudioRail>
+    </div>
+  );
 }
 
 function PaletteList({ items, locale, onAdd }: { items: PaletteItem[]; locale: "zh" | "en"; onAdd: (item: PaletteItem) => void }) {

@@ -136,7 +136,7 @@ export type LocalProjectApi = {
   getFactorySession?(projectId: string, sessionId: string): Promise<FactorySession>;
   addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
   generateFactoryBlueprint?(projectId: string, sessionId: string): Promise<FactorySession>;
-  applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string }): Promise<ApplyFactoryDraftResponse>;
+  applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string; parent_agent_id?: string }): Promise<ApplyFactoryDraftResponse>;
   createResourceDraft?(input: { confirm: boolean; kind: string; requested_reference: string; name?: string; description?: string }): Promise<ResourceDraftResponse>;
   listMcpServers?(): Promise<ListMcpServersResponse>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
@@ -1288,7 +1288,7 @@ export class LocalApiClient {
   applyFactoryDraft(
     projectId: string,
     sessionId: string,
-    input: { confirm: boolean; name?: string; description?: string },
+    input: { confirm: boolean; name?: string; description?: string; parent_agent_id?: string },
   ): Promise<ApplyFactoryDraftResponse> {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/apply-draft`,

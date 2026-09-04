@@ -77,6 +77,9 @@ const shellLabelKeys: Record<string, string> = {
   "New chat": "newChat",
   "Run workspace": "runWorkspace",
   "Resource library": "resourceLibrary",
+  Overview: "overview",
+  "Back to app": "backToApp",
+  "Back to home": "backToHome",
   "Knowledge base": "knowledgeBase",
   Recent: "recent",
   Runs: "runs",
@@ -95,11 +98,21 @@ function shellText(value: string, translate: (key: string, fallback?: string) =>
   return translate(shellLabelKeys[value] ?? "", value);
 }
 
+function isNavigationItemActive(item: NavigationItem, activeHref: string): boolean {
+  return item.active !== undefined ? item.active : item.href === activeHref;
+}
+
 function navigationStatusText(group: NavigationGroup, translate: (key: string, fallback?: string) => string): string {
   if (group.statusText) return group.statusText;
   if (group.status === "loading") return translate("loadingProjects");
   if (group.status === "error") return translate("projectsUnavailable");
   return group.label === "Recent" ? translate("noRecentProjects") : translate("noProjects");
+}
+
+function navigationLinkClassName(active: boolean, contextual: boolean): string {
+  if (active) return "sidebar-nav-link active";
+  if (contextual) return "sidebar-nav-link contextual";
+  return "sidebar-nav-link";
 }
 
 function renderSidebarChildren(
@@ -110,12 +123,12 @@ function renderSidebarChildren(
 ): ReactNode {
   return items.map((child) => {
     const ChildIcon = child.icon;
-    const childActive = child.active ?? child.href === activeHref;
+    const childActive = isNavigationItemActive(child, activeHref);
     const childLabel = shellText(child.label, translate);
     return (
       <div className="sidebar-nav-child" key={`${child.href}-${childLabel}`}>
         <div className={`sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`}>
-          <a className={`sidebar-nav-link ${childActive ? "active" : ""}`} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>
+          <a className={navigationLinkClassName(childActive, child.contextual === true && !childActive)} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>
           {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
         </div>
         {child.children && child.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(child.children, activeHref, closeMobile, translate)}</div> : null}
@@ -231,7 +244,7 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
   );
 }
 
-export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, backHref, headerActions, contentClassName, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
+export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, headerActions, contentClassName, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
@@ -319,14 +332,15 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
           {navigation.map((group) => (
             <div className={`nav-group ${group.section === "fixed" || group.section === undefined ? "nav-group-fixed" : "nav-group-list"} nav-group-${group.section ?? "fixed"}`} key={group.label}>
               <div className="nav-group-heading"><span className="nav-group-label">{shellText(group.label, t)}</span>{group.action ? <span className="nav-group-action">{group.action}</span> : null}</div>
+              {group.backLink ? <a className="sidebar-context-back" href={group.backLink.href} aria-label={group.backLink.label} title={group.backLink.label} onClick={() => closeMobile()}><ArrowLeft size={16} aria-hidden="true" /><span>{group.backLink.label}</span></a> : null}
               {group.items.map((item) => {
                 const Icon = item.icon;
-                const active = item.active ?? item.href === activeHref;
+                const active = isNavigationItemActive(item, activeHref);
                 const label = shellText(item.label, t);
                 return <div className={`sidebar-nav-item ${item.children ? "has-children" : ""}`} key={`${item.href}-${label}`}>
                   <div className="sidebar-nav-item-row">
                     {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
-                    <a className={`sidebar-nav-link ${active ? "active" : ""}`} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={16} aria-hidden="true" /><span>{label}</span></a>
+                    <a className={navigationLinkClassName(active, item.contextual === true && !active)} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={16} aria-hidden="true" /><span>{label}</span></a>
                     {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
                   </div>
                   {item.children && item.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(item.children, activeHref, closeMobile, t)}</div> : null}
@@ -349,7 +363,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
         <header className="app-header">
           <IconButton ref={mobileMenuRef} className="mobile-menu" icon={Menu} label={t("openNavigation")} aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={openMobile} />
           <div className={`header-copy ${breadcrumbs ? "has-breadcrumbs" : ""}`}>
-            {breadcrumbs ? <nav className="header-breadcrumbs" aria-label={t("breadcrumb")}>{backHref ? <a className="breadcrumb-back" href={backHref} aria-label={t("back")}><ArrowLeft size={16} aria-hidden="true" /></a> : null}{breadcrumbs.map((crumb, index) => {
+            {breadcrumbs ? <nav className="header-breadcrumbs" aria-label={t("breadcrumb")}>{breadcrumbs.map((crumb, index) => {
               const Icon = crumb.icon;
               const current = index === breadcrumbs.length - 1;
               return <span className="breadcrumb-part" key={`${crumb.label}-${crumb.href ?? index}`}>{index > 0 ? <span className="breadcrumb-separator" aria-hidden="true">/</span> : null}{current ? <span aria-current="page">{Icon ? <Icon size={15} aria-hidden="true" /> : null}{shellText(crumb.label, t)}</span> : <a href={crumb.href}>{Icon ? <Icon size={15} aria-hidden="true" /> : null}{shellText(crumb.label, t)}</a>}</span>;

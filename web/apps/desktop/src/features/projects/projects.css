@@ -136,20 +136,24 @@
 .folder-selection strong { color: var(--ink); font-size: 13px; }
 .folder-selection p { margin: 4px 0 0; font-size: 12px; }
 
-.sidebar-project-actions { position: relative; display: inline-flex; }
+.sidebar-project-actions { position: relative; display: inline-flex; align-items: center; height: 22px; gap: 2px; }
 .sidebar-import-input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 0 auto auto 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
   overflow: hidden;
+  border: 0;
   opacity: 0;
   pointer-events: none;
 }
-.project-row-actions { position: relative; display: inline-flex; align-items: center; gap: 0; }
-.project-row-actions > button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 7px; color: var(--subtle); background: transparent; cursor: pointer; }
+.project-row-actions { position: relative; display: inline-flex; align-items: center; height: 24px; gap: 0; }
+.project-row-actions > button { width: 24px; height: 24px; flex: 0 0 24px; }
 .project-row-actions > button:hover, .project-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
-.agent-row-actions { display: inline-flex; align-items: center; gap: 1px; }
-.agent-row-actions > button { display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 7px; color: var(--subtle); background: transparent; cursor: pointer; }
+.agent-row-actions { display: inline-flex; align-items: center; height: 22px; gap: 0; }
+.agent-row-actions > button { width: 22px; height: 22px; }
 .agent-row-actions > button:hover, .agent-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
 .sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
 .sidebar-project-menu, .sidebar-agent-menu, .agent-add-chooser { width: min(240px, calc(100vw - 16px)); padding: 5px; }

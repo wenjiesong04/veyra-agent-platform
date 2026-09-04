@@ -11,7 +11,7 @@ from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
-from veyra_agent_platform.local.projects.service import ProjectService
+from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
 from .client import FactoryProviderError, KimiClient
@@ -290,6 +290,7 @@ class FactoryService:
         confirm: bool,
         name: str | None = None,
         description: str | None = None,
+        parent_agent_id: str | None = None,
     ) -> dict[str, Any]:
         if not confirm:
             raise FactoryError(
@@ -329,15 +330,21 @@ class FactoryService:
                     "factory_generation_invalid",
                     "; ".join(exc.diagnostics),
                 ) from exc
-            agent = self.projects.create_agent_from_source(
-                project_id=project_id, source=source
-            )
+            try:
+                agent = self.projects.create_agent_from_source(
+                    project_id=project_id,
+                    source=source,
+                    parent_agent_id=parent_agent_id,
+                )
+            except ProjectError as exc:
+                raise FactoryError("factory_apply_failed", str(exc)) from exc
             self._set_state(
                 session_id,
                 "completed",
                 ready=True,
                 next_prompt=(
-                    "Agent Draft created. Open Studio to review it before running."
+                    "Agent Draft created. Open Studio to review it, then test-run "
+                    "it with the local Runtime. Factory still does not execute drafts."
                 ),
             )
             return {
@@ -496,7 +503,7 @@ def _repair_prompt(diagnostics: list[str]) -> str:
 def _interview_prompt(catalog: ResourceCatalog) -> str:
     kinds = sorted({resource["kind"] for resource in catalog.factory_snapshot()})
     return (
-        "You are the Veyra Factory interviewer. Ask one concise follow-up question "
+        "You are Veyra Agent. Ask one concise follow-up question "
         "at a time about goal, inputs, outputs, environment, risks, approvals, "
         "and success criteria. Never execute tools or invent resources. "
         "Available resource kinds: " + ", ".join(kinds)
@@ -505,7 +512,7 @@ def _interview_prompt(catalog: ResourceCatalog) -> str:
 
 def _generation_prompt(catalog: ResourceCatalog) -> str:
     return (
-        "You are the Veyra Factory planner. Return only an AgentBlueprint JSON "
+        "You are Veyra Agent. Return only an AgentBlueprint JSON "
         "object matching the supplied schema. Use only the registered Component, "
         "Tool, Skill, and Policy references in this catalog snapshot. Keep "
         "permissions minimal, require verification for consequential results, and "

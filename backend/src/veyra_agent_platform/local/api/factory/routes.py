@@ -39,6 +39,7 @@ class ApplyFactoryDraftRequest(_ClosedModel):
     confirm: StrictBool
     name: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
+    parent_agent_id: str | None = Field(default=None, max_length=64)
 
 
 def build_router() -> APIRouter:
@@ -95,6 +96,7 @@ def build_router() -> APIRouter:
                 confirm=payload.confirm,
                 name=payload.name,
                 description=payload.description,
+                parent_agent_id=payload.parent_agent_id,
             )
         )
 

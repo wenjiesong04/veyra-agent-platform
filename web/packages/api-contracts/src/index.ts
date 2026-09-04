@@ -14,6 +14,8 @@ export type DesktopRoute = keyof typeof desktopRoutePaths;
 
 export const projectRoutePaths = {
   project: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}`,
+  projectChat: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/chat`,
+  projectAnalysis: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/analysis`,
   agents: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents`,
   agent: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}`,
   agentVersion: (projectId: string, agentId: string, versionId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/versions/${encodeRouteSegment(versionId)}`,
@@ -34,7 +36,7 @@ export const libraryRoutePaths = {
   file: (fileId: string) => `#/files/${encodeRouteSegment(fileId)}`,
 } as const;
 
-export type ProjectRouteKind = "project" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
+export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
 export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
 export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 
@@ -109,6 +111,8 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   const projectId = parts[1] ? decodeRouteSegment(parts[1]) : null;
   if (!projectId) return { kind: "not-found", path };
   if (parts.length === 2) return { kind: "project", path, projectId };
+  if (parts.length === 3 && parts[2] === "chat") return { kind: "project-chat", path, projectId };
+  if (parts.length === 3 && parts[2] === "analysis") return { kind: "project-analysis", path, projectId };
   if (parts.length === 3 && parts[2] === "factory") return { kind: "factory", path, projectId };
 
   if (parts.length === 3 && parts[2] === "agents") return { kind: "project-agents", path, projectId };

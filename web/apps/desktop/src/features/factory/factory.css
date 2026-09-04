@@ -389,6 +389,97 @@
   gap: 8px;
 }
 
+.factory-assembly-canvas .factory-canvas-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.factory-stage-track {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.factory-stage-track li {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.factory-stage-track li[data-active="true"] {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: var(--accent-soft);
+}
+
+.factory-canvas-plan,
+.factory-canvas-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.factory-canvas-actions {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin-top: 8px;
+}
+
+.factory-canvas-kicker,
+.factory-canvas-empty,
+.factory-canvas-assembling {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.factory-canvas-assembling {
+  color: var(--accent-strong);
+}
+
+.agent-convo-flow.is-assembling .agent-convo-flow-node {
+  animation: agent-convo-node-pulse 1.2s ease-in-out infinite;
+}
+
+.factory-test-run {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--surface-soft);
+}
+
+.factory-test-run > strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.factory-test-run > p,
+.factory-test-run label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.factory-test-run label {
+  display: grid;
+  gap: 4px;
+}
+
+.factory-test-run input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
 @media (max-width: 800px) {
   .factory-layout {
     grid-template-columns: 1fr;

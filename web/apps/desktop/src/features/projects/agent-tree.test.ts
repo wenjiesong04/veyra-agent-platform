@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentTree, layoutAgentGraph, parseProjectFileId, projectFileId } from "./agent-tree";
+import { agentAncestryPath, agentTree, layoutAgentGraph, parseProjectFileId, projectFileId } from "./agent-tree";
 
 function agent(id: string, slug: string, parent?: string) {
   return {
@@ -22,6 +22,18 @@ describe("agentTree", () => {
     expect(tree.map((node) => node.slug)).toEqual(["orphan", "parent"]);
     expect(tree[1]?.children[0]?.slug).toBe("child");
     expect(tree[1]?.children[0]?.children[0]?.slug).toBe("grand");
+  });
+});
+
+describe("agentAncestryPath", () => {
+  it("returns root-to-target ancestry for nested agents", () => {
+    const agents = [
+      agent("parent", "parent"),
+      agent("child", "child", "parent"),
+      agent("grand", "grand", "child"),
+    ];
+    expect(agentAncestryPath(agents, "grand").map((item) => item.slug)).toEqual(["parent", "child", "grand"]);
+    expect(agentAncestryPath(agents, "missing")).toEqual([]);
   });
 });
 

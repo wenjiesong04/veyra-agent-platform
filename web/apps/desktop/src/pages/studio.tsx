@@ -7,6 +7,7 @@ import { useProjectWorkspace } from "../api/project-workspace";
 import { StudioWorkbench } from "../features/studio/StudioWorkbench";
 import { graphDiagnostics, isAgentSourceCandidate, type GraphDiagnostic } from "../features/studio/graph";
 import { LiveRunProvider } from "../features/studio/live-run";
+import { StudioChromeProvider } from "../features/studio/studio-chrome";
 import { TestRunPanel } from "../features/studio/TestRunPanel";
 import { NotFoundPage } from "./not-found";
 
@@ -14,22 +15,24 @@ type StudioView = "canvas" | "form" | "source";
 
 const studioCopy = {
   zh: {
-    saved: "已保存", dirty: "草稿变更", committed: "已提交",
+    saved: "已保存", dirty: "草稿变更", committed: "已提交", saving: "正在保存",
     save: "保存草稿", commit: "校验并提交版本", loading: "正在加载草稿…", unavailable: "本地草稿不可用", retry: "重试", loadDisk: "加载磁盘版本",
     canvas: "Canvas", form: "表单", source: "源码", view: "Studio 视图", revision: "修订",
   },
   en: {
-    saved: "Saved", dirty: "Draft changes", committed: "Committed",
+    saved: "Saved", dirty: "Draft changes", committed: "Committed", saving: "Saving",
     save: "Save draft", commit: "Validate & commit", loading: "Loading draft…", unavailable: "Draft unavailable", retry: "Retry", loadDisk: "Load disk version",
     canvas: "Canvas", form: "Form", source: "Source", view: "Studio view", revision: "revision",
   },
 } as const;
 
+const AUTOSAVE_MS = 2000;
+
 export function StudioPage({ projectId, agentId }: { projectId: string; agentId: string }) {
   const { api, projects } = useProjectWorkspace(); const { locale } = useLocale();
   const copy = studioCopy[locale];
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<AgentSource | null>(null);
-  const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null);
+  const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
   const cleanSnapshot = React.useRef(""); const [dirty, setDirty] = React.useState(false);
   const project = projects.find((item) => item.project_id === projectId);
@@ -52,18 +55,49 @@ export function StudioPage({ projectId, agentId }: { projectId: string; agentId:
   }, [api]);
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: AgentSource) => { setSource(next); setDirty(JSON.stringify(next) !== cleanSnapshot.current); setStatus("ready"); }, []);
-  const save = async () => { if (!source || diagnostics.length || !api.saveDraft) return; try { const saved = await api.saveDraft(projectId, agentId, { source, expected_revision: revision }, { etag }); cleanSnapshot.current = JSON.stringify(saved.source); setSource(saved.source); setDirty(false); setRevision(saved.revision); setEtag(saved.etag); setStatus("saved"); setMessage(locale === "zh" ? "草稿已按当前修订保存。" : "Draft saved with the current revision."); } catch (error) { if (isDraftConflict(error)) { setStatus("conflict"); setMessage(locale === "zh" ? "草稿已在其他窗口或磁盘中发生变化。请加载磁盘版本后再保存。" : "This draft changed elsewhere or on disk. Load the disk version before saving again."); } else { setStatus("offline"); setMessage(error instanceof Error ? error.message : (locale === "zh" ? "保存失败。" : "Save failed.")); } } };
+  const save = React.useCallback(async (mode: "manual" | "auto" = "manual") => {
+    if (!source || diagnostics.length || !api.saveDraft) return;
+    if (mode === "auto") setStatus("saving");
+    try {
+      const saved = await api.saveDraft(projectId, agentId, { source, expected_revision: revision }, { etag });
+      cleanSnapshot.current = JSON.stringify(saved.source);
+      setSource(saved.source); setDirty(false); setRevision(saved.revision); setEtag(saved.etag); setStatus("saved");
+      if (mode === "manual") setMessage(locale === "zh" ? "草稿已按当前修订保存。" : "Draft saved with the current revision.");
+    } catch (error) {
+      if (isDraftConflict(error)) {
+        setStatus("conflict");
+        setMessage(locale === "zh" ? "草稿已在其他窗口或磁盘中发生变化。请加载磁盘版本后再保存。" : "This draft changed elsewhere or on disk. Load the disk version before saving again.");
+      } else {
+        setStatus("offline");
+        setMessage(error instanceof Error ? error.message : (locale === "zh" ? "保存失败。" : "Save failed."));
+      }
+    }
+  }, [api, projectId, agentId, source, diagnostics.length, revision, etag, locale]);
+  React.useEffect(() => {
+    if (!dirty || diagnostics.length || !api.saveDraft) return;
+    if (status === "conflict" || status === "offline" || status === "loading" || status === "saving") return;
+    const timer = window.setTimeout(() => { void save("auto"); }, AUTOSAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [dirty, diagnostics.length, api.saveDraft, status, save]);
   const validateAndCommit = async () => { if (!api.validate || !api.commit) return; try { const result = await api.validate(projectId, agentId); setBehaviorHash(result.behavior_hash); const committed = await api.commit(projectId, agentId, { expectedRevision: revision, etag }); setStatus("committed"); setMessage(locale === "zh" ? `已提交不可变版本 ${committed.version_id}。` : `Immutable version ${committed.version_id} committed.`); } catch (error) { setMessage(error instanceof Error ? error.message : (locale === "zh" ? "校验或提交失败。" : "Validation or commit failed.")); } };
   if (!project && status !== "loading") return <NotFoundPage backHref="#/projects" backLabel={locale === "zh" ? "返回项目" : "Back to Projects"} />;
   if (status === "loading") return <Panel><SectionHeading eyebrow="Studio" title={copy.loading} /></Panel>;
   if (!source) return <Panel><SectionHeading eyebrow="Studio" title={copy.unavailable} detail={message} action={status === "conflict" && api.reloadDraft ? <Button onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : <Button onClick={() => void load()}>{copy.retry}</Button>} /></Panel>;
-  return <div className="page-stack">
+  const statusLabel = status === "committed" ? copy.committed : status === "saving" ? copy.saving : dirty ? copy.dirty : copy.saved;
+  const statusTone = status === "offline" || status === "conflict" ? "bad" : dirty || status === "saving" ? "warn" : "good";
+  return <div className="page-stack studio-page">
     {Boolean(message || diagnostics.length) ? <div className={status === "conflict" || status === "offline" || diagnostics.length ? "studio-alert bad" : "studio-alert"}>{message}{diagnostics.map((item, index) => <div key={`${item.code}-${index}`}>{graphDiagnosticText(item, locale)}</div>)}{status === "conflict" && api.reloadDraft ? <Button size="sm" onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : null}</div> : null}
-    <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{copy[item]}</button>)}</div><div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={status === "committed" ? copy.committed : dirty ? copy.dirty : copy.saved} tone={status === "offline" || status === "conflict" ? "bad" : dirty ? "warn" : "good"} /><Button icon={Save} variant="primary" disabled={!dirty || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save()}>{copy.save}</Button><Button disabled={dirty || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button></div></div>
-    <LiveRunProvider api={api} projectId={projectId} agentId={agentId} locale={locale}>
-      {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
-      <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} />
-    </LiveRunProvider>
+    <StudioChromeProvider>
+      <LiveRunProvider api={api} projectId={projectId} agentId={agentId} locale={locale}>
+        <div className="studio-body">
+          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{copy[item]}</button>)}</div>{view === "canvas" ? <div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !api.saveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button disabled={dirty || status === "saving" || !api.validate || !api.commit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button></div> : null}</div>
+          <div className={`studio-stage${view === "canvas" ? " is-canvas" : ""}`}>
+            {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
+            <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} />
+          </div>
+        </div>
+      </LiveRunProvider>
+    </StudioChromeProvider>
   </div>;
 }
 

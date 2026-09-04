@@ -190,6 +190,52 @@ def test_generate_repairs_then_applies_draft_without_running(tmp_path: Path) -> 
         assert runs.json()["runs"] == []
 
 
+def test_apply_draft_can_create_a_child_of_an_existing_agent(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion("What should success look like?"),
+            _completion(json.dumps(VALID_BLUEPRINT)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        parent = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={"mode": "blank", "name": "Parent Reviewer"},
+        )
+        assert parent.status_code == 201
+        parent_id = parent.json()["agent_id"]
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "Revise the parent Agent into a research brief"},
+        )
+        session_id = created.json()["session_id"]
+        generated = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
+        )
+        assert generated.status_code == 200
+        applied = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
+            json={
+                "confirm": True,
+                "name": "Revised Brief Agent",
+                "parent_agent_id": parent_id,
+            },
+        )
+        assert applied.status_code == 200
+        child = applied.json()["agent"]
+        assert child["parent_agent_id"] == parent_id
+        assert child["agent_id"] != parent_id
+        listed = client.get(f"/api/v1/projects/{project_id}")
+        assert listed.status_code == 200
+        child_record = next(
+            item
+            for item in listed.json()["agents"]
+            if item["agent_id"] == child["agent_id"]
+        )
+        assert child_record["parent_agent_id"] == parent_id
+
+
 def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> None:
     blueprint = json.loads(json.dumps(VALID_BLUEPRINT))
     blueprint["nodes"].insert(

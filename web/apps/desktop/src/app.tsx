@@ -1,13 +1,13 @@
 import * as React from "react";
 import { Boxes, FileText, Gauge, Globe2, MessageCirclePlus } from "lucide-react";
-import { desktopRoutePaths, parseDesktopRoute, type DesktopRouteLocation } from "@veyra/api-contracts";
+import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
 import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
 import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { desktopHeader } from "./desktop-header";
-import { agentContextActiveHref, agentContextNavigation, agentRecentNavigation, isAgentContextRoute } from "./features/agents/agent-navigation";
+import { agentContextActiveHref, agentContextNavigation, agentRecentNavigation, isAgentContextRoute, isProjectContextRoute, projectContextActiveHref, projectContextNavigation } from "./features/agents/agent-navigation";
 import { AccountPage } from "./pages/account";
 import { AgentAnalysisPage } from "./pages/agent-analysis";
 import { AgentRunPage } from "./pages/agent-run";
@@ -20,6 +20,8 @@ import { FactoryPage } from "./pages/factory";
 import { MonitorPage } from "./pages/monitor";
 import { NewChatPage } from "./pages/new-chat";
 import { NotFoundPage } from "./pages/not-found";
+import { ProjectAnalysisPage } from "./pages/project-analysis";
+import { ProjectChatPage } from "./pages/project-chat";
 import { ProjectDetailPage } from "./pages/project-detail";
 import { useProjectNavigation } from "./features/projects/project-navigation";
 import { RunsPage } from "./pages/runs";
@@ -65,6 +67,8 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "chat") return <NewChatPage />;
   if (route.kind === "projects") return <NewChatPage />;
   if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
+  if (route.kind === "project-chat") return <ProjectChatPage projectId={route.projectId} />;
+  if (route.kind === "project-analysis") return <ProjectAnalysisPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "agent-detail") return <AgentDetailPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "agent-version") return <AgentVersionPage projectId={route.projectId} agentId={route.agentId ?? ""} versionId={route.versionId ?? ""} />;
@@ -99,22 +103,27 @@ function DesktopWorkspace() {
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   const agentContextRoute = isAgentContextRoute(route) ? route : undefined;
-  const scopedProjectId = route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-analysis" || route.kind === "agent-run" ? route.projectId : undefined;
+  const projectContextRoute = isProjectContextRoute(route) ? route : undefined;
+  const scopedProjectId = route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-analysis" || route.kind === "agent-run" ? route.projectId : undefined;
   const activeAgentId = agentContextRoute?.agentId;
   const activeHref = agentContextRoute
     ? agentContextActiveHref(agentContextRoute)
+    : projectContextRoute
+    ? projectContextActiveHref(projectContextRoute) || (projectContextRoute.kind === "factory" ? projectRoutePaths.factory(projectContextRoute.projectId) : projectRoutePaths.project(projectContextRoute.projectId))
     : route.kind === "projects" || route.kind === "chat"
     ? desktopRoutePaths.chat
-    : route.kind === "project" || route.kind === "project-agents" || route.kind === "agent-detail" || route.kind === "agent-version" || route.kind === "factory" || route.kind === "agent-design" || route.kind === "agent-analysis" || route.kind === "agent-run"
-    ? desktopRoutePaths.projects
     : route.kind === "component" || route.kind === "components" ? desktopRoutePaths.components
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
-          : route.kind === "not-found" ? desktopRoutePaths.projects : desktopRoutePaths[route.kind];
-  const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId, routeKey: route.path });
+          : route.kind === "not-found" ? desktopRoutePaths.projects : (route.kind in desktopRoutePaths ? desktopRoutePaths[route.kind as keyof typeof desktopRoutePaths] : desktopRoutePaths.projects);
+  const suppressAgentTreeHighlight = Boolean(agentContextRoute && agentContextActiveHref(agentContextRoute));
+  const suppressProjectTreeHighlight = Boolean(projectContextRoute && projectContextActiveHref(projectContextRoute));
+  const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId, routeKey: route.path, suppressAgentHighlight: suppressAgentTreeHighlight, suppressProjectHighlight: suppressProjectTreeHighlight });
   const header = desktopHeader(route, projects, locale);
   const navigation: NavigationGroup[] = agentContextRoute
     ? [agentContextNavigation(agentContextRoute, locale), ...projectNavigation, agentRecentNavigation(locale)]
+    : projectContextRoute
+    ? [projectContextNavigation(projectContextRoute, locale), ...projectNavigation, agentRecentNavigation(locale)]
     : [fixedNavigation, ...projectNavigation];
 
   return (
@@ -124,8 +133,7 @@ function DesktopWorkspace() {
       activeHref={activeHref}
       title={header.title}
       breadcrumbs={header.breadcrumbs}
-      backHref={header.backHref}
-      contentClassName={route.kind === "agent-design" ? "agent-studio-content" : undefined}
+      contentClassName={route.kind === "agent-design" ? "agent-studio-content" : (route.kind === "chat" || route.kind === "projects" || route.kind === "project-chat" || route.kind === "agent-detail" || route.kind === "factory" ? "agent-conversation-content" : undefined)}
       account={account ? {
         displayName: account.display_name || account.handle,
         detail: account.email,
