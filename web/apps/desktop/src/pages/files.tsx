@@ -5,10 +5,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { parseProjectFileId, projectFileId } from "../features/projects/agent-tree";
 
-export function FilesPage({ fileId }: { fileId?: string }) {
+export function FilesPage({ fileId, projectId }: { fileId?: string; projectId?: string }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api, projects, status } = useProjectWorkspace();
+  const scopedProjects = useMemo(
+    () => (projectId ? projects.filter((project) => project.project_id === projectId) : projects),
+    [projectId, projects],
+  );
   const copy = zh ? {
     missing: "找不到文件", missingDetail: "请求的文件在已索引的项目源中不可用。", back: "返回文件", file: "文件", all: "全部文件", library: "知识库", title: "文件", description: "这里只列出项目里已索引的源文件、README、测试和 resources，不包含运行状态或密钥。", openProject: "打开项目", projectLibrary: "项目文件", count: "个文件", empty: "还没有项目文件", emptyDetail: "创建或打开一个项目后，这里会显示它的源文件树。", preview: "预览", identity: "文件身份", kind: "类型", size: "大小", project: "项目", path: "路径",
   } : {
@@ -21,7 +25,7 @@ export function FilesPage({ fileId }: { fileId?: string }) {
   useEffect(() => {
     if (!api.listProjectFiles) return;
     let current = true;
-    void Promise.all(projects.map(async (project) => {
+    void Promise.all(scopedProjects.map(async (project) => {
       const response = await api.listProjectFiles!(project.project_id);
       return [project.project_id, response.files] as const;
     })).then((entries) => {
@@ -32,23 +36,23 @@ export function FilesPage({ fileId }: { fileId?: string }) {
       if (current) setListingError(cause instanceof Error ? cause.message : copy.missingDetail);
     });
     return () => { current = false; };
-  }, [api, copy.missingDetail, projects]);
+  }, [api, copy.missingDetail, scopedProjects]);
 
   const allFiles = useMemo(() => {
-    return projects.flatMap((project) => (listings[project.project_id] ?? []).map((file) => ({ project, file })));
-  }, [listings, projects]);
+    return scopedProjects.flatMap((project) => (listings[project.project_id] ?? []).map((file) => ({ project, file })));
+  }, [listings, scopedProjects]);
 
   if (fileId) {
-    return <FilePreviewPage fileId={fileId} selected={selected} projects={projects} copy={copy} />;
+    return <FilePreviewPage fileId={fileId} selected={selected} projects={scopedProjects} copy={copy} />;
   }
 
-  if (status === "loading" && !projects.length) return <LoadingState label={zh ? "正在加载文件…" : "Loading files…"} />;
+  if (status === "loading" && !scopedProjects.length) return <LoadingState label={zh ? "正在加载文件…" : "Loading files…"} />;
   if (status === "error") return <ErrorState message={listingError || copy.missingDetail} />;
-  const firstProject = projects[0];
+  const firstProject = scopedProjects[0];
 
   return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.library}</span><h2>{copy.title}</h2><p>{copy.description}</p></div>{firstProject ? <LinkButton href={projectRoutePaths.project(firstProject.project_id)} icon={FolderOpen} variant="primary">{copy.openProject}</LinkButton> : null}</div>
     {listingError ? <ErrorState message={listingError} /> : null}
-    {allFiles.length === 0 ? <Panel><EmptyState icon={FileCode2} title={copy.empty} detail={copy.emptyDetail} /></Panel> : projects.map((project) => {
+    {allFiles.length === 0 ? <Panel><EmptyState icon={FileCode2} title={copy.empty} detail={copy.emptyDetail} /></Panel> : scopedProjects.map((project) => {
       const files = listings[project.project_id] ?? [];
       if (!files.length) return null;
       return <Panel key={project.project_id}><SectionHeading eyebrow={project.name} title={`${files.length} ${copy.count}`} /><div className="project-agent-list">{files.map((file) => <a className="project-agent-row" href={libraryRoutePaths.file(projectFileId(project.project_id, file.path))} key={file.path}><span className="row-icon"><FileCode2 size={17} /></span><span className="row-copy"><strong>{file.path.split("/").at(-1)}</strong><small>{file.path}</small></span><Tag>{file.kind}</Tag></a>)}</div></Panel>;

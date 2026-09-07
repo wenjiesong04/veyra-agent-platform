@@ -21,8 +21,15 @@ export const projectRoutePaths = {
   agentVersion: (projectId: string, agentId: string, versionId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/versions/${encodeRouteSegment(versionId)}`,
   factory: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/factory`,
   agentDesign: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/design`,
+  agentDesignFromWorkflow: (projectId: string, agentId: string, workflowId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/design?fromWorkflow=${encodeRouteSegment(workflowId)}`,
   agentAnalysis: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/analysis`,
   agentRun: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/run`,
+  workflows: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/workflows`,
+  workflow: (projectId: string, workflowId: string) => `#/projects/${encodeRouteSegment(projectId)}/workflows/${encodeRouteSegment(workflowId)}`,
+  knowledge: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/knowledge`,
+  knowledgeItem: (projectId: string, knowledgeId: string) => `#/projects/${encodeRouteSegment(projectId)}/knowledge/${encodeRouteSegment(knowledgeId)}`,
+  files: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/files`,
+  runs: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/runs`,
 } as const;
 
 export const communityRoutePaths = {
@@ -36,14 +43,14 @@ export const libraryRoutePaths = {
   file: (fileId: string) => `#/files/${encodeRouteSegment(fileId)}`,
 } as const;
 
-export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-agents" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
+export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
 export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
 export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 
 export type DesktopRouteLocation =
   | { kind: "projects"; path: string }
   | { kind: DesktopRoute; path: string; }
-  | { kind: ProjectRouteKind; path: string; projectId: string; agentId?: string; versionId?: string }
+  | { kind: ProjectRouteKind; path: string; projectId: string; agentId?: string; versionId?: string; workflowId?: string; knowledgeId?: string }
   | { kind: DesktopSubrouteKind; path: string; componentId?: string; fileId?: string; owner?: string; slug?: string; versionId?: string }
   | { kind: DesktopAuthRouteKind; path: string }
   | { kind: "not-found"; path: string };
@@ -67,9 +74,18 @@ function normalizeRoutePath(input: string): string {
   return withoutQuery.replace(/^\/+|\/+$/g, "");
 }
 
+function fromWorkflowQuery(input: string): string | undefined {
+  const raw = input.replace(/^#/, "");
+  const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
+  const value = new URLSearchParams(query).get("fromWorkflow");
+  const decoded = value ? decodeRouteSegment(value) : null;
+  return decoded ?? undefined;
+}
+
 export function parseDesktopRoute(input: string): DesktopRouteLocation {
   const normalized = normalizeRoutePath(input);
   const path = normalized ? `#/${normalized}` : "#/projects";
+  const fromWorkflow = fromWorkflowQuery(input);
   const parts = normalized.split("/").filter(Boolean);
 
   if (parts.length === 0 || (parts.length === 1 && parts[0] === "projects")) {
@@ -116,13 +132,20 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   if (parts.length === 3 && parts[2] === "factory") return { kind: "factory", path, projectId };
 
   if (parts.length === 3 && parts[2] === "agents") return { kind: "project-agents", path, projectId };
+  if (parts.length === 3 && parts[2] === "workflows") return { kind: "project-workflows", path, projectId };
+  if (parts.length === 3 && parts[2] === "knowledge") return { kind: "project-knowledge", path, projectId };
+  if (parts.length === 3 && parts[2] === "files") return { kind: "project-files", path, projectId };
+  if (parts.length === 3 && parts[2] === "runs") return { kind: "project-runs", path, projectId };
+  const nestedId = parts[3] ? decodeRouteSegment(parts[3]) : null;
+  if (parts.length === 4 && parts[2] === "workflows" && nestedId) return { kind: "project-workflow", path, projectId, workflowId: nestedId };
+  if (parts.length === 4 && parts[2] === "knowledge" && nestedId) return { kind: "project-knowledge-item", path, projectId, knowledgeId: nestedId };
 
   const agentId = parts[3] ? decodeRouteSegment(parts[3]) : null;
   if (parts.length === 4 && parts[2] === "agents" && agentId) return { kind: "agent-detail", path, projectId, agentId };
   const versionId = parts[5] ? decodeRouteSegment(parts[5]) : null;
-  if (parts.length === 6 && parts[2] === "agents" && agentId && parts[4] === "versions" && versionId) return { kind: "agent-version", path, projectId, agentId, versionId };
+  if (parts.length === 6 && parts[2] === "agents" && agentId && parts[4] === "versions" && versionId) return { kind: "agent-version", path, projectId, agentId, versionId, ...(fromWorkflow ? { workflowId: fromWorkflow } : {}) };
   if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "design") {
-    return { kind: "agent-design", path, projectId, agentId };
+    return { kind: "agent-design", path, projectId, agentId, ...(fromWorkflow ? { workflowId: fromWorkflow } : {}) };
   }
   if (parts.length === 5 && parts[2] === "agents" && agentId && parts[4] === "analysis") {
     return { kind: "agent-analysis", path, projectId, agentId };

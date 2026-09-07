@@ -19,6 +19,8 @@ from veyra_agent_platform.contracts.common import (
     IdempotencyKey,
     new_uuid7,
 )
+from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.library.knowledge_context import read_knowledge_context
 from veyra_agent_platform.local.library.service import LibraryService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
@@ -167,6 +169,75 @@ class RuntimeService:
                 )
             else:
                 version_id = version["version_id"]
+            run_id = new_uuid7()
+            self.repository.create_run(
+                connection,
+                run_id=run_id,
+                project_id=project_id,
+                agent_id=agent_id,
+                version_id=version_id,
+                created_at=_now(),
+                inputs=inputs,
+            )
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [(None, "run.created", {}), (None, "run.started", {})],
+            )
+            started = self._row_payload(
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            )
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, started
+            )
+        self._schedule_execution(
+            run_id,
+            lambda: self._complete_execution(
+                project_id,
+                run_id,
+                source,
+                inputs,
+                start_node=None,
+                approved=False,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            ),
+        )
+        return started
+
+    def run_version(
+        self,
+        project_id: str,
+        agent_id: str,
+        version_id: str,
+        inputs: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Execute a pinned snapshot without inspecting or changing its draft."""
+        IdempotencyKey(SCHEMA_VERSION, idempotency_key)
+        self.library._agent_in_project(project_id, agent_id)
+        version = self.repository.version(version_id)
+        if version is None or version["agent_id"] != agent_id:
+            raise RuntimeError(
+                "agent_version_not_found", "Committed Agent version not found"
+            )
+        source = AgentSource.from_dict(json.loads(version["source_json"]))
+        if source.agent_id != agent_id or source.source_hash != version["source_hash"]:
+            raise RuntimeError(
+                "agent_version_invalid", "Agent version integrity check failed"
+            )
+        self._validate_inputs(source, inputs)
+        scope = f"run-version:{project_id}:{agent_id}:{version_id}"
+        digest = sha256_digest({"version_id": version_id, "inputs": inputs})
+        with self.repository.transaction() as connection:
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
             run_id = new_uuid7()
             self.repository.create_run(
                 connection,
@@ -756,7 +827,9 @@ class RuntimeService:
         }
 
     @staticmethod
-    def _validate_inputs(source: AgentSource, inputs: dict[str, Any]) -> None:
+    def _validate_inputs(
+        source: AgentSource | WorkflowSource, inputs: dict[str, Any]
+    ) -> None:
         if set(inputs) != set(source.inputs):
             raise RuntimeError(
                 "inputs_invalid", "inputs must exactly match the Agent source inputs"
@@ -906,8 +979,38 @@ class RuntimeService:
                         verified=verifier_passed,
                         pause=None,
                     )
-                elif node.component_type is ComponentType.AGENT:
-                    values.update(self._run_agent(node, source, values, model))
+                elif node.component_type in {ComponentType.AGENT, ComponentType.MODEL}:
+                    context_text = ""
+                    if source.knowledge_refs or any(
+                        item["kind"] == "knowledge"
+                        for item in (source.ui.get("bindings") or {}).values()
+                    ):
+                        emit(
+                            node.id,
+                            "tool.requested",
+                            {
+                                "tool_reference": "knowledge.context",
+                                "authorization": "allowed",
+                                "references": list(source.knowledge_refs),
+                            },
+                        )
+                        try:
+                            context_text, receipts = read_knowledge_context(
+                                self.projects, project_id, source
+                            )
+                        except ProjectError as exc:
+                            raise RuntimeError(exc.code, str(exc)) from exc
+                        emit(
+                            node.id,
+                            "tool.completed",
+                            {
+                                "tool_reference": "knowledge.context",
+                                "receipts": receipts,
+                            },
+                        )
+                    values.update(
+                        self._run_agent(node, source, values, model, context_text)
+                    )
                     port = "next"
                 elif node.component_type is ComponentType.HUMAN_APPROVAL:
                     prompt = node.prompt or ""
@@ -970,7 +1073,7 @@ class RuntimeService:
 
     @staticmethod
     def _validated_outputs(
-        source: AgentSource, values: dict[str, Any]
+        source: AgentSource | WorkflowSource, values: dict[str, Any]
     ) -> dict[str, Any]:
         validators: dict[str, Callable[[Any], bool]] = {
             "string": lambda value: isinstance(value, str),
@@ -1000,6 +1103,7 @@ class RuntimeService:
         source: AgentSource,
         values: dict[str, Any],
         model: RuntimeModelClient,
+        knowledge_context: str = "",
     ) -> dict[str, Any]:
         if not model.configured:
             raise RuntimeError(
@@ -1017,7 +1121,10 @@ class RuntimeService:
         completion = model.complete(
             [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": _agent_user_message(source, values)},
+                {
+                    "role": "user",
+                    "content": _agent_user_message(source, values) + knowledge_context,
+                },
             ]
         )
         return _model_output_values(completion.content.strip(), source.outputs, values)

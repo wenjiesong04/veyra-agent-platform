@@ -3,7 +3,9 @@ import type { ProjectAgentRecord } from "@veyra/api-contracts";
 export type AgentHierarchyRecord = Pick<
   ProjectAgentRecord,
   "agent_id" | "slug" | "name" | "parent_agent_id" | "source_path"
->;
+> & {
+  pinned?: boolean;
+};
 
 export type AgentTreeNode<T extends AgentHierarchyRecord = AgentHierarchyRecord> = T & {
   children: AgentTreeNode<T>[];
@@ -38,8 +40,11 @@ export function agentTree<T extends AgentHierarchyRecord>(agents: readonly T[]):
   for (const node of nodes.values()) {
     if (!seen.has(node.agent_id)) roots.push(node);
   }
-  const compare = (left: AgentTreeNode<T>, right: AgentTreeNode<T>) =>
-    left.slug.localeCompare(right.slug) || left.agent_id.localeCompare(right.agent_id);
+  const compare = (left: AgentTreeNode<T>, right: AgentTreeNode<T>) => {
+    const pin = Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
+    if (pin) return pin;
+    return left.slug.localeCompare(right.slug) || left.agent_id.localeCompare(right.agent_id);
+  };
   const sortTree = (items: AgentTreeNode<T>[]) => {
     items.sort(compare);
     for (const item of items) sortTree(item.children);

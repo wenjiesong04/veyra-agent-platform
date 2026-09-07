@@ -13,6 +13,15 @@ from veyra_agent_platform.local.templates import (
 )
 
 
+def test_starter_template_is_an_agent_internal_graph() -> None:
+    starter = AgentTemplateCatalog().source(STARTER_TEMPLATE_ID)
+    assert [node.component_type.value for node in starter.nodes] == [
+        "Start",
+        "Model",
+        "Output",
+    ]
+
+
 def test_work_templates_are_local_llm_graphs_with_compiled_skills() -> None:
     catalog = ResourceCatalog()
     templates = AgentTemplateCatalog(catalog)

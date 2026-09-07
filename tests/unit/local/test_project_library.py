@@ -43,8 +43,14 @@ def test_create_indexes_multi_agent_project_and_reopens_without_moving(
     indexed = projects.index(root)
 
     assert (root / "project.vproject.yaml").is_file()
+    assert (root / "workflows").is_dir()
+    assert (root / "knowledge").is_dir()
+    assert (root / "assets").is_dir()
+    assert (root / "components" / "primitive").is_dir()
     assert (root / "resources").is_dir()
     assert (root / "tests").is_dir()
+    for agent in created["agents"]:
+        assert (root / "agents" / agent["slug"] / "resource.yaml").is_file()
     assert len(created["agents"]) == 2
     assert indexed["root_path"] == str(root.resolve())
     restarted_projects, _ = _services(tmp_path)
@@ -128,3 +134,51 @@ def test_external_source_change_conflicts_until_reindex(tmp_path: Path) -> None:
     projects.index(tmp_path / "project")
     with pytest.raises(DraftConflict):
         library.draft(project_id, agent["agent_id"])
+
+
+def test_workflow_draft_revision_etag_and_reload(tmp_path: Path) -> None:
+    projects, library = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="Example")
+    workflow = projects.create_workflow(project_id=created["project_id"])
+    project_id = created["project_id"]
+    workflow_id = workflow["workflow_id"]
+    original = library.workflow_draft(project_id, workflow_id)
+    changed = deepcopy(original["source"])
+    changed["description"] = "Changed workflow documentation."
+    key = new_uuid7()
+
+    saved = library.replace_workflow_draft(
+        project_id=project_id,
+        workflow_id=workflow_id,
+        source=changed,
+        expected_revision=original["revision"],
+        expected_etag=original["etag"],
+        idempotency_key=key,
+    )
+    replayed = library.replace_workflow_draft(
+        project_id=project_id,
+        workflow_id=workflow_id,
+        source=changed,
+        expected_revision=original["revision"],
+        expected_etag=original["etag"],
+        idempotency_key=key,
+    )
+    with pytest.raises(DraftConflict):
+        library.replace_workflow_draft(
+            project_id=project_id,
+            workflow_id=workflow_id,
+            source=changed,
+            expected_revision=original["revision"],
+            expected_etag=original["etag"],
+            idempotency_key=new_uuid7(),
+        )
+    assert saved["revision"] == 1
+    assert replayed["revision"] == 1
+    source_path = tmp_path / "project" / workflow["source_path"]
+    external = json.loads(source_path.read_text())
+    external["description"] = "Edited outside Studio."
+    source_path.write_text(json.dumps(external), encoding="utf-8")
+    with pytest.raises(DraftConflict):
+        library.workflow_draft(project_id, workflow_id)
+    reloaded = library.reload_workflow_from_disk(project_id, workflow_id)
+    assert reloaded["source"]["description"] == "Edited outside Studio."

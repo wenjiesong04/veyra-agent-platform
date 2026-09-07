@@ -36,8 +36,10 @@ def source_projection(source: Mapping[str, Any]) -> dict[str, Any]:
 
 def behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
     """Execution semantics, excluding presentational/editor-only metadata."""
+    if source.get("component_type") == "Workflow":
+        return workflow_behavior_projection(source)
     veyra = source.get("extensions", {}).get("veyra", {})
-    return {
+    projection = {
         "agentspec_version": source["agentspec_version"],
         "component_type": source["component_type"],
         "inputs": source["inputs"],
@@ -50,6 +52,24 @@ def behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
         "verification": veyra["verification"],
         "skill_refs": list(veyra.get("skill_refs") or ()),
         "policy_refs": list(veyra.get("policy_refs") or ()),
+    }
+
+    if veyra.get("knowledge_refs"):
+        projection["knowledge_refs"] = list(veyra["knowledge_refs"])
+    return projection
+
+
+def workflow_behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Workflow execution semantics: Agents plus control flow, no AgentSpec fields."""
+    veyra = source.get("extensions", {}).get("veyra", {})
+    return {
+        "component_type": source["component_type"],
+        "inputs": source["inputs"],
+        "outputs": source["outputs"],
+        "nodes": source["nodes"],
+        "transitions": source["transitions"],
+        "permissions": veyra["permissions"],
+        "verification": veyra["verification"],
     }
 
 

@@ -142,18 +142,19 @@ class ResourceCatalog:
             spec = deepcopy(resource["spec"])
             if isinstance(spec, dict):
                 spec.pop("ui", None)
-            snapshot.append(
-                {
-                    "reference": resource["reference"],
-                    "kind": resource["kind"],
-                    "name": resource["name"],
-                    "description": resource["description"],
-                    "availability": resource["availability"],
-                    "runtime_status": resource["runtime_status"],
-                    "required_permissions": deepcopy(resource["required_permissions"]),
-                    "spec": spec,
-                }
-            )
+            item = {
+                "reference": resource["reference"],
+                "kind": resource["kind"],
+                "name": resource["name"],
+                "description": resource["description"],
+                "availability": resource["availability"],
+                "runtime_status": resource["runtime_status"],
+                "required_permissions": deepcopy(resource["required_permissions"]),
+                "spec": spec,
+            }
+            if resource.get("component_class"):
+                item["component_class"] = resource["component_class"]
+            snapshot.append(item)
         return snapshot
 
     def components(self) -> list[dict[str, Any]]:
@@ -166,9 +167,11 @@ class ResourceCatalog:
                 "fields": deepcopy(resource["spec"]["fields"]),
                 "output_ports": deepcopy(resource["spec"]["output_ports"]),
                 "runtime_status": resource["runtime_status"],
+                "component_class": resource.get("component_class", "primitive"),
             }
             for resource in resources
             if resource["kind"] == "component"
+            and resource.get("component_class", "primitive") == "primitive"
         ]
 
     @staticmethod
@@ -186,6 +189,8 @@ class ResourceCatalog:
             spec.pop("ui", None)
             hashed["spec"] = spec
         material["content_hash"] = sha256_digest(hashed)
+        if material["kind"] == "component":
+            material.setdefault("component_class", "primitive")
         return material
 
     @staticmethod

@@ -10,8 +10,10 @@ export type StudioComponent = {
 };
 
 export const studioComponents: StudioComponent[] = [
-  { type: "Start", label: "Start", labelZh: "开始", detail: "Entry point", detailZh: "工作流入口", ports: ["next"] },
-  { type: "Agent", label: "Agent", labelZh: "Agent", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
+  { type: "Start", label: "Start", labelZh: "开始", detail: "Entry point", detailZh: "输入入口", ports: ["next"] },
+  { type: "Agent", label: "Model (legacy)", labelZh: "模型（旧格式）", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
+  { type: "Model", label: "Model", labelZh: "模型", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
+  { type: "AgentCall", label: "AgentCall", labelZh: "AgentCall", detail: "Call a Project Agent", detailZh: "调用项目 Agent", ports: ["next"] },
   { type: "Tool", label: "Tool", labelZh: "工具", detail: "Governed tool", detailZh: "受治理工具调用", ports: ["next"] },
   { type: "Condition", label: "Condition", labelZh: "条件", detail: "Branch expression", detailZh: "条件分支", ports: ["true", "false"] },
   { type: "Transform", label: "Transform", labelZh: "转换", detail: "Map values", detailZh: "安全字段映射", ports: ["next"] },
@@ -26,7 +28,8 @@ export function componentFor(type: FlowNode["component_type"]) {
 
 export function newNode(type: FlowNode["component_type"], id: string): FlowNode {
   const base: FlowNode = { id, component_type: type };
-  if (type === "Agent") return { ...base, model_ref: "model.primary", system_prompt: "" };
+  if (type === "Agent" || type === "Model") return { ...base, model_ref: "model.primary", system_prompt: "" };
+  if (type === "AgentCall") return { ...base, agent_ref: "", input_mapping: {}, output_mapping: {} };
   if (type === "Tool") return { ...base, uses: "" };
   if (type === "Condition") return { ...base, expression: "" };
   if (type === "Transform") return { ...base, mapping: {} };

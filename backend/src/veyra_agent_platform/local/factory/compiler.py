@@ -237,10 +237,12 @@ def _compile_skills(
 ) -> tuple[Any, ...]:
     skills = [resource for resource in selected if resource["kind"] == "skill"]
     agent_nodes = [
-        node for node in blueprint.nodes if node.component_type is ComponentType.AGENT
+        node
+        for node in blueprint.nodes
+        if node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
     ]
     if skills and not agent_nodes:
-        diagnostics.append("selected Skills require an Agent node")
+        diagnostics.append("selected Skills require a Model node")
         return blueprint.nodes
     blocks = [
         f"[{resource['name']}] {resource['spec'].get('instruction', '').strip()}"
@@ -252,7 +254,10 @@ def _compile_skills(
         return blueprint.nodes
     compiled = []
     for node in blueprint.nodes:
-        if node.component_type is ComponentType.AGENT and node.system_prompt:
+        if (
+            node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
+            and node.system_prompt
+        ):
             compiled.append(
                 replace(node, system_prompt=f"{node.system_prompt}\n\n{suffix}")
             )

@@ -265,6 +265,11 @@ class LocalRepository:
             linked = connection.execute(
                 "SELECT 1 FROM agent_version_files WHERE file_id = ?", (row["file_id"],)
             ).fetchone()
+            if linked is None:
+                linked = connection.execute(
+                    "SELECT 1 FROM workflow_version_files WHERE file_id = ?",
+                    (row["file_id"],),
+                ).fetchone()
             if linked is not None:
                 continue
             connection.execute(
@@ -466,6 +471,255 @@ class LocalRepository:
         with self._connect() as connection:
             return connection.execute("SELECT * FROM draft_write_intents").fetchall()
 
+    def workflow(self, workflow_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """SELECT * FROM workflows
+                       WHERE workflow_id = ? AND removed_at IS NULL""",
+                    (workflow_id,),
+                ).fetchone(),
+            )
+
+    def upsert_workflow(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        workflow_id: str,
+        project_id: str,
+        slug: str,
+        source_path: str,
+        source_file_hash: str,
+        indexed_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO workflows(
+              workflow_id, project_id, slug, source_path, source_file_hash,
+              indexed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                workflow_id,
+                project_id,
+                slug,
+                source_path,
+                source_file_hash,
+                indexed_at,
+            ),
+        )
+
+    def refresh_workflow(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        workflow_id: str,
+        slug: str,
+        source_path: str,
+        source_file_hash: str,
+        indexed_at: str,
+    ) -> None:
+        connection.execute(
+            """UPDATE workflows SET slug = ?, source_path = ?, source_file_hash = ?,
+               indexed_at = ?, removed_at = NULL
+               WHERE workflow_id = ?""",
+            (slug, source_path, source_file_hash, indexed_at, workflow_id),
+        )
+
+    def remove_workflow(self, workflow_id: str, removed_at: str) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE workflows SET removed_at = ?
+                   WHERE workflow_id = ? AND removed_at IS NULL""",
+                (removed_at, workflow_id),
+            )
+            return cursor.rowcount == 1
+
+    def restore_workflow(self, workflow_id: str) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE workflows SET removed_at = NULL WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+            return cursor.rowcount == 1
+
+    def delete_workflows(
+        self, connection: sqlite3.Connection, workflow_ids: set[str]
+    ) -> None:
+        for workflow_id in workflow_ids:
+            has_versions = connection.execute(
+                "SELECT 1 FROM workflow_versions WHERE workflow_id = ?",
+                (workflow_id,),
+            ).fetchone()
+            if has_versions is not None:
+                raise ValueError("cannot remove a Workflow with immutable versions")
+            connection.execute(
+                "DELETE FROM workflow_drafts WHERE workflow_id = ?", (workflow_id,)
+            )
+            connection.execute(
+                "DELETE FROM workflow_draft_write_intents WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+        connection.executemany(
+            "DELETE FROM workflows WHERE workflow_id = ?",
+            ((workflow_id,) for workflow_id in workflow_ids),
+        )
+
+    def workflow_draft(self, workflow_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM workflow_drafts WHERE workflow_id = ?",
+                    (workflow_id,),
+                ).fetchone(),
+            )
+
+    def insert_workflow_draft(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        workflow_id: str,
+        draft_id: str,
+        revision: int,
+        source: dict[str, Any],
+        source_file_hash: str,
+        etag: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO workflow_drafts(
+              workflow_id, draft_id, revision, source_json, source_file_hash, etag
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                workflow_id,
+                draft_id,
+                revision,
+                json.dumps(source, sort_keys=True, separators=(",", ":")),
+                source_file_hash,
+                etag,
+            ),
+        )
+
+    def update_workflow_draft(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        workflow_id: str,
+        expected_revision: int,
+        source: dict[str, Any],
+        source_file_hash: str,
+        etag: str,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            UPDATE workflow_drafts
+            SET revision = revision + 1, source_json = ?, source_file_hash = ?, etag = ?
+            WHERE workflow_id = ? AND revision = ?
+            """,
+            (
+                json.dumps(source, sort_keys=True, separators=(",", ":")),
+                source_file_hash,
+                etag,
+                workflow_id,
+                expected_revision,
+            ),
+        )
+        return cursor.rowcount
+
+    def create_workflow_write_intent(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        workflow_id: str,
+        previous_source_text: str,
+        intended_source_text: str,
+    ) -> str:
+        intent_id = new_uuid7()
+        connection.execute(
+            """INSERT INTO workflow_draft_write_intents(
+                 intent_id, workflow_id, previous_source_text, intended_source_text
+               ) VALUES (?, ?, ?, ?)""",
+            (intent_id, workflow_id, previous_source_text, intended_source_text),
+        )
+        return intent_id
+
+    def remove_workflow_write_intent(
+        self, connection: sqlite3.Connection, intent_id: str
+    ) -> None:
+        connection.execute(
+            "DELETE FROM workflow_draft_write_intents WHERE intent_id = ?",
+            (intent_id,),
+        )
+
+    def workflow_write_intents(self) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM workflow_draft_write_intents"
+            ).fetchall()
+
+    def workflow_version_by_fingerprint(
+        self, connection: sqlite3.Connection, workflow_id: str, source_file_hash: str
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """SELECT * FROM workflow_versions
+                   WHERE workflow_id = ? AND file_hash = ?""",
+                (workflow_id, source_file_hash),
+            ).fetchone(),
+        )
+
+    def insert_workflow_version(
+        self, connection: sqlite3.Connection, values: dict[str, Any]
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO workflow_versions(
+              version_id, workflow_id, source_hash, behavior_hash, lock_hash, file_hash,
+              source_json, source_text, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                values["version_id"],
+                values["workflow_id"],
+                values["source_hash"],
+                values["behavior_hash"],
+                values["lock_hash"],
+                values["file_hash"],
+                json.dumps(values["source"], sort_keys=True, separators=(",", ":")),
+                values["source_text"],
+                values["created_at"],
+            ),
+        )
+
+    def attach_file_to_workflow_version(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        version_id: str,
+        project_id: str,
+        relative_path: str,
+    ) -> None:
+        row = connection.execute(
+            """SELECT file_id FROM files
+               WHERE project_id = ? AND relative_path = ?""",
+            (project_id, relative_path),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                "committed Workflow source is absent from the file index"
+            )
+        connection.execute(
+            """INSERT OR IGNORE INTO workflow_version_files(version_id, file_id)
+               VALUES (?, ?)""",
+            (version_id, row["file_id"]),
+        )
+
     def idempotent_response(
         self, connection: sqlite3.Connection, scope: str, key: str, request_digest: str
     ) -> dict[str, Any] | None:
@@ -586,6 +840,32 @@ class LocalRepository:
                 sqlite3.Row | None,
                 connection.execute(
                     "SELECT * FROM agent_versions WHERE version_id = ?",
+                    (version_id,),
+                ).fetchone(),
+            )
+
+    def agent_versions(self, agent_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM agent_versions WHERE agent_id = ? ORDER BY "
+                "created_at DESC, version_id DESC",
+                (agent_id,),
+            ).fetchall()
+
+    def workflow_versions(self, workflow_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM workflow_versions WHERE workflow_id = ? ORDER "
+                "BY created_at DESC, version_id DESC",
+                (workflow_id,),
+            ).fetchall()
+
+    def workflow_version(self, version_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM workflow_versions WHERE version_id = ?",
                     (version_id,),
                 ).fetchone(),
             )

@@ -1,8 +1,8 @@
 # Veyra Agent Platform — Canonical Development Design
 
 > Status: **ONLY CURRENT PRODUCT AND ENGINEERING AUTHORITY**
-> Revision: 1.2
-> Date: 2026-08-25
+> Revision: 1.4
+> Date: 2026-09-06
 > Repository: `/Users/spectre/PycharmProjects/veyra-agent-platform`
 > Development branch: `codex/agent-platform`
 > Legacy source: `/Users/spectre/PycharmProjects/veyra @ 1ffb4cdd45c798556390c20e53fc2d265cd56471`
@@ -307,17 +307,18 @@ That combination is the product. No single individual feature is the moat.
 
 #### Veyra Library
 
-- Agents
-- Components
-- files/resources
-- immutable versions
-- imports/exports
-- packages
-- run artifacts
-- trash/restore
+- Agents and Workflows as first-class Project resources
+- Knowledge documents and metadata
+- Files / Assets as raw file storage
+- immutable versions, imports/exports, packages
+- run artifacts, trash/restore
+- Component catalog keeps an independent Resource Library (list + detail)
+  at `#/components`. The Agent/Workflow palette is a projection of that
+  catalog, not a replacement for the library page.
 
 #### Veyra Community
 
+- Marketplace for sharing and downloading versioned resources
 - email-verified account and public creator profile
 - Agent and template publishing
 - immutable versions
@@ -385,20 +386,32 @@ Optional Community Server
 ### 5.0 Project directory
 
 A Project is a user-owned directory and the primary Studio, Library, Runtime,
-and Orchestrator scope. It contains one manifest and any number of Agent
-directories:
+and Orchestrator scope. It is a container, not an editor. The on-disk layout
+keeps each resource kind in its own folder:
 
 ```text
 <Project>/
   project.vproject.yaml
-  agents/
-    <agent-slug>/
-      agent.vagent.yaml
-      README.md
-      tests/
-  resources/
+  agents/<slug>/
+    resource.yaml
+    agent.vagent.yaml
+  workflows/<slug>/
+    resource.yaml
+    workflow.vworkflow.yaml
+  components/primitive/<slug>/
+  components/composite/<slug>/
+  knowledge/<slug>/
+  assets/<slug>/
   tests/
 ```
+
+Components remain a storage and catalog kind with required `primitive` or
+`composite` class. They keep an independent Resource Library workspace
+(`#/components`: list + detail for description, version, examples, and
+references). The Agent/Workflow Canvas palette is a filtered projection of
+the same catalog for drag-and-drop. Composite packages expand to locked
+primitive nodes when dropped on a Canvas. Components are not a flowchart
+and are not renamed into a ninth Flow type.
 
 The manifest contains a stable UUIDv7 `project_id`, Project name, listed Agent
 UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
@@ -490,7 +503,7 @@ nodes:
     uses: veyra.github.issue_search@1.0.0
 
   - id: analyze
-    component_type: Agent
+    component_type: Model
     model_ref: model.primary
     system_prompt: Analyze the issue and identify missing evidence.
 
@@ -530,26 +543,31 @@ extensions:
       required: true
 ```
 
-### 5.4 Core components
+### 5.4 Components: primitive vs composite
 
-V1:
+Components are one resource kind with two required classes. They must not
+collapse into a single palette bag.
 
-- Start
-- Agent
-- Tool
-- Condition
-- Transform
-- HumanApproval
-- Verifier
-- Output
+**Primitive** — platform-owned graph node types. These are the only nodes a
+Canvas may persist. V1 primitives:
 
-Later:
+- Start, Model, Tool, HumanApproval, Verifier, Output
+  (Agent canvas palette)
+- Condition, Transform (Workflow control flow; historical Agent graphs may still persist them)
+- AgentCall (Workflow canvas only; references `agent_id@version_id`, both UUIDv7, never a path)
 
-- Loop
-- Parallel
-- SubAgent
-- Schedule/Webhook
-- CustomFunction
+A primitive cannot be authored in a Project overlay, Factory output, or
+workshop draft. The legacy node name `Agent` is accepted only as an alias for
+`Model` in the UI. Historical `Agent` wire identities and omitted version
+fields remain unchanged when reading and serializing old definitions.
+
+**Composite** — a versioned assembly of primitive (and acyclic nested composite)
+references. It is a reusable Component package, not a ninth Flow type. Dropping
+one onto a Canvas expands to locked primitive nodes. Composites live under
+`components/composite/<slug>/` and are referenced by ID + version.
+
+Later primitives: Loop, Parallel, Schedule/Webhook. CustomFunction is not a
+primitive; it is a workshop proposal until promoted.
 
 ### 5.5 Tools
 
@@ -572,14 +590,19 @@ Factory and Studio resolve capabilities only through one server-owned Resource
 Catalog. The catalog is not a folder of arbitrary code and it is not populated
 from model output. It exposes immutable, versioned descriptors for:
 
-- **Component** — one of the platform-owned graph node types and its editable
-  fields, ports, compiler support, and Runtime status.
+- **Component** — either a **primitive** graph node type (platform-owned fields,
+  ports, compiler support, Runtime status) or a **composite** reusable assembly
+  of primitive references. The two classes share the Component kind and
+  marketplace, but they have different folders, palettes, and compile rules.
 - **Tool** — an executable capability with exact version, input/output schema,
   permission requirements, secret references, receipts, and Runtime adapter
   status.
-- **MCP server/tool** — a configured discovery source. An MCP tool must be
-  normalized into a Tool descriptor before Factory may select it; connection
-  configuration and credentials remain outside Agent source.
+- **MCP server/tool** — a configured discovery source under Tools, not a
+  product layer beside Agent, Workflow, Component, or Knowledge. An MCP
+  tool must be normalized into a Tool descriptor and lands on the Canvas as
+  a Tool node (`uses: resource_id@version`). Connection configuration and
+  credentials remain outside Agent source. Architecture diagrams must not
+  draw MCP as its own resource class.
 - **Skill** — a non-executable, versioned instruction/method asset. Factory may
   compile Skill content into an Agent prompt, while the exact Skill reference
   and hash remain in the dependency lock.
@@ -599,7 +622,8 @@ support, required permissions, and compatibility. Availability is explicit:
 `unavailable`. Factory cannot present a resource as runnable when its adapter or
 provider is absent.
 
-The first useful catalog contains the eight existing graph Components, versioned
+The first useful catalog contains the primitive graph Components, including
+Model and the Workflow-only AgentCall, plus versioned
 instruction Skills (research, document analysis, need extraction, evidence
 ledger, content planning, file taxonomy) and default Policies, Forkable work
 templates, and only Tool/MCP entries backed by real adapters. The UI may display
@@ -798,35 +822,101 @@ Reuse the old Veyra visual language only:
 
 Do not migrate old product pages, React state, APIs, Today, Situations, Reactions, Chat, or LegacyConsole.
 
-### 7.2 Navigation
+### 7.2 Workspaces and navigation
+
+Not every resource uses a Canvas. Shared editing means one matching
+workspace per layer, not one Canvas for every page.
+
+| Layer | Workspace | What the user does |
+|---|---|---|
+| Project | Dashboard | Status, resource counts, and settings. No graph editing. |
+| Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output. Left palette projects Model, Tool, Knowledge bindings, plus HumanApproval and Verifier. Condition, Transform, and AgentCall stay on the Workflow canvas. Right inspector edits parameters. Bottom panel test-runs. |
+| Workflow | Same Canvas shell | Declares its own inputs and outputs. Palette is AgentCall plus control flow (Condition, Transform, HumanApproval, Verifier). No Model or Tool nodes. Existing Agents are not renamed into Workflows. |
+| Component | Resource Library | Independent list + detail for description, version, examples, and references. Not a flowchart. Primitive vs composite stays a required class. The Studio palette projects this catalog; it does not replace the library. |
+| Knowledge | Library + preview | Project documents, metadata, and citations. Not a flowchart. |
+| Files / Assets | File manager | Raw indexed files, separate from Knowledge documents. |
+| Runs | List + timeline + logs | Inspect steps, outputs, and replay. No editing. |
+| Community | Marketplace | Share and download versioned packages. Never execute remotely. |
+| Settings | Control panel | Model providers, API keys, and runtime environment. Secrets stay out of Project directories. |
+
+Home sidebar (no Project open). These items already exist and must not be
+removed:
 
 ```text
-Create     Studio
-Library    Agents / Components / Files
-Operate    Runs / Monitor
-Discover   Community
-Identity   Account / Settings
+New chat
+Run workspace
+Resource library
+  Components
+  Tools / MCP
+  Skills
+  Policies
+  Templates
+Knowledge base
+Community
+Projects tree
 ```
+
+Catalog children appear when Resource Library is the current home route.
+They are not Project resources. Settings and Account stay in the account
+menu. Resource Library (`#/components`) is the independent Component entry.
+
+Project sidebar (any route inside a Project, including Agent Canvas):
+
+```text
+New chat / Overview / Analysis
+```
+
+Those three items are workspace surfaces, not resource kinds. The Project
+tree below them is the resource model:
+
+```text
+Project
+  Agents            named runnable instances, plus to add
+    <agent>
+  Workflows         named orchestration instances, plus to add
+    <workflow>
+  Knowledge         long-lived documents, plus to add
+    <document>
+  Files             collection page; raw Project files
+```
+
+Do not list Agents as bare children of a Project. Agent and Workflow are
+siblings. Knowledge documents nest under Knowledge; Files stay a collection
+leaf because it is an index, not a Canvas instance. Run history is not a
+Project-tree item. The header History control opens `#/runs` on the home
+workspace and `#/projects/:projectId/runs` inside a Project.
+
+Resource Library (`#/components`) stays on the home sidebar. It is not a
+Project child. Opening it reveals catalog kinds with a distinct catalog
+style: Components, Tools / MCP, Skills, Policies, Templates. MCP is grouped
+with Tools and is not a product layer beside Agent, Workflow, Knowledge, or
+Component. The Agent/Workflow Canvas palette remains a projection of that
+catalog.
+
+The Project-to-resource tree lets users pin, edit, delete, and add Agents,
+and add Workflows and Knowledge, without duplicating those kinds in the
+fixed Project workspace list. Selecting an Agent opens its Canvas
+(`.../agents/:agentId/design`). Selecting a Workflow opens the shared
+Canvas shell (`.../workflows/:workflowId`). Conversation and analysis
+routes remain reachable.
 
 Routes:
 
 ```text
+#/projects/:projectId
+#/projects/:projectId/agents
 #/projects/:projectId/agents/:agentId
 #/projects/:projectId/agents/:agentId/design
 #/projects/:projectId/agents/:agentId/analysis
 #/projects/:projectId/agents/:agentId/run
-#/studio/new
-#/studio/:agentId
-#/agents
-#/agents/:agentId
-#/agents/:agentId/versions/:versionId
-#/runs
-#/runs/:runId
-#/monitor
+#/projects/:projectId/workflows
+#/projects/:projectId/workflows/:workflowId
+#/projects/:projectId/knowledge
+#/projects/:projectId/files
+#/projects/:projectId/runs
 #/components
 #/components/:componentId
 #/files
-#/files/:fileId
 #/community
 #/community/:owner/:slug
 #/community/:owner/:slug/versions/:versionId
@@ -834,34 +924,49 @@ Routes:
 #/account
 ```
 
-The Desktop sidebar presents an optional single pinned Project followed by a
-collapsible Project-to-Agent tree. Each Project row owns Pin/Edit/Delete and an
-Add Agent button that opens a top-layer chooser without navigating. The chooser
-offers a blank Agent, a registered template, or a validated local Agent file;
-each choice opens its own confirmation form and refreshes the tree after a real
-write. Selecting an existing Agent opens its Orchestration route by default;
-Agent-context New chat remains the explicit entry to the Agent conversation
-surface. The
-Desktop header uses one title for a root page and a horizontal, linked
-breadcrumb for nested Project and Agent pages; it does not stack an eyebrow
-over the page title.
+`#/components` is the Resource Library: a first-class home destination and
+a deep link into catalog detail. It is not deleted, not absorbed into the
+Agent palette, and not drawn as a flowchart. The Desktop header uses one
+title for a root page and a horizontal, linked breadcrumb for nested
+Project and Agent pages.
 
-Inside a concrete Agent route, the fixed navigation changes to New chat,
-Orchestration, and Data analysis. The existing Project-to-Agent tree follows
-these entries, and Recent is shown only in Agent context. Recent must remain an
-empty state until durable conversation or Run data exists; it is not populated
-from fixtures or browser storage.
+### 7.2.1 Information architecture lock
 
-Empty library redirects to Studio onboarding. Otherwise `/` redirects to Agents/Dashboard.
+These decisions override earlier oscillating sentences in this document.
+Do not hide Components, do not promote MCP into a product layer, and do
+not rename Agent into Workflow.
+
+1. **Agent is not renamed to Workflow.** An Agent remains a runnable
+   capability whose graph may contain Model, Tool, and Knowledge. A
+   Workflow is a separate source that only orchestrates AgentCall plus
+   control flow. Both declare their own inputs and outputs.
+2. **Shared editor does not mean every page is a Canvas.** Agent and
+   Workflow share one Canvas shell. Components use Resource Library
+   (list + detail). Knowledge uses document management. Runs use list +
+   timeline. Files use the file manager.
+3. **Components keep an independent entry.** `#/components` stays on the
+   home sidebar. The left Studio palette is a filtered projection of the
+   same catalog for drag-and-drop.
+4. **MCP is not a product layer.** Catalog kind `mcp_tool` is a discovery
+   record under Tools. After normalization it lands on the Canvas as a
+   Tool node. Studio groups MCP with Tools. Architecture diagrams must
+   not draw MCP as a sibling of Agent, Workflow, Component, or Knowledge.
 
 ### 7.3 Studio layout
 
+Agent and Workflow share one Canvas shell, with distinct source contracts,
+node sets, dependency validation, interface mappings, and Runtime entry points.
+
 ```text
-Left      component and tool library
-Center    Prompt / Canvas / Source / Run
-Right     inspector, schemas, permissions, diagnostics
-Top       name, version, validation, save, run, export
-Bottom    errors, semantic diff, generator explanation
+Left      Catalog projection (Agent: Model / Tool / Knowledge;
+          Workflow: AgentCall / control flow).
+          MCP appears under Tools, not as its own product class.
+          Canvas notes are UI-only annotations; they are not Flow nodes.
+Center    Canvas. Hover a connection to insert a node; select it to
+          delete or reconnect an endpoint. Notes can hold free text.
+Right     parameter inspector
+Top       name, version, validation, save
+Bottom    local Agent / Workflow run, immutable version, events, approval and stop
 ```
 
 ### 7.4 Canonical state
@@ -931,7 +1036,9 @@ approval request plus checkpoint, and continue on the **same run** through
 stored inputs. `resume` is not used for approval waits. Node events are
 persisted as they happen and can be replayed through
 `GET /api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}/events`.
-POST `/run` is still synchronous. A full Studio graph Run Canvas remains later.
+POST `/run` returns a started run before completion. Ordered events are
+persisted during execution. Workflow runs use a separate durable parent Run
+and pinned child Agent runs; see ADR 0005 for supported controls and limits.
 
 ### 8.2 Runtime guarantees
 
@@ -1652,6 +1759,12 @@ Stop expanding if:
 ---
 
 ## 20. Immediate Next Documentation/Implementation Tasks
+
+The current resource-boundary decision, migration corrections, executable
+Workflow slice, package limits, and next acceptance stages are recorded in
+[ADR 0005](adr/0005-resource-boundaries-and-pinned-workflows.md). Its explicit
+compatibility and execution boundaries supersede earlier ambiguous wording.
+
 
 1. Resource Catalog node definitions are file-backed packages at
    `resources/nodes/<family>/<id>/node.yaml`; Factory resolves only those records.

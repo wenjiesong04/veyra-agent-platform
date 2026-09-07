@@ -65,10 +65,12 @@ def test_resource_routes_use_typed_errors_and_preserve_components(
         assert [component["type"] for component in components.json()["components"]] == [
             "Start",
             "Agent",
+            "Model",
             "Tool",
             "Condition",
             "Transform",
             "HumanApproval",
             "Verifier",
             "Output",
+            "AgentCall",
         ]

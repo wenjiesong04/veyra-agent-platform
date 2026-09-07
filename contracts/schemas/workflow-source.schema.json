@@ -1,0 +1,555 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/contracts/workflow-source.schema.json",
+  "title": "Veyra Workflow Source V1",
+  "$defs": {
+    "uuid7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
+    "node_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "typed_fields": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/slug"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network_hosts",
+        "tools"
+      ],
+      "properties": {
+        "network_hosts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "filesystem_read_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "filesystem_write_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "shell_workspace_only": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "checks"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "start_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Start"
+        }
+      }
+    },
+    "condition_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "expression"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Condition"
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "transform_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "mapping"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Transform"
+        },
+        "mapping": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "approval_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "prompt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "HumanApproval"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "verifier_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "checks"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Verifier"
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "output_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "output_name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Output"
+        },
+        "output_name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "node": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/start_node"
+        },
+        {
+          "$ref": "#/$defs/agent_call_node"
+        },
+        {
+          "$ref": "#/$defs/condition_node"
+        },
+        {
+          "$ref": "#/$defs/transform_node"
+        },
+        {
+          "$ref": "#/$defs/approval_node"
+        },
+        {
+          "$ref": "#/$defs/verifier_node"
+        },
+        {
+          "$ref": "#/$defs/output_node"
+        }
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "port",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/node_id"
+        },
+        "port": {
+          "enum": [
+            "next",
+            "true",
+            "false",
+            "approved",
+            "rejected",
+            "passed",
+            "failed"
+          ]
+        },
+        "to": {
+          "$ref": "#/$defs/node_id"
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positions"
+      ],
+      "properties": {
+        "positions": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "x",
+              "y"
+            ],
+            "properties": {
+              "x": {
+                "type": "integer"
+              },
+              "y": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "reference",
+              "x",
+              "y"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "skill",
+                  "policy",
+                  "template",
+                  "mcp_tool",
+                  "knowledge"
+                ]
+              },
+              "reference": {
+                "type": "string",
+                "pattern": "^(?:[a-z][a-z0-9_.-]*|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})@[0-9]+\\.[0-9]+\\.[0-9]+$"
+              },
+              "x": {
+                "type": "integer"
+              },
+              "y": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "x",
+              "y",
+              "text"
+            ],
+            "properties": {
+              "x": {
+                "type": "integer"
+              },
+              "y": {
+                "type": "integer"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 4000
+              },
+              "color": {
+                "enum": [
+                  "teal",
+                  "amber",
+                  "violet",
+                  "slate"
+                ]
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 160,
+                "maximum": 640
+              }
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/agent_version_ref"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "agent_version_ref": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "call_mapping": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,62}$"
+      }
+    },
+    "agent_call_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "agent_ref",
+        "input_mapping",
+        "output_mapping"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "AgentCall"
+        },
+        "agent_ref": {
+          "$ref": "#/$defs/agent_version_ref"
+        },
+        "input_mapping": {
+          "$ref": "#/$defs/call_mapping"
+        },
+        "output_mapping": {
+          "$ref": "#/$defs/call_mapping"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "component_type",
+    "workflow_id",
+    "slug",
+    "name",
+    "description",
+    "inputs",
+    "outputs",
+    "nodes",
+    "transitions",
+    "extensions",
+    "ui",
+    "lock"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "component_type": {
+      "const": "Workflow"
+    },
+    "slug": {
+      "$ref": "#/$defs/slug"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "$ref": "#/$defs/typed_fields"
+    },
+    "outputs": {
+      "$ref": "#/$defs/typed_fields"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/transition"
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "veyra"
+      ],
+      "properties": {
+        "veyra": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "permissions",
+            "verification"
+          ],
+          "properties": {
+            "permissions": {
+              "$ref": "#/$defs/permissions"
+            },
+            "verification": {
+              "$ref": "#/$defs/verification"
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "$ref": "#/$defs/ui"
+    },
+    "lock": {
+      "$ref": "#/$defs/lock"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "workflow_id": {
+      "$ref": "#/$defs/uuid7"
+    }
+  },
+  "description": "Structural contract. Agent version ownership, hashes, mappings, and graph topology are validated by the local service."
+}

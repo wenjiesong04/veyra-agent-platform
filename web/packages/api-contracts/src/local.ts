@@ -30,6 +30,8 @@ export type FlowNode = {
   component_type:
     | "Start"
     | "Agent"
+    | "Model"
+    | "AgentCall"
     | "Tool"
     | "Condition"
     | "Transform"
@@ -38,6 +40,9 @@ export type FlowNode = {
     | "Output";
   model_ref?: string;
   system_prompt?: string;
+  agent_ref?: string;
+  input_mapping?: Record<string, string>;
+  output_mapping?: Record<string, string>;
   uses?: string;
   expression?: string;
   mapping?: Record<string, string>;
@@ -50,6 +55,16 @@ export type FlowTransition = {
   from: string;
   port: "next" | "true" | "false" | "approved" | "rejected" | "passed" | "failed";
   to: string;
+};
+
+export type StudioNoteColor = "teal" | "amber" | "violet" | "slate";
+
+export type StudioNote = {
+  x: number;
+  y: number;
+  text: string;
+  color?: StudioNoteColor;
+  width?: number;
 };
 
 export type AgentSource = {
@@ -72,17 +87,71 @@ export type AgentSource = {
       verification: VerificationContract;
       skill_refs?: string[];
       policy_refs?: string[];
+      knowledge_refs?: string[];
     };
   };
   ui: {
     positions: Record<string, { x: number; y: number }>;
     bindings?: Record<string, CatalogBinding>;
+    notes?: Record<string, StudioNote>;
   };
   lock: Record<string, string>;
 };
 
+export type WorkflowSource = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  component_type: "Workflow";
+  workflow_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version?: string;
+  inputs: Record<string, string>;
+  outputs: Record<string, string>;
+  nodes: FlowNode[];
+  transitions: FlowTransition[];
+  extensions: {
+    veyra: {
+      permissions: PermissionContract;
+      verification: VerificationContract;
+    };
+  };
+  ui: {
+    positions: Record<string, { x: number; y: number }>;
+    notes?: Record<string, StudioNote>;
+  };
+  lock: Record<string, string>;
+};
+
+export type StudioSource = AgentSource | WorkflowSource;
+
+export type AgentVersionSnapshot = {
+  version_id: string;
+  agent_id: string;
+  source_hash: string;
+  behavior_hash: string;
+  created_at: string;
+  source: AgentSource;
+};
+export type ListAgentVersionsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  versions: AgentVersionSnapshot[];
+};
+export type WorkflowVersionSnapshot = {
+  version_id: string;
+  workflow_id: string;
+  source_hash: string;
+  behavior_hash: string;
+  created_at: string;
+  source: WorkflowSource;
+};
+export type ListWorkflowVersionsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  versions: WorkflowVersionSnapshot[];
+};
+
 export type CatalogBinding = {
-  kind: "skill" | "policy" | "template" | "mcp_tool";
+  kind: "skill" | "policy" | "template" | "mcp_tool" | "knowledge";
   reference: string;
   x: number;
   y: number;
@@ -104,11 +173,32 @@ export type ProjectAgentRecord = {
   slug: string;
   name: string;
   description: string;
+  version?: string;
   pinned: boolean;
   source_path: string;
   source_file_hash: string;
   parent_agent_id?: string | null;
   runtime_profile?: RuntimeApiProfileSummary | null;
+};
+
+export type ProjectWorkflowRecord = {
+  workflow_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version?: string;
+  source_path: string;
+  source_file_hash: string;
+};
+
+export type ProjectKnowledgeRecord = {
+  knowledge_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version?: string;
+  source_path: string;
+  source_file_hash: string;
 };
 
 export type ProjectSummaryResponse = {
@@ -124,6 +214,10 @@ export type ProjectSummaryResponse = {
   default_agent_id: string | null;
   agent_count: number;
   agents: ProjectAgentRecord[];
+  workflows?: ProjectWorkflowRecord[];
+  workflow_count?: number;
+  knowledge?: ProjectKnowledgeRecord[];
+  knowledge_count?: number;
   runtime_profile?: RuntimeApiProfileSummary | null;
 };
 
@@ -257,7 +351,12 @@ export type ProjectFileKind =
   | "readme"
   | "test"
   | "resource"
+  | "resource_manifest"
   | "project_test"
+  | "workflow"
+  | "component"
+  | "knowledge"
+  | "asset"
   | "file";
 
 export type ProjectFileRecord = {
@@ -301,6 +400,15 @@ export type DraftResponse = {
   source: AgentSource;
 };
 
+export type WorkflowDraftResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  draft_id: string;
+  revision: number;
+  etag: string;
+  source_file_hash: string;
+  source: WorkflowSource;
+};
+
 export type SaveDraftResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   revision: number;
@@ -308,9 +416,83 @@ export type SaveDraftResponse = {
   source: AgentSource;
 };
 
+export type SaveWorkflowDraftResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  revision: number;
+  etag: string;
+  source: WorkflowSource;
+};
+
 export type SaveDraftRequest = {
   source: AgentSource;
   expected_revision: number;
+};
+
+export type SaveWorkflowDraftRequest = {
+  source: WorkflowSource;
+  expected_revision: number;
+};
+
+export type CreateWorkflowRequest = {
+  name?: string;
+  description?: string;
+};
+
+export type CreatedWorkflowResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  workflow_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version?: string;
+  source_path: string;
+  source_file_hash: string;
+  node_count?: number;
+  transition_count?: number;
+};
+
+export type CreateKnowledgeRequest = {
+  name?: string;
+  description?: string;
+  text?: string;
+};
+
+export type UpdateKnowledgeRequest = {
+  name?: string;
+  description?: string;
+  text?: string;
+};
+
+export type KnowledgeDocumentResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  knowledge_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version?: string;
+  source_path: string;
+  source_file_hash: string;
+  text: string;
+};
+
+export type DeleteKnowledgeResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  knowledge_id: string;
+  disposition: "trashed";
+  removed_at: string;
+  project: ProjectSummaryResponse;
+};
+
+export type DeleteWorkflowResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  workflow_id: string;
+  disposition: "trashed";
+  removed_at: string;
+  project: ProjectSummaryResponse;
 };
 
 export type ValidateResponse = {
@@ -325,7 +507,8 @@ export type ValidateResponse = {
 export type CommitResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   version_id: string;
-  agent_id: string;
+  agent_id?: string;
+  workflow_id?: string;
   source_hash: string;
   behavior_hash: string;
   lock_hash: string;
@@ -661,4 +844,10 @@ export type OrchestratorStatus = {
   cloud_execution: false;
   counts: Record<WorkItemStatus, number>;
   active: WorkItem[];
+};
+
+export type WorkflowRunResponse = Omit<AgentRunResponse, "agent_id"> & {
+  workflow_id: string;
+  waiting: { kind: string; node_id: string; prompt: string; agent_id?: string; child_run_id?: string } | null;
+  children: { node_id: string; agent_id: string; version_id: string; child_run_id: string | null; status: RuntimeRunStatus | null }[];
 };

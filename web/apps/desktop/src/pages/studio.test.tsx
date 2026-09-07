@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSource, DraftResponse, ProjectSummaryResponse, ResourceDescriptor } from "@veyra/api-contracts";
+import type { AgentSource, DraftResponse, ProjectSummaryResponse, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
@@ -167,16 +167,16 @@ describe("StudioPage source and conflict safety", () => {
     const user = userEvent.setup();
     renderPage(api);
     expect(await screen.findByRole("button", { name: /Start Entry point/ })).toBeInTheDocument();
-    expect(screen.getByText("Select a canvas node to edit its source fields.")).toBeInTheDocument();
+    expect(screen.getByText("Select a canvas node or connection to edit.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Collapse catalog" }));
     expect(screen.queryByRole("button", { name: /Start Entry point/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Expand catalog" })).toHaveAttribute("aria-expanded", "false");
     await user.click(screen.getByRole("button", { name: "Collapse inspector" }));
-    expect(screen.queryByText("Select a canvas node to edit its source fields.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Select a canvas node or connection to edit.")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Expand catalog" }));
     expect(screen.getByRole("button", { name: /Start Entry point/ })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Expand inspector" }));
-    expect(screen.getByText("Select a canvas node to edit its source fields.")).toBeInTheDocument();
+    expect(screen.getByText("Select a canvas node or connection to edit.")).toBeInTheDocument();
   });
 
   it("overlays a collapsible test run panel without removing the run controls until collapsed", async () => {
@@ -203,5 +203,90 @@ describe("StudioPage source and conflict safety", () => {
     renderPage(api);
     expect(await screen.findByRole("button", { name: "Expand catalog" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Start Entry point/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps Agent internals off the Workflow palette and orchestration nodes off the Agent palette", async () => {
+    const workflow: WorkflowSource = {
+      schema_version: "1.0",
+      component_type: "Workflow",
+      workflow_id: "wf-1",
+      slug: "review-path",
+      name: "Review path",
+      description: "",
+      version: "1.0.0",
+      inputs: { prompt: "string" },
+      outputs: { result: "string" },
+      nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }],
+      transitions: [{ from: "start", port: "next", to: "out" }],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: { start: { x: 0, y: 0 }, out: { x: 100, y: 0 } } },
+      lock: {},
+    };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft()),
+      getWorkflowDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "wf-draft", revision: 1, etag: '"etag-w"', source_file_hash: "wf-hash", source: workflow }),
+    } as unknown as LocalProjectApi;
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: /Model Model instruction/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /AgentCall/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Condition Branch expression/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Transform Map values/ })).not.toBeInTheDocument();
+    cleanup();
+    const workflowProject = {
+      ...project,
+      agents: [{ agent_id: "agent-1", slug: "translation", name: "translation", description: "", pinned: false, source_path: "agents/translation/agent.vagent.yaml", source_file_hash: "file" }],
+    };
+    const workflowApi = {
+      ...api,
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [workflowProject] }),
+    } as unknown as LocalProjectApi;
+    render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={workflowApi}><StudioPage projectId="project-1" workflowId="wf-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    const agentCall = await screen.findByRole("button", { name: /AgentCall Call a Project Agent/ });
+    expect(agentCall).toBeEnabled();
+    expect(screen.getByRole("button", { name: /translation Call a committed version/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Condition Branch expression/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Transform Map values/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Model Model instruction/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Tool Governed tool/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test run" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run Workflow" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Workflow run inputs/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Run the current workflow with real inputs")).toBeInTheDocument();
+  });
+
+  it("inserts a Project Agent between Start and Output and explains missing committed versions", async () => {
+    const workflow: WorkflowSource = {
+      schema_version: "1.0",
+      component_type: "Workflow",
+      workflow_id: "wf-1",
+      slug: "review-path",
+      name: "Review path",
+      description: "",
+      version: "1.0.0",
+      inputs: { prompt: "string" },
+      outputs: { result: "string" },
+      nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }],
+      transitions: [{ from: "start", port: "next", to: "out" }],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: { start: { x: 0, y: 0 }, out: { x: 100, y: 0 } } },
+      lock: {},
+    };
+    const workflowProject = {
+      ...project,
+      agents: [{ agent_id: "01900000-0000-7000-8000-000000000001", slug: "translation", name: "translation", description: "", pinned: false, source_path: "agents/translation/agent.vagent.yaml", source_file_hash: "file" }],
+    };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [workflowProject] }),
+      getWorkflowDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "wf-draft", revision: 1, etag: '"etag-w"', source_file_hash: "wf-hash", source: workflow }),
+      listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [] }),
+    } as unknown as LocalProjectApi;
+    window.localStorage.setItem("veyra.language", "zh");
+    const user = userEvent.setup();
+    render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={api}><StudioPage projectId="project-1" workflowId="wf-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    await user.click(await screen.findByRole("button", { name: /translation 调用已提交版本/ }));
+    expect(screen.queryByText(/还没有接到流程上/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "去提交版本" })).toBeInTheDocument();
+    expect(screen.getByText(/还没有绑定已提交的 Agent 版本/)).toBeInTheDocument();
   });
 });

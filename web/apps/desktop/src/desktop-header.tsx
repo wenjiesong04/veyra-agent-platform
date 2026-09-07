@@ -1,4 +1,4 @@
-import { Bot, FolderKanban, Gauge, GitBranch, Home, MessageCirclePlus, Play, Wrench } from "lucide-react";
+import { BookOpen, Bot, FileText, FolderKanban, Gauge, History, Home, MessageCirclePlus, Play, Workflow, Wrench } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation, type ProjectAgentRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import { agentAncestryPath } from "./features/projects/agent-tree";
 
@@ -6,8 +6,8 @@ type DesktopHeader = { title: string; breadcrumbs?: { label: string; href?: stri
 type DesktopLocale = "zh" | "en";
 
 const rootTitles: Record<"en" | "zh", Partial<Record<DesktopRouteLocation["kind"], string>>> = {
-  en: { chat: "New chat", projects: "New chat", components: "Resource Library", files: "Knowledge base", runs: "Runs", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found" },
-  zh: { chat: "新聊天", projects: "新聊天", components: "资源库", files: "知识库", runs: "运行记录", monitor: "监控", community: "社区", account: "账号", settings: "设置", "not-found": "找不到页面" },
+  en: { chat: "New chat", projects: "New chat", components: "Resource Library", files: "Knowledge base", runs: "History", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found" },
+  zh: { chat: "新聊天", projects: "新聊天", components: "资源库", files: "知识库", runs: "历史", monitor: "监控", community: "社区", account: "账号", settings: "设置", "not-found": "找不到页面" },
 };
 
 function agentDisplayLabel(agent: ProjectAgentRecord): string {
@@ -24,8 +24,8 @@ function agentBreadcrumbChain(project: ProjectSummaryResponse, projectId: string
 
 export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSummaryResponse[], locale: DesktopLocale = "en"): DesktopHeader {
   const contextLabels = locale === "zh"
-    ? { newChat: "新聊天", orchestration: "编排", analysis: "数据分析", run: "运行", version: "版本", overview: "概览", factory: "Factory" }
-    : { newChat: "New chat", orchestration: "Orchestration", analysis: "Data analysis", run: "Run", version: "Version", overview: "Overview", factory: "Factory" };
+    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", overview: "概览", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "历史" }
+    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", overview: "Overview", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "History" };
   const title = rootTitles[locale][route.kind];
   if (title) return { title };
   const project = "projectId" in route ? projects.find((item) => item.project_id === route.projectId) : undefined;
@@ -46,6 +46,23 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   if (route.kind === "factory") {
     return { title: contextLabels.factory, breadcrumbs: [home, { label: contextLabels.factory, href: projectRoutePaths.factory(route.projectId), icon: Wrench }, projectCrumb] };
   }
+  if (route.kind === "project-workflows") {
+    return { title: contextLabels.workflows, breadcrumbs: [home, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, projectCrumb] };
+  }
+  if (route.kind === "project-workflow") {
+    const workflow = project?.workflows?.find((item) => item.workflow_id === route.workflowId);
+    const workflowLabel = workflow?.name || workflow?.slug || contextLabels.workflows;
+    return { title: workflowLabel, breadcrumbs: [home, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, projectCrumb, { label: workflowLabel, href: projectRoutePaths.workflow(route.projectId, route.workflowId ?? ""), icon: Workflow }] };
+  }
+  if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") {
+    return { title: contextLabels.knowledge, breadcrumbs: [home, { label: contextLabels.knowledge, href: projectRoutePaths.knowledge(route.projectId), icon: BookOpen }, projectCrumb] };
+  }
+  if (route.kind === "project-files") {
+    return { title: contextLabels.files, breadcrumbs: [home, { label: contextLabels.files, href: projectRoutePaths.files(route.projectId), icon: FileText }, projectCrumb] };
+  }
+  if (route.kind === "project-runs") {
+    return { title: contextLabels.history, breadcrumbs: [home, { label: contextLabels.history, href: projectRoutePaths.runs(route.projectId), icon: History }, projectCrumb] };
+  }
 
   if ("agentId" in route && route.agentId && project) {
     const agentId = route.agentId;
@@ -57,31 +74,35 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
     if (route.kind === "agent-detail") {
       return {
         title: fallbackAgent ? agentDisplayLabel(fallbackAgent) : agentId,
-        breadcrumbs: [home, { label: contextLabels.newChat, href: projectRoutePaths.agent(route.projectId, agentId), icon: MessageCirclePlus }, projectCrumb, ...resolvedAgentChain],
+        breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain],
       };
     }
     if (route.kind === "agent-design") {
+      const fromWorkflow = route.workflowId ? project.workflows?.find((item) => item.workflow_id === route.workflowId) : undefined;
+      const agentTitle = fallbackAgent ? agentDisplayLabel(fallbackAgent) : (resolvedAgentChain.at(-1)?.label ?? agentId);
       return {
-        title: contextLabels.orchestration,
-        breadcrumbs: [home, { label: contextLabels.orchestration, href: projectRoutePaths.agentDesign(route.projectId, agentId), icon: GitBranch }, projectCrumb, ...resolvedAgentChain],
+        title: agentTitle,
+        breadcrumbs: fromWorkflow
+          ? [home, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, projectCrumb, { label: fromWorkflow.name || fromWorkflow.slug, href: projectRoutePaths.workflow(route.projectId, fromWorkflow.workflow_id), icon: Workflow }, ...resolvedAgentChain]
+          : [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain],
       };
     }
     if (route.kind === "agent-analysis") {
       return {
         title: contextLabels.analysis,
-        breadcrumbs: [home, { label: contextLabels.analysis, href: projectRoutePaths.agentAnalysis(route.projectId, agentId), icon: Gauge }, projectCrumb, ...resolvedAgentChain],
+        breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain, { label: contextLabels.analysis, icon: Gauge }],
       };
     }
     if (route.kind === "agent-version") {
       const versionLabel = `${contextLabels.version} / ${route.versionId ?? ""}`.trim();
       return {
         title: versionLabel,
-        breadcrumbs: [home, { label: contextLabels.orchestration, href: projectRoutePaths.agentDesign(route.projectId, agentId), icon: GitBranch }, projectCrumb, ...resolvedAgentChain, { label: versionLabel, icon: Wrench }],
+        breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain, { label: versionLabel, icon: Wrench }],
       };
     }
     return {
       title: contextLabels.run,
-      breadcrumbs: [home, { label: contextLabels.orchestration, href: projectRoutePaths.agentDesign(route.projectId, agentId), icon: GitBranch }, projectCrumb, ...resolvedAgentChain, { label: contextLabels.run, icon: Play }],
+      breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain, { label: contextLabels.run, icon: Play }],
     };
   }
 

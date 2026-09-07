@@ -201,10 +201,18 @@ def test_empty_project_creates_required_layout_and_reopens(tmp_path: Path) -> No
     assert manifest["agents"] == []
     assert manifest["default_agent_id"] is None
     assert (root / "agents").is_dir()
+    assert (root / "workflows").is_dir()
+    assert (root / "components" / "primitive").is_dir()
+    assert (root / "components" / "composite").is_dir()
+    assert (root / "knowledge").is_dir()
+    assert (root / "assets").is_dir()
     assert (root / "resources").is_dir()
     assert (root / "tests").is_dir()
     assert created["agent_count"] == 0
+    assert created["workflow_count"] == 0
+    assert created["knowledge_count"] == 0
     assert created["agents"] == []
+    assert created["workflows"] == []
     assert created["indexed_at"]
     assert projects.index(root)["project_id"] == created["project_id"]
 
@@ -402,3 +410,30 @@ def test_reload_accepts_external_edit_and_divergent_idempotency_conflicts(
         library.draft(project_id, agent_id)
     reloaded = library.reload_from_disk(project_id, agent_id)
     assert reloaded["source"]["description"] == "external"
+
+
+def test_create_workflow_writes_layout_and_indexes_blank_source(
+    tmp_path: Path,
+) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="One")
+    workflow = projects.create_workflow(
+        project_id=created["project_id"], name="Review path"
+    )
+    root = Path(created["root_path"])
+    source_path = root / workflow["source_path"]
+    assert workflow["slug"] == "new-workflow"
+    assert workflow["name"] == "Review path"
+    assert workflow["node_count"] == 2
+    assert source_path.is_file()
+    assert (source_path.parent / "resource.yaml").is_file()
+    assert (source_path.parent / "README.md").is_file()
+    summary = projects.project_summary(created["project_id"])
+    assert summary["workflow_count"] == 1
+    assert summary["workflows"][0]["workflow_id"] == workflow["workflow_id"]
+    manifest = json.loads((root / "project.vproject.yaml").read_text())
+    assert manifest["workflows"][0]["path"] == "workflows/new-workflow"
+    source = json.loads(source_path.read_text())
+    assert source["component_type"] == "Workflow"
+    assert source["lock"] == {}
+    assert [node["component_type"] for node in source["nodes"]] == ["Start", "Output"]

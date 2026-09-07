@@ -1,3 +1,4 @@
+import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersionsResponse } from "@veyra/api-contracts";
 import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
@@ -7,9 +8,14 @@ import {
   type CommitResponse,
   type CreateAgentRequest,
   type CreatedAgentResponse,
+  type CreateKnowledgeRequest,
   type CreateProjectRequest,
+  type CreateWorkflowRequest,
+  type CreatedWorkflowResponse,
   type DeleteProjectResponse,
   type DeleteAgentResponse,
+  type DeleteKnowledgeResponse,
+  type DeleteWorkflowResponse,
   type DraftResponse,
   type ExportResponse,
   type FactoryMissingCapability,
@@ -26,6 +32,7 @@ import {
   type FactoryMessage,
   type JsonObject,
   type JsonValue,
+  type KnowledgeDocumentResponse,
   type ListAgentRunsResponse,
   type ListAgentsResponse,
   type ListAgentTemplatesResponse,
@@ -35,7 +42,6 @@ import {
   type ListResourcesResponse,
   type ListProjectsResponse,
   type ListWorkItemsResponse,
-  type LocalErrorEnvelope,
   type CreateMcpServerRequest,
   type McpServer,
   type OpenProjectRequest,
@@ -44,9 +50,13 @@ import {
   type ProjectFileKind,
   type ProjectFileRecord,
   type ProjectFilesResponse,
+  type ProjectKnowledgeRecord,
   type ProjectSummaryResponse,
+  type ProjectWorkflowRecord,
   type SaveDraftRequest,
   type SaveDraftResponse,
+  type SaveWorkflowDraftRequest,
+  type SaveWorkflowDraftResponse,
   type SelectDirectoryResponse,
   type StartAgentRunRequest,
   type RunCommandRequest,
@@ -59,7 +69,10 @@ import {
   type RuntimeEvent,
   type UpdateProjectRequest,
   type UpdateAgentRequest,
+  type UpdateKnowledgeRequest,
   type ValidateResponse,
+  type WorkflowDraftResponse,
+  type WorkflowSource,
   type OrchestratorStatus,
   type WorkItem,
 } from "@veyra/api-contracts";
@@ -112,15 +125,29 @@ export type LocalProjectApi = {
   deleteAgent(projectId: string, agentId: string): Promise<DeleteAgentResponse>;
   listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse>;
   createAgent(projectId: string, input: CreateAgentRequest): Promise<CreatedAgentResponse>;
+  createWorkflow?(projectId: string, input?: CreateWorkflowRequest): Promise<CreatedWorkflowResponse>;
+  deleteWorkflow?(projectId: string, workflowId: string): Promise<DeleteWorkflowResponse>;
+  createKnowledge?(projectId: string, input?: CreateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
+  getKnowledge?(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse>;
+  updateKnowledge?(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
+  deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; }): Promise<CreatedAgentResponse>;
   importProject?(file: File): Promise<ProjectSummaryResponse>;
   exportProject?(projectId: string): Promise<Blob>;
+  exportAgent?(projectId: string, agentId: string): Promise<ExportResponse>;
   listProjectFiles?(projectId: string): Promise<ProjectFilesResponse>;
   getProjectFile?(projectId: string, path: string): Promise<ProjectFileContentResponse>;
+  listAgentVersions?(projectId: string, agentId: string): Promise<ListAgentVersionsResponse>;
+  listWorkflowVersions?(projectId: string, workflowId: string): Promise<ListWorkflowVersionsResponse>;
   getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
   /** Studio mutations are optional so narrow consumers can still supply read-only APIs. */
   saveDraft?(projectId: string, agentId: string, input: SaveDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveDraftResponse>;
   reloadDraft?(projectId: string, agentId: string): Promise<DraftResponse>;
+  getWorkflowDraft?(projectId: string, workflowId: string): Promise<WorkflowDraftResponse>;
+  saveWorkflowDraft?(projectId: string, workflowId: string, input: SaveWorkflowDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveWorkflowDraftResponse>;
+  reloadWorkflowDraft?(projectId: string, workflowId: string): Promise<WorkflowDraftResponse>;
+  validateWorkflow?(projectId: string, workflowId: string): Promise<ValidateResponse>;
+  commitWorkflow?(projectId: string, workflowId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
   validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
   commit?(projectId: string, agentId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
   listComponents?(): Promise<ListComponentsResponse>;
@@ -147,6 +174,10 @@ export type LocalProjectApi = {
   createWorkItem?(projectId: string, input: { title: string; agent_id: string; description?: string; depends_on?: string[]; inputs?: JsonObject }): Promise<WorkItem>;
   dispatchWorkItem?(workItemId: string): Promise<WorkItem>;
   cancelWorkItem?(workItemId: string): Promise<WorkItem>;
+  runWorkflow?(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse>;
+  getWorkflowRun?(projectId: string, workflowId: string, runId: string): Promise<WorkflowRunResponse>;
+  listWorkflowRuns?(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }>;
+  commandWorkflowRun?(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" }): Promise<WorkflowRunResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
@@ -344,11 +375,38 @@ function projectAgent(value: unknown, status = 502): ProjectAgentRecord {
         ? null
         : asString(record.parent_agent_id, "parent_agent_id", status),
     }),
+    ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
     ...(record.runtime_profile === undefined ? {} : {
       runtime_profile: record.runtime_profile === null
         ? null
         : runtimeProfile(record.runtime_profile, status),
     }),
+  };
+}
+
+function projectWorkflow(value: unknown, status = 502): ProjectWorkflowRecord {
+  const record = asRecord(value, status);
+  return {
+    workflow_id: asString(record.workflow_id, "workflow_id", status),
+    slug: asString(record.slug, "slug", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    source_path: asString(record.source_path, "source_path", status),
+    source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
+  };
+}
+
+function projectKnowledge(value: unknown, status = 502): ProjectKnowledgeRecord {
+  const record = asRecord(value, status);
+  return {
+    knowledge_id: asString(record.knowledge_id, "knowledge_id", status),
+    slug: asString(record.slug, "slug", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    source_path: asString(record.source_path, "source_path", status),
+    source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
   };
 }
 
@@ -367,6 +425,18 @@ function projectSummary(value: unknown, status = 502): ProjectSummaryResponse {
     default_agent_id: record.default_agent_id === null ? null : asString(record.default_agent_id, "default_agent_id", status),
     agent_count: asNumber(record.agent_count, "agent_count", status),
     agents: asArray(record.agents, "agents", status).map((item) => projectAgent(item, status)),
+    ...(record.workflows === undefined ? {} : {
+      workflows: asArray(record.workflows, "workflows", status).map((item) => projectWorkflow(item, status)),
+    }),
+    ...(record.workflow_count === undefined ? {} : {
+      workflow_count: asNumber(record.workflow_count, "workflow_count", status),
+    }),
+    ...(record.knowledge === undefined ? {} : {
+      knowledge: asArray(record.knowledge, "knowledge", status).map((item) => projectKnowledge(item, status)),
+    }),
+    ...(record.knowledge_count === undefined ? {} : {
+      knowledge_count: asNumber(record.knowledge_count, "knowledge_count", status),
+    }),
     ...(record.runtime_profile === undefined ? {} : {
       runtime_profile: record.runtime_profile === null
         ? null
@@ -404,7 +474,12 @@ const PROJECT_FILE_KINDS = new Set<ProjectFileKind>([
   "readme",
   "test",
   "resource",
+  "resource_manifest",
   "project_test",
+  "workflow",
+  "component",
+  "knowledge",
+  "asset",
   "file",
 ]);
 
@@ -537,6 +612,38 @@ function savedDraft(value: unknown, status = 502): SaveDraftResponse {
   };
 }
 
+function versionIdentity(value: unknown, status: number) {
+  const record = asRecord(value, status);
+  const versionId = asString(record.version_id, "version_id", status);
+  const sourceHash = asString(record.source_hash, "source_hash", status);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(versionId) || !/^[0-9a-f]{64}$/.test(sourceHash)) {
+    throw new LocalApiClientError("Invalid immutable version identity.", { status, code: "invalid_response" });
+  }
+  return { record, version_id: versionId, source_hash: sourceHash, behavior_hash: asString(record.behavior_hash, "behavior_hash", status), created_at: asString(record.created_at, "created_at", status) };
+}
+
+function agentVersions(value: unknown, status = 502): ListAgentVersionsResponse {
+  const response = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, versions: asArray(response.versions, "versions", status).map((value) => {
+    const { record, ...identity } = versionIdentity(value, status);
+    const agentId = asString(record.agent_id, "agent_id", status);
+    const snapshot = source(record.source, status);
+    if (snapshot.agent_id !== agentId) throw new LocalApiClientError("Agent version identity mismatch.", { status, code: "invalid_response" });
+    return { ...identity, agent_id: agentId, source: snapshot };
+  }) };
+}
+
+function workflowVersions(value: unknown, status = 502): ListWorkflowVersionsResponse {
+  const response = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, versions: asArray(response.versions, "versions", status).map((value) => {
+    const { record, ...identity } = versionIdentity(value, status);
+    const workflowId = asString(record.workflow_id, "workflow_id", status);
+    const snapshot = workflowSource(record.source, status);
+    if (snapshot.workflow_id !== workflowId) throw new LocalApiClientError("Workflow version identity mismatch.", { status, code: "invalid_response" });
+    return { ...identity, workflow_id: workflowId, source: snapshot };
+  }) };
+}
+
 function validated(value: unknown, status = 502): ValidateResponse {
   const record = schemaRecord(value, status);
   if (record.valid !== true) {
@@ -560,7 +667,8 @@ function committed(value: unknown, status = 502): CommitResponse {
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     version_id: asString(record.version_id, "version_id", status),
-    agent_id: asString(record.agent_id, "agent_id", status),
+    ...(record.agent_id === undefined ? {} : { agent_id: asString(record.agent_id, "agent_id", status) }),
+    ...(record.workflow_id === undefined ? {} : { workflow_id: asString(record.workflow_id, "workflow_id", status) }),
     source_hash: asString(record.source_hash, "source_hash", status),
     behavior_hash: asString(record.behavior_hash, "behavior_hash", status),
     lock_hash: asString(record.lock_hash, "lock_hash", status),
@@ -568,9 +676,125 @@ function committed(value: unknown, status = 502): CommitResponse {
   };
 }
 
+function workflowSource(value: unknown, status = 502): WorkflowSource {
+  const record = schemaRecord(value, status);
+  for (const field of [
+    "component_type",
+    "workflow_id",
+    "slug",
+    "name",
+    "description",
+    "extensions",
+    "ui",
+    "lock",
+  ]) {
+    if (!(field in record)) {
+      throw new LocalApiClientError(`The local service returned an invalid workflow source (${field}).`, {
+        status,
+        code: "invalid_response",
+      });
+    }
+  }
+  asRecord(record.inputs, status);
+  asRecord(record.outputs, status);
+  asArray(record.nodes, "source.nodes", status);
+  asArray(record.transitions, "source.transitions", status);
+  asRecord(record.extensions, status);
+  asRecord(record.ui, status);
+  asRecord(record.lock, status);
+  return record as unknown as WorkflowSource;
+}
+
+function workflowDraft(value: unknown, status = 502): WorkflowDraftResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    draft_id: asString(record.draft_id, "draft_id", status),
+    revision: asNumber(record.revision, "revision", status),
+    etag: asString(record.etag, "etag", status),
+    source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    source: workflowSource(record.source, status),
+  };
+}
+
+function savedWorkflowDraft(value: unknown, status = 502): SaveWorkflowDraftResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    revision: asNumber(record.revision, "revision", status),
+    etag: asString(record.etag, "etag", status),
+    source: workflowSource(record.source, status),
+  };
+}
+
+function createdWorkflow(value: unknown, status = 502): CreatedWorkflowResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    workflow_id: asString(record.workflow_id, "workflow_id", status),
+    slug: asString(record.slug, "slug", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    source_path: asString(record.source_path, "source_path", status),
+    source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
+    ...(record.node_count === undefined ? {} : { node_count: asNumber(record.node_count, "node_count", status) }),
+    ...(record.transition_count === undefined ? {} : { transition_count: asNumber(record.transition_count, "transition_count", status) }),
+  };
+}
+
+function deletedWorkflow(value: unknown, status = 502): DeleteWorkflowResponse {
+  const record = schemaRecord(value, status);
+  if (record.disposition !== "trashed") {
+    throw new LocalApiClientError("The local service returned an invalid Workflow deletion result.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    workflow_id: asString(record.workflow_id, "workflow_id", status),
+    disposition: "trashed",
+    removed_at: asString(record.removed_at, "removed_at", status),
+    project: projectSummary(record.project, status),
+  };
+}
+
+function knowledgeDocument(value: unknown, status = 502): KnowledgeDocumentResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    knowledge_id: asString(record.knowledge_id, "knowledge_id", status),
+    slug: asString(record.slug, "slug", status),
+    name: asString(record.name, "name", status),
+    description: asText(record.description, "description", status),
+    source_path: asString(record.source_path, "source_path", status),
+    source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+    text: asText(record.text, "text", status),
+    ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
+  };
+}
+
+function deletedKnowledge(value: unknown, status = 502): DeleteKnowledgeResponse {
+  const record = schemaRecord(value, status);
+  if (record.disposition !== "trashed") {
+    throw new LocalApiClientError("The local service returned an invalid Knowledge deletion result.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    knowledge_id: asString(record.knowledge_id, "knowledge_id", status),
+    disposition: "trashed",
+    removed_at: asString(record.removed_at, "removed_at", status),
+    project: projectSummary(record.project, status),
+  };
+}
+
 const componentTypes = new Set<ComponentDefinition["type"]>([
   "Start",
   "Agent",
+  "Model",
+  "AgentCall",
   "Tool",
   "Condition",
   "Transform",
@@ -922,7 +1146,7 @@ function runtimeEvent(value: unknown, status = 502): NonNullable<AgentRunRespons
   };
 }
 
-function agentRun(value: unknown, status = 502): AgentRunResponse {
+function commonRun(value: unknown, status = 502): Omit<AgentRunResponse, "agent_id"> {
   const record = schemaRecord(value, status);
   const runStatus = asString(record.status, "run.status", status);
   if (runStatus !== "running" && runStatus !== "waiting" && runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed" && runStatus !== "interrupted" && runStatus !== "cancelled") {
@@ -938,7 +1162,6 @@ function agentRun(value: unknown, status = 502): AgentRunResponse {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     run_id: asString(record.run_id, "run_id", status),
     project_id: asString(record.project_id, "project_id", status),
-    agent_id: asString(record.agent_id, "agent_id", status),
     version_id: asString(record.version_id, "version_id", status),
     status: runStatus,
     result,
@@ -946,6 +1169,27 @@ function agentRun(value: unknown, status = 502): AgentRunResponse {
     created_at: asString(record.created_at, "created_at", status),
     finished_at: record.finished_at === null ? null : asString(record.finished_at, "finished_at", status),
     ...(record.events === undefined ? {} : { events: asArray(record.events, "run.events", status).map((item) => runtimeEvent(item, status)) }),
+  };
+}
+
+function agentRun(value: unknown, status = 502): AgentRunResponse {
+  const record = schemaRecord(value, status);
+  return { ...commonRun(record, status), agent_id: asString(record.agent_id, "agent_id", status) };
+}
+
+function workflowRun(value: unknown, status = 502): WorkflowRunResponse {
+  const record = schemaRecord(value, status);
+  const workflowId = asString(record.workflow_id, "workflow_id", status);
+  const common = commonRun(record, status);
+  const waiting = record.waiting === null ? null : asRecord(record.waiting, status);
+  return { ...common, workflow_id: workflowId,
+    waiting: waiting ? { kind: asString(waiting.kind, "waiting.kind", status), node_id: asString(waiting.node_id, "waiting.node_id", status), prompt: asText(waiting.prompt, "waiting.prompt", status) } : null,
+    children: asArray(record.children, "children", status).map((value) => {
+      const child = asRecord(value, status);
+      const childStatus = child.status === null ? null : asString(child.status, "child.status", status);
+      if (childStatus !== null && !["running", "waiting", "verified", "unverified", "failed", "interrupted", "cancelled"].includes(childStatus)) throw new LocalApiClientError("Invalid child run status", { status, code: "invalid_response" });
+      return { node_id: asString(child.node_id, "child.node_id", status), agent_id: asString(child.agent_id, "child.agent_id", status), version_id: asString(child.version_id, "child.version_id", status), child_run_id: child.child_run_id === null ? null : asString(child.child_run_id, "child.run_id", status), status: childStatus as WorkflowRunResponse["children"][number]["status"] };
+    }),
   };
 }
 
@@ -968,53 +1212,74 @@ function exported(value: unknown, status = 502): ExportResponse {
   };
 }
 
+function fallbackHttpError(status: number): LocalApiClientError {
+  return new LocalApiClientError(
+    status >= 500
+      ? "The local service failed while handling this request. Restart the desktop sidecar and retry."
+      : `The local service rejected this request (${status}).`,
+    { status, code: status >= 500 ? "local_internal_error" : "http_error" },
+  );
+}
+
+function fastapiDetailMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const parts = value.flatMap((item) => {
+    if (typeof item === "string" && item.trim()) {
+      return [item];
+    }
+    if (item && typeof item === "object" && "msg" in item) {
+      const message = (item as { msg?: unknown }).msg;
+      return typeof message === "string" && message.trim() ? [message] : [];
+    }
+    return [];
+  });
+  return parts.length > 0 ? parts.join("; ") : undefined;
+}
+
 function errorEnvelope(value: unknown, status: number): LocalApiClientError {
-  let record: Record<string, unknown>;
-  try {
-    record = schemaRecord(value, status);
-  } catch {
-    return new LocalApiClientError("The local service returned an invalid error response.", {
-      status,
-      code: "invalid_error_envelope",
-    });
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    return fallbackHttpError(status);
   }
-  if (
-    typeof record.code !== "string" ||
-    typeof record.message !== "string" ||
-    typeof record.request_id !== "string"
-  ) {
-    return new LocalApiClientError("The local service returned an invalid error response.", {
-      status,
-      code: "invalid_error_envelope",
-    });
-  }
-  let details: Record<string, string> | undefined;
-  if (record.details !== undefined) {
-    const rawDetails = asRecord(record.details, status);
-    details = {};
-    for (const [key, detail] of Object.entries(rawDetails)) {
-      if (typeof detail !== "string") {
+  const record = value as Record<string, unknown>;
+  if (typeof record.code === "string" && typeof record.message === "string") {
+    let details: Record<string, string> | undefined;
+    if (record.details !== undefined) {
+      try {
+        const rawDetails = asRecord(record.details, status);
+        details = {};
+        for (const [key, detail] of Object.entries(rawDetails)) {
+          if (typeof detail !== "string") {
+            return new LocalApiClientError("The local service returned invalid error details.", {
+              status,
+              code: "invalid_error_envelope",
+            });
+          }
+          details[key] = detail;
+        }
+      } catch {
         return new LocalApiClientError("The local service returned invalid error details.", {
           status,
           code: "invalid_error_envelope",
         });
       }
-      details[key] = detail;
     }
+    return new LocalApiClientError(record.message, {
+      status,
+      code: record.code,
+      requestId: typeof record.request_id === "string" ? record.request_id : undefined,
+      details,
+    });
   }
-  const envelope: LocalErrorEnvelope = {
-    schema_version: LOCAL_API_SCHEMA_VERSION,
-    code: record.code,
-    message: record.message,
-    request_id: record.request_id,
-    ...(details ? { details } : {}),
-  };
-  return new LocalApiClientError(envelope.message, {
-    status,
-    code: envelope.code,
-    requestId: envelope.request_id,
-    details: envelope.details,
-  });
+  const detail = fastapiDetailMessage(record.detail);
+  if (detail) {
+    return new LocalApiClientError(detail, { status, code: "http_error" });
+  }
+  return fallbackHttpError(status);
 }
 
 export class LocalApiClient {
@@ -1093,6 +1358,51 @@ export class LocalApiClient {
     });
   }
 
+  createWorkflow(projectId: string, input: CreateWorkflowRequest = {}): Promise<CreatedWorkflowResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows`, createdWorkflow, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  deleteWorkflow(projectId: string, workflowId: string): Promise<DeleteWorkflowResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}`,
+      deletedWorkflow,
+      { method: "DELETE" },
+    );
+  }
+
+  createKnowledge(projectId: string, input: CreateKnowledgeRequest = {}): Promise<KnowledgeDocumentResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/knowledge`, knowledgeDocument, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  getKnowledge(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}`,
+      knowledgeDocument,
+    );
+  }
+
+  updateKnowledge(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}`,
+      knowledgeDocument,
+      { method: "PATCH", body: input },
+    );
+  }
+
+  deleteKnowledge(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}`,
+      deletedKnowledge,
+      { method: "DELETE" },
+    );
+  }
+
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string }): Promise<CreatedAgentResponse> {
     const formData = new FormData();
     formData.append("file", input.file);
@@ -1165,6 +1475,74 @@ export class LocalApiClient {
       `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/draft/reload`,
       draft,
       { method: "POST" },
+    );
+  }
+
+  listAgentVersions(projectId: string, agentId: string): Promise<ListAgentVersionsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/versions`, agentVersions);
+  }
+
+  listWorkflowVersions(projectId: string, workflowId: string): Promise<ListWorkflowVersionsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/versions`, workflowVersions);
+  }
+
+  getWorkflowDraft(projectId: string, workflowId: string): Promise<WorkflowDraftResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/draft`,
+      workflowDraft,
+    );
+  }
+
+  saveWorkflowDraft(
+    projectId: string,
+    workflowId: string,
+    input: SaveWorkflowDraftRequest,
+    options: { etag: string; idempotencyKey?: string },
+  ): Promise<SaveWorkflowDraftResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/draft`,
+      savedWorkflowDraft,
+      {
+        method: "PATCH",
+        body: input,
+        ifMatch: options.etag,
+        idempotencyKey: options.idempotencyKey,
+        requireIdempotencyKey: true,
+      },
+    );
+  }
+
+  reloadWorkflowDraft(projectId: string, workflowId: string): Promise<WorkflowDraftResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/draft/reload`,
+      workflowDraft,
+      { method: "POST" },
+    );
+  }
+
+  validateWorkflow(projectId: string, workflowId: string): Promise<ValidateResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/validate`,
+      validated,
+      { method: "POST" },
+    );
+  }
+
+  commitWorkflow(
+    projectId: string,
+    workflowId: string,
+    options: { expectedRevision: number; etag: string; idempotencyKey?: string },
+  ): Promise<CommitResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/commit`,
+      committed,
+      {
+        method: "POST",
+        body: { expected_revision: options.expectedRevision },
+        ifMatch: options.etag,
+        idempotencyKey: options.idempotencyKey,
+        requireIdempotencyKey: true,
+      },
     );
   }
 
@@ -1344,6 +1722,19 @@ export class LocalApiClient {
 
   cancelWorkItem(workItemId: string): Promise<WorkItem> {
     return this.request(`work-items/${encodeURIComponent(workItemId)}/cancel`, workItem, { method: "POST" });
+  }
+
+  runWorkflow(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/run`, workflowRun, { method: "POST", body: input, requireIdempotencyKey: true });
+  }
+  getWorkflowRun(projectId: string, workflowId: string, runId: string): Promise<WorkflowRunResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`, workflowRun);
+  }
+  listWorkflowRuns(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs`, (value, status) => { const record = schemaRecord(value, status); return { schema_version: "1.0", runs: asArray(record.runs, "runs", status).map((item) => workflowRun(item, status)) }; });
+  }
+  commandWorkflowRun(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" }): Promise<WorkflowRunResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/commands`, workflowRun, { method: "POST", body: input, requireIdempotencyKey: true });
   }
 
   runAgent(

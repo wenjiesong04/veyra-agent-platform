@@ -94,6 +94,29 @@ class CreateAgentRequest(_ClosedModel):
         return self
 
 
+class CreateWorkflowRequest(_ClosedModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class CreateKnowledgeRequest(_ClosedModel):
+    name: str | None = None
+    description: str | None = None
+    text: str | None = None
+
+
+class UpdateKnowledgeRequest(_ClosedModel):
+    name: str | None = None
+    description: str | None = None
+    text: str | None = None
+
+    @model_validator(mode="after")
+    def require_update(self) -> UpdateKnowledgeRequest:
+        if not self.model_fields_set:
+            raise ValueError("at least one Knowledge field is required")
+        return self
+
+
 class UpdateAgentRequest(_ClosedModel):
     pinned: Literal[True] | None = None
     runtime_profile: RuntimeApiProfileInput | None = None
@@ -436,12 +459,194 @@ def build_router() -> APIRouter:
         response.headers["ETag"] = result["etag"]
         return result
 
+    @router.get("/{project_id}/agents/{agent_id}/versions")
+    def agent_versions(
+        project_id: str, agent_id: str, request: Request
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        return _translate(lambda: library.versions(project_id, agent_id))
+
+    @router.get("/{project_id}/workflows/{workflow_id}/versions")
+    def workflow_versions(
+        project_id: str, workflow_id: str, request: Request
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        return _translate(lambda: library.workflow_versions(project_id, workflow_id))
+
     @router.get("/{project_id}/agents/{agent_id}/export")
     def export_agent(
         project_id: str, agent_id: str, request: Request
     ) -> dict[str, Any]:
         _, library = _services(request)
         return _translate(lambda: library.export(project_id, agent_id))
+
+    @router.get("/{project_id}/workflows")
+    def list_workflows(project_id: str, request: Request) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: {
+                "schema_version": "1.0",
+                "workflows": projects.project_summary(project_id)["workflows"],
+            }
+        )
+
+    @router.post("/{project_id}/workflows", status_code=status.HTTP_201_CREATED)
+    def create_workflow(
+        project_id: str, payload: CreateWorkflowRequest, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.create_workflow(
+                project_id=project_id,
+                name=payload.name,
+                description=payload.description,
+            )
+        )
+
+    @router.delete("/{project_id}/workflows/{workflow_id}")
+    def delete_workflow(
+        project_id: str, workflow_id: str, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+
+        def operation() -> dict[str, Any]:
+            result = projects.remove_workflow(project_id, workflow_id)
+            result["project"] = _project_response(request, result["project"])
+            return result
+
+        return _translate(operation)
+
+    @router.get("/{project_id}/workflows/{workflow_id}/draft")
+    def get_workflow_draft(
+        project_id: str, workflow_id: str, response: Response, request: Request
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        result = _translate(lambda: library.workflow_draft(project_id, workflow_id))
+        response.headers["ETag"] = result["etag"]
+        return result
+
+    @router.patch("/{project_id}/workflows/{workflow_id}/draft")
+    def patch_workflow_draft(
+        project_id: str,
+        workflow_id: str,
+        payload: ReplaceDraftRequest,
+        response: Response,
+        request: Request,
+        if_match: str = Header(),
+        idempotency_key: str = Header(),
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        result = _translate(
+            lambda: library.replace_workflow_draft(
+                project_id=project_id,
+                workflow_id=workflow_id,
+                expected_etag=if_match,
+                idempotency_key=idempotency_key,
+                **payload.model_dump(),
+            )
+        )
+        response.headers["ETag"] = result["etag"]
+        return result
+
+    @router.post("/{project_id}/workflows/{workflow_id}/draft/reload")
+    def reload_workflow_draft(
+        project_id: str, workflow_id: str, response: Response, request: Request
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        result = _translate(
+            lambda: library.reload_workflow_from_disk(project_id, workflow_id)
+        )
+        response.headers["ETag"] = result["etag"]
+        return result
+
+    @router.post("/{project_id}/workflows/{workflow_id}/validate")
+    def validate_workflow(
+        project_id: str, workflow_id: str, request: Request
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        return _translate(lambda: library.validate_workflow(project_id, workflow_id))
+
+    @router.post("/{project_id}/workflows/{workflow_id}/commit")
+    def commit_workflow(
+        project_id: str,
+        workflow_id: str,
+        payload: CommitAgentRequest,
+        request: Request,
+        if_match: str = Header(),
+        idempotency_key: str = Header(),
+    ) -> dict[str, Any]:
+        _, library = _services(request)
+        return _translate(
+            lambda: library.commit_workflow(
+                project_id=project_id,
+                workflow_id=workflow_id,
+                expected_revision=payload.expected_revision,
+                expected_etag=if_match,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+    @router.get("/{project_id}/knowledge")
+    def list_knowledge(project_id: str, request: Request) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: {
+                "schema_version": "1.0",
+                "knowledge": projects.project_summary(project_id)["knowledge"],
+            }
+        )
+
+    @router.post("/{project_id}/knowledge", status_code=status.HTTP_201_CREATED)
+    def create_knowledge(
+        project_id: str, payload: CreateKnowledgeRequest, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.create_knowledge(
+                project_id=project_id,
+                name=payload.name,
+                description=payload.description,
+                text=payload.text,
+            )
+        )
+
+    @router.get("/{project_id}/knowledge/{knowledge_id}")
+    def get_knowledge(
+        project_id: str, knowledge_id: str, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(lambda: projects.knowledge_summary(project_id, knowledge_id))
+
+    @router.patch("/{project_id}/knowledge/{knowledge_id}")
+    def patch_knowledge(
+        project_id: str,
+        knowledge_id: str,
+        payload: UpdateKnowledgeRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.replace_knowledge(
+                project_id=project_id,
+                knowledge_id=knowledge_id,
+                name=payload.name,
+                description=payload.description,
+                text=payload.text,
+            )
+        )
+
+    @router.delete("/{project_id}/knowledge/{knowledge_id}")
+    def delete_knowledge(
+        project_id: str, knowledge_id: str, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+
+        def operation() -> dict[str, Any]:
+            result = projects.remove_knowledge(project_id, knowledge_id)
+            result["project"] = _project_response(request, result["project"])
+            return result
+
+        return _translate(operation)
 
     return router
 
@@ -515,3 +720,11 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         raise TypedApiError(422, "project_invalid", str(exc)) from exc
     except ContractValidationError as exc:
         raise TypedApiError(422, "contract_invalid", str(exc)) from exc
+    except TypedApiError:
+        raise
+    except Exception as exc:
+        raise TypedApiError(
+            500,
+            "local_internal_error",
+            str(exc) or "local service failed",
+        ) from exc

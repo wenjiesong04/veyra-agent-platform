@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentRunResponse, AgentSource, JsonValue, RuntimeEvent, RuntimeRunStatus } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonValue, RuntimeEvent, RuntimeRunStatus } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 
 export type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
@@ -44,7 +44,7 @@ export function applyRuntimeEvent(run: AgentRunResponse | null, event: RuntimeEv
   return { ...run, events, status: inferRunStatus(run.status, events) };
 }
 
-export function nodeRunStates(source: AgentSource, events: RuntimeEvent[]): { id: string; state: NodeRunState }[] {
+export function nodeRunStates(source: { nodes: Array<{ id: string }> }, events: RuntimeEvent[]): { id: string; state: NodeRunState }[] {
   return source.nodes.map((node) => {
     let state: NodeRunState = "pending";
     for (const event of events) {
@@ -153,15 +153,17 @@ export function LiveRunProvider({
   projectId,
   agentId,
   locale = "en",
+  inactive = false,
   children,
 }: {
   api: LocalProjectApi;
   projectId: string;
   agentId: string;
   locale?: "zh" | "en";
+  inactive?: boolean;
   children: React.ReactNode;
 }) {
-  const live = useLiveRunSession({ api, projectId, agentId, locale });
+  const live = useLiveRunSession({ api, projectId, agentId, locale, inactive });
   return React.createElement(LiveRunContext.Provider, { value: live }, children);
 }
 

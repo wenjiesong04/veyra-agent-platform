@@ -19,7 +19,8 @@ type ApplicationShellProps = {
   account?: AccountMenuConfig;
   footer?: ReactNode;
   storageKey?: string;
-  onHistoryClick?: () => void;
+  historyHref?: string;
+  historyActive?: boolean;
 };
 
 function readCollapsed(storageKey: string): boolean {
@@ -58,7 +59,7 @@ const shellLabelKeys: Record<string, string> = {
   Preferences: "preferences",
   "Create / Project": "createProject",
   Project: "project",
-  Agents: "agents",
+  Agents: "navAgents",
   "Agent / Project": "agentProject",
   "Version / Project": "versionProject",
   "Run / Project": "runProject",
@@ -71,6 +72,8 @@ const shellLabelKeys: Record<string, string> = {
   Pinned: "pinned",
   Home: "home",
   Agent: "agent",
+  Workflows: "workflows",
+  Knowledge: "knowledge",
   Factory: "factory",
   Version: "version",
   Run: "run",
@@ -84,7 +87,11 @@ const shellLabelKeys: Record<string, string> = {
   Recent: "recent",
   Runs: "runs",
   Monitor: "monitor",
-  Components: "components",
+  Components: "catalogComponents",
+  "Tools / MCP": "catalogTools",
+  Skills: "catalogSkills",
+  Policies: "catalogPolicies",
+  Templates: "catalogTemplates",
   Files: "files",
   Community: "community",
   Account: "account",
@@ -109,10 +116,39 @@ function navigationStatusText(group: NavigationGroup, translate: (key: string, f
   return group.label === "Recent" ? translate("noRecentProjects") : translate("noProjects");
 }
 
-function navigationLinkClassName(active: boolean, contextual: boolean): string {
-  if (active) return "sidebar-nav-link active";
-  if (contextual) return "sidebar-nav-link contextual";
-  return "sidebar-nav-link";
+function navigationLinkClassName(item: NavigationItem, active: boolean, contextual: boolean): string {
+  const classes = ["sidebar-nav-link"];
+  if (active) classes.push("active");
+  else if (contextual) classes.push("contextual");
+  if (item.tone) classes.push(`tone-${item.tone}`);
+  if (item.resourceKind) classes.push(`kind-${item.resourceKind}`);
+  return classes.join(" ");
+}
+
+function navigationRowClassName(item: NavigationItem, extra = ""): string {
+  const classes = [extra, item.tone ? `tone-${item.tone}` : "", item.resourceKind ? `kind-${item.resourceKind}` : ""].filter(Boolean);
+  return classes.join(" ");
+}
+
+function NavigationGlyph({ item, size }: { item: NavigationItem; size: number }) {
+  const Icon = item.icon;
+  const chip = item.tone === "kind" || item.tone === "collection" || item.tone === "catalog";
+  return (
+    <span className={chip ? "sidebar-nav-icon sidebar-nav-kind-icon" : "sidebar-nav-icon"} aria-hidden="true">
+      <Icon size={chip ? 11 : size} />
+    </span>
+  );
+}
+
+function NavLinkLabel({ text }: { text: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const onMouseEnter = () => {
+    const node = ref.current;
+    if (!node) return;
+    if (node.scrollWidth > node.clientWidth + 1) node.setAttribute("title", text);
+    else node.removeAttribute("title");
+  };
+  return <span ref={ref} onMouseEnter={onMouseEnter}>{text}</span>;
 }
 
 function renderSidebarChildren(
@@ -120,18 +156,19 @@ function renderSidebarChildren(
   activeHref: string,
   closeMobile: () => void,
   translate: (key: string, fallback?: string) => string,
+  collapsed: boolean,
 ): ReactNode {
   return items.map((child) => {
-    const ChildIcon = child.icon;
     const childActive = isNavigationItemActive(child, activeHref);
     const childLabel = shellText(child.label, translate);
+    const childContextual = child.contextual === true && !childActive;
     return (
-      <div className="sidebar-nav-child" key={`${child.href}-${childLabel}`}>
-        <div className={`sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`}>
-          <a className={navigationLinkClassName(childActive, child.contextual === true && !childActive)} href={child.href} aria-label={childLabel} title={childLabel} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><ChildIcon size={15} aria-hidden="true" /><span>{childLabel}</span></a>
+      <div className={navigationRowClassName(child, "sidebar-nav-child")} key={`${child.href}-${childLabel}`}>
+        <div className={navigationRowClassName(child, `sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`)}>
+          <a className={navigationLinkClassName(child, childActive, childContextual)} href={child.href} aria-label={childLabel} title={collapsed ? childLabel : undefined} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><NavigationGlyph item={child} size={16} /><NavLinkLabel text={childLabel} /></a>
           {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
         </div>
-        {child.children && child.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(child.children, activeHref, closeMobile, translate)}</div> : null}
+        {child.children && child.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(child.children, activeHref, closeMobile, translate, collapsed)}</div> : null}
       </div>
     );
   });
@@ -244,7 +281,7 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
   );
 }
 
-export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, headerActions, contentClassName, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", onHistoryClick }: ApplicationShellProps) {
+export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title, breadcrumbs, headerActions, contentClassName, children, account, footer, storageKey = "veyra.sidebar-collapsed.v1", historyHref, historyActive = false }: ApplicationShellProps) {
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
@@ -334,16 +371,16 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
               <div className="nav-group-heading"><span className="nav-group-label">{shellText(group.label, t)}</span>{group.action ? <span className="nav-group-action">{group.action}</span> : null}</div>
               {group.backLink ? <a className="sidebar-context-back" href={group.backLink.href} aria-label={group.backLink.label} title={group.backLink.label} onClick={() => closeMobile()}><ArrowLeft size={16} aria-hidden="true" /><span>{group.backLink.label}</span></a> : null}
               {group.items.map((item) => {
-                const Icon = item.icon;
                 const active = isNavigationItemActive(item, activeHref);
+                const contextual = item.contextual === true && !active;
                 const label = shellText(item.label, t);
-                return <div className={`sidebar-nav-item ${item.children ? "has-children" : ""}`} key={`${item.href}-${label}`}>
-                  <div className="sidebar-nav-item-row">
+                return <div className={navigationRowClassName(item, `sidebar-nav-item ${item.children ? "has-children" : ""}`)} key={`${item.href}-${label}`}>
+                  <div className={navigationRowClassName(item, "sidebar-nav-item-row")}>
                     {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
-                    <a className={navigationLinkClassName(active, item.contextual === true && !active)} href={item.href} aria-label={label} title={label} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><Icon size={16} aria-hidden="true" /><span>{label}</span></a>
+                    <a className={navigationLinkClassName(item, active, contextual)} href={item.href} aria-label={label} title={collapsed ? label : undefined} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><NavigationGlyph item={item} size={16} /><NavLinkLabel text={label} /></a>
                     {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
                   </div>
-                  {item.children && item.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(item.children, activeHref, closeMobile, t)}</div> : null}
+                  {item.children && item.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(item.children, activeHref, closeMobile, t, collapsed)}</div> : null}
                 </div>;
               })}
               {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}
@@ -371,7 +408,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
           </div>
           <div className="header-actions">
             {headerActions}
-            <button className="header-control history-control" type="button" onClick={onHistoryClick} aria-label={t("history")} title={t("history")}><History size={17} /><span>{t("history")}</span></button>
+            {historyHref ? <a className={`header-control history-control${historyActive ? " is-current" : ""}`} href={historyHref} aria-current={historyActive ? "page" : undefined} aria-label={t("history")} title={t("history")}><History size={17} aria-hidden="true" /><span>{t("history")}</span></a> : null}
             <button className="header-control language-control" type="button" onClick={() => setLanguage(languageIsEnglish ? "zh" : "en")} aria-label={languageIsEnglish ? t("switchToChinese") : t("switchToEnglish")} title={languageIsEnglish ? t("switchToChinese") : t("switchToEnglish")}><Languages size={17} /><span>{languageIsEnglish ? "中" : "EN"}</span></button>
             <button className="header-control theme-control" type="button" onClick={() => setTheme(effectiveDark ? "light" : "dark")} aria-label={effectiveDark ? t("switchToLight") : t("switchToDark")} title={effectiveDark ? t("switchToLight") : t("switchToDark")}><span aria-hidden="true">{effectiveDark ? <Sun size={17} /> : <Moon size={17} />}</span><span>{effectiveDark ? t("day") : t("night")}</span></button>
           </div>

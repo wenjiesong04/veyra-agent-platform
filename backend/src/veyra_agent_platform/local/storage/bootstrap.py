@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0011_mcp_orchestrator"
+HEAD_REVISION = "local_0014_workflow_runs"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

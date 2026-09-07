@@ -50,7 +50,7 @@ class SchemaParityTests(unittest.TestCase):
         definitions = schema["$defs"]
         self.assertEqual(
             len(definitions["node"]["oneOf"]),
-            8,
+            9,
         )
         self.assertEqual(
             schema["required"],
@@ -100,6 +100,7 @@ class SchemaParityTests(unittest.TestCase):
         expected_definition_names = {
             "start_node",
             "agent_node",
+            "model_node",
             "tool_node",
             "condition_node",
             "transform_node",

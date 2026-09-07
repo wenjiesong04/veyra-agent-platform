@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachCatalogBinding, attachCatalogResource, catalogToolRequiresApproval, paletteFromCatalog } from "./palette";
+import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, knowledgePalette, notePalette, paletteForMode, paletteFromCatalog, workflowAgentPalette } from "./palette";
 
 const source: AgentSource = {
   schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "",
@@ -79,5 +79,66 @@ describe("Studio catalog palette", () => {
     expect(next.extensions.veyra.skill_refs).toEqual([skill.reference]);
     expect(next.lock[skill.reference]).toBe(skill.content_hash);
     expect(next.ui.bindings?.bind_skill1).toEqual({ kind: "skill", reference: skill.reference, x: 12, y: 19 });
+  });
+
+  it("keeps the legacy Agent alias out of the new-node palette", () => {
+    const items = fallbackPalette();
+    expect(items.some((item) => item.componentType === "Agent")).toBe(false);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Agent")).toBe(false);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Model")).toBe(true);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "AgentCall")).toBe(false);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Condition")).toBe(false);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Transform")).toBe(false);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "AgentCall")).toBe(true);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Condition")).toBe(true);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Model")).toBe(false);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Tool")).toBe(false);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Agent")).toBe(false);
+  });
+
+  it("keeps Workflow AgentCall draggable even when Factory cannot select it", () => {
+    const agentCall: ResourceDescriptor = {
+      schema_version: "1.0",
+      resource_id: "veyra.component.agent-call",
+      kind: "component",
+      version: "1.0.0",
+      reference: "veyra.component.agent-call@1.0.0",
+      name: "AgentCall",
+      description: "Call a Project Agent",
+      origin: "builtin",
+      content_hash: "e".repeat(64),
+      availability: "ready",
+      factory_selectable: false,
+      runtime_status: "supported",
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      tags: ["graph"],
+      spec: { fields: ["agent_ref"], output_ports: ["next"], ui: { category: "orchestration", icon: "bot", title: "Agent call" } },
+    };
+    const items = paletteFromCatalog([agentCall]);
+    expect(items[0]?.draggable).toBe(true);
+    expect(paletteForMode(items, "workflow")[0]?.componentType).toBe("AgentCall");
+  });
+
+  it("projects Project Agents as Workflow AgentCall shortcuts", () => {
+    const agent = { agent_id: "01900000-0000-7000-8000-000000000001", slug: "translation", name: "translation", description: "", pinned: false, source_path: "agents/translation/agent.vagent.yaml", source_file_hash: "f".repeat(64) };
+    const items = workflowAgentPalette([agent]);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.group).toBe("agent");
+    expect(items[0]?.componentType).toBe("AgentCall");
+    expect(items[0]?.draggable).toBe(true);
+    expect(items[0]?.title).toBe("translation");
+  });
+
+  it("attaches Knowledge as a catalog binding locked by id@version", () => {
+    const document = { knowledge_id: "01900000-0000-7000-8000-000000000010", slug: "brief", name: "Brief", description: "", version: "1.0.0", source_path: "knowledge/brief/document.md", source_file_hash: "d".repeat(64) };
+    expect(knowledgePalette([document])[0]?.group).toBe("knowledge");
+    const next = attachKnowledgeBinding(source, document, "bind_knowledge1", { x: 8.2, y: 9.8 });
+    expect(next.nodes).toEqual(source.nodes);
+    expect(next.lock[`${document.knowledge_id}@1.0.0`]).toBe(document.source_file_hash);
+    expect(next.ui.bindings?.bind_knowledge1).toEqual({ kind: "knowledge", reference: `${document.knowledge_id}@1.0.0`, x: 8, y: 10 });
+  });
+
+  it("exposes canvas notes as a non-executable palette card", () => {
+    expect(notePalette()[0]).toMatchObject({ group: "note", titleZh: "文字卡片", draggable: true, runtimeStatus: "runtime_not_supported" });
   });
 });

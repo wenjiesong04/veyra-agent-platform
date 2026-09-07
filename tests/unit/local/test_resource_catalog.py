@@ -29,7 +29,7 @@ def test_component_catalog_status_and_legacy_projection_are_honest() -> None:
     catalog = ResourceCatalog()
     components = catalog.resources(kind="component")["resources"]
 
-    agent = next(resource for resource in components if resource["name"] == "Agent")
+    agent = next(resource for resource in components if resource["name"] == "Model")
     tool = next(resource for resource in components if resource["name"] == "Tool")
     approval = next(
         resource for resource in components if resource["name"] == "HumanApproval"
@@ -37,16 +37,27 @@ def test_component_catalog_status_and_legacy_projection_are_honest() -> None:
 
     assert agent["availability"] == "requires_configuration"
     assert agent["runtime_status"] == "runtime_not_configured"
+    assert agent["component_class"] == "primitive"
+    assert {item["component_class"] for item in components} == {"primitive"}
+    assert "AgentCall" in {item["name"] for item in components}
     assert tool["availability"] == "ready"
     assert tool["runtime_status"] == "supported"
     assert approval["availability"] == "ready"
     assert approval["runtime_status"] == "supported"
-    assert all(resource["factory_selectable"] for resource in components)
-    assert catalog.components()[2] == {
+    assert all(
+        resource["factory_selectable"]
+        for resource in components
+        if resource["name"] != "AgentCall"
+    )
+    assert not next(item for item in components if item["name"] == "AgentCall")[
+        "factory_selectable"
+    ]
+    assert next(item for item in catalog.components() if item["type"] == "Tool") == {
         "type": "Tool",
         "fields": ["uses"],
         "output_ports": ["next"],
         "runtime_status": "supported",
+        "component_class": "primitive",
     }
 
 

@@ -21,7 +21,7 @@ spec:
   ui:
     category: model
     icon: bot
-    title: LLM Agent
+    title: Model
 tags:
 - graph
 - builtin

@@ -23,7 +23,20 @@ from veyra_agent_platform.contracts.agent import (
 )
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.contracts.resource import ResourceKind, ResourceManifest
+from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.projects.layout import (
+    INDEXED_ROOT_DIRECTORIES,
+    agent_resource_manifest,
+    blank_knowledge_document,
+    blank_workflow_source,
+    ensure_project_layout,
+    knowledge_resource_manifest,
+    resource_yaml_path,
+    workflow_resource_manifest,
+)
 from veyra_agent_platform.local.projects.packaging import (
+    ProjectArchive,
     ProjectPackageError,
     pack_project_files,
     unpack_project_archive,
@@ -83,6 +96,7 @@ class ProjectService:
         parents: dict[str, str] | None = None,
         extra_files: dict[str, bytes] | None = None,
         default_agent_id: str | None = None,
+        imported_bundle: ProjectArchive | None = None,
     ) -> dict[str, Any]:
         with self._writer_lock:
             return self._create(
@@ -96,6 +110,7 @@ class ProjectService:
                 parents=parents,
                 extra_files=extra_files,
                 default_agent_id=default_agent_id,
+                imported_bundle=imported_bundle,
             )
 
     def _create(
@@ -111,6 +126,7 @@ class ProjectService:
         parents: dict[str, str] | None = None,
         extra_files: dict[str, bytes] | None = None,
         default_agent_id: str | None = None,
+        imported_bundle: ProjectArchive | None = None,
     ) -> dict[str, Any]:
         root = self._new_root(root_path, require_new_root=require_new_root)
         root_preexisted = root.exists()
@@ -135,20 +151,25 @@ class ProjectService:
             parents=parents,
             default_agent_id=None if fork_identities else default_agent_id,
         )
+        if imported_bundle is not None:
+            manifest = imported_bundle.manifest.to_dict()
+            manifest["name"] = allocated_name
         staging = root.parent / f".{root.name}.veyra-staging-{new_uuid7()}"
         installed = False
         try:
             staging.mkdir(mode=0o700)
-            (staging / "agents").mkdir()
-            (staging / "resources").mkdir()
-            (staging / "tests").mkdir()
+            ensure_project_layout(staging)
             for source in forked_sources:
                 agent_root = staging / "agents" / source.slug
-                agent_root.mkdir(parents=True)
+                agent_root.mkdir(parents=True, exist_ok=True)
                 (agent_root / "tests").mkdir()
                 self.atomic_write(
                     agent_root / "agent.vagent.yaml",
                     self._canonical_source(source.to_dict()),
+                )
+                self.atomic_write(
+                    agent_root / "resource.yaml",
+                    self._canonical_source(agent_resource_manifest(source)),
                 )
                 self.atomic_write(agent_root / "README.md", f"# {source.name}\n")
             self._write_extra_files(staging, extra_files or {})
@@ -163,6 +184,15 @@ class ProjectService:
             os.replace(staging, root)
             installed = True
             self._fsync_directory(root.parent)
+            if imported_bundle is not None:
+                manifest_path = root / "project.vproject.yaml"
+                return self._index_manifest(
+                    root,
+                    manifest_path,
+                    self._read_text(manifest_path),
+                    ProjectManifest.from_dict(manifest),
+                    imported_bundle=imported_bundle,
+                )
             return self.index(root)
         except BaseException as exc:
             rollback_errors: list[BaseException] = []
@@ -194,6 +224,7 @@ class ProjectService:
         parents: dict[str, str] | None = None,
         extra_files: dict[str, bytes] | None = None,
         default_agent_id: str | None = None,
+        imported_bundle: ProjectArchive | None = None,
     ) -> dict[str, Any]:
         """Create a Project under the application-managed storage root only."""
         storage_root = self._managed_storage_root()
@@ -209,6 +240,7 @@ class ProjectService:
             parents=parents,
             extra_files=extra_files,
             default_agent_id=default_agent_id,
+            imported_bundle=imported_bundle,
         )
 
     def export_archive(self, project_id: str) -> tuple[bytes, str]:
@@ -216,7 +248,37 @@ class ProjectService:
         _, root, manifest_path, _, manifest = self._project_manifest_state(project_id)
         _records, files = self._collect_allowed_files(root, manifest, manifest_path)
         try:
-            payload = pack_project_files(root, files)
+            snapshots: dict[str, bytes] = {}
+            for entry in manifest.workflows:
+                workflow = self._workflow_source(root, entry)
+                for node in workflow.nodes:
+                    if not node.agent_ref:
+                        continue
+                    agent_id, version_id = node.agent_ref.split("@", 1)
+                    owner = next(
+                        (item for item in manifest.agents if item.agent_id == agent_id),
+                        None,
+                    )
+                    version = self.repository.version(version_id)
+                    if (
+                        owner is None
+                        or version is None
+                        or version["agent_id"] != agent_id
+                    ):
+                        raise ProjectPackageError(
+                            "Workflow requires a committed Project Agent version"
+                        )
+                    snapshots[f"{owner.path}/versions/{version_id}.json"] = (
+                        self._canonical_source(
+                            {
+                                "version_id": version_id,
+                                "agent_id": agent_id,
+                                "source": json.loads(version["source_json"]),
+                                "source_hash": version["source_hash"],
+                            }
+                        ).encode("utf-8")
+                    )
+            payload = pack_project_files(root, files, extra_files=snapshots)
         except ProjectPackageError as exc:
             raise _package_error(exc) from exc
         return payload, _archive_filename(manifest.name)
@@ -237,6 +299,7 @@ class ProjectService:
             parents=bundle.parents,
             extra_files=bundle.extra_files,
             default_agent_id=bundle.default_agent_id,
+            imported_bundle=bundle,
         )
 
     def list_files(self, project_id: str) -> dict[str, Any]:
@@ -404,6 +467,50 @@ class ProjectService:
                 )
             raise ProjectError("Agent creation mode is unknown")
 
+    def create_workflow(
+        self,
+        *,
+        project_id: str,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a blank Start → Output Workflow inside an existing Project."""
+        with self._writer_lock:
+            project = self.repository.project(project_id)
+            if project is None:
+                raise ProjectError("unknown Project")
+            root = self._existing_root(project["root_path"])
+            manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+            previous_manifest_text = self._read_text(manifest_path)
+            manifest = ProjectManifest.from_dict(
+                self._parse_yaml(previous_manifest_text, "Project manifest")
+            )
+            if manifest.project_id != project_id:
+                raise ProjectError("Project manifest identity does not match its index")
+            occupied_names = {
+                self._workflow_source(root, entry).name for entry in manifest.workflows
+            }
+            allocated_name = self._allocate_agent_name(
+                _nonblank_optional_text(name) or "New Workflow", occupied_names
+            )
+            allocated_slug = self._allocate_agent_slug(
+                "new-workflow", {entry.slug for entry in manifest.workflows}
+            )
+            source = blank_workflow_source(
+                slug=allocated_slug,
+                name=allocated_name,
+                description=_nonblank_optional_text(description)
+                or "A blank Workflow that orchestrates Agents.",
+            )
+            return self._install_workflow(
+                project_id=project_id,
+                root=root,
+                manifest_path=manifest_path,
+                previous_manifest_text=previous_manifest_text,
+                manifest=manifest,
+                source=source,
+            )
+
     def create_agent_from_source(
         self,
         *,
@@ -535,6 +642,7 @@ class ProjectService:
                 "agent_id": source.agent_id,
                 "slug": source.slug,
                 "path": f"agents/{source.slug}",
+                "version": source.version,
                 **(
                     {"parent_agent_id": parent_agent_id}
                     if parent_agent_id is not None
@@ -554,6 +662,10 @@ class ProjectService:
             self.atomic_write(
                 staging / "agent.vagent.yaml",
                 self._canonical_source(source.to_dict()),
+            )
+            self.atomic_write(
+                staging / "resource.yaml",
+                self._canonical_source(agent_resource_manifest(source)),
             )
             self.atomic_write(staging / "README.md", f"# {source.name}\n")
             self._fsync_tree(staging)
@@ -594,6 +706,7 @@ class ProjectService:
 
     def _index(self, root_path: str | Path) -> dict[str, Any]:
         root = self._existing_root(root_path)
+        ensure_project_layout(root)
         self._scan_for_forbidden_names(root)
         manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
         original_manifest_text = self._read_text(manifest_path)
@@ -628,6 +741,8 @@ class ProjectService:
         manifest_path: Path,
         manifest_text: str,
         manifest: ProjectManifest,
+        *,
+        imported_bundle: ProjectArchive | None = None,
     ) -> dict[str, Any]:
         records, indexed_files = self._collect_allowed_files(
             root, manifest, manifest_path
@@ -748,6 +863,24 @@ class ProjectService:
                         source_file_hash=current_hash,
                         etag=_etag(0, current_hash),
                     )
+            if imported_bundle is not None:
+                for snapshot in imported_bundle.agent_versions:
+                    text = self._canonical_source(snapshot.source.to_dict())
+                    self.repository.insert_version(
+                        connection,
+                        {
+                            "version_id": snapshot.version_id,
+                            "agent_id": snapshot.source.agent_id,
+                            "source": snapshot.source.to_dict(),
+                            "source_text": text,
+                            "source_hash": snapshot.source.source_hash,
+                            "behavior_hash": snapshot.source.behavior_hash,
+                            "lock_hash": snapshot.source.lock_hash,
+                            "file_hash": file_hash(text),
+                            "created_at": now,
+                        },
+                    )
+            self._index_workflows(connection, root, manifest, now)
             for path in indexed_files:
                 self._index_file(
                     connection,
@@ -793,12 +926,47 @@ class ProjectService:
                     "slug": source.slug,
                     "name": source.name,
                     "description": source.description,
+                    "version": source.version,
                     "pinned": source.agent_id == manifest.default_agent_id,
                     "parent_agent_id": entry.parent_agent_id,
                     "source_path": row["source_path"],
                     "source_file_hash": file_hash(source_text),
                 }
             )
+        workflows: list[dict[str, Any]] = []
+        for workflow_entry in sorted(manifest.workflows, key=lambda item: item.slug):
+            row = self.repository.workflow(workflow_entry.resource_id)
+            if row is None:
+                raise ProjectError("Project Workflow is missing from its local index")
+            source_path = self._safe_file(
+                root, Path(workflow_entry.path) / "workflow.vworkflow.yaml"
+            )
+            source_text = self._read_text(source_path)
+            workflow_source = WorkflowSource.from_dict(
+                self._parse_yaml(source_text, workflow_entry.slug)
+            )
+            if (
+                workflow_source.workflow_id != workflow_entry.resource_id
+                or workflow_source.slug != workflow_entry.slug
+            ):
+                raise ProjectError(
+                    "Project Workflow identity does not match workflow_source"
+                )
+            workflows.append(
+                {
+                    "workflow_id": workflow_source.workflow_id,
+                    "slug": workflow_source.slug,
+                    "name": workflow_source.name,
+                    "description": workflow_source.description,
+                    "version": workflow_source.version,
+                    "source_path": row["source_path"],
+                    "source_file_hash": file_hash(source_text),
+                }
+            )
+        knowledge = [
+            self._knowledge_listing(root, entry)
+            for entry in sorted(manifest.knowledge, key=lambda item: item.slug)
+        ]
         return {
             "schema_version": "1.0",
             "project_id": project["project_id"],
@@ -811,6 +979,12 @@ class ProjectService:
             "default_agent_id": manifest.default_agent_id,
             "agents": agents,
             "agent_count": len(agents),
+            "workflows": workflows,
+            "workflow_count": len(workflows),
+            "knowledge": knowledge,
+            "knowledge_count": len(knowledge),
+            "component_count": len(manifest.components),
+            "asset_count": len(manifest.assets),
             "indexed_at": project["indexed_at"],
         }
 
@@ -1052,6 +1226,612 @@ class ProjectService:
                 raise
             return self._removal_summary(project_id, "trashed", removed_at)
 
+    def _install_workflow(
+        self,
+        *,
+        project_id: str,
+        root: Path,
+        manifest_path: Path,
+        previous_manifest_text: str,
+        manifest: ProjectManifest,
+        source: WorkflowSource,
+    ) -> dict[str, Any]:
+        existing_ids = {entry.resource_id for entry in manifest.workflows}
+        existing_slugs = {entry.slug for entry in manifest.workflows}
+        if source.workflow_id in existing_ids or self.repository.workflow(
+            source.workflow_id
+        ):
+            raise ProjectError("duplicate Workflow ID; use explicit Fork/import")
+        if source.slug in existing_slugs:
+            raise ProjectError("Project Workflow slugs must be unique")
+        ensure_project_layout(root)
+        workflows_root = self._safe_directory(root, Path("workflows"))
+        target = workflows_root / source.slug
+        if target.exists() or target.is_symlink():
+            raise ProjectError("Project Workflow path already exists")
+        staging = workflows_root / f".{source.slug}.veyra-staging-{new_uuid7()}"
+        updated_manifest = manifest.to_dict()
+        updated_manifest.setdefault("workflows", []).append(
+            {
+                "kind": "workflow",
+                "resource_id": source.workflow_id,
+                "slug": source.slug,
+                "version": source.version,
+                "path": f"workflows/{source.slug}",
+            }
+        )
+        ProjectManifest.from_dict(updated_manifest)
+        installed = False
+        manifest_replaced = False
+        try:
+            staging.mkdir(mode=0o700)
+            self.atomic_write(
+                staging / "workflow.vworkflow.yaml",
+                self._canonical_source(source.to_dict()),
+            )
+            self.atomic_write(
+                staging / "resource.yaml",
+                self._canonical_source(workflow_resource_manifest(source)),
+            )
+            self.atomic_write(staging / "README.md", f"# {source.name}\n")
+            self._fsync_tree(staging)
+            if target.exists():
+                raise ProjectError("Project Workflow path already exists")
+            os.replace(staging, target)
+            installed = True
+            self._fsync_directory(workflows_root)
+            self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
+            manifest_replaced = True
+            self.index(root)
+            return self.workflow_summary(project_id, source.workflow_id)
+        except BaseException as exc:
+            rollback_errors: list[BaseException] = []
+            if manifest_replaced:
+                try:
+                    self.atomic_write(manifest_path, previous_manifest_text)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if installed and target.exists():
+                try:
+                    shutil.rmtree(target)
+                    self._fsync_directory(workflows_root)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if staging.exists():
+                try:
+                    shutil.rmtree(staging)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            for rollback_note in rollback_errors:
+                exc.add_note(f"rollback failed: {rollback_note}")
+            raise
+
+    def _index_workflows(
+        self,
+        connection: Any,
+        root: Path,
+        manifest: ProjectManifest,
+        now: str,
+    ) -> None:
+        manifest_ids = {entry.resource_id for entry in manifest.workflows}
+        existing = connection.execute(
+            """SELECT * FROM workflows
+               WHERE project_id = ? AND removed_at IS NULL""",
+            (manifest.project_id,),
+        ).fetchall()
+        stale = {
+            row["workflow_id"]
+            for row in existing
+            if row["workflow_id"] not in manifest_ids
+        }
+        for workflow_id in stale:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM workflow_versions WHERE workflow_id = ?",
+                    (workflow_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise ProjectError("cannot remove a Workflow with immutable versions")
+        self.repository.delete_workflows(connection, stale)
+        for entry in manifest.workflows:
+            source_path = self._safe_file(
+                root, Path(entry.path) / "workflow.vworkflow.yaml"
+            )
+            source_text = self._read_text(source_path)
+            source = WorkflowSource.from_dict(self._parse_yaml(source_text, entry.slug))
+            if source.workflow_id != entry.resource_id or source.slug != entry.slug:
+                raise ProjectError(
+                    "Project manifest Workflow identity does not match source"
+                )
+            current_hash = file_hash(source_text)
+            existing_row = connection.execute(
+                "SELECT * FROM workflows WHERE workflow_id = ?",
+                (source.workflow_id,),
+            ).fetchone()
+            relative = source_path.relative_to(root).as_posix()
+            if (
+                existing_row is not None
+                and existing_row["project_id"] != manifest.project_id
+            ):
+                raise ProjectError("duplicate Workflow ID; use explicit Fork/import")
+            if existing_row is None:
+                self.repository.upsert_workflow(
+                    connection,
+                    workflow_id=source.workflow_id,
+                    project_id=manifest.project_id,
+                    slug=source.slug,
+                    source_path=relative,
+                    source_file_hash=current_hash,
+                    indexed_at=now,
+                )
+            else:
+                self.repository.refresh_workflow(
+                    connection,
+                    workflow_id=source.workflow_id,
+                    slug=source.slug,
+                    source_path=relative,
+                    source_file_hash=current_hash,
+                    indexed_at=now,
+                )
+            if self.repository.workflow_draft(source.workflow_id) is None:
+                self.repository.insert_workflow_draft(
+                    connection,
+                    workflow_id=source.workflow_id,
+                    draft_id=new_uuid7(),
+                    revision=0,
+                    source=source.to_dict(),
+                    source_file_hash=current_hash,
+                    etag=_etag(0, current_hash),
+                )
+
+    def _workflow_source(self, root: Path, entry: Any) -> WorkflowSource:
+        source_path = self._safe_file(
+            root, Path(entry.path) / "workflow.vworkflow.yaml"
+        )
+        source = WorkflowSource.from_dict(
+            self._parse_yaml(self._read_text(source_path), entry.slug)
+        )
+        if source.workflow_id != entry.resource_id or source.slug != entry.slug:
+            raise ProjectError(
+                "Project manifest Workflow identity does not match source"
+            )
+        return source
+
+    def remove_workflow(self, project_id: str, workflow_id: str) -> dict[str, Any]:
+        """Move a Workflow source directory to application trash."""
+        with self._writer_lock:
+            _, root, manifest_path, previous_text, manifest = (
+                self._project_manifest_state(project_id)
+            )
+            selected = next(
+                (
+                    entry
+                    for entry in manifest.workflows
+                    if entry.resource_id == workflow_id
+                ),
+                None,
+            )
+            if selected is None:
+                raise ProjectError("unknown Workflow in Project")
+            remaining = [
+                entry
+                for entry in manifest.workflows
+                if entry.resource_id != workflow_id
+            ]
+            updated = manifest.to_dict()
+            updated["workflows"] = [entry.to_dict() for entry in remaining]
+            validated = ProjectManifest.from_dict(updated)
+            source = self._safe_directory(root, Path(selected.path))
+            target = self._workflow_trash_target(project_id, workflow_id)
+            removed_at = _utc_now()
+            moved = False
+            marked = False
+            try:
+                os.replace(source, target)
+                moved = True
+                self._fsync_directory(source.parent)
+                self._fsync_directory(target.parent)
+                self.atomic_write(
+                    manifest_path, self._canonical_source(validated.to_dict())
+                )
+                if not self.repository.remove_workflow(workflow_id, removed_at):
+                    raise ProjectError("unknown Workflow in Project")
+                marked = True
+                project = self.index(root)
+                return {
+                    "schema_version": "1.0",
+                    "project_id": project_id,
+                    "workflow_id": workflow_id,
+                    "disposition": "trashed",
+                    "removed_at": removed_at,
+                    "project": project,
+                }
+            except BaseException as exc:
+                rollback_errors: list[BaseException] = []
+                if marked:
+                    try:
+                        self.repository.restore_workflow(workflow_id)
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+                try:
+                    self.atomic_write(manifest_path, previous_text)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+                if moved and target.exists():
+                    try:
+                        os.replace(target, source)
+                        self._fsync_directory(source.parent)
+                        self._fsync_directory(target.parent)
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+                for rollback_error in rollback_errors:
+                    exc.add_note(f"rollback failed: {rollback_error}")
+                raise
+
+    def _workflow_trash_target(self, project_id: str, workflow_id: str) -> Path:
+        storage_root = self._managed_storage_root()
+        trash_root = storage_root.parent / "trash" / "workflows" / project_id
+        current = trash_root
+        while True:
+            if current.exists() and current.is_symlink():
+                raise ProjectError("managed Workflow trash path must not be a symlink")
+            if current == current.parent:
+                break
+            current = current.parent
+        try:
+            trash_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ProjectError("managed Workflow trash path is unavailable") from exc
+        if not trash_root.is_dir() or trash_root.is_symlink():
+            raise ProjectError("managed Workflow trash path must be a directory")
+        target = trash_root / workflow_id
+        if target.exists() or target.is_symlink():
+            raise ProjectError(
+                "managed Workflow trash target already exists or is unsafe"
+            )
+        return target
+
+    def workflow_summary(self, project_id: str, workflow_id: str) -> dict[str, Any]:
+        project = self.repository.project(project_id)
+        workflow = self.repository.workflow(workflow_id)
+        if project is None:
+            raise ProjectError("unknown Project")
+        if workflow is None or workflow["project_id"] != project_id:
+            raise ProjectError("unknown Workflow in Project")
+        root = self._existing_root(project["root_path"])
+        source_path = self._safe_file(root, Path(workflow["source_path"]))
+        source_text = self._read_text(source_path)
+        source = WorkflowSource.from_dict(
+            self._parse_yaml(source_text, workflow["slug"])
+        )
+        if source.workflow_id != workflow_id or source.slug != workflow["slug"]:
+            raise ProjectError("Project Workflow identity does not match source")
+        return {
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "workflow_id": source.workflow_id,
+            "slug": source.slug,
+            "name": source.name,
+            "description": source.description,
+            "version": source.version,
+            "source_path": workflow["source_path"],
+            "source_file_hash": file_hash(source_text),
+            "node_count": len(source.nodes),
+            "transition_count": len(source.transitions),
+        }
+
+    def create_knowledge(
+        self,
+        *,
+        project_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a Knowledge document inside an existing Project."""
+        with self._writer_lock:
+            _, root, manifest_path, previous_manifest_text, manifest = (
+                self._project_manifest_state(project_id)
+            )
+            occupied_names = {
+                self._knowledge_manifest(root, entry).name
+                for entry in manifest.knowledge
+            }
+            allocated_name = self._allocate_agent_name(
+                _nonblank_optional_text(name) or "New Knowledge", occupied_names
+            )
+            allocated_slug = self._allocate_agent_slug(
+                "new-knowledge", {entry.slug for entry in manifest.knowledge}
+            )
+            document = (
+                text
+                if isinstance(text, str) and text
+                else blank_knowledge_document(allocated_name)
+            )
+            return self._install_knowledge(
+                project_id=project_id,
+                root=root,
+                manifest_path=manifest_path,
+                previous_manifest_text=previous_manifest_text,
+                manifest=manifest,
+                resource_id=new_uuid7(),
+                slug=allocated_slug,
+                name=allocated_name,
+                description=_nonblank_optional_text(description)
+                or "A Knowledge document.",
+                text=document,
+            )
+
+    def _install_knowledge(
+        self,
+        *,
+        project_id: str,
+        root: Path,
+        manifest_path: Path,
+        previous_manifest_text: str,
+        manifest: ProjectManifest,
+        resource_id: str,
+        slug: str,
+        name: str,
+        description: str,
+        text: str,
+    ) -> dict[str, Any]:
+        existing_ids = {entry.resource_id for entry in manifest.knowledge}
+        existing_slugs = {entry.slug for entry in manifest.knowledge}
+        if resource_id in existing_ids:
+            raise ProjectError("duplicate Knowledge ID; use explicit Fork/import")
+        if slug in existing_slugs:
+            raise ProjectError("Project Knowledge slugs must be unique")
+        ensure_project_layout(root)
+        knowledge_root = self._safe_directory(root, Path("knowledge"))
+        target = knowledge_root / slug
+        if target.exists() or target.is_symlink():
+            raise ProjectError("Project Knowledge path already exists")
+        staging = knowledge_root / f".{slug}.veyra-staging-{new_uuid7()}"
+        updated_manifest = manifest.to_dict()
+        updated_manifest.setdefault("knowledge", []).append(
+            {
+                "kind": "knowledge",
+                "resource_id": resource_id,
+                "slug": slug,
+                "version": "1.0.0",
+                "path": f"knowledge/{slug}",
+            }
+        )
+        ProjectManifest.from_dict(updated_manifest)
+        installed = False
+        manifest_replaced = False
+        try:
+            staging.mkdir(mode=0o700)
+            self.atomic_write(
+                staging / "resource.yaml",
+                self._canonical_source(
+                    knowledge_resource_manifest(
+                        resource_id=resource_id,
+                        slug=slug,
+                        name=name,
+                        description=description,
+                    )
+                ),
+            )
+            self.atomic_write(staging / "document.md", document_text(text))
+            self.atomic_write(staging / "README.md", f"# {name}\n")
+            self._fsync_tree(staging)
+            if target.exists():
+                raise ProjectError("Project Knowledge path already exists")
+            os.replace(staging, target)
+            installed = True
+            self._fsync_directory(knowledge_root)
+            self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
+            manifest_replaced = True
+            self.index(root)
+            return self.knowledge_summary(project_id, resource_id)
+        except BaseException as exc:
+            rollback_errors: list[BaseException] = []
+            if manifest_replaced:
+                try:
+                    self.atomic_write(manifest_path, previous_manifest_text)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if installed and target.exists():
+                try:
+                    shutil.rmtree(target)
+                    self._fsync_directory(knowledge_root)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if staging.exists():
+                try:
+                    shutil.rmtree(staging)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            for rollback_note in rollback_errors:
+                exc.add_note(f"rollback failed: {rollback_note}")
+            raise
+
+    def knowledge_summary(self, project_id: str, knowledge_id: str) -> dict[str, Any]:
+        _, root, _, _, manifest = self._project_manifest_state(project_id)
+        entry = next(
+            (item for item in manifest.knowledge if item.resource_id == knowledge_id),
+            None,
+        )
+        if entry is None:
+            raise ProjectError("unknown Knowledge in Project")
+        listing = self._knowledge_listing(root, entry)
+        document_path = self._safe_file(root, Path(listing["source_path"]))
+        return {
+            **listing,
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "text": self._read_text(document_path),
+        }
+
+    def replace_knowledge(
+        self,
+        *,
+        project_id: str,
+        knowledge_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """Update Knowledge metadata and/or document text on disk."""
+        if name is None and description is None and text is None:
+            raise ProjectError("at least one Knowledge field is required")
+        with self._writer_lock:
+            _, root, _, _, manifest = self._project_manifest_state(project_id)
+            entry = next(
+                (
+                    item
+                    for item in manifest.knowledge
+                    if item.resource_id == knowledge_id
+                ),
+                None,
+            )
+            if entry is None:
+                raise ProjectError("unknown Knowledge in Project")
+            current = self._knowledge_manifest(root, entry)
+            next_name = _nonblank_optional_text(name) or current.name
+            next_description = (
+                _nonblank_optional_text(description) or current.description
+            )
+            document_path = self._safe_file(root, Path(entry.path) / "document.md")
+            resource_path = self._safe_file(root, Path(entry.path) / "resource.yaml")
+            next_text = (
+                document_text(text)
+                if isinstance(text, str)
+                else self._read_text(document_path)
+            )
+            occupied = {
+                self._knowledge_manifest(root, item).name
+                for item in manifest.knowledge
+                if item.resource_id != knowledge_id
+            }
+            if _name_key(next_name) in {_name_key(value) for value in occupied}:
+                raise ProjectError("Project Knowledge names must be unique")
+            self.atomic_write(
+                resource_path,
+                self._canonical_source(
+                    knowledge_resource_manifest(
+                        resource_id=current.resource_id,
+                        slug=current.slug,
+                        name=next_name,
+                        description=next_description,
+                        version=current.version,
+                    )
+                ),
+            )
+            self.atomic_write(document_path, next_text)
+            self.index(root)
+            return self.knowledge_summary(project_id, knowledge_id)
+
+    def remove_knowledge(self, project_id: str, knowledge_id: str) -> dict[str, Any]:
+        """Move a Knowledge directory to application trash."""
+        with self._writer_lock:
+            _, root, manifest_path, previous_text, manifest = (
+                self._project_manifest_state(project_id)
+            )
+            selected = next(
+                (
+                    entry
+                    for entry in manifest.knowledge
+                    if entry.resource_id == knowledge_id
+                ),
+                None,
+            )
+            if selected is None:
+                raise ProjectError("unknown Knowledge in Project")
+            remaining = [
+                entry
+                for entry in manifest.knowledge
+                if entry.resource_id != knowledge_id
+            ]
+            updated = manifest.to_dict()
+            updated["knowledge"] = [entry.to_dict() for entry in remaining]
+            validated = ProjectManifest.from_dict(updated)
+            source = self._safe_directory(root, Path(selected.path))
+            target = self._knowledge_trash_target(project_id, knowledge_id)
+            removed_at = _utc_now()
+            moved = False
+            try:
+                os.replace(source, target)
+                moved = True
+                self._fsync_directory(source.parent)
+                self._fsync_directory(target.parent)
+                self.atomic_write(
+                    manifest_path, self._canonical_source(validated.to_dict())
+                )
+                project = self.index(root)
+                return {
+                    "schema_version": "1.0",
+                    "project_id": project_id,
+                    "knowledge_id": knowledge_id,
+                    "disposition": "trashed",
+                    "removed_at": removed_at,
+                    "project": project,
+                }
+            except BaseException as exc:
+                rollback_errors: list[BaseException] = []
+                try:
+                    self.atomic_write(manifest_path, previous_text)
+                except BaseException as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+                if moved and target.exists():
+                    try:
+                        os.replace(target, source)
+                        self._fsync_directory(source.parent)
+                        self._fsync_directory(target.parent)
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+                for rollback_error in rollback_errors:
+                    exc.add_note(f"rollback failed: {rollback_error}")
+                raise
+
+    def _knowledge_listing(self, root: Path, entry: Any) -> dict[str, Any]:
+        resource = self._knowledge_manifest(root, entry)
+        if resource.resource_id != entry.resource_id or resource.slug != entry.slug:
+            raise ProjectError("Project Knowledge identity does not match source")
+        document_path = self._safe_file(root, Path(entry.path) / "document.md")
+        document_text_value = self._read_text(document_path)
+        return {
+            "knowledge_id": resource.resource_id,
+            "slug": resource.slug,
+            "name": resource.name,
+            "description": resource.description,
+            "version": resource.version,
+            "source_path": document_path.relative_to(root).as_posix(),
+            "source_file_hash": file_hash(document_text_value),
+        }
+
+    def _knowledge_manifest(self, root: Path, entry: Any) -> ResourceManifest:
+        resource_path = self._safe_file(root, Path(entry.path) / "resource.yaml")
+        return ResourceManifest.from_dict(
+            self._parse_yaml(self._read_text(resource_path), entry.slug)
+        )
+
+    def _knowledge_trash_target(self, project_id: str, knowledge_id: str) -> Path:
+        storage_root = self._managed_storage_root()
+        trash_root = storage_root.parent / "trash" / "knowledge" / project_id
+        current = trash_root
+        while True:
+            if current.exists() and current.is_symlink():
+                raise ProjectError("managed Knowledge trash path must not be a symlink")
+            if current == current.parent:
+                break
+            current = current.parent
+        try:
+            trash_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ProjectError("managed Knowledge trash path is unavailable") from exc
+        if not trash_root.is_dir() or trash_root.is_symlink():
+            raise ProjectError("managed Knowledge trash path must be a directory")
+        target = trash_root / knowledge_id
+        if target.exists() or target.is_symlink():
+            raise ProjectError(
+                "managed Knowledge trash target already exists or is unsafe"
+            )
+        return target
+
     def agent_summary(self, project_id: str, agent_id: str) -> dict[str, Any]:
         """Return an Agent summary parsed from its authoritative source file."""
         project = self.repository.project(project_id)
@@ -1173,6 +1953,7 @@ class ProjectService:
     def _collect_allowed_files(
         self, root: Path, manifest: ProjectManifest, manifest_path: Path
     ) -> tuple[list[tuple[AgentSource, Path, str]], list[Path]]:
+        ensure_project_layout(root)
         files = [manifest_path]
         records: list[tuple[AgentSource, Path, str]] = []
         for entry in manifest.agents:
@@ -1186,13 +1967,14 @@ class ProjectService:
                 raise ProjectError(
                     "Project manifest Agent identity does not match source"
                 )
+            resource_path = self._agent_resource_file(root, entry.path, source)
             records.append((source, source_path, source_text))
-            files.extend([source_path, readme_path])
+            files.extend([source_path, readme_path, resource_path])
             files.extend(self._files_below(test_dir))
             if agent_dir.is_symlink():
                 raise ProjectError("Project path or symlink escapes its root")
-        files.extend(self._files_below(self._safe_directory(root, Path("resources"))))
-        files.extend(self._files_below(self._safe_directory(root, Path("tests"))))
+        for relative in INDEXED_ROOT_DIRECTORIES:
+            files.extend(self._files_below(self._safe_directory(root, relative)))
         unique = sorted(set(files))
         total = 0
         for path in unique:
@@ -1206,6 +1988,26 @@ class ProjectService:
             raise ProjectError("Project exceeds the indexing total size limit")
         return records, unique
 
+    def _agent_resource_file(
+        self, root: Path, entry_path: str, source: AgentSource
+    ) -> Path:
+        relative = Path(resource_yaml_path(entry_path))
+        expected = agent_resource_manifest(source)
+        candidate = root / relative
+        if candidate.is_file():
+            current = ResourceManifest.from_dict(
+                self._parse_yaml(self._read_text(candidate), "resource manifest")
+            )
+            if (
+                current.kind is not ResourceKind.AGENT
+                or current.resource_id != source.agent_id
+                or current.slug != source.slug
+            ):
+                raise ProjectError("Agent resource.yaml identity does not match source")
+            return self._safe_file(root, relative)
+        self.atomic_write(candidate, self._canonical_source(expected))
+        return self._safe_file(root, relative)
+
     def _write_extra_files(self, staging: Path, extra_files: dict[str, bytes]) -> None:
         staging_resolved = staging.resolve()
         for relative, payload in extra_files.items():
@@ -1213,6 +2015,8 @@ class ProjectService:
             if path.is_absolute() or ".." in path.parts or not path.parts:
                 raise ProjectError("Project relative path escapes its root")
             if path.name in {"agent.vagent.yaml", "project.vproject.yaml"}:
+                raise ProjectError("Project archive contains a disallowed path")
+            if path.name == "resource.yaml" and path.parts[:1] == ("agents",):
                 raise ProjectError("Project archive contains a disallowed path")
             current = staging
             for part in path.parts[:-1]:
@@ -1410,6 +2214,7 @@ class ProjectService:
                 "agent_id": source.agent_id,
                 "slug": source.slug,
                 "path": f"agents/{source.slug}",
+                "version": source.version,
             }
             parent_id = parent_map.get(source.agent_id)
             if parent_id is not None:
@@ -1461,6 +2266,12 @@ def _nonblank_optional_text(value: str | None) -> str | None:
     return None if not value.strip() else value
 
 
+def document_text(value: str) -> str:
+    if not isinstance(value, str):
+        raise ProjectError("Knowledge document must be a string")
+    return value
+
+
 def _etag(revision: int, current_file_hash: str) -> str:
     return (
         '"'
@@ -1484,10 +2295,28 @@ def _file_kind(relative: str, manifest: ProjectManifest) -> tuple[str, str | Non
     for entry in manifest.agents:
         if relative == f"{entry.path}/agent.vagent.yaml":
             return "agent_source", entry.agent_id
+        if relative == resource_yaml_path(entry.path):
+            return "resource_manifest", entry.agent_id
         if relative == f"{entry.path}/README.md":
             return "readme", entry.agent_id
         if relative.startswith(f"{entry.path}/tests/"):
             return "test", entry.agent_id
+    for owned_entry in manifest.workflows:
+        if relative.startswith(f"{owned_entry.path}/"):
+            return "workflow", owned_entry.resource_id
+    for owned_entry in manifest.components:
+        if relative.startswith(f"{owned_entry.path}/"):
+            return "component", owned_entry.resource_id
+    for owned_entry in manifest.knowledge:
+        if relative.startswith(f"{owned_entry.path}/"):
+            return "knowledge", owned_entry.resource_id
+    for owned_entry in manifest.assets:
+        if relative.startswith(f"{owned_entry.path}/"):
+            return "asset", owned_entry.resource_id
+    if relative.startswith("knowledge/"):
+        return "knowledge", None
+    if relative.startswith("assets/"):
+        return "asset", None
     if relative.startswith("resources/"):
         return "resource", None
     if relative.startswith("tests/"):

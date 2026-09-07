@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import json
+import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -11,13 +13,29 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from veyra_agent_platform.contracts.agent import AgentSource, ProjectManifest
-from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.contracts.canonical import file_hash
+from veyra_agent_platform.contracts.common import (
+    ContractValidationError,
+    new_uuid7,
+    require_uuid7,
+)
+from veyra_agent_platform.contracts.resource import (
+    ResourceKind,
+    ResourceManifest,
+    ResourceRef,
+)
+from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.projects.layout import (
+    ARCHIVE_PREFIXES,
+    listed_archive_prefixes,
+    resource_yaml_path,
+)
 
 MAX_INDEXED_FILE_BYTES = 1_000_000
 MAX_INDEXED_TOTAL_BYTES = 10_000_000
 MAX_PROJECT_ARCHIVE_BYTES = 12_000_000
 _ALLOWED_SUFFIXES = {".yaml", ".yml", ".md", ".txt", ".json"}
-_ARCHIVE_PREFIXES = ("agents/", "resources/", "tests/")
+_ARCHIVE_PREFIXES = ARCHIVE_PREFIXES
 _FORBIDDEN_SECRET_NAMES = {".env", "id_rsa", "credentials.json"}
 _FORBIDDEN_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".token"}
 _UNIX_SYMLINK_MODE = 0o120000
@@ -32,7 +50,15 @@ class ProjectPackageError(ValueError):
 
 
 @dataclass(frozen=True)
+class ImportedAgentVersion:
+    version_id: str
+    source: AgentSource
+
+
+@dataclass(frozen=True)
 class ProjectArchive:
+    manifest: ProjectManifest
+    agent_versions: tuple[ImportedAgentVersion, ...]
     sources: list[AgentSource]
     parents: dict[str, str]
     extra_files: dict[str, bytes]
@@ -41,17 +67,52 @@ class ProjectArchive:
     default_agent_id: str | None
 
 
-def pack_project_files(root: Path, files: list[Path]) -> bytes:
+def pack_project_files(
+    root: Path,
+    files: list[Path],
+    *,
+    extra_files: dict[str, bytes] | None = None,
+) -> bytes:
+    members = {path.relative_to(root).as_posix(): path.read_bytes() for path in files}
+    for relative, payload in (extra_files or {}).items():
+        if relative in members:
+            raise ProjectPackageError("Project archive contains duplicate paths")
+        members[relative] = payload
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in files:
-            relative = path.relative_to(root).as_posix()
+        for relative, payload in sorted(members.items()):
             _assert_archive_path(relative)
-            archive.write(path, arcname=relative)
+            archive.writestr(relative, payload)
     payload = buffer.getvalue()
     if len(payload) > MAX_PROJECT_ARCHIVE_BYTES:
         raise ProjectPackageError("Project archive exceeds the export size limit")
+    # Export and import enforce the same structural and digest guarantees.
+    _validated_members(zipfile.ZipFile(io.BytesIO(payload)))
     return payload
+
+
+def _validated_members(
+    archive: zipfile.ZipFile,
+) -> tuple[
+    ProjectManifest,
+    list[tuple[str, AgentSource]],
+    dict[str, bytes],
+    dict[str, ImportedAgentVersion],
+]:
+    with archive:
+        members = _read_members(archive)
+    if "project.vproject.yaml" not in members:
+        raise ProjectPackageError("Project archive is missing project.vproject.yaml")
+    try:
+        manifest = ProjectManifest.from_dict(
+            _parse_mapping(members["project.vproject.yaml"], "Project manifest")
+        )
+        sources, extra_files = _sources_and_extras(manifest, members)
+        snapshots = _read_agent_versions(manifest, members)
+        _validate_workflow_references(manifest, members, snapshots)
+    except ContractValidationError as exc:
+        raise ProjectPackageError(str(exc), "contract_invalid") from exc
+    return manifest, sources, extra_files, snapshots
 
 
 def unpack_project_archive(filename: str | None, contents: bytes) -> ProjectArchive:
@@ -65,17 +126,8 @@ def unpack_project_archive(filename: str | None, contents: bytes) -> ProjectArch
         archive = zipfile.ZipFile(io.BytesIO(contents))
     except zipfile.BadZipFile as exc:
         raise ProjectPackageError("Project archive is not a valid zip") from exc
-    members = _read_members(archive)
-    if "project.vproject.yaml" not in members:
-        raise ProjectPackageError("Project archive is missing project.vproject.yaml")
-    try:
-        manifest = ProjectManifest.from_dict(
-            _parse_mapping(members["project.vproject.yaml"], "Project manifest")
-        )
-        sources, extra_files = _sources_and_extras(manifest, members)
-    except ContractValidationError as exc:
-        raise ProjectPackageError(str(exc), "contract_invalid") from exc
-    return _remap_identities(manifest, sources, extra_files)
+    manifest, sources, extra_files, snapshots = _validated_members(archive)
+    return _remap_identities(manifest, sources, extra_files, snapshots)
 
 
 def _read_members(archive: zipfile.ZipFile) -> dict[str, bytes]:
@@ -95,7 +147,7 @@ def _read_members(archive: zipfile.ZipFile) -> dict[str, bytes]:
             raise ProjectPackageError("Project file exceeds the indexing size limit")
         try:
             payload = archive.read(info)
-        except RuntimeError as exc:
+        except (RuntimeError, zipfile.BadZipFile) as exc:
             raise ProjectPackageError(
                 "Project archive member could not be read"
             ) from exc
@@ -162,48 +214,255 @@ def _sources_and_extras(
             raise ProjectPackageError(
                 "Project manifest Agent identity does not match source"
             )
+        if source.version != entry.version:
+            raise ProjectPackageError(
+                "Project manifest Agent version does not match source"
+            )
+        metadata = members.get(resource_yaml_path(entry.path))
+        if metadata is not None:
+            _validate_resource_metadata(entry, ResourceKind.AGENT, metadata)
         sources.append((entry.agent_id, source))
         claimed.add(source_path)
+        claimed.add(resource_yaml_path(entry.path))
+    ids = [entry.agent_id for entry in manifest.agents]
+    for entries in (
+        manifest.workflows,
+        manifest.components,
+        manifest.knowledge,
+        manifest.assets,
+    ):
+        for owned_entry in entries:
+            ids.append(owned_entry.resource_id)
+            metadata_path = resource_yaml_path(owned_entry.path)
+            if metadata_path not in members:
+                raise ProjectPackageError("Project archive is missing resource.yaml")
+            _validate_resource_metadata(
+                owned_entry, owned_entry.kind, members[metadata_path]
+            )
+            if owned_entry.kind is ResourceKind.WORKFLOW:
+                source_path = f"{owned_entry.path}/workflow.vworkflow.yaml"
+                if source_path not in members:
+                    raise ProjectPackageError(
+                        "Project archive is missing a Workflow source file"
+                    )
+                workflow = WorkflowSource.from_dict(
+                    _parse_mapping(members[source_path], owned_entry.slug)
+                )
+                if (workflow.workflow_id, workflow.slug, workflow.version) != (
+                    owned_entry.resource_id,
+                    owned_entry.slug,
+                    owned_entry.version,
+                ):
+                    raise ProjectPackageError(
+                        "Project manifest Workflow identity or version does not "
+                        "match source"
+                    )
+            if (
+                owned_entry.kind is ResourceKind.KNOWLEDGE
+                and f"{owned_entry.path}/document.md" not in members
+            ):
+                raise ProjectPackageError(
+                    "Project archive is missing a Knowledge document"
+                )
+    if len(set(ids)) != len(ids) or manifest.project_id in ids:
+        raise ProjectPackageError(
+            "Project resource IDs must be unique across resource kinds"
+        )
     extra = {path: payload for path, payload in members.items() if path not in claimed}
-    listed_prefixes = tuple(f"{entry.path}/" for entry in manifest.agents)
+    identity_prefixes = {
+        "agents/": listed_archive_prefixes(list(manifest.agents)),
+        "workflows/": listed_archive_prefixes(list(manifest.workflows)),
+        "components/": listed_archive_prefixes(list(manifest.components)),
+    }
+    library_prefixes = {
+        "knowledge/": listed_archive_prefixes(list(manifest.knowledge)),
+        "assets/": listed_archive_prefixes(list(manifest.assets)),
+    }
     for path in extra:
-        if path.startswith("agents/") and not path.startswith(listed_prefixes):
-            raise ProjectPackageError("Project archive contains a disallowed path")
+        for prefix, listed in identity_prefixes.items():
+            if path.startswith(prefix) and (not listed or not path.startswith(listed)):
+                raise ProjectPackageError("Project archive contains a disallowed path")
+        for prefix, listed in library_prefixes.items():
+            if path.startswith(prefix) and listed and not path.startswith(listed):
+                raise ProjectPackageError("Project archive contains a disallowed path")
     return sources, extra
+
+
+def _validate_resource_metadata(entry: Any, kind: ResourceKind, payload: bytes) -> None:
+    resource = ResourceManifest.from_dict(_parse_mapping(payload, "resource manifest"))
+    resource_id = entry.agent_id if kind is ResourceKind.AGENT else entry.resource_id
+    if (
+        resource.kind,
+        resource.resource_id,
+        resource.slug,
+        resource.version,
+        resource.component_class,
+    ) != (
+        kind,
+        resource_id,
+        entry.slug,
+        entry.version,
+        getattr(entry, "component_class", None),
+    ):
+        raise ProjectPackageError(
+            "resource.yaml identity, kind, class or version does not "
+            "match Project manifest"
+        )
+
+
+def _read_agent_versions(
+    manifest: ProjectManifest, members: dict[str, bytes]
+) -> dict[str, ImportedAgentVersion]:
+    versions: dict[str, ImportedAgentVersion] = {}
+    for entry in manifest.agents:
+        prefix = f"{entry.path}/versions/"
+        for path, body in members.items():
+            if not path.startswith(prefix):
+                continue
+            payload = _parse_mapping(body, "Agent version snapshot")
+            if set(payload) != {"version_id", "agent_id", "source", "source_hash"}:
+                raise ProjectPackageError("Agent version snapshot fields are invalid")
+            version_id = require_uuid7(payload["version_id"], "version_id")
+            source = AgentSource.from_dict(payload["source"])
+            if (
+                path != f"{prefix}{version_id}.json"
+                or payload["agent_id"] != entry.agent_id
+                or source.agent_id != entry.agent_id
+            ):
+                raise ProjectPackageError(
+                    "Agent version snapshot identity does not match its owner"
+                )
+            if payload["source_hash"] != source.source_hash:
+                raise ProjectPackageError(
+                    "Agent version snapshot digest does not match source"
+                )
+            if version_id in versions:
+                raise ProjectPackageError("Agent version snapshot IDs must be unique")
+            versions[version_id] = ImportedAgentVersion(version_id, source)
+    return versions
+
+
+def _validate_workflow_references(
+    manifest: ProjectManifest,
+    members: dict[str, bytes],
+    snapshots: dict[str, ImportedAgentVersion],
+) -> None:
+    referenced: set[str] = set()
+    for entry in manifest.workflows:
+        source = WorkflowSource.from_dict(
+            _parse_mapping(members[f"{entry.path}/workflow.vworkflow.yaml"], entry.slug)
+        )
+        for node in source.nodes:
+            if node.agent_ref is None:
+                continue
+            agent_id, version_id = node.agent_ref.split("@", 1)
+            snapshot = snapshots.get(version_id)
+            if snapshot is None or snapshot.source.agent_id != agent_id:
+                raise ProjectPackageError(
+                    "Workflow AgentCall requires a bundled immutable Agent version"
+                )
+            if source.lock[node.agent_ref] != snapshot.source.source_hash:
+                raise ProjectPackageError(
+                    "Workflow AgentCall lock digest does not match its Agent version"
+                )
+            referenced.add(version_id)
+        # An unused local reference must not survive import with an old identity.
+        for reference in source.lock:
+            if reference[0].isdigit() and reference not in {
+                node.agent_ref for node in source.nodes
+            }:
+                raise ProjectPackageError(
+                    "Workflow lock contains an unbound local resource reference"
+                )
+    if set(snapshots) != referenced:
+        raise ProjectPackageError(
+            "Project archive contains an unreferenced Agent version snapshot"
+        )
 
 
 def _remap_identities(
     manifest: ProjectManifest,
     sources: list[tuple[str, AgentSource]],
     extra_files: dict[str, bytes],
+    snapshots: dict[str, ImportedAgentVersion],
 ) -> ProjectArchive:
     id_map = {old_id: new_uuid7() for old_id, _source in sources}
+    for entries in (
+        manifest.workflows,
+        manifest.components,
+        manifest.knowledge,
+        manifest.assets,
+    ):
+        id_map.update({entry.resource_id: new_uuid7() for entry in entries})
     remapped_sources: list[AgentSource] = []
     parents: dict[str, str] = {}
     slug_map: dict[str, str] = {}
-    occupied_slugs: set[str] = set()
     occupied_names: set[str] = set()
     for old_id, source in sources:
-        slug = _unique_slug(source.slug, occupied_slugs)
-        occupied_slugs.add(slug)
         name = _unique_name(source.name, occupied_names)
         occupied_names.add(name)
         source_payload = source.to_dict()
-        source_payload.update({"agent_id": id_map[old_id], "slug": slug, "name": name})
+        source_payload.update({"agent_id": id_map[old_id], "name": name})
+        _remap_knowledge_locks(source_payload, id_map, manifest, extra_files)
         remapped_sources.append(AgentSource.from_dict(source_payload))
-        slug_map[old_id] = slug
+        slug_map[old_id] = source.slug
         entry = next(item for item in manifest.agents if item.agent_id == old_id)
         if entry.parent_agent_id is not None:
             parents[id_map[old_id]] = id_map[entry.parent_agent_id]
+    version_map: dict[str, ImportedAgentVersion] = {}
+    unique_versions: dict[tuple[str, str], ImportedAgentVersion] = {}
+    for old_version, snapshot in snapshots.items():
+        payload = snapshot.source.to_dict()
+        payload["agent_id"] = id_map[snapshot.source.agent_id]
+        _remap_knowledge_locks(payload, id_map, manifest, extra_files)
+        source = AgentSource.from_dict(payload)
+        fingerprint = (source.agent_id, source.source_hash)
+        if fingerprint not in unique_versions:
+            unique_versions[fingerprint] = ImportedAgentVersion(new_uuid7(), source)
+        version_map[old_version] = unique_versions[fingerprint]
     rewritten_extras: dict[str, bytes] = {}
     for path, body in extra_files.items():
+        if any(path.startswith(f"{entry.path}/versions/") for entry in manifest.agents):
+            continue
+        if path.endswith("/resource.yaml"):
+            payload = _parse_mapping(body, "resource manifest")
+            resource = ResourceManifest.from_dict(payload)
+            if resource.resource_id in id_map:
+                payload["resource_id"] = id_map[resource.resource_id]
+                body = _encode_mapping(payload)
+        if path.endswith("/workflow.vworkflow.yaml"):
+            payload = WorkflowSource.from_dict(
+                _parse_mapping(body, "Workflow")
+            ).to_dict()
+            payload["workflow_id"] = id_map[payload["workflow_id"]]
+            for node in payload["nodes"]:
+                if "agent_ref" not in node:
+                    continue
+                old_ref = node["agent_ref"]
+                _old_agent, old_version = old_ref.split("@", 1)
+                snapshot = version_map[old_version]
+                new_ref = f"{snapshot.source.agent_id}@{snapshot.version_id}"
+                node["agent_ref"] = new_ref
+                payload["lock"].pop(old_ref, None)
+                payload["lock"][new_ref] = snapshot.source.source_hash
+            body = _encode_mapping(WorkflowSource.from_dict(payload).to_dict())
         rewritten_extras[_rewrite_extra_path(path, slug_map, manifest)] = body
     default_agent_id = (
-        id_map[manifest.default_agent_id]
-        if manifest.default_agent_id is not None
-        else None
+        id_map[manifest.default_agent_id] if manifest.default_agent_id else None
     )
+    updated_manifest = manifest.to_dict()
+    updated_manifest["project_id"] = new_uuid7()
+    updated_manifest["default_agent_id"] = default_agent_id
+    for entry in updated_manifest["agents"]:
+        entry["agent_id"] = id_map[entry["agent_id"]]
+        if "parent_agent_id" in entry:
+            entry["parent_agent_id"] = id_map[entry["parent_agent_id"]]
+    for kind in ("workflows", "components", "knowledge", "assets"):
+        for entry in updated_manifest.get(kind, []):
+            entry["resource_id"] = id_map[entry["resource_id"]]
     return ProjectArchive(
+        manifest=ProjectManifest.from_dict(updated_manifest),
+        agent_versions=tuple(unique_versions.values()),
         sources=remapped_sources,
         parents=parents,
         extra_files=rewritten_extras,
@@ -211,6 +470,57 @@ def _remap_identities(
         description=manifest.description,
         default_agent_id=default_agent_id,
     )
+
+
+def _remap_knowledge_locks(
+    payload: dict[str, Any],
+    id_map: dict[str, str],
+    manifest: ProjectManifest,
+    members: dict[str, bytes],
+) -> None:
+    replacements: dict[str, str] = {}
+    for reference, digest in list(payload["lock"].items()):
+        if not re.match(r"^[0-9a-f]{8}-", reference):
+            continue
+        ref = ResourceRef.from_string(reference)
+        entry = next(
+            (
+                entry
+                for entry in manifest.knowledge
+                if entry.resource_id == ref.resource_id
+            ),
+            None,
+        )
+        body = members.get(f"{entry.path}/document.md") if entry else None
+        if (
+            entry is None
+            or body is None
+            or entry.version != ref.version
+            or file_hash(body.decode("utf-8")) != digest
+        ):
+            raise ProjectPackageError(
+                "Agent local dependency requires a bundled Knowledge "
+                "document matching its lock"
+            )
+        target = f"{id_map[ref.resource_id]}@{ref.version}"
+        replacements[reference] = target
+        payload["lock"].pop(reference)
+        payload["lock"][target] = digest
+    veyra = payload["extensions"]["veyra"]
+    if "knowledge_refs" in veyra:
+        veyra["knowledge_refs"] = [
+            replacements.get(ref, ref) for ref in veyra["knowledge_refs"]
+        ]
+    for binding in (payload["ui"].get("bindings") or {}).values():
+        binding["reference"] = replacements.get(
+            binding["reference"], binding["reference"]
+        )
+
+
+def _encode_mapping(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
 
 
 def _rewrite_extra_path(

@@ -23,6 +23,14 @@ describe("agentTree", () => {
     expect(tree[1]?.children[0]?.slug).toBe("child");
     expect(tree[1]?.children[0]?.children[0]?.slug).toBe("grand");
   });
+
+  it("keeps a pinned root first among siblings", () => {
+    const tree = agentTree([
+      { ...agent("alpha", "alpha"), pinned: false },
+      { ...agent("zeta", "zeta"), pinned: true },
+    ]);
+    expect(tree.map((node) => node.slug)).toEqual(["zeta", "alpha"]);
+  });
 });
 
 describe("agentAncestryPath", () => {

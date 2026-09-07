@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
-import { graphDiagnostics, isAgentSourceCandidate, sourceWithGraph, toCanvas } from "./graph";
+import { attachFlowNodeOnEdge, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, newFlowNodeId, repairInvalidNodeIds, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
 
@@ -82,5 +82,110 @@ describe("Studio graph adapter", () => {
     expect(graphDiagnostics(graph, [write])).toEqual(expect.arrayContaining([
       { code: "write_requires_approval", params: { nodeId: "write" } },
     ]));
+  });
+
+  it("prunes unused Workflow AgentCall locks when the node is removed", () => {
+    const ref = "01900000-0000-7000-8000-000000000001@1.0.0";
+    const workflow = {
+      schema_version: "1.0" as const,
+      component_type: "Workflow" as const,
+      workflow_id: "01900000-0000-7000-8000-000000000002",
+      slug: "path",
+      name: "Path",
+      description: "A blank Workflow that orchestrates Agents.",
+      inputs: { prompt: "string" },
+      outputs: { result: "string" },
+      nodes: [
+        { id: "start", component_type: "Start" as const },
+        { id: "call", component_type: "AgentCall" as const, agent_ref: ref },
+        { id: "out", component_type: "Output" as const, output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next" as const, to: "call" },
+        { from: "call", port: "next" as const, to: "out" },
+      ],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: { start: { x: 0, y: 0 }, call: { x: 1, y: 0 }, out: { x: 2, y: 0 } } },
+      lock: { [ref]: "a".repeat(64) },
+    };
+    const graph = toCanvas(workflow);
+    const withoutCall = sourceWithGraph(workflow, graph.nodes.filter((node) => node.id !== "call"), graph.edges.filter((edge) => edge.source !== "call" && edge.target !== "call"));
+    expect(withoutCall.lock).toEqual({});
+  });
+
+  it("treats Model like Agent and AgentCall like a required agent_ref", () => {
+    expect(graphDiagnostics({
+      ...source,
+      nodes: [{ id: "model", component_type: "Model" }],
+      transitions: [],
+    })).toEqual(expect.arrayContaining([
+      { code: "node_fields_missing", params: { nodeId: "model", componentType: "Model" } },
+    ]));
+    const callProblems = graphDiagnostics({
+      ...source,
+      nodes: [{ id: "call", component_type: "AgentCall" }],
+      transitions: [],
+    });
+    expect(callProblems).toEqual(expect.arrayContaining([
+      { code: "agent_ref_invalid", params: { nodeId: "call" } },
+    ]));
+    expect(callProblems.some((item) => item.code === "node_fields_missing" && item.params?.nodeId === "call")).toBe(false);
+    expect(callProblems.some((item) => item.code === "agent_lock_mismatch" && item.params?.nodeId === "call")).toBe(false);
+  });
+
+  it("round-trips canvas notes without turning them into Flow nodes", () => {
+    const noted = {
+      ...source,
+      ui: { positions: source.ui.positions, notes: { note_intro: { x: 12, y: 24, text: "Hello", color: "violet" as const, width: 240 } } },
+    };
+    const graph = toCanvas(noted);
+    expect(graph.nodes.some((node) => node.id === "note_intro" && node.type === "noteNode")).toBe(true);
+    const next = sourceWithGraph(noted, graph.nodes.map((node) => node.id === "note_intro" ? { ...node, position: { x: 40.4, y: 80.6 }, data: { ...node.data, note: { text: "Moved", color: "teal" as const, width: 240 } } } : node), graph.edges);
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "out"]);
+    expect(next.ui.notes?.note_intro).toEqual({ x: 40, y: 81, text: "Moved", color: "teal", width: 240 });
+  });
+
+  it("inserts a Flow node by splitting an existing edge", () => {
+    const graph = toCanvas(source);
+    const inserted = insertFlowNodeOnEdge(graph.nodes, graph.edges, "start:next:out", { id: "call", type: "agentNode", position: { x: 0, y: 0 }, data: { flow: { id: "call", component_type: "AgentCall" } } }, "next");
+    expect(inserted).not.toBeNull();
+    expect(inserted?.edges.map((edge) => edge.id)).toEqual(["start:next:call", "call:next:out"]);
+    const next = sourceWithGraph(source, inserted!.nodes, inserted!.edges);
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "out", "call"]);
+    expect(next.transitions).toEqual([{ from: "start", port: "next", to: "call" }, { from: "call", port: "next", to: "out" }]);
+  });
+
+  it("picks the unique edge into Output as the default splice target", () => {
+    const blank = toCanvas(source);
+    expect(defaultSpliceEdgeId(blank.nodes, blank.edges)).toBe("start:next:out");
+    const inserted = insertFlowNodeOnEdge(blank.nodes, blank.edges, "start:next:out", { id: "call", type: "agentNode", position: { x: 0, y: 0 }, data: { flow: { id: "call", component_type: "AgentCall" } } }, "next");
+    expect(defaultSpliceEdgeId(inserted!.nodes, inserted!.edges)).toBe("call:next:out");
+  });
+
+  it("attaches an existing disconnected node onto the default splice edge", () => {
+    const graph = toCanvas(source);
+    const disconnected = [...graph.nodes, { id: "call", type: "agentNode", position: { x: 40, y: 80 }, data: { flow: { id: "call", component_type: "AgentCall" as const } } }];
+    const attached = attachFlowNodeOnEdge(disconnected, graph.edges, "start:next:out", "call", "next");
+    expect(attached?.edges.map((edge) => edge.id)).toEqual(["start:next:call", "call:next:out"]);
+    expect(attached?.nodes.filter((node) => node.id === "call")).toHaveLength(1);
+  });
+
+  it("generates Flow node ids without hyphens so they pass the contract", () => {
+    expect(newFlowNodeId("AgentCall")).toMatch(FLOW_NODE_ID_RE);
+    expect(newFlowNodeId("AgentCall")).not.toContain("-");
+  });
+
+  it("rewrites hyphenated canvas ids into contract-safe node ids", () => {
+    const broken = {
+      ...source,
+      nodes: [...source.nodes, { id: "agentcall-7cb9c027", component_type: "AgentCall" as const, output_mapping: { result: "agentcall-7cb9c027_result" } }],
+      transitions: [...source.transitions, { from: "agentcall-7cb9c027" as const, port: "next" as const, to: "out" }],
+      ui: { positions: { ...source.ui.positions, "agentcall-7cb9c027": { x: 8, y: 8 } } },
+    };
+    const repaired = repairInvalidNodeIds(broken);
+    expect(repaired.nodes.map((node) => node.id)).toEqual(["start", "out", "agentcall_7cb9c027"]);
+    expect(repaired.transitions).toContainEqual({ from: "agentcall_7cb9c027", port: "next", to: "out" });
+    expect(repaired.ui.positions.agentcall_7cb9c027).toEqual({ x: 8, y: 8 });
+    expect(repaired.nodes.find((node) => node.id === "agentcall_7cb9c027")?.output_mapping).toEqual({ result: "agentcall_7cb9c027_result" });
   });
 });

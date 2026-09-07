@@ -19,6 +19,7 @@ from .api.projects import build_router as build_projects_router
 from .api.resources import build_router as build_resources_router
 from .api.runtime import build_router as build_runtime_router
 from .api.system import build_router as build_system_router
+from .api.workflows import build_router as build_workflow_router
 from .config import LocalSettings
 from .factory import FactoryService, FactorySettings, KimiClient
 from .factory.client import KimiTransport
@@ -38,6 +39,7 @@ from .runtime import (
     ToolRuntime,
 )
 from .runtime.client import RuntimeModelTransport
+from .runtime.workflow_service import WorkflowRuntimeService
 from .storage import LocalRepository, migrate_local_database
 from .storage.bootstrap import HEAD_REVISION
 from .system import DirectoryPicker, MacOSDirectoryPicker
@@ -123,6 +125,9 @@ def create_app(
             ToolRuntime(catalog, mcp=mcp),
             runtime_profiles,
         )
+        application.state.workflow_runtime = WorkflowRuntimeService(
+            application.state.runtime
+        )
         application.state.orchestrator = OrchestratorService(
             OrchestratorStore(database_path),
             projects,
@@ -156,6 +161,7 @@ def create_app(
     application.include_router(build_projects_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())
+    application.include_router(build_workflow_router())
     application.include_router(build_factory_router())
     application.include_router(build_resources_router())
     application.include_router(build_mcp_router())

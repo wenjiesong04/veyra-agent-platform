@@ -35,8 +35,8 @@ _STARTER_SOURCE: dict[str, Any] = {
     "nodes": [
         {"id": "start", "component_type": "Start"},
         {
-            "id": "agent",
-            "component_type": "Agent",
+            "id": "model",
+            "component_type": "Model",
             "model_ref": "model.primary",
             "system_prompt": "Complete the request and return a concise result.",
         },
@@ -47,8 +47,8 @@ _STARTER_SOURCE: dict[str, Any] = {
         },
     ],
     "transitions": [
-        {"from": "start", "port": "next", "to": "agent"},
-        {"from": "agent", "port": "next", "to": "output"},
+        {"from": "start", "port": "next", "to": "model"},
+        {"from": "model", "port": "next", "to": "output"},
     ],
     "extensions": {
         "veyra": {
@@ -63,7 +63,7 @@ _STARTER_SOURCE: dict[str, Any] = {
     "ui": {
         "positions": {
             "start": {"x": 0, "y": 80},
-            "agent": {"x": 240, "y": 80},
+            "model": {"x": 240, "y": 80},
             "output": {"x": 480, "y": 80},
         }
     },

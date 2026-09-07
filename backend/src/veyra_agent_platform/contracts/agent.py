@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, cast
 
@@ -27,6 +27,13 @@ from .common import (
     require_uuid7,
     thaw_json,
 )
+from .resource import (
+    AgentVersionRef,
+    ProjectOwnedResource,
+    ResourceKind,
+    ResourceRef,
+    require_semver,
+)
 
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]*@[0-9]+\.[0-9]+\.[0-9]+$")
@@ -36,18 +43,25 @@ HARD_MAX_NODES = 128
 HARD_MAX_TRANSITIONS = 256
 HARD_MAX_CONCURRENT_RUNS = 16
 HARD_MAX_RUN_SECONDS = 86_400
-_BINDING_KINDS = frozenset({"skill", "policy", "template", "mcp_tool"})
+_BINDING_KINDS = frozenset({"skill", "policy", "template", "mcp_tool", "knowledge"})
 
 
 class ComponentType(StrEnum):
     START = "Start"
-    AGENT = "Agent"
+    AGENT = "Agent"  # Legacy wire identity; the editor labels it Model.
+    MODEL = "Model"
     TOOL = "Tool"
     CONDITION = "Condition"
     TRANSFORM = "Transform"
     HUMAN_APPROVAL = "HumanApproval"
     VERIFIER = "Verifier"
     OUTPUT = "Output"
+    AGENT_CALL = "AgentCall"
+
+    @classmethod
+    def parse(cls, value: Any) -> ComponentType:
+        """Preserve the node wire identity when reading historical sources."""
+        return cls(value)
 
 
 class TransitionPort(StrEnum):
@@ -63,6 +77,7 @@ class TransitionPort(StrEnum):
 _ALLOWED_PORTS: dict[ComponentType, frozenset[TransitionPort]] = {
     ComponentType.START: frozenset({TransitionPort.NEXT}),
     ComponentType.AGENT: frozenset({TransitionPort.NEXT}),
+    ComponentType.MODEL: frozenset({TransitionPort.NEXT}),
     ComponentType.TOOL: frozenset({TransitionPort.NEXT}),
     ComponentType.CONDITION: frozenset({TransitionPort.TRUE, TransitionPort.FALSE}),
     ComponentType.TRANSFORM: frozenset({TransitionPort.NEXT}),
@@ -71,7 +86,33 @@ _ALLOWED_PORTS: dict[ComponentType, frozenset[TransitionPort]] = {
     ),
     ComponentType.VERIFIER: frozenset({TransitionPort.PASSED, TransitionPort.FAILED}),
     ComponentType.OUTPUT: frozenset(),
+    ComponentType.AGENT_CALL: frozenset({TransitionPort.NEXT}),
 }
+
+_AGENT_GRAPH_TYPES = frozenset(
+    {
+        ComponentType.START,
+        ComponentType.AGENT,
+        ComponentType.MODEL,
+        ComponentType.TOOL,
+        ComponentType.CONDITION,
+        ComponentType.TRANSFORM,
+        ComponentType.HUMAN_APPROVAL,
+        ComponentType.VERIFIER,
+        ComponentType.OUTPUT,
+    }
+)
+_WORKFLOW_GRAPH_TYPES = frozenset(
+    {
+        ComponentType.START,
+        ComponentType.AGENT_CALL,
+        ComponentType.CONDITION,
+        ComponentType.TRANSFORM,
+        ComponentType.HUMAN_APPROVAL,
+        ComponentType.VERIFIER,
+        ComponentType.OUTPUT,
+    }
+)
 
 
 def _strict_str_list(
@@ -175,6 +216,9 @@ class FlowNode:
     prompt: str | None = None
     checks: tuple[str, ...] | None = None
     output_name: str | None = None
+    agent_ref: str | None = None
+    input_mapping: Mapping[str, str] | None = None
+    output_mapping: Mapping[str, str] | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> FlowNode:
@@ -190,11 +234,14 @@ class FlowNode:
             "prompt",
             "checks",
             "output_name",
+            "agent_ref",
+            "input_mapping",
+            "output_mapping",
         }
         require_keys(item, allowed=fields, required={"id", "component_type"})
         node_id = require_string(item["id"], "node.id", pattern=NODE_ID_RE)
         try:
-            component_type = ComponentType(item["component_type"])
+            component_type = ComponentType.parse(item["component_type"])
         except (TypeError, ValueError) as exc:
             raise ContractValidationError(
                 "node.component_type is not a built-in V1 component"
@@ -203,12 +250,14 @@ class FlowNode:
         allowed_by_type: dict[ComponentType, set[str]] = {
             ComponentType.START: set(),
             ComponentType.AGENT: {"model_ref", "system_prompt"},
+            ComponentType.MODEL: {"model_ref", "system_prompt"},
             ComponentType.TOOL: {"uses"},
             ComponentType.CONDITION: {"expression"},
             ComponentType.TRANSFORM: {"mapping"},
             ComponentType.HUMAN_APPROVAL: {"prompt"},
             ComponentType.VERIFIER: {"checks"},
             ComponentType.OUTPUT: {"output_name"},
+            ComponentType.AGENT_CALL: {"agent_ref", "input_mapping", "output_mapping"},
         }
         present = {key for key in values if key in item}
         forbidden = present - allowed_by_type[component_type]
@@ -221,12 +270,14 @@ class FlowNode:
         required_by_type: dict[ComponentType, set[str]] = {
             ComponentType.START: set(),
             ComponentType.AGENT: {"model_ref", "system_prompt"},
+            ComponentType.MODEL: {"model_ref", "system_prompt"},
             ComponentType.TOOL: {"uses"},
             ComponentType.CONDITION: {"expression"},
             ComponentType.TRANSFORM: {"mapping"},
             ComponentType.HUMAN_APPROVAL: {"prompt"},
             ComponentType.VERIFIER: {"checks"},
             ComponentType.OUTPUT: {"output_name"},
+            ComponentType.AGENT_CALL: {"agent_ref", "input_mapping", "output_mapping"},
         }
         missing = required_by_type[component_type] - present
         if missing:
@@ -274,6 +325,23 @@ class FlowNode:
             output_name=require_string(item["output_name"], "node.output_name")
             if "output_name" in present
             else None,
+            agent_ref=(
+                AgentVersionRef.from_string(
+                    item["agent_ref"], "node.agent_ref"
+                ).as_ref()
+                if "agent_ref" in present
+                else None
+            ),
+            input_mapping=(
+                _call_mapping(item["input_mapping"], "node.input_mapping")
+                if "input_mapping" in present
+                else None
+            ),
+            output_mapping=(
+                _call_mapping(item["output_mapping"], "node.output_mapping")
+                if "output_mapping" in present
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -290,11 +358,26 @@ class FlowNode:
             "prompt",
             "checks",
             "output_name",
+            "agent_ref",
+            "input_mapping",
+            "output_mapping",
         ):
             value = getattr(self, key)
             if value is not None:
                 result[key] = list(value) if key == "checks" else thaw_json(value)
         return result
+
+
+def _call_mapping(value: Any, field_name: str) -> Mapping[str, str]:
+    """Child field names map to Workflow values; expressions are not accepted."""
+    mapping = require_mapping(value, field_name)
+    parsed = {
+        require_string(key, field_name, pattern=_SLUG): require_string(
+            target, field_name, pattern=NODE_ID_RE
+        )
+        for key, target in mapping.items()
+    }
+    return cast(Mapping[str, str], freeze_json(parsed))
 
 
 @dataclass(frozen=True)
@@ -330,14 +413,16 @@ class ProjectAgentDirectory:
     agent_id: str
     slug: str
     path: str
+    version: str = "1.0.0"
     parent_agent_id: str | None = None
+    _version_present: bool = field(default=False, repr=False, compare=False)
 
     @classmethod
     def from_dict(cls, data: Any) -> ProjectAgentDirectory:
         item = require_mapping(data, "project agent")
         require_keys(
             item,
-            allowed={"agent_id", "slug", "path", "parent_agent_id"},
+            allowed={"agent_id", "slug", "path", "version", "parent_agent_id"},
             required={"agent_id", "slug", "path"},
         )
         path = require_string(item["path"], "project agent.path")
@@ -350,6 +435,10 @@ class ProjectAgentDirectory:
             agent_id=require_uuid7(item["agent_id"], "project agent.agent_id"),
             slug=slug,
             path=path,
+            version=require_semver(
+                item.get("version", "1.0.0"), "project agent.version"
+            ),
+            _version_present="version" in item,
             parent_agent_id=(
                 None
                 if item.get("parent_agent_id") is None
@@ -360,10 +449,19 @@ class ProjectAgentDirectory:
         )
 
     def to_dict(self) -> dict[str, str]:
-        result = {"agent_id": self.agent_id, "slug": self.slug, "path": self.path}
+        result = {
+            "agent_id": self.agent_id,
+            "slug": self.slug,
+            "path": self.path,
+        }
+        if self._version_present or self.version != "1.0.0":
+            result["version"] = self.version
         if self.parent_agent_id is not None:
             result["parent_agent_id"] = self.parent_agent_id
         return result
+
+    def ref(self) -> str:
+        return f"{self.agent_id}@{self.version}"
 
 
 @dataclass(frozen=True)
@@ -376,6 +474,13 @@ class ProjectManifest:
     agents: tuple[ProjectAgentDirectory, ...]
     default_agent_id: str | None
     resource_policy: ResourcePolicy
+    workflows: tuple[ProjectOwnedResource, ...] = ()
+    components: tuple[ProjectOwnedResource, ...] = ()
+    knowledge: tuple[ProjectOwnedResource, ...] = ()
+    assets: tuple[ProjectOwnedResource, ...] = ()
+    _resource_fields: frozenset[str] = field(
+        default_factory=frozenset, repr=False, compare=False
+    )
 
     @classmethod
     def from_dict(cls, data: Any) -> ProjectManifest:
@@ -391,6 +496,10 @@ class ProjectManifest:
                 "agents",
                 "default_agent_id",
                 "resource_policy",
+                "workflows",
+                "components",
+                "knowledge",
+                "assets",
             },
             required={
                 "schema_version",
@@ -458,6 +567,12 @@ class ProjectManifest:
             raise ContractValidationError(
                 "default_agent_id must identify a listed Project Agent"
             )
+        workflows = _owned_resources(item.get("workflows", []), ResourceKind.WORKFLOW)
+        components = _owned_resources(
+            item.get("components", []), ResourceKind.COMPONENT
+        )
+        knowledge = _owned_resources(item.get("knowledge", []), ResourceKind.KNOWLEDGE)
+        assets = _owned_resources(item.get("assets", []), ResourceKind.ASSET)
         return cls(
             SCHEMA_VERSION,
             "1",
@@ -467,10 +582,15 @@ class ProjectManifest:
             agents,
             default_agent_id,
             ResourcePolicy.from_dict(item["resource_policy"]),
+            workflows,
+            components,
+            knowledge,
+            assets,
+            frozenset({"workflows", "components", "knowledge", "assets"} & set(item)),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "project_version": self.project_version,
             "project_id": self.project_id,
@@ -480,6 +600,49 @@ class ProjectManifest:
             "default_agent_id": self.default_agent_id,
             "resource_policy": self.resource_policy.to_dict(),
         }
+
+        for key in ("workflows", "components", "knowledge", "assets"):
+            entries = getattr(self, key)
+            if entries or key in self._resource_fields:
+                result[key] = [item.to_dict() for item in entries]
+        return result
+
+
+def _is_dependency_ref(value: str) -> bool:
+    if _REFERENCE.fullmatch(value):
+        return True
+    try:
+        ResourceRef.from_string(value)
+    except ContractValidationError:
+        return False
+    return True
+
+
+def _dependency_ref(value: Any, field: str) -> str:
+    text = require_string(value, field)
+    if _is_dependency_ref(text):
+        return text
+    raise ContractValidationError(
+        f"{field} must be a catalog reference or resource_id@version"
+    )
+
+
+def _owned_resources(
+    value: Any, kind: ResourceKind
+) -> tuple[ProjectOwnedResource, ...]:
+    items = tuple(
+        ProjectOwnedResource.from_dict(item, expected_kind=kind)
+        for item in require_list(value, kind.value)
+    )
+    if (
+        len({item.resource_id for item in items}) != len(items)
+        or len({item.slug for item in items}) != len(items)
+        or len({item.path for item in items}) != len(items)
+    ):
+        raise ContractValidationError(
+            f"project {kind.value} entries must have unique IDs, slugs, and paths"
+        )
+    return items
 
 
 def _project_description(value: Any) -> str:
@@ -584,7 +747,13 @@ class AgentBlueprint:
         return blueprint.validated()
 
     def validated(self) -> AgentBlueprint:
-        _validate_graph(self.nodes, self.transitions, self.outputs, self.verification)
+        _validate_graph(
+            self.nodes,
+            self.transitions,
+            self.outputs,
+            self.verification,
+            allowed_types=_AGENT_GRAPH_TYPES,
+        )
         self.required_capabilities.validate_nodes(self.nodes)
         _validate_ui_node_references(self.ui_suggestions, self.nodes, "ui_suggestions")
         return self
@@ -623,7 +792,7 @@ class RequiredCapabilities:
             item["component_types"], "required_capabilities.component_types"
         )
         try:
-            component_types = tuple(ComponentType(value) for value in raw_types)
+            component_types = tuple(ComponentType.parse(value) for value in raw_types)
         except (TypeError, ValueError) as exc:
             raise ContractValidationError(
                 "required_capabilities.component_types must use "
@@ -691,7 +860,7 @@ def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
 
 def _ui_layout(value: Any) -> Mapping[str, Any]:
     item = require_mapping(value, "ui")
-    require_keys(item, allowed={"positions", "bindings"}, required={"positions"})
+    require_keys(item, allowed={"positions", "bindings", "notes"}, required={"positions"})
     positions = require_mapping(item["positions"], "ui.positions")
     parsed: dict[str, dict[str, int]] = {}
     for node_id, point in positions.items():
@@ -707,6 +876,8 @@ def _ui_layout(value: Any) -> Mapping[str, Any]:
     layout: dict[str, Any] = {"positions": parsed}
     if "bindings" in item:
         layout["bindings"] = _ui_bindings(item["bindings"])
+    if "notes" in item:
+        layout["notes"] = _ui_notes(item["notes"])
     return cast(Mapping[str, Any], freeze_json(layout))
 
 
@@ -724,7 +895,8 @@ def _ui_bindings(value: Any) -> dict[str, dict[str, Any]]:
         kind = require_string(entry["kind"], "ui.bindings.kind")
         if kind not in _BINDING_KINDS:
             raise ContractValidationError(
-                "ui.bindings.kind must be skill, policy, template, or mcp_tool"
+                "ui.bindings.kind must be skill, policy, template, mcp_tool, "
+                "or knowledge"
             )
         x, y = entry["x"], entry["y"]
         if any(
@@ -733,12 +905,55 @@ def _ui_bindings(value: Any) -> dict[str, dict[str, Any]]:
             raise ContractValidationError("ui bindings must have integer x and y")
         parsed[binding_id] = {
             "kind": kind,
-            "reference": require_string(
-                entry["reference"], "ui.bindings.reference", pattern=_REFERENCE
-            ),
+            "reference": _dependency_ref(entry["reference"], "ui.bindings.reference"),
             "x": x,
             "y": y,
         }
+    return parsed
+
+
+_NOTE_COLORS = frozenset({"teal", "amber", "violet", "slate"})
+
+
+def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
+    item = require_mapping(value, "ui.notes")
+    parsed: dict[str, dict[str, Any]] = {}
+    for note_id, payload in item.items():
+        require_string(note_id, "ui.notes id", pattern=NODE_ID_RE)
+        entry = require_mapping(payload, "ui.notes entry")
+        require_keys(
+            entry,
+            allowed={"x", "y", "text", "color", "width"},
+            required={"x", "y", "text"},
+        )
+        if not isinstance(entry["text"], str) or len(entry["text"]) > 4000:
+            raise ContractValidationError("ui.notes.text must be a string up to 4000 characters")
+        x, y = entry["x"], entry["y"]
+        if any(
+            isinstance(number, bool) or not isinstance(number, int) for number in (x, y)
+        ):
+            raise ContractValidationError("ui notes must have integer x and y")
+        note: dict[str, Any] = {"x": x, "y": y, "text": entry["text"]}
+        if "color" in entry:
+            color = require_string(entry["color"], "ui.notes.color")
+            if color not in _NOTE_COLORS:
+                raise ContractValidationError(
+                    "ui.notes.color must be teal, amber, violet, or slate"
+                )
+            note["color"] = color
+        if "width" in entry:
+            width = entry["width"]
+            if (
+                isinstance(width, bool)
+                or not isinstance(width, int)
+                or width < 160
+                or width > 640
+            ):
+                raise ContractValidationError(
+                    "ui.notes.width must be an integer between 160 and 640"
+                )
+            note["width"] = width
+        parsed[note_id] = note
     return parsed
 
 
@@ -763,6 +978,9 @@ class AgentSource:
     policy_refs: tuple[str, ...]
     ui: Mapping[str, Any]
     lock: Mapping[str, str]
+    knowledge_refs: tuple[str, ...] = ()
+    version: str = "1.0.0"
+    _version_present: bool = field(default=False, repr=False, compare=False)
 
     @classmethod
     def from_dict(cls, data: Any) -> AgentSource:
@@ -775,6 +993,7 @@ class AgentSource:
             "slug",
             "name",
             "description",
+            "version",
             "inputs",
             "outputs",
             "nodes",
@@ -783,7 +1002,7 @@ class AgentSource:
             "ui",
             "lock",
         }
-        require_keys(item, allowed=allowed, required=allowed)
+        require_keys(item, allowed=allowed, required=allowed - {"version"})
         require_schema_version(item)
         if item["agentspec_version"] != "26.1" or item["component_type"] != "Flow":
             raise ContractValidationError(
@@ -801,6 +1020,7 @@ class AgentSource:
                 "verification",
                 "skill_refs",
                 "policy_refs",
+                "knowledge_refs",
             },
             required={"runtime_profile", "secret_refs", "permissions", "verification"},
         )
@@ -808,7 +1028,7 @@ class AgentSource:
         lock = require_mapping(item["lock"], "lock")
         if not lock or not all(
             isinstance(key, str)
-            and _REFERENCE.fullmatch(key)
+            and _is_dependency_ref(key)
             and isinstance(value, str)
             and re.fullmatch(r"[0-9a-f]{64}", value)
             for key, value in lock.items()
@@ -846,11 +1066,29 @@ class AgentSource:
             policy_refs=_strict_str_list(
                 veyra.get("policy_refs", []), "policy_refs", pattern=_REFERENCE
             ),
+            knowledge_refs=tuple(
+                ResourceRef.from_string(ref).as_ref()
+                for ref in _strict_str_list(
+                    veyra.get("knowledge_refs", []), "knowledge_refs"
+                )
+            ),
             ui=ui,
             lock=freeze_json(dict(lock)),
+            version=require_semver(item.get("version", "1.0.0"), "version"),
+            _version_present="version" in item,
         )
+        if any(
+            node.component_type is ComponentType.AGENT_CALL for node in source.nodes
+        ):
+            raise ContractValidationError(
+                "Agent graphs cannot contain AgentCall nodes; those belong to Workflows"
+            )
         _validate_graph(
-            source.nodes, source.transitions, source.outputs, source.verification
+            source.nodes,
+            source.transitions,
+            source.outputs,
+            source.verification,
+            allowed_types=_AGENT_GRAPH_TYPES,
         )
         _validate_ui_node_references(source.ui, source.nodes, "ui")
         tool_references = {
@@ -865,6 +1103,7 @@ class AgentSource:
             exact_tool_references
             | set(source.skill_refs)
             | set(source.policy_refs)
+            | set(source.knowledge_refs)
             | {
                 str(binding["reference"])
                 for binding in (source.ui.get("bindings") or {}).values()
@@ -878,7 +1117,7 @@ class AgentSource:
         return source
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "agentspec_version": self.agentspec_version,
             "component_type": self.component_type,
@@ -903,6 +1142,12 @@ class AgentSource:
             "ui": thaw_json(self.ui),
             "lock": thaw_json(self.lock),
         }
+
+        if self.knowledge_refs:
+            result["extensions"]["veyra"]["knowledge_refs"] = list(self.knowledge_refs)
+        if self._version_present or self.version != "1.0.0":
+            result["version"] = self.version
+        return result
 
     @property
     def source_hash(self) -> str:
@@ -971,6 +1216,20 @@ def _validate_ui_node_references(
         raise ContractValidationError(
             f"{field}.bindings collide with Flow node id(s): {colliding}"
         )
+    notes = ui.get("notes") or {}
+    note_ids = set(notes)
+    note_nodes = note_ids & {node.id for node in nodes}
+    if note_nodes:
+        colliding = ", ".join(sorted(note_nodes))
+        raise ContractValidationError(
+            f"{field}.notes collide with Flow node id(s): {colliding}"
+        )
+    note_bindings = note_ids & set(bindings)
+    if note_bindings:
+        colliding = ", ".join(sorted(note_bindings))
+        raise ContractValidationError(
+            f"{field}.notes collide with ui.bindings id(s): {colliding}"
+        )
 
 
 def _validate_graph(
@@ -978,6 +1237,8 @@ def _validate_graph(
     transitions: tuple[Transition, ...],
     outputs: Mapping[str, str],
     verification: VerifierContract,
+    *,
+    allowed_types: frozenset[ComponentType] = _AGENT_GRAPH_TYPES,
 ) -> None:
     if len(nodes) > HARD_MAX_NODES:
         raise ContractValidationError(
@@ -990,6 +1251,12 @@ def _validate_graph(
     if not nodes or len({node.id for node in nodes}) != len(nodes):
         raise ContractValidationError("nodes must be non-empty with unique IDs")
     types = {node.id: node.component_type for node in nodes}
+    unknown = {node.component_type for node in nodes} - allowed_types
+    if unknown:
+        names = ", ".join(sorted(item.value for item in unknown))
+        raise ContractValidationError(
+            f"graph contains component types not allowed at this layer: {names}"
+        )
     if sum(node.component_type is ComponentType.START for node in nodes) != 1:
         raise ContractValidationError("a Flow needs exactly one Start node")
     if not any(node.component_type is ComponentType.OUTPUT for node in nodes):

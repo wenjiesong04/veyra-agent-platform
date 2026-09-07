@@ -120,7 +120,21 @@ def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
         project_storage_root=tmp_path / "projects",
     )
     with TestClient(create_app(settings)) as client:
-        assert len(client.get("/api/v1/components").json()["components"]) == 8
+        assert {
+            item["type"]
+            for item in client.get("/api/v1/components").json()["components"]
+        } == {
+            "Start",
+            "Agent",
+            "Model",
+            "AgentCall",
+            "Tool",
+            "Condition",
+            "Transform",
+            "HumanApproval",
+            "Verifier",
+            "Output",
+        }
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -975,3 +989,57 @@ def test_runtime_event_stream_follows_approval_then_completes(
         assert "approval.requested" in body
         assert "tool.completed" in body
         assert "event: done" in body
+
+
+def test_knowledge_binding_sends_locked_context_and_rejects_changed_document(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedRuntimeTransport("A recyclable box.")
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        project = client.post(
+            "/api/v1/projects", json={"agents": [_agent_source()]}
+        ).json()
+        p, a = project["project_id"], project["agents"][0]["agent_id"]
+        knowledge = client.post(
+            f"/api/v1/projects/{p}/knowledge",
+            json={
+                "name": "Brand",
+                "text": "BRAND_REFERENCE_742: Use recyclable paper.",
+            },
+        ).json()
+        ref = f"{knowledge['knowledge_id']}@{knowledge['version']}"
+        url = f"/api/v1/projects/{p}/agents/{a}"
+        draft = client.get(f"{url}/draft").json()
+        draft["source"]["extensions"]["veyra"]["knowledge_refs"] = [ref]
+        draft["source"]["lock"][ref] = knowledge["source_file_hash"]
+        saved = client.patch(
+            f"{url}/draft",
+            json={"source": draft["source"], "expected_revision": draft["revision"]},
+            headers={"If-Match": draft["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert saved.status_code == 200, saved.text
+        result = _run_until_settled(
+            client, f"{url}/run", {"request": "Design packaging"}
+        )
+        assert result["status"] == "unverified", result
+        assert "BRAND_REFERENCE_742" in json.dumps(transport.calls)
+        events = client.get(f"{url}/runs/{result['run_id']}").json()["events"]
+        assert "BRAND_REFERENCE_742" not in json.dumps(events)
+        assert any(
+            event["payload"].get("tool_reference") == "knowledge.context"
+            for event in events
+        )
+        changed = client.patch(
+            f"/api/v1/projects/{p}/knowledge/{knowledge['knowledge_id']}",
+            json={"text": "Different content"},
+        )
+        assert changed.status_code == 200, changed.text
+        call_count = len(transport.calls)
+        failed = _run_until_settled(client, f"{url}/run", {"request": "Design again"})
+        assert failed["status"] == "failed", failed
+        assert failed["error"]["code"] == "knowledge_lock_mismatch"
+        assert len(transport.calls) == call_count

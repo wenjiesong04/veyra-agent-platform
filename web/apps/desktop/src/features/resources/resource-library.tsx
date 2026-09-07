@@ -30,8 +30,9 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useProjectWorkspace } from "../../api/project-workspace";
 import type { LocalProjectApi } from "../../api/local-client";
+import { resourceLibraryTabFromHash, resourceLibraryTabPaths, type ResourceLibraryTab } from "./library-navigation";
 
-type ResourceTab = "component" | "tooling" | "skill" | "policy" | "template";
+type ResourceTab = ResourceLibraryTab;
 
 const tabKinds: Array<{ id: ResourceTab; kinds: ResourceKind[] }> = [
   { id: "component", kinds: ["component"] },
@@ -52,13 +53,13 @@ const iconForKind: Record<ResourceKind, typeof Box> = {
 
 function resourceKindLabel(kind: ResourceKind, zh: boolean): string {
   return zh
-    ? { component: "组件", tool: "工具", mcp_tool: "MCP", skill: "Skill", policy: "策略", template: "模板" }[kind]
+    ? { component: "组件", tool: "工具", mcp_tool: "MCP", skill: "技能", policy: "策略", template: "模板" }[kind]
     : { component: "Components", tool: "Tools", mcp_tool: "MCP", skill: "Skills", policy: "Policies", template: "Templates" }[kind];
 }
 
 function tabLabel(tab: ResourceTab, zh: boolean): string {
   return zh
-    ? { component: "组件", tooling: "工具 / MCP", skill: "Skills", policy: "策略", template: "模板" }[tab]
+    ? { component: "组件", tooling: "工具 / MCP", skill: "技能", policy: "策略", template: "模板" }[tab]
     : { component: "Components", tooling: "Tools / MCP", skill: "Skills", policy: "Policies", template: "Templates" }[tab];
 }
 
@@ -86,7 +87,7 @@ export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api } = useProjectWorkspace();
-  const [tab, setTab] = useState<ResourceTab>("component");
+  const [tab, setTab] = useState<ResourceTab>(() => resourceLibraryTabFromHash(window.location.hash));
   const [resources, setResources] = useState<ResourceDescriptor[]>([]);
   const [selected, setSelected] = useState<ResourceDescriptor | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -124,6 +125,13 @@ export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
   }, [load]);
 
   useEffect(() => {
+    const syncTab = () => setTab(resourceLibraryTabFromHash(window.location.hash));
+    syncTab();
+    window.addEventListener("hashchange", syncTab);
+    return () => window.removeEventListener("hashchange", syncTab);
+  }, []);
+
+  useEffect(() => {
     if (!resourceId || !api.getResource) return;
     const separator = resourceId.lastIndexOf("@");
     if (separator < 1) return;
@@ -135,10 +143,12 @@ export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
   const changeTab = (next: ResourceTab) => {
     setTab(next);
     setSelected(null);
+    const href = resourceLibraryTabPaths[next];
+    if (window.location.hash !== href) window.location.hash = href;
   };
   const copy = zh
     ? {
-      eyebrow: "资源库", title: "可复用能力", description: "组件、工具、MCP、Skills、策略和模板都从一个有版本的目录进入 Factory 与 Studio。", count: "个资源", local: "本机目录", empty: "这个分类暂时没有可用资源", emptyDetail: "目录会明确显示未配置或暂不支持的能力，不会伪造可运行项目。", unavailable: "资源库暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源库", tags: "标签",
+      eyebrow: "资源库", title: "可复用能力", description: "组件、工具、MCP、技能、策略和模板都从一个有版本的目录进入 Factory 与 Studio。", count: "个资源", local: "本机目录", empty: "这个分类暂时没有可用资源", emptyDetail: "目录会明确显示未配置或暂不支持的能力，不会伪造可运行项目。", unavailable: "资源库暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源库", tags: "标签",
     }
     : {
       eyebrow: "Resource Library", title: "Reusable capabilities", description: "Components, tools, MCP, Skills, Policies, and Templates enter Factory and Studio through one versioned catalog.", count: "resources", local: "Local catalog", empty: "No resources in this category yet", emptyDetail: "The catalog will show unavailable or unconfigured capabilities honestly instead of pretending they can run.", unavailable: "The Resource Library is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Library", tags: "Tags",

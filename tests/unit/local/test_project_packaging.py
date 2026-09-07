@@ -113,9 +113,44 @@ def test_unpack_rejects_disallowed_type_and_oversized_member() -> None:
         )
 
 
+def test_unpack_preserves_legacy_raw_knowledge_files() -> None:
+    archive = unpack_project_archive(
+        "team.vproject.zip",
+        _zip_bytes(
+            _valid_entries(
+                **{
+                    "knowledge/brief.md": b"# Brief\n",
+                }
+            )
+        ),
+    )
+    assert archive.extra_files["knowledge/brief.md"] == b"# Brief\n"
+    assert "agents/github-triage/resource.yaml" not in archive.extra_files
+
+
+def test_unpack_rejects_unlisted_workflow_path() -> None:
+    with pytest.raises(ProjectPackageError, match="disallowed path"):
+        unpack_project_archive(
+            "orphan.zip",
+            _zip_bytes(
+                _valid_entries(**{"workflows/ship/workflow.vworkflow.yaml": b"x: 1\n"})
+            ),
+        )
+
+
 def test_unpack_rejects_orphaned_agent_path() -> None:
     with pytest.raises(ProjectPackageError, match="disallowed path"):
         unpack_project_archive(
             "orphan.zip",
             _zip_bytes(_valid_entries(**{"agents/not-listed/README.md": b"# x\n"})),
+        )
+
+
+def test_unpack_rejects_invalid_resource_metadata() -> None:
+    with pytest.raises(ProjectPackageError, match="resource manifest"):
+        unpack_project_archive(
+            "invalid.zip",
+            _zip_bytes(
+                _valid_entries(**{"agents/github-triage/resource.yaml": b"ignored\n"})
+            ),
         )

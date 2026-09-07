@@ -60,7 +60,10 @@ function renderPage(api: LocalProjectApi) {
   return render(<ThemeProvider><ProjectWorkspaceProvider api={api}><ResourceLibraryPage /></ProjectWorkspaceProvider></ThemeProvider>);
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.location.hash = "";
+});
 
 describe("ResourceLibraryPage", () => {
   it("loads real Component resources and switches to Skills and Policies", async () => {
@@ -74,6 +77,7 @@ describe("ResourceLibraryPage", () => {
     await user.click(screen.getByRole("tab", { name: "Policies" }));
     expect(await screen.findByText("Local Only")).toBeInTheDocument();
     expect(api.listResources).toHaveBeenCalledWith({ kind: "policy" });
+    expect(window.location.hash).toBe("#/components?tab=policy");
   });
 
   it("shows registered Tools including unavailable GitHub entries", async () => {

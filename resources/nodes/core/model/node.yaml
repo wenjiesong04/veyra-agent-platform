@@ -1,0 +1,30 @@
+# veyra.component.model@1.0.0
+availability: requires_configuration
+description: Platform-owned Model graph component for an Agent canvas.
+factory_selectable: true
+kind: component
+component_class: primitive
+name: Model
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.model
+runtime_status: runtime_not_configured
+spec:
+  fields:
+  - model_ref
+  - system_prompt
+  output_ports:
+  - next
+  ui:
+    category: model
+    icon: bot
+    title: Model
+tags:
+- graph
+- builtin
+- primitive
+version: 1.0.0

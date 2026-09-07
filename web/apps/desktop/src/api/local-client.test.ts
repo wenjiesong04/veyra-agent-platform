@@ -109,6 +109,22 @@ describe("LocalApiClient Project requests", () => {
     });
   });
 
+  it("maps plain 500 bodies and FastAPI detail errors into readable client errors", async () => {
+    const plain = vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500, headers: { "Content-Type": "text/plain" } }));
+    await expect(new LocalApiClient({ fetcher: plain }).listProjects()).rejects.toMatchObject({
+      status: 500,
+      code: "local_internal_error",
+      message: "The local service failed while handling this request. Restart the desktop sidecar and retry.",
+    });
+
+    const fastapi = vi.fn().mockResolvedValue(response({ detail: "Not Found" }, 404));
+    await expect(new LocalApiClient({ fetcher: fastapi }).getProject("missing")).rejects.toMatchObject({
+      status: 404,
+      code: "http_error",
+      message: "Not Found",
+    });
+  });
+
   it("parses the component registry and starts a durable Agent run", async () => {
     const run = {
       schema_version: "1.0",
@@ -358,5 +374,19 @@ describe("LocalApiClient Project requests", () => {
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: "PATCH" });
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ pinned: true });
     expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("parses a recoverable Workflow delete response", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0",
+      project_id: "project-1",
+      workflow_id: "wf-1",
+      disposition: "trashed",
+      removed_at: "2026-08-28T00:00:00Z",
+      project: summary(),
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.deleteWorkflow("project-1", "wf-1")).resolves.toMatchObject({ workflow_id: "wf-1", disposition: "trashed", project: summary() });
+    expect(fetcher).toHaveBeenCalledWith("/api/v1/projects/project-1/workflows/wf-1", expect.objectContaining({ method: "DELETE" }));
   });
 });

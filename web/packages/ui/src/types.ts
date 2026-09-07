@@ -10,12 +10,29 @@ export type Brand = {
   iconSrc?: string;
 };
 
+export type NavigationTone = "project" | "kind" | "instance" | "collection" | "catalog";
+
+export type NavigationResourceKind =
+  | "agent"
+  | "workflow"
+  | "knowledge"
+  | "files"
+  | "runs"
+  | "library"
+  | "component"
+  | "tooling"
+  | "skill"
+  | "policy"
+  | "template";
+
 export type NavigationItem = {
   href: string;
   label: string;
   icon: LucideIcon;
   active?: boolean;
   contextual?: boolean;
+  tone?: NavigationTone;
+  resourceKind?: NavigationResourceKind;
   onClick?: () => void;
   trailingAction?: ReactNode;
   leadingAction?: ReactNode;

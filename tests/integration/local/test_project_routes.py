@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from veyra_agent_platform.contracts.common import new_uuid7
@@ -33,6 +34,8 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         assert project["manifest_hash"]
         assert project["agents"] == []
         assert project["agent_count"] == 0
+        assert project["workflows"] == []
+        assert project["workflow_count"] == 0
         assert project["indexed_at"]
         root = Path(project["root_path"])
         assert root.is_relative_to(managed_root)
@@ -466,6 +469,11 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
             f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/export"
         )
         assert exported.json()["source"]["agent_id"] == agent_id
+        assert exported.json()["kind"] == "agent"
+        assert exported.json()["version"]
+        assert exported.json()["dependencies"] == sorted(
+            exported.json()["source"]["lock"]
+        )
 
 
 def test_commit_requires_current_revision_and_etag(tmp_path: Path) -> None:
@@ -581,3 +589,163 @@ def test_project_export_import_files_and_parent_remap(tmp_path: Path) -> None:
         )
         assert rejected.status_code == 422
         assert rejected.json()["code"] == "project_package_invalid"
+
+
+def test_workflow_routes_create_draft_and_remove(tmp_path: Path) -> None:
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/v1/projects", json={"name": "Workflows"})
+        assert created.status_code == 201
+        project_id = created.json()["project_id"]
+        created_workflow = client.post(
+            f"/api/v1/projects/{project_id}/workflows",
+            json={"name": "Review path"},
+        )
+        assert created_workflow.status_code == 201
+        workflow = created_workflow.json()
+        workflow_id = workflow["workflow_id"]
+        assert workflow["name"] == "Review path"
+        listed = client.get(f"/api/v1/projects/{project_id}/workflows")
+        assert listed.status_code == 200
+        assert [item["workflow_id"] for item in listed.json()["workflows"]] == [
+            workflow_id
+        ]
+        draft = client.get(
+            f"/api/v1/projects/{project_id}/workflows/{workflow_id}/draft"
+        )
+        assert draft.status_code == 200
+        source = draft.json()["source"]
+        source["description"] = "Saved from Studio."
+        saved = client.patch(
+            f"/api/v1/projects/{project_id}/workflows/{workflow_id}/draft",
+            json={"source": source, "expected_revision": draft.json()["revision"]},
+            headers={
+                "If-Match": draft.headers["etag"],
+                "Idempotency-Key": new_uuid7(),
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["revision"] == 1
+        assert saved.json()["source"]["description"] == "Saved from Studio."
+        removed = client.delete(
+            f"/api/v1/projects/{project_id}/workflows/{workflow_id}"
+        )
+        assert removed.status_code == 200
+        assert removed.json()["disposition"] == "trashed"
+        assert removed.json()["project"]["workflow_count"] == 0
+        assert (
+            client.get(
+                f"/api/v1/projects/{project_id}/workflows/{workflow_id}/draft"
+            ).status_code
+            == 422
+        )
+
+
+def test_unhandled_workflow_create_error_returns_typed_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from veyra_agent_platform.local.projects.service import ProjectService
+
+    def boom(self: ProjectService, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("workflow index exploded")
+
+    monkeypatch.setattr(ProjectService, "create_workflow", boom)
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/v1/projects", json={"name": "Broken"})
+        assert created.status_code == 201
+        response = client.post(
+            f"/api/v1/projects/{created.json()['project_id']}/workflows",
+            json={"name": "Review path"},
+        )
+        assert response.status_code == 500
+        body = response.json()
+        assert body["code"] == "local_internal_error"
+        assert "workflow index exploded" in body["message"]
+        assert body["request_id"]
+
+
+def test_workflow_validate_and_commit(tmp_path: Path) -> None:
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/v1/projects", json={"name": "Workflow commit"})
+        assert created.status_code == 201
+        project_id = created.json()["project_id"]
+        created_workflow = client.post(
+            f"/api/v1/projects/{project_id}/workflows",
+            json={"name": "Blank path"},
+        )
+        assert created_workflow.status_code == 201
+        workflow_id = created_workflow.json()["workflow_id"]
+        draft = client.get(
+            f"/api/v1/projects/{project_id}/workflows/{workflow_id}/draft"
+        )
+        assert draft.status_code == 200
+        validated = client.post(
+            f"/api/v1/projects/{project_id}/workflows/{workflow_id}/validate"
+        )
+        assert validated.status_code == 200
+        assert validated.json()["valid"] is True
+        committed = client.post(
+            f"/api/v1/projects/{project_id}/workflows/{workflow_id}/commit",
+            json={"expected_revision": draft.json()["revision"]},
+            headers={
+                "If-Match": draft.headers["etag"],
+                "Idempotency-Key": new_uuid7(),
+            },
+        )
+        assert committed.status_code == 200
+        assert committed.json()["workflow_id"] == workflow_id
+        assert committed.json()["version_id"]
+
+
+def test_knowledge_routes_create_read_and_remove(tmp_path: Path) -> None:
+    managed_root = tmp_path / "application-data" / "projects"
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=managed_root,
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/v1/projects", json={"name": "Knowledge"})
+        assert created.status_code == 201
+        project_id = created.json()["project_id"]
+        created_knowledge = client.post(
+            f"/api/v1/projects/{project_id}/knowledge",
+            json={"name": "Brief", "text": "# Brief\n"},
+        )
+        assert created_knowledge.status_code == 201
+        knowledge = created_knowledge.json()
+        knowledge_id = knowledge["knowledge_id"]
+        assert knowledge["name"] == "Brief"
+        assert knowledge["text"] == "# Brief\n"
+        listed = client.get(f"/api/v1/projects/{project_id}/knowledge")
+        assert listed.status_code == 200
+        assert [item["knowledge_id"] for item in listed.json()["knowledge"]] == [
+            knowledge_id
+        ]
+        fetched = client.get(f"/api/v1/projects/{project_id}/knowledge/{knowledge_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["text"] == "# Brief\n"
+        patched = client.patch(
+            f"/api/v1/projects/{project_id}/knowledge/{knowledge_id}",
+            json={"text": "# Updated\n"},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["text"] == "# Updated\n"
+        removed = client.delete(
+            f"/api/v1/projects/{project_id}/knowledge/{knowledge_id}"
+        )
+        assert removed.status_code == 200
+        assert removed.json()["disposition"] == "trashed"
+        assert removed.json()["project"]["knowledge_count"] == 0

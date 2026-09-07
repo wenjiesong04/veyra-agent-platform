@@ -31,16 +31,26 @@ type AuthContextValue = {
 const defaultApi = createCommunityApi({ baseUrl: "/api/v1" });
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function isCommunityOffline(error: unknown): boolean {
+  if (!(error instanceof CommunityApiError)) return false;
+  return error.status === 0
+    || error.status === 503
+    || error.code === "network_unavailable"
+    || error.code === "community_unavailable"
+    || error.code === "http_503";
+}
+
 async function bootstrapAccount(api: CommunityApi): Promise<CommunityAccount | null> {
   if (!api.hasRefreshEvidence()) return null;
   try {
     return await api.me();
   } catch (error) {
+    if (isCommunityOffline(error)) return null;
     if (!(error instanceof CommunityApiError) || error.status !== 401) throw error;
     try {
       return await api.refresh();
     } catch (refreshError) {
-      if (refreshError instanceof CommunityApiError && [401, 403].includes(refreshError.status)) return null;
+      if (refreshError instanceof CommunityApiError && ([401, 403].includes(refreshError.status) || isCommunityOffline(refreshError))) return null;
       throw refreshError;
     }
   }

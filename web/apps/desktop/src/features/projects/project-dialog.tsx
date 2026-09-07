@@ -1,5 +1,5 @@
 import { Box, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
-import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectSummaryResponse, RuntimeApiProfileInput } from "@veyra/api-contracts";
+import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, RuntimeApiProfileInput, WorkflowSource } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { LocalApiClientError } from "../../api/local-client";
@@ -236,7 +236,151 @@ export function AgentDeleteDialog({ project, agent, onClose, onDeleted }: { proj
   </Modal>;
 }
 
-export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCreated }: { project: ProjectSummaryResponse; mode: AgentCreateMode; parentAgentId?: string; onClose: () => void; onCreated: (projectId: string) => void }) {
+export function WorkflowEditDialog({ project, workflow, onClose }: { project: ProjectSummaryResponse; workflow: ProjectWorkflowRecord; onClose: () => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, upsertProject } = useProjectWorkspace();
+  const [source, setSource] = useState<WorkflowSource | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [etag, setEtag] = useState("");
+  const [name, setName] = useState(workflow.name || workflow.slug);
+  const [description, setDescription] = useState(workflow.description);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const copy = zh ? { title: "编辑工作流", name: "工作流名称", description: "描述", loading: "正在加载工作流…", cancel: "取消", save: "保存", close: "关闭对话框", failed: "无法更新工作流，请重试。" } : { title: "Edit Workflow", name: "Workflow name", description: "Description", loading: "Loading Workflow…", cancel: "Cancel", save: "Save", close: "Close dialog", failed: "The Workflow could not be updated. Try again." };
+
+  useEffect(() => {
+    let current = true;
+    if (!api.getWorkflowDraft) {
+      setError(copy.failed);
+      setLoading(false);
+      return;
+    }
+    void api.getWorkflowDraft(project.project_id, workflow.workflow_id).then((draft) => {
+      if (!current) return;
+      setSource(draft.source);
+      setRevision(draft.revision);
+      setEtag(draft.etag);
+      setName(draft.source.name);
+      setDescription(draft.source.description);
+    }).catch((cause: unknown) => { if (current) setError(cause instanceof Error ? cause.message : copy.failed); }).finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [api, copy.failed, project.project_id, workflow.workflow_id]);
+
+  useEffect(() => {
+    if (!loading) nameRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [loading, onClose, saving]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!source || !api.saveWorkflowDraft) return;
+    const nextName = name.trim() || source.name || workflow.slug;
+    setSaving(true); setError(null);
+    try {
+      const saved = await api.saveWorkflowDraft(project.project_id, workflow.workflow_id, { source: { ...source, name: nextName, description: description.trim() }, expected_revision: revision }, { etag });
+      setRevision(saved.revision);
+      setEtag(saved.etag);
+      try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, workflows: (project.workflows ?? []).map((item) => item.workflow_id === workflow.workflow_id ? { ...item, name: saved.source.name, description: saved.source.description } : item) }); }
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : copy.failed);
+    } finally { setSaving(false); }
+  };
+
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={loading || saving}>
+    {loading ? <p className="project-modal-hint">{copy.loading}</p> : source ? <form className="project-form" onSubmit={(event) => void submit(event)}>
+      <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" disabled={saving} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label>
+      {error ? <p className="project-form-error" role="alert">{error}</p> : null}
+      <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button variant="primary" type="submit" disabled={saving || !api.saveWorkflowDraft}>{saving ? "…" : copy.save}</Button></div>
+    </form> : <p className="project-form-error" role="alert">{error ?? copy.failed}</p>}
+  </Modal>;
+}
+
+export function WorkflowDeleteDialog({ project, workflow, onClose, onDeleted }: { project: ProjectSummaryResponse; workflow: ProjectWorkflowRecord; onClose: () => void; onDeleted?: () => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, upsertProject } = useProjectWorkspace();
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const copy = zh ? { title: "删除工作流？", detail: `将“${workflow.name || workflow.slug}”移到 Veyra 回收区。`, cancel: "取消", remove: "删除工作流", close: "关闭对话框", failed: "无法删除工作流，请重试。", unavailable: "当前工作区无法删除工作流。" } : { title: "Delete Workflow?", detail: `Move “${workflow.name || workflow.slug}” to Veyra Trash.`, cancel: "Cancel", remove: "Delete Workflow", close: "Close dialog", failed: "The Workflow could not be deleted. Try again.", unavailable: "This workspace cannot delete a Workflow." };
+  const remove = async () => {
+    if (!api.deleteWorkflow) return setError(copy.unavailable);
+    setDeleting(true); setError(null);
+    try { const result = await api.deleteWorkflow(project.project_id, workflow.workflow_id); upsertProject(result.project); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
+  };
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
+    <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
+    <div className="project-modal-actions"><Button variant="ghost" onClick={onClose} disabled={deleting}>{copy.cancel}</Button><Button icon={Trash2} variant="danger" onClick={() => void remove()} disabled={deleting}>{deleting ? "…" : copy.remove}</Button></div>
+  </Modal>;
+}
+
+export function KnowledgeEditDialog({ project, knowledge, onClose }: { project: ProjectSummaryResponse; knowledge: ProjectKnowledgeRecord; onClose: () => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, upsertProject } = useProjectWorkspace();
+  const [name, setName] = useState(knowledge.name || knowledge.slug);
+  const [description, setDescription] = useState(knowledge.description);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const copy = zh ? { title: "编辑知识", name: "知识名称", description: "描述", cancel: "取消", save: "保存", close: "关闭对话框", failed: "无法更新知识，请重试。", unavailable: "当前工作区无法编辑知识。" } : { title: "Edit Knowledge", name: "Knowledge name", description: "Description", cancel: "Cancel", save: "Save", close: "Close dialog", failed: "The Knowledge could not be updated. Try again.", unavailable: "This workspace cannot edit Knowledge." };
+
+  useEffect(() => {
+    nameRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose, saving]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!api.updateKnowledge) return setError(copy.unavailable);
+    const nextName = name.trim() || knowledge.name || knowledge.slug;
+    setSaving(true); setError(null);
+    try {
+      const saved = await api.updateKnowledge(project.project_id, knowledge.knowledge_id, { name: nextName, description: description.trim() });
+      try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, knowledge: (project.knowledge ?? []).map((item) => item.knowledge_id === knowledge.knowledge_id ? { ...item, name: saved.name, description: saved.description } : item) }); }
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : copy.failed);
+    } finally { setSaving(false); }
+  };
+
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={saving}>
+    <form className="project-form" onSubmit={(event) => void submit(event)}>
+      <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" disabled={saving} /></label>
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label>
+      {error ? <p className="project-form-error" role="alert">{error}</p> : null}
+      <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button variant="primary" type="submit" disabled={saving}>{saving ? "…" : copy.save}</Button></div>
+    </form>
+  </Modal>;
+}
+
+export function KnowledgeDeleteDialog({ project, knowledge, onClose, onDeleted }: { project: ProjectSummaryResponse; knowledge: ProjectKnowledgeRecord; onClose: () => void; onDeleted?: () => void }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api, upsertProject } = useProjectWorkspace();
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const copy = zh ? { title: "删除知识？", detail: `将“${knowledge.name || knowledge.slug}”移到 Veyra 回收区。`, cancel: "取消", remove: "删除知识", close: "关闭对话框", failed: "无法删除知识，请重试。", unavailable: "当前工作区无法删除知识。" } : { title: "Delete Knowledge?", detail: `Move “${knowledge.name || knowledge.slug}” to Veyra Trash.`, cancel: "Cancel", remove: "Delete Knowledge", close: "Close dialog", failed: "The Knowledge could not be deleted. Try again.", unavailable: "This workspace cannot delete Knowledge." };
+  const remove = async () => {
+    if (!api.deleteKnowledge) return setError(copy.unavailable);
+    setDeleting(true); setError(null);
+    try { const result = await api.deleteKnowledge(project.project_id, knowledge.knowledge_id); upsertProject(result.project); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
+  };
+  return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
+    <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
+    <div className="project-modal-actions"><Button variant="ghost" onClick={onClose} disabled={deleting}>{copy.cancel}</Button><Button icon={Trash2} variant="danger" onClick={() => void remove()} disabled={deleting}>{deleting ? "…" : copy.remove}</Button></div>
+  </Modal>;
+}
+
+export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCreated }: { project: ProjectSummaryResponse; mode: AgentCreateMode; parentAgentId?: string; onClose: () => void; onCreated: (projectId: string, agentId: string) => void }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api, refresh, upsertProject } = useProjectWorkspace();
@@ -292,6 +436,7 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
     setSaving(true); setError(null);
     const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}), ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) };
     try {
+      let agentId: string;
       if (mode === "file") {
         const imported = await api.importAgent(project.project_id, {
           file: file!,
@@ -299,13 +444,21 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
           ...(description.trim() ? { description: description.trim() } : {}),
           ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
         });
+        agentId = imported.agent_id;
         if (runtimeProfile && api.setAgentRuntimeProfile) {
           await api.setAgentRuntimeProfile(project.project_id, imported.agent_id, runtimeProfile);
         }
-      } else await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
-      const updated = await api.getProject(project.project_id);
-      upsertProject(updated);
-      onCreated(project.project_id);
+      } else {
+        const created = await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
+        agentId = created.agent_id;
+      }
+      try {
+        const updated = await api.getProject(project.project_id);
+        upsertProject(updated);
+      } catch {
+        /* Creation succeeded; open the Agent even if the tree refresh fails. */
+      }
+      onCreated(project.project_id, agentId);
       onClose();
       void refresh().catch(() => undefined);
     } catch (cause) {

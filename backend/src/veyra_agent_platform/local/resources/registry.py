@@ -15,6 +15,7 @@ from typing import Any, Final
 import yaml  # type: ignore[import-untyped]
 
 from veyra_agent_platform.contracts.agent import ComponentType
+from veyra_agent_platform.contracts.resource import ComponentClass
 
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _RESOURCE_ID = re.compile(r"^veyra\.[a-z][a-z0-9_.-]*$")
@@ -60,6 +61,7 @@ _RUNTIME_STATUS: Final[frozenset[str]] = frozenset(
 )
 _FAMILY_KINDS: Final[dict[str, str]] = {
     "core": "component",
+    "composites": "component",
     "filesystem": "tool",
     "git": "tool",
     "shell": "tool",
@@ -69,6 +71,7 @@ _FAMILY_KINDS: Final[dict[str, str]] = {
     "policies": "policy",
     "templates": "template",
 }
+_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset({"component_class"})
 _OVERLAY_FAMILIES: Final[frozenset[str]] = frozenset({"workshop", "discovered"})
 _COMPONENT_NAMES: Final[frozenset[str]] = frozenset(
     item.value for item in ComponentType
@@ -180,7 +183,7 @@ def _validated(
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise NodePackageError(f"{path}: node.yaml must be a mapping")
-    extra = set(payload) - _REQUIRED_KEYS
+    extra = set(payload) - _REQUIRED_KEYS - _OPTIONAL_KEYS
     missing = _REQUIRED_KEYS - set(payload)
     if extra or missing:
         detail = ", ".join(sorted(extra or missing))
@@ -209,8 +212,7 @@ def _validated(
                 f"{path}: family {family} must declare kind {expected_kind}"
             )
     name = _text(path, "name", payload["name"])
-    if kind == "component" and name not in _COMPONENT_NAMES:
-        raise NodePackageError(f"{path}: component name is not a V1 graph type")
+    component_class = _component_class(path, payload, kind, family, name)
     availability = _text(path, "availability", payload["availability"])
     runtime_status = _text(path, "runtime_status", payload["runtime_status"])
     if availability not in _AVAILABILITY:
@@ -229,7 +231,7 @@ def _validated(
     ):
         raise NodePackageError(f"{path}: tags must be a list of strings")
     _ui(path, spec)
-    if kind == "component":
+    if kind == "component" and component_class is ComponentClass.PRIMITIVE:
         fields = spec.get("fields")
         ports = spec.get("output_ports")
         if not isinstance(fields, list) or not all(
@@ -242,7 +244,13 @@ def _validated(
             raise NodePackageError(
                 f"{path}: component spec.output_ports must be strings"
             )
-    return {
+    if kind == "component" and component_class is ComponentClass.COMPOSITE:
+        primitives = spec.get("primitive_refs")
+        if not isinstance(primitives, list) or not primitives:
+            raise NodePackageError(
+                f"{path}: composite spec.primitive_refs must list primitive components"
+            )
+    result = {
         "resource_id": resource_id,
         "kind": kind,
         "name": name,
@@ -255,6 +263,9 @@ def _validated(
         "spec": deepcopy(spec),
         "version": version,
     }
+    if component_class is not None and "component_class" in payload:
+        result["component_class"] = component_class.value
+    return result
 
 
 def _permissions(path: Path, value: object) -> None:
@@ -294,11 +305,56 @@ def _check_components(packages: tuple[NodePackage, ...]) -> None:
         package.definition["name"]
         for package in packages
         if package.definition["kind"] == "component"
+        and package.definition.get("component_class", "primitive")
+        == ComponentClass.PRIMITIVE.value
     }
     if names != _COMPONENT_NAMES:
         raise NodePackageError(
-            "node packages must declare each V1 graph component exactly once"
+            "primitive component packages must declare each V1 graph type exactly once"
         )
+
+
+def _component_class(
+    path: Path, payload: dict[str, Any], kind: str, family: str, name: str
+) -> ComponentClass | None:
+    raw = payload.get("component_class")
+    if kind != "component":
+        if raw is not None:
+            raise NodePackageError(
+                f"{path}: component_class is only valid on components"
+            )
+        return None
+    if raw is None:
+        # Core V1 packages predate this classification. Preserve their hash material.
+        if family == "core" and name in _COMPONENT_NAMES - {"Model", "AgentCall"}:
+            raw = ComponentClass.PRIMITIVE.value
+        else:
+            raise NodePackageError(
+                f"{path}: component packages must declare component_class"
+            )
+    try:
+        component_class = ComponentClass(raw)
+    except ValueError as exc:
+        raise NodePackageError(
+            f"{path}: component_class must be primitive or composite"
+        ) from exc
+    if component_class is ComponentClass.PRIMITIVE:
+        if family != "core":
+            raise NodePackageError(
+                f"{path}: primitive components must live in the core family"
+            )
+        if name not in _COMPONENT_NAMES:
+            raise NodePackageError(f"{path}: primitive name is not a V1 graph type")
+    if component_class is ComponentClass.COMPOSITE:
+        if family != "composites":
+            raise NodePackageError(
+                f"{path}: composite components must live in the composites family"
+            )
+        if name in _COMPONENT_NAMES:
+            raise NodePackageError(
+                f"{path}: composite components cannot reuse a primitive graph type name"
+            )
+    return component_class
 
 
 def _text(path: Path, field: str, value: object) -> str:
