@@ -860,7 +860,9 @@ def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
 
 def _ui_layout(value: Any) -> Mapping[str, Any]:
     item = require_mapping(value, "ui")
-    require_keys(item, allowed={"positions", "bindings", "notes"}, required={"positions"})
+    require_keys(
+        item, allowed={"positions", "bindings", "notes"}, required={"positions"}
+    )
     positions = require_mapping(item["positions"], "ui.positions")
     parsed: dict[str, dict[str, int]] = {}
     for node_id, point in positions.items():
@@ -927,7 +929,9 @@ def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
             required={"x", "y", "text"},
         )
         if not isinstance(entry["text"], str) or len(entry["text"]) > 4000:
-            raise ContractValidationError("ui.notes.text must be a string up to 4000 characters")
+            raise ContractValidationError(
+                "ui.notes.text must be a string up to 4000 characters"
+            )
         x, y = entry["x"], entry["y"]
         if any(
             isinstance(number, bool) or not isinstance(number, int) for number in (x, y)
