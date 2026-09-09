@@ -113,6 +113,59 @@ class McpService:
             "deleted": True,
         }
 
+    def approve_tool(
+        self, server_id: str, resource_id: str, version: str
+    ) -> dict[str, Any]:
+        """Promote one discovered descriptor after an explicit user review."""
+        self._require(server_id)
+        try:
+            descriptor = self.catalog.detail(resource_id, version)
+        except ValueError as exc:
+            raise McpError("mcp_tool_not_found", "MCP tool was not found") from exc
+        if descriptor.get("origin") != "discovered":
+            raise McpError(
+                "mcp_tool_not_discovered", "Only discovered MCP tools can be reviewed"
+            )
+        spec = descriptor.get("spec") or {}
+        if spec.get("mcp_server_id") != server_id:
+            raise McpError(
+                "mcp_tool_server_mismatch", "MCP tool belongs to another server"
+            )
+        target = self._discovered_package(server_id, resource_id, version)
+        if target is None:
+            raise McpError("mcp_tool_not_found", "MCP tool package was not found")
+        try:
+            payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise McpError(
+                "mcp_discovery_invalid", "MCP tool package could not be read"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise McpError("mcp_discovery_invalid", "MCP tool package is invalid")
+        payload["factory_selectable"] = True
+        package_spec = payload.get("spec")
+        if not isinstance(package_spec, dict):
+            raise McpError("mcp_discovery_invalid", "MCP tool spec is invalid")
+        package_spec["review_required"] = False
+        temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
+        try:
+            temporary.write_text(
+                yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+            self.catalog.reload_overlays()
+        except (OSError, NodePackageError) as exc:
+            temporary.unlink(missing_ok=True)
+            raise McpError(
+                "mcp_discovery_invalid", "MCP tool could not be approved"
+            ) from exc
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "server_id": server_id,
+            "resource": self.catalog.detail(resource_id, version),
+        }
+
     def discover(self, server_id: str) -> dict[str, Any]:
         row = self._require(server_id)
         if not row["enabled"]:
@@ -193,7 +246,7 @@ class McpService:
             "name": name[:120],
             "description": description.strip()[:4_000],
             "availability": "ready",
-            "factory_selectable": True,
+            "factory_selectable": False,
             "runtime_status": "supported",
             "required_permissions": {
                 "network_hosts": [],
@@ -202,10 +255,11 @@ class McpService:
                 "filesystem_write_roots": [],
                 "shell_workspace_only": False,
             },
-            "tags": ["mcp", "discovered"],
+            "tags": ["mcp", "discovered", "review_required"],
             "spec": {
                 "adapter": "veyra.runtime.mcp.call",
-                "approval_required": False,
+                "approval_required": True,
+                "review_required": True,
                 "mcp_server_id": server_id,
                 "mcp_tool_name": name,
                 "input_schema": input_schema,
@@ -225,6 +279,31 @@ class McpService:
             encoding="utf-8",
         )
         return {"resource_id": resource_id, "version": "1.0.0"}
+
+    def _discovered_package(
+        self, server_id: str, resource_id: str, version: str
+    ) -> Path | None:
+        root = self.overlay_root / "discovered"
+        if not root.is_dir():
+            return None
+        for target in root.glob("*/node.yaml"):
+            if target.is_symlink() or not target.is_file():
+                continue
+            try:
+                payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            spec = payload.get("spec")
+            if (
+                payload.get("resource_id") == resource_id
+                and payload.get("version") == version
+                and isinstance(spec, dict)
+                and spec.get("mcp_server_id") == server_id
+            ):
+                return target
+        return None
 
 
 def _stdio_factory(

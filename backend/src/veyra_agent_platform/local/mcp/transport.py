@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import selectors
+import signal
 import subprocess
+import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from typing import Any, Protocol
+
+_MAX_MESSAGE_BYTES = 1_048_576
 
 
 class McpTransportError(RuntimeError):
@@ -45,7 +51,7 @@ class ScriptedMcpTransport:
 
 
 class StdioMcpTransport:
-    """Spawn a configured MCP server over stdio JSON-RPC with Content-Length framing."""
+    """Spawn a configured MCP server over newline-delimited JSON-RPC stdio."""
 
     def __init__(
         self,
@@ -96,6 +102,7 @@ class _StdioSession:
         self.timeout = timeout
         self._process: subprocess.Popen[bytes] | None = None
         self._next_id = 1
+        self._stdout_buffer = b""
 
     def __enter__(self) -> _StdioSession:
         merged = os.environ.copy()
@@ -105,8 +112,9 @@ class _StdioSession:
                 [self.command, *self.args],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 env=merged,
+                start_new_session=os.name != "nt",
             )
         except OSError as exc:
             raise McpTransportError(
@@ -118,11 +126,20 @@ class _StdioSession:
         process = self._process
         if process is None:
             return
-        if process.stdin:
-            process.stdin.close()
-        process.kill()
-        process.wait(timeout=2)
-        self._process = None
+        try:
+            if process.stdin:
+                with suppress(OSError):
+                    process.stdin.close()
+            if process.poll() is None:
+                if os.name == "nt":
+                    process.kill()
+                else:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2)
+        finally:
+            self._process = None
 
     def initialize(self) -> None:
         self.request(
@@ -141,19 +158,26 @@ class _StdioSession:
         self._write(
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
         )
-        payload = self._read()
-        if payload.get("id") != request_id:
-            raise McpTransportError(
-                "mcp_protocol_invalid", "MCP response id did not match"
-            )
-        if "error" in payload:
-            raise McpTransportError("mcp_remote_error", "MCP server returned an error")
-        result = payload.get("result")
-        if not isinstance(result, dict):
-            raise McpTransportError(
-                "mcp_protocol_invalid", "MCP result must be an object"
-            )
-        return result
+        deadline = time.monotonic() + self.timeout
+        while True:
+            payload = self._read(deadline)
+            if payload.get("id") != request_id:
+                # Servers may emit notifications while a request is in flight.
+                if "id" not in payload and isinstance(payload.get("method"), str):
+                    continue
+                raise McpTransportError(
+                    "mcp_protocol_invalid", "MCP response id did not match"
+                )
+            if "error" in payload:
+                raise McpTransportError(
+                    "mcp_remote_error", "MCP server returned an error"
+                )
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                raise McpTransportError(
+                    "mcp_protocol_invalid", "MCP result must be an object"
+                )
+            return result
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -163,39 +187,55 @@ class _StdioSession:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         assert process.stdin is not None
         try:
-            process.stdin.write(header + body)
+            process.stdin.write(body + b"\n")
             process.stdin.flush()
         except OSError as exc:
             raise McpTransportError("mcp_io_failed", "MCP stdin write failed") from exc
 
-    def _read(self) -> dict[str, Any]:
+    def _read(self, deadline: float) -> dict[str, Any]:
         process = self._require_process()
         assert process.stdout is not None
-        headers: dict[str, str] = {}
         while True:
-            line = process.stdout.readline()
-            if not line:
-                raise McpTransportError("mcp_io_failed", "MCP server closed stdout")
-            if line in {b"\r\n", b"\n"}:
+            if b"\n" in self._stdout_buffer:
+                line, self._stdout_buffer = self._stdout_buffer.split(b"\n", 1)
+                line = line.rstrip(b"\r")
                 break
-            decoded = line.decode("utf-8", errors="replace")
-            key, _, value = decoded.partition(":")
-            headers[key.strip().lower()] = value.strip()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise McpTransportError(
+                    "mcp_timeout", "MCP server did not respond before the timeout"
+                )
+            selector = selectors.DefaultSelector()
+            try:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                if not selector.select(remaining):
+                    raise McpTransportError(
+                        "mcp_timeout", "MCP server did not respond before the timeout"
+                    )
+            finally:
+                selector.close()
+            try:
+                chunk = os.read(process.stdout.fileno(), 65_536)
+            except OSError as exc:
+                raise McpTransportError(
+                    "mcp_io_failed", "MCP stdout read failed"
+                ) from exc
+            if not chunk:
+                raise McpTransportError("mcp_io_failed", "MCP server closed stdout")
+            self._stdout_buffer += chunk
+            if len(self._stdout_buffer) > _MAX_MESSAGE_BYTES:
+                raise McpTransportError(
+                    "mcp_message_too_large", "MCP message exceeds the 1 MiB limit"
+                )
+        if not line:
+            raise McpTransportError("mcp_protocol_invalid", "MCP message is empty")
         try:
-            length = int(headers["content-length"])
-        except (KeyError, ValueError) as exc:
-            raise McpTransportError(
-                "mcp_protocol_invalid", "MCP response is missing Content-Length"
-            ) from exc
-        body = process.stdout.read(length)
-        try:
-            payload = json.loads(body.decode("utf-8"))
+            payload = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise McpTransportError(
-                "mcp_protocol_invalid", "MCP response is not JSON"
+                "mcp_protocol_invalid", "MCP response is not newline-delimited JSON"
             ) from exc
         if not isinstance(payload, dict):
             raise McpTransportError(

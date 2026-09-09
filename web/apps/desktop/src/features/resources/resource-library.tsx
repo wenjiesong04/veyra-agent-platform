@@ -316,6 +316,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
 
 function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: boolean; onChanged: () => void }) {
   const [servers, setServers] = useState<McpServer[]>([]);
+  const [tools, setTools] = useState<ResourceDescriptor[]>([]);
   const [name, setName] = useState("demo");
   const [command, setCommand] = useState("npx");
   const [args, setArgs] = useState("");
@@ -347,10 +348,25 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
     if (!api.discoverMcpServer) return;
     setError("");
     try {
-      await api.discoverMcpServer(serverId);
+      const result = await api.discoverMcpServer(serverId);
+      setTools((current) => [
+        ...current.filter((item) => !result.tools.some((next) => next.reference === item.reference)),
+        ...result.tools,
+      ]);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "MCP 发现失败。" : "MCP discovery failed."));
+    }
+  };
+  const approve = async (serverId: string, tool: ResourceDescriptor) => {
+    if (!api.approveMcpTool) return;
+    setError("");
+    try {
+      const result = await api.approveMcpTool(serverId, tool.resource_id, tool.version);
+      setTools((current) => current.map((item) => item.reference === result.resource.reference ? result.resource : item));
+      onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "无法审核 MCP 工具。" : "Could not approve the MCP tool."));
     }
   };
   return (
@@ -369,6 +385,17 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
           <Button size="sm" onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
         </div>
       ))}
+      {tools.map((tool) => {
+        const spec = (tool.spec ?? {}) as Record<string, unknown>;
+        const serverId = typeof spec.mcp_server_id === "string" ? spec.mcp_server_id : "";
+        const reviewRequired = spec.review_required === true || !tool.factory_selectable;
+        return (
+          <div className="resource-row" key={tool.reference}>
+            <span className="row-copy"><strong>{tool.name}</strong><small>{tool.reference} · {reviewRequired ? (zh ? "等待审核" : "Review required") : (zh ? "已审核" : "Reviewed")}</small></span>
+            {reviewRequired ? <Button size="sm" disabled={!serverId || !api.approveMcpTool} onClick={() => void approve(serverId, tool)}>{zh ? "审核并启用" : "Review and enable"}</Button> : <StatusBadge label={zh ? "已审核" : "Reviewed"} tone="good" />}
+          </div>
+        );
+      })}
     </Panel>
   );
 }

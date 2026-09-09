@@ -179,6 +179,7 @@ export type LocalProjectApi = {
   listMcpServers?(): Promise<ListMcpServersResponse>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   discoverMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }>;
+  approveMcpTool?(serverId: string, resourceId: string, version: string): Promise<{ schema_version: "1.0"; server_id: string; resource: ResourceDescriptor }>;
   deleteMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; deleted: boolean }>;
   orchestratorStatus?(): Promise<OrchestratorStatus>;
   listWorkItems?(projectId: string): Promise<ListWorkItemsResponse>;
@@ -1019,6 +1020,15 @@ function discoveredMcpTools(value: unknown, status = 502): { schema_version: "1.
   };
 }
 
+function approvedMcpTool(value: unknown, status = 502): { schema_version: "1.0"; server_id: string; resource: ResourceDescriptor } {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    server_id: asString(record.server_id, "mcp.server_id", status),
+    resource: resource(record.resource, status),
+  };
+}
+
 function deletedMcpServer(value: unknown, status = 502): { schema_version: "1.0"; server_id: string; deleted: boolean } {
   const record = schemaRecord(value, status);
   return {
@@ -1799,6 +1809,14 @@ export class LocalApiClient {
 
   discoverMcpServer(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }> {
     return this.request(`mcp/servers/${encodeURIComponent(serverId)}/discover`, discoveredMcpTools, { method: "POST" });
+  }
+
+  approveMcpTool(serverId: string, resourceId: string, version: string): Promise<{ schema_version: "1.0"; server_id: string; resource: ResourceDescriptor }> {
+    return this.request(
+      `mcp/servers/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}/approve`,
+      approvedMcpTool,
+      { method: "POST" },
+    );
   }
 
   deleteMcpServer(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; deleted: boolean }> {

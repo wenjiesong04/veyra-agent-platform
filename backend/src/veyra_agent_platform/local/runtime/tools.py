@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
@@ -49,12 +50,39 @@ class ToolExecution:
     receipt: dict[str, Any]
 
 
+class ToolAdapter(Protocol):
+    """An injectable Runtime adapter for one catalog `spec.adapter` value."""
+
+    def __call__(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution: ...
+
+
 class ToolRuntime:
     """Resolve exact catalog references and execute only registered adapters."""
 
-    def __init__(self, catalog: ResourceCatalog, mcp: McpService | None = None) -> None:
+    def __init__(
+        self,
+        catalog: ResourceCatalog,
+        mcp: McpService | None = None,
+        adapters: Mapping[str, ToolAdapter] | None = None,
+    ) -> None:
         self.catalog = catalog
         self.mcp = mcp
+        self._adapters: dict[str, ToolAdapter] = {
+            _READ_ADAPTER: self._execute_read,
+            _WRITE_ADAPTER: self._execute_write,
+            _MCP_ADAPTER: self._execute_mcp,
+        }
+        if adapters:
+            self._adapters.update(adapters)
 
     def authorize(
         self, *, source: AgentSource, node: FlowNode, values: dict[str, Any]
@@ -113,7 +141,7 @@ class ToolRuntime:
         except ToolRuntimeError as exc:
             return self._denied(node.uses, exc.code, str(exc), values, resource)
         adapter = resource.get("spec", {}).get("adapter")
-        if adapter not in {_READ_ADAPTER, _WRITE_ADAPTER, _MCP_ADAPTER}:
+        if not isinstance(adapter, str) or adapter not in self._adapters:
             return self._denied(
                 node.uses,
                 "tool_runtime_unavailable",
@@ -163,26 +191,88 @@ class ToolRuntime:
                 "approval_required",
                 "This Tool requires an approved HumanApproval on the current path",
             )
-        adapter = authorization.adapter
-        if adapter == _READ_ADAPTER:
-            output, byte_length, relative_path = self._read_project_file(
-                project_root, values.get("path")
-            )
-        elif adapter == _WRITE_ADAPTER:
-            output, byte_length, relative_path = self._write_project_file(
-                project_root, values.get("path"), values.get("content")
-            )
-        elif adapter == _MCP_ADAPTER:
-            output, byte_length, relative_path = self._call_mcp(
-                authorization.resource, values
-            )
-        else:
+        if authorization.adapter is None:
             raise ToolRuntimeError(
                 "tool_runtime_unavailable", "Tool adapter is not installed"
             )
+        adapter = self._adapters.get(authorization.adapter)
+        if adapter is None:
+            raise ToolRuntimeError(
+                "tool_runtime_unavailable", "Tool adapter is not installed"
+            )
+        return adapter(
+            project_root=project_root,
+            source=source,
+            node=node,
+            values=values,
+            authorization=authorization,
+            approved=approved,
+        )
+
+    def _execute_read(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del source, node, approved
+        output, byte_length, relative_path = self._read_project_file(
+            project_root, values.get("path")
+        )
+        return self._receipt_execution(
+            authorization, output, byte_length, relative_path
+        )
+
+    def _execute_write(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del source, node, approved
+        output, byte_length, relative_path = self._write_project_file(
+            project_root, values.get("path"), values.get("content")
+        )
+        return self._receipt_execution(
+            authorization, output, byte_length, relative_path
+        )
+
+    def _execute_mcp(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        output, byte_length, relative_path = self._call_mcp(
+            authorization.resource or {}, values
+        )
+        return self._receipt_execution(
+            authorization, output, byte_length, relative_path
+        )
+
+    @staticmethod
+    def _receipt_execution(
+        authorization: ToolAuthorization,
+        output: dict[str, Any],
+        byte_length: int,
+        relative_path: str,
+    ) -> ToolExecution:
         receipt = {
             "tool_reference": authorization.tool_reference,
-            "adapter": adapter,
+            "adapter": authorization.adapter,
             "permission": "allowed",
             "authorization": "allowed",
             "input_digest": authorization.input_digest,

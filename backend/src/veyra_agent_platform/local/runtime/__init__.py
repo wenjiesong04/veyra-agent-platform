@@ -15,7 +15,13 @@ from .profiles import (
     RuntimeProfileStore,
 )
 from .service import RuntimeService
-from .tools import ToolAuthorization, ToolExecution, ToolRuntime, ToolRuntimeError
+from .tools import (
+    ToolAdapter,
+    ToolAuthorization,
+    ToolExecution,
+    ToolRuntime,
+    ToolRuntimeError,
+)
 
 __all__ = [
     "RuntimeCompletion",
@@ -30,6 +36,7 @@ __all__ = [
     "RuntimeProfileError",
     "RuntimeProfileStore",
     "ToolAuthorization",
+    "ToolAdapter",
     "ToolExecution",
     "ToolRuntime",
     "ToolRuntimeError",

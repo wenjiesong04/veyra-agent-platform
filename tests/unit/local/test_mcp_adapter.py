@@ -147,7 +147,7 @@ def test_discovered_mcp_tool_executes_through_runtime_adapter(tmp_path: Path) ->
                 "name": "echo",
                 "description": "Echo text through MCP",
                 "availability": "ready",
-                "factory_selectable": True,
+                "factory_selectable": False,
                 "runtime_status": "supported",
                 "required_permissions": {
                     "network_hosts": [],
@@ -159,7 +159,7 @@ def test_discovered_mcp_tool_executes_through_runtime_adapter(tmp_path: Path) ->
                 "tags": ["mcp", "discovered"],
                 "spec": {
                     "adapter": "veyra.runtime.mcp.call",
-                    "approval_required": False,
+                    "approval_required": True,
                     "mcp_server_id": "server-1",
                     "mcp_tool_name": "echo",
                     "input_schema": {"text": "string"},
@@ -189,7 +189,7 @@ def test_discovered_mcp_tool_executes_through_runtime_adapter(tmp_path: Path) ->
         node=node,
         values=values,
         authorization=authorization,
-        approved=False,
+        approved=True,
     )
     assert execution.output["result"]["content"][0]["text"] == "hello"
     assert execution.receipt["authorization"] == "allowed"

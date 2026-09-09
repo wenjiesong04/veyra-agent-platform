@@ -51,6 +51,14 @@ def build_router() -> APIRouter:
     def discover(server_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _mcp(request).discover(server_id))
 
+    @router.post("/servers/{server_id}/tools/{resource_id}/versions/{version}/approve")
+    def approve_tool(
+        server_id: str, resource_id: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _mcp(request).approve_tool(server_id, resource_id, version)
+        )
+
     @router.delete("/servers/{server_id}")
     def delete_server(server_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _mcp(request).delete_server(server_id))

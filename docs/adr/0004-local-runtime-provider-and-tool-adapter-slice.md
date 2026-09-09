@@ -34,9 +34,14 @@ a model credential fails with `runtime_not_configured`; it is never simulated.
 - Model responses are mapped only to declared Agent outputs. String outputs use
   the final response text; object, array, number and boolean outputs require
   matching JSON values.
-- Shell, network, MCP, and token streaming remain explicit unsupported states.
-  They are not represented as fake successful adapters. `resume` is not used
-  for approval waits; those waits continue through `approve` or `reject`.
+- Shell, arbitrary network requests, and token streaming remain explicit
+  unsupported states. MCP is an experimental Tool adapter only: stdio uses
+  newline-delimited JSON-RPC, discovered descriptors are not Factory-selectable
+  until reviewed, and discovered calls require approval by default. The generic
+  builtin `veyra.mcp.call` descriptor remains unconfigured until a concrete
+  server/tool descriptor exists. These boundaries are not represented as fake
+  successful adapters. `resume` is not used for approval waits; those waits
+  continue through `approve` or `reject`.
   `GET .../runs/{run_id}/events` is a replayable SSE follow of persisted
   events. POST `/run` is still synchronous.
 
@@ -44,6 +49,8 @@ a model credential fails with `runtime_not_configured`; it is never simulated.
 
 The Resource Library can now honestly mark filesystem read and write as
 runnable, and Factory can select them. Write still requires a HumanApproval
-node before compilation. The next Runtime wave can make POST `/run`
+node before compilation. A reviewed MCP Tool can use the same catalog lock,
+authorization, approval, receipt, and Runtime adapter boundary; discovery alone
+does not grant execution. The next Runtime wave can make POST `/run`
 asynchronous and paint node state onto the Studio graph without changing the
 portable Agent source format.

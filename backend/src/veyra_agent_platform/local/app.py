@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -37,6 +37,7 @@ from .runtime import (
     RuntimeProfileStore,
     RuntimeService,
     RuntimeSettings,
+    ToolAdapter,
     ToolRuntime,
 )
 from .runtime.client import RuntimeModelTransport
@@ -70,6 +71,7 @@ def create_app(
     runtime_transport: RuntimeModelTransport | None = None,
     runtime_settings: RuntimeSettings | None = None,
     mcp_transport_factory: TransportFactory | None = None,
+    tool_adapters: Mapping[str, ToolAdapter] | None = None,
 ) -> FastAPI:
     """Create the local service application without starting a server."""
 
@@ -124,7 +126,7 @@ def create_app(
             projects,
             application.state.library,
             runtime_client,
-            ToolRuntime(catalog, mcp=mcp),
+            ToolRuntime(catalog, mcp=mcp, adapters=tool_adapters),
             runtime_profiles,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
