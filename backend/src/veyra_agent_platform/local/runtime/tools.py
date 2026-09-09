@@ -8,6 +8,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
+
+import httpx
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
@@ -21,6 +24,8 @@ _READ_ADAPTER = "veyra.runtime.filesystem.read"
 _LIST_ADAPTER = "veyra.runtime.filesystem.list"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
+_HTTP_ADAPTER = "veyra.runtime.http.request"
+_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
 
 
 class ToolRuntimeError(RuntimeError):
@@ -74,14 +79,19 @@ class ToolRuntime:
         catalog: ResourceCatalog,
         mcp: McpService | None = None,
         adapters: Mapping[str, ToolAdapter] | None = None,
+        http_client: httpx.Client | None = None,
     ) -> None:
         self.catalog = catalog
         self.mcp = mcp
+        self._http_client = http_client or httpx.Client(
+            timeout=30.0, follow_redirects=False
+        )
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
             _LIST_ADAPTER: self._execute_list,
             _WRITE_ADAPTER: self._execute_write,
             _MCP_ADAPTER: self._execute_mcp,
+            _HTTP_ADAPTER: self._execute_http,
         }
         if adapters:
             self._adapters.update(adapters)
@@ -281,6 +291,64 @@ class ToolRuntime:
         )
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
+        )
+
+    def _execute_http(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, approved
+        method = values.get("method")
+        raw_url = values.get("url")
+        body = values.get("body")
+        if not isinstance(method, str) or method.upper() not in _HTTP_METHODS:
+            raise ToolRuntimeError("tool_input_invalid", "HTTP method is not supported")
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            raise ToolRuntimeError("tool_input_invalid", "HTTP URL is required")
+        parsed = urlsplit(raw_url)
+        host = parsed.hostname
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not host
+            or parsed.username
+            or parsed.password
+        ):
+            raise ToolRuntimeError(
+                "tool_network_denied", "HTTP URL is invalid or contains credentials"
+            )
+        allowed_hosts = {item.lower() for item in (node.network_hosts or ())}
+        if host.lower() not in allowed_hosts:
+            raise ToolRuntimeError(
+                "tool_network_denied",
+                "HTTP host must be explicitly listed on the Tool node",
+            )
+        if body is not None and not isinstance(body, str):
+            raise ToolRuntimeError("tool_input_invalid", "HTTP body must be text")
+        try:
+            response = self._http_client.request(
+                method.upper(), raw_url, content=body, follow_redirects=False
+            )
+            content = response.content
+        except httpx.TimeoutException as exc:
+            raise ToolRuntimeError("tool_timeout", "HTTP request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ToolRuntimeError("tool_failed", "HTTP request failed") from exc
+        if len(content) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "HTTP response exceeds the 1 MiB limit"
+            )
+        output = {
+            "status": response.status_code,
+            "body": content.decode("utf-8", errors="replace"),
+        }
+        return self._receipt_execution(
+            authorization, output, len(content), host.lower()
         )
 
     @staticmethod

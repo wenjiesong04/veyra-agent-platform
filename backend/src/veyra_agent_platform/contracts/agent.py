@@ -212,6 +212,7 @@ class FlowNode:
     model_ref: str | None = None
     system_prompt: str | None = None
     uses: str | None = None
+    network_hosts: tuple[str, ...] | None = None
     expression: str | None = None
     mapping: Mapping[str, str] | None = None
     prompt: str | None = None
@@ -230,6 +231,7 @@ class FlowNode:
             "model_ref",
             "system_prompt",
             "uses",
+            "network_hosts",
             "expression",
             "mapping",
             "prompt",
@@ -252,7 +254,7 @@ class FlowNode:
             ComponentType.START: set(),
             ComponentType.AGENT: {"model_ref", "system_prompt"},
             ComponentType.MODEL: {"model_ref", "system_prompt"},
-            ComponentType.TOOL: {"uses"},
+            ComponentType.TOOL: {"uses", "network_hosts"},
             ComponentType.CONDITION: {"expression"},
             ComponentType.TRANSFORM: {"mapping"},
             ComponentType.HUMAN_APPROVAL: {"prompt"},
@@ -315,6 +317,13 @@ class FlowNode:
             uses=require_string(item["uses"], "node.uses", pattern=_REFERENCE)
             if "uses" in present
             else None,
+            network_hosts=(
+                _strict_str_list(
+                    item["network_hosts"], "node.network_hosts", pattern=_HOST
+                )
+                if "network_hosts" in present
+                else None
+            ),
             expression=require_string(item["expression"], "node.expression")
             if "expression" in present
             else None,
@@ -354,6 +363,7 @@ class FlowNode:
             "model_ref",
             "system_prompt",
             "uses",
+            "network_hosts",
             "expression",
             "mapping",
             "prompt",

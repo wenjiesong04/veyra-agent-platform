@@ -10,6 +10,8 @@ The first Runtime slice supports these real execution paths:
   Project root; and
 - `veyra.tool.filesystem.write@1.0.0` writes a UTF-8 file below the Project
   root after an approved `HumanApproval` node on the current path.
+- `veyra.tool.http.request@1.0.0` calls an HTTP(S) host explicitly listed on
+  the Tool node and requires an approved `HumanApproval` node.
 
 Tool execution records an authorization decision before any adapter effect.
 Write, Shell, and similar high-authority tools remain approval-gated. A run
@@ -34,8 +36,9 @@ a model credential fails with `runtime_not_configured`; it is never simulated.
 - Model responses are mapped only to declared Agent outputs. String outputs use
   the final response text; object, array, number and boolean outputs require
   matching JSON values.
-- Shell, arbitrary network requests, and token streaming remain explicit
-  unsupported states. MCP is an experimental Tool adapter only: stdio uses
+- Shell, arbitrary network requests outside the explicit HTTP adapter, and
+  token streaming remain explicit unsupported states. MCP is an experimental
+  Tool adapter only: stdio uses
   newline-delimited JSON-RPC, discovered descriptors are not Factory-selectable
   until reviewed, and discovered calls require approval by default. The generic
   builtin `veyra.mcp.call` descriptor remains unconfigured until a concrete

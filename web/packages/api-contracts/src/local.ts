@@ -44,6 +44,7 @@ export type FlowNode = {
   input_mapping?: Record<string, string>;
   output_mapping?: Record<string, string>;
   uses?: string;
+  network_hosts?: string[];
   expression?: string;
   mapping?: Record<string, string>;
   prompt?: string;

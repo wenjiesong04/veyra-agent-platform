@@ -604,7 +604,7 @@ Initial tools:
 - filesystem.list — current Runtime adapter, bounded Project directory listing
 - filesystem.write — current Runtime adapter, HumanApproval by default, Project workspace only
 - shell.exec, approval and workspace scope by default
-- http.request, host allowlist
+- http.request — current Runtime adapter, explicit per-node host allowlist and HumanApproval
 - github.read
 - github.write, approval by default
 - mcp.call
