@@ -1,8 +1,9 @@
-import { BookOpen, Bot, FileText, FolderKanban, Gauge, History, Home, MessageCirclePlus, Play, Workflow, Wrench } from "lucide-react";
+import { BookOpen, Bot, Boxes, FileText, FolderKanban, Gauge, History, Home, MessageCirclePlus, Play, Workflow, Wrench } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation, type ProjectAgentRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import { agentAncestryPath } from "./features/projects/agent-tree";
 
-type DesktopHeader = { title: string; breadcrumbs?: { label: string; href?: string; icon?: typeof Home }[] };
+type Crumb = { label: string; href?: string; icon?: typeof Home };
+type DesktopHeader = { title: string; breadcrumbs?: Crumb[] };
 type DesktopLocale = "zh" | "en";
 
 const rootTitles: Record<"en" | "zh", Partial<Record<DesktopRouteLocation["kind"], string>>> = {
@@ -22,10 +23,14 @@ function agentBreadcrumbChain(project: ProjectSummaryResponse, projectId: string
   }));
 }
 
+function projectTrail(home: Crumb, project: Crumb, ...rest: Crumb[]): Crumb[] {
+  return [home, project, ...rest];
+}
+
 export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSummaryResponse[], locale: DesktopLocale = "en"): DesktopHeader {
   const contextLabels = locale === "zh"
-    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", overview: "概览", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "历史" }
-    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", overview: "Overview", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "History" };
+    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", resourceLibrary: "资源库", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "历史" }
+    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", resourceLibrary: "Resource library", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "History" };
   const title = rootTitles[locale][route.kind];
   if (title) return { title };
   const project = "projectId" in route ? projects.find((item) => item.project_id === route.projectId) : undefined;
@@ -34,34 +39,37 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   const projectCrumb = "projectId" in route ? { label: projectLabel, href: projectRoutePaths.project(route.projectId), icon: FolderKanban } : undefined;
   if (!projectCrumb) return { title: "Route not found" };
 
-  if (route.kind === "project" || route.kind === "project-agents") {
-    return { title: projectLabel, breadcrumbs: [home, { label: contextLabels.overview, href: projectCrumb.href, icon: FolderKanban }, projectCrumb] };
+  if (route.kind === "project") {
+    return { title: contextLabels.resourceLibrary, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.resourceLibrary, href: projectCrumb.href, icon: Boxes }) };
+  }
+  if (route.kind === "project-agents") {
+    return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }) };
   }
   if (route.kind === "project-chat") {
-    return { title: contextLabels.newChat, breadcrumbs: [home, { label: contextLabels.newChat, href: projectRoutePaths.projectChat(route.projectId), icon: MessageCirclePlus }, projectCrumb] };
+    return { title: contextLabels.newChat, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.newChat, href: projectRoutePaths.projectChat(route.projectId), icon: MessageCirclePlus }) };
   }
   if (route.kind === "project-analysis") {
-    return { title: contextLabels.analysis, breadcrumbs: [home, { label: contextLabels.analysis, href: projectRoutePaths.projectAnalysis(route.projectId), icon: Gauge }, projectCrumb] };
+    return { title: contextLabels.analysis, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.analysis, href: projectRoutePaths.projectAnalysis(route.projectId), icon: Gauge }) };
   }
   if (route.kind === "factory") {
-    return { title: contextLabels.factory, breadcrumbs: [home, { label: contextLabels.factory, href: projectRoutePaths.factory(route.projectId), icon: Wrench }, projectCrumb] };
+    return { title: contextLabels.factory, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.factory, href: projectRoutePaths.factory(route.projectId), icon: Wrench }) };
   }
   if (route.kind === "project-workflows") {
-    return { title: contextLabels.workflows, breadcrumbs: [home, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, projectCrumb] };
+    return { title: contextLabels.workflows, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }) };
   }
   if (route.kind === "project-workflow") {
     const workflow = project?.workflows?.find((item) => item.workflow_id === route.workflowId);
     const workflowLabel = workflow?.name || workflow?.slug || contextLabels.workflows;
-    return { title: workflowLabel, breadcrumbs: [home, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, projectCrumb, { label: workflowLabel, href: projectRoutePaths.workflow(route.projectId, route.workflowId ?? ""), icon: Workflow }] };
+    return { title: workflowLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, { label: workflowLabel, href: projectRoutePaths.workflow(route.projectId, route.workflowId ?? ""), icon: Workflow }) };
   }
   if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") {
-    return { title: contextLabels.knowledge, breadcrumbs: [home, { label: contextLabels.knowledge, href: projectRoutePaths.knowledge(route.projectId), icon: BookOpen }, projectCrumb] };
+    return { title: contextLabels.knowledge, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.knowledge, href: projectRoutePaths.knowledge(route.projectId), icon: BookOpen }) };
   }
   if (route.kind === "project-files") {
-    return { title: contextLabels.files, breadcrumbs: [home, { label: contextLabels.files, href: projectRoutePaths.files(route.projectId), icon: FileText }, projectCrumb] };
+    return { title: contextLabels.files, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.files, href: projectRoutePaths.files(route.projectId), icon: FileText }) };
   }
   if (route.kind === "project-runs") {
-    return { title: contextLabels.history, breadcrumbs: [home, { label: contextLabels.history, href: projectRoutePaths.runs(route.projectId), icon: History }, projectCrumb] };
+    return { title: contextLabels.history, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.history, href: projectRoutePaths.runs(route.projectId), icon: History }) };
   }
 
   if ("agentId" in route && route.agentId && project) {
@@ -74,7 +82,7 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
     if (route.kind === "agent-detail") {
       return {
         title: fallbackAgent ? agentDisplayLabel(fallbackAgent) : agentId,
-        breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain],
+        breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, ...resolvedAgentChain),
       };
     }
     if (route.kind === "agent-design") {
@@ -83,26 +91,26 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
       return {
         title: agentTitle,
         breadcrumbs: fromWorkflow
-          ? [home, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, projectCrumb, { label: fromWorkflow.name || fromWorkflow.slug, href: projectRoutePaths.workflow(route.projectId, fromWorkflow.workflow_id), icon: Workflow }, ...resolvedAgentChain]
-          : [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain],
+          ? projectTrail(home, projectCrumb, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, { label: fromWorkflow.name || fromWorkflow.slug, href: projectRoutePaths.workflow(route.projectId, fromWorkflow.workflow_id), icon: Workflow }, ...resolvedAgentChain)
+          : projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, ...resolvedAgentChain),
       };
     }
     if (route.kind === "agent-analysis") {
       return {
         title: contextLabels.analysis,
-        breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain, { label: contextLabels.analysis, icon: Gauge }],
+        breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, ...resolvedAgentChain, { label: contextLabels.analysis, icon: Gauge }),
       };
     }
     if (route.kind === "agent-version") {
       const versionLabel = `${contextLabels.version} / ${route.versionId ?? ""}`.trim();
       return {
         title: versionLabel,
-        breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain, { label: versionLabel, icon: Wrench }],
+        breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, ...resolvedAgentChain, { label: versionLabel, icon: Wrench }),
       };
     }
     return {
       title: contextLabels.run,
-      breadcrumbs: [home, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, projectCrumb, ...resolvedAgentChain, { label: contextLabels.run, icon: Play }],
+      breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }, ...resolvedAgentChain, { label: contextLabels.run, icon: Play }),
     };
   }
 

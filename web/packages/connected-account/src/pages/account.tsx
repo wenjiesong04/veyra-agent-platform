@@ -54,7 +54,7 @@ export function ConnectedAccountPage() {
     void listSessions().then((items) => {
       if (!cancelled) setSessions(items);
     }).catch((caught: unknown) => {
-      if (!cancelled) setError(authErrorMessage(caught, errorCopy[locale]));
+      if (!cancelled) setError(authErrorMessage(caught, errorCopy[locale], "account"));
     }).finally(() => {
       if (!cancelled) setSessionsLoading(false);
     });
@@ -77,7 +77,7 @@ export function ConnectedAccountPage() {
       await updateProfile(payload);
       setSuccess(copy.saved);
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "account"));
     } finally {
       setSaving(false);
     }
@@ -118,7 +118,7 @@ export function ConnectedAccountPage() {
       });
       setSuccess(copy.avatarSaved);
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "account"));
     } finally {
       setAvatarBusy(false);
     }
@@ -137,7 +137,7 @@ export function ConnectedAccountPage() {
       });
       setSuccess(copy.avatarRemoved);
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "account"));
     } finally {
       setAvatarBusy(false);
     }
@@ -150,7 +150,7 @@ export function ConnectedAccountPage() {
       await revokeSession(session.id);
       if (!session.current) setSessions((items) => items.filter((item) => item.id !== session.id));
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "account"));
     } finally {
       setRevokingId(null);
     }
@@ -162,7 +162,7 @@ export function ConnectedAccountPage() {
     try {
       await logout();
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "account"));
     } finally {
       setSigningOut(false);
     }

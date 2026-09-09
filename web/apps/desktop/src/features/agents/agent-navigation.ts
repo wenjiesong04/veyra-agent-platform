@@ -1,4 +1,4 @@
-import { FolderKanban, Gauge, MessageCirclePlus, Wrench } from "lucide-react";
+import { Boxes, Gauge, MessageCirclePlus, Wrench } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
 import type { NavigationGroup } from "@veyra/ui";
 
@@ -69,8 +69,8 @@ export function projectTreeSelection(route: DesktopRouteLocation): ProjectTreeSe
 
 export function projectContextNavigation(route: ProjectContextRoute, locale: DesktopLocale): NavigationGroup {
   const labels = locale === "zh"
-    ? { newChat: "新聊天", overview: "概览", analysis: "数据分析", factory: "Factory" }
-    : { newChat: "New chat", overview: "Overview", analysis: "Data analysis", factory: "Factory" };
+    ? { newChat: "新聊天", resourceLibrary: "资源库", analysis: "数据分析", factory: "Factory" }
+    : { newChat: "New chat", resourceLibrary: "Resource library", analysis: "Data analysis", factory: "Factory" };
   const activeHref = projectContextActiveHref(route);
   const projectHref = projectRoutePaths.project(route.projectId);
   const factoryHref = projectRoutePaths.factory(route.projectId);
@@ -80,7 +80,7 @@ export function projectContextNavigation(route: ProjectContextRoute, locale: Des
     backLink: workspaceContextBackLink(locale),
     items: [
       { href: projectRoutePaths.projectChat(route.projectId), label: labels.newChat, icon: MessageCirclePlus, active: activeHref === projectRoutePaths.projectChat(route.projectId) },
-      { href: projectHref, label: labels.overview, icon: FolderKanban, active: activeHref === projectHref },
+      { href: projectHref, label: labels.resourceLibrary, icon: Boxes, active: activeHref === projectHref },
       { href: projectRoutePaths.projectAnalysis(route.projectId), label: labels.analysis, icon: Gauge, active: activeHref === projectRoutePaths.projectAnalysis(route.projectId) },
       ...(route.kind === "factory" ? [{ href: factoryHref, label: labels.factory, icon: Wrench, active: true }] : []),
     ],

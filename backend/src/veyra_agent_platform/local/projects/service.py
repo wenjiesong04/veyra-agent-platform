@@ -36,6 +36,7 @@ from veyra_agent_platform.local.projects.layout import (
     workflow_resource_manifest,
 )
 from veyra_agent_platform.local.projects.packaging import (
+    MAX_PROJECT_ARCHIVE_BYTES,
     ProjectArchive,
     ProjectPackageError,
     pack_project_files,
@@ -55,6 +56,7 @@ MAX_AGENT_IMPORT_BYTES = 1_000_000
 _EXCLUDED_DIRECTORIES = {".git", "node_modules", "build", "cache", "runtime"}
 _FORBIDDEN_SECRET_NAMES = {".env", "id_rsa", "credentials.json"}
 _FORBIDDEN_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".token"}
+_UNSAFE_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 class ProjectError(ValueError):
@@ -227,21 +229,102 @@ class ProjectService:
         imported_bundle: ProjectArchive | None = None,
     ) -> dict[str, Any]:
         """Create a Project under the application-managed storage root only."""
-        storage_root = self._managed_storage_root()
-        target = storage_root / f"project-{new_uuid7()}"
-        return self.create(
-            root_path=target,
-            name=name,
-            description=description,
-            sources=sources,
-            template_selections=template_selections,
-            require_new_root=True,
-            fork_identities=fork_identities,
-            parents=parents,
-            extra_files=extra_files,
-            default_agent_id=default_agent_id,
-            imported_bundle=imported_bundle,
-        )
+        with self._writer_lock:
+            requested = None if name is None else self._folder_name_from_display(name)
+            allocated = self._allocate_name(requested)
+            target = self._allocate_managed_folder(allocated)
+            if target.name != allocated:
+                allocated = self._allocate_name(target.name)
+                target = self._allocate_managed_folder(allocated)
+            return self._create(
+                root_path=target,
+                name=allocated,
+                description=description,
+                sources=sources,
+                template_selections=template_selections,
+                require_new_root=True,
+                fork_identities=fork_identities,
+                parents=parents,
+                extra_files=extra_files,
+                default_agent_id=default_agent_id,
+                imported_bundle=imported_bundle,
+            )
+
+    def reconcile_managed_storage(self) -> None:
+        """Keep managed folders named after the Project and stored relatively."""
+        with self._writer_lock:
+            for row in list(self.repository.projects()):
+                try:
+                    root = self._existing_root(row["root_path"])
+                except ProjectError:
+                    continue
+                if not self._is_managed_root(root):
+                    continue
+                aligned = self._align_managed_folder(
+                    row["project_id"], row["name"], root
+                )
+                stored = self._stored_root_text(aligned)
+                if stored != row["root_path"]:
+                    self._rewrite_stored_root(row["project_id"], stored)
+
+    def _folder_name_from_display(self, name: str) -> str:
+        cleaned = unicodedata.normalize("NFC", name).strip()
+        cleaned = _UNSAFE_FOLDER_CHARS.sub("", cleaned).rstrip(" .")
+        return cleaned[:255] or "New project"
+
+    def _allocate_managed_folder(
+        self, display_name: str, *, occupy: Path | None = None
+    ) -> Path:
+        storage = self._managed_storage_root()
+        base = self._folder_name_from_display(display_name)
+        occupy_resolved = occupy.resolve() if occupy is not None else None
+        suffix = 0
+        while True:
+            folder = base if suffix == 0 else f"{base}({suffix})"
+            candidate = storage / folder
+            if occupy_resolved is not None:
+                try:
+                    if occupy is not None and candidate.resolve() == occupy_resolved:
+                        return occupy
+                except OSError:
+                    pass
+            if not candidate.exists() and not candidate.is_symlink():
+                return candidate
+            suffix += 1
+
+    def _align_managed_folder(
+        self, project_id: str, display_name: str, root: Path
+    ) -> Path:
+        desired = self._allocate_managed_folder(display_name, occupy=root)
+        if desired == root:
+            return root
+        try:
+            os.replace(root, desired)
+        except OSError as exc:
+            raise ProjectError("managed Project folder could not be renamed") from exc
+        self._fsync_directory(desired.parent)
+        self._rewrite_stored_root(project_id, desired.name)
+        return desired
+
+    def _stored_root_text(self, root: Path) -> str:
+        """Persist a storage-root-relative folder name for managed Projects."""
+        resolved = root.expanduser().absolute()
+        if self._is_managed_root(resolved):
+            return resolved.name
+        return str(resolved.resolve(strict=False))
+
+    def _rewrite_stored_root(self, project_id: str, stored: str) -> None:
+        with self.repository.transaction() as connection:
+            connection.execute(
+                "UPDATE projects SET root_path = ? WHERE project_id = ?",
+                (stored, project_id),
+            )
+
+    def _same_stored_root(self, stored: str, root: Path) -> bool:
+        try:
+            return self._existing_root(stored) == root.resolve(strict=True)
+        except ProjectError:
+            return stored == self._stored_root_text(root)
 
     def export_archive(self, project_id: str) -> tuple[bytes, str]:
         """Pack indexed Project source files into a portable zip archive."""
@@ -301,6 +384,21 @@ class ProjectService:
             default_agent_id=bundle.default_agent_id,
             imported_bundle=bundle,
         )
+
+    def import_archive_from_path(self, path: str | Path) -> dict[str, Any]:
+        """Install a native-selected zip without copying bytes through the browser."""
+        archive = Path(path).expanduser()
+        if archive.is_symlink() or not archive.is_file():
+            raise ProjectError(
+                "selected archive is absent or unsafe", "project_package_invalid"
+            )
+        if not archive.name.lower().endswith(".zip"):
+            raise ProjectError(
+                "selected archive is not a zip file", "project_package_invalid"
+            )
+        with archive.open("rb") as handle:
+            contents = handle.read(MAX_PROJECT_ARCHIVE_BYTES + 1)
+        return self.import_archive(filename=archive.name, contents=contents)
 
     def list_files(self, project_id: str) -> dict[str, Any]:
         """List indexed Project source files without exposing runtime state."""
@@ -387,15 +485,24 @@ class ProjectService:
         return root
 
     def _is_managed_root(self, root_path: Path) -> bool:
-        """Recognize only immediate, non-symlink children allocated by this service."""
+        """Recognize only immediate, non-symlink children of managed storage."""
         storage_root = self._managed_storage_root()
-        candidate = Path(root_path).expanduser().absolute()
-        if candidate.parent != storage_root or not candidate.name.startswith(
-            "project-"
-        ):
+        candidate = Path(root_path)
+        if not candidate.is_absolute():
+            if (
+                len(candidate.parts) != 1
+                or candidate.name in {".", ".."}
+                or ".." in candidate.parts
+            ):
+                return False
+            candidate = storage_root / candidate
+        candidate = candidate.expanduser().absolute()
+        try:
+            storage_resolved = storage_root.resolve()
+            root = self._existing_root(candidate)
+        except (OSError, ProjectError):
             return False
-        root = self._existing_root(candidate)
-        return root.parent == storage_root and root.name.startswith("project-")
+        return root.parent == storage_resolved
 
     def _trash_target(self, project_id: str) -> Path:
         storage_root = self._managed_storage_root()
@@ -700,15 +807,19 @@ class ProjectService:
                 exc.add_note(f"rollback failed: {rollback_note}")
             raise
 
-    def index(self, root_path: str | Path) -> dict[str, Any]:
+    def index(
+        self, root_path: str | Path, *, allow_relocate: bool = False
+    ) -> dict[str, Any]:
         with self._writer_lock:
-            return self._index(root_path)
+            return self._index(root_path, allow_relocate=allow_relocate)
 
-    def _index(self, root_path: str | Path) -> dict[str, Any]:
+    def _index(
+        self, root_path: str | Path, *, allow_relocate: bool = False
+    ) -> dict[str, Any]:
         root = self._existing_root(root_path)
+        manifest_path = self._require_project_manifest(root)
         ensure_project_layout(root)
         self._scan_for_forbidden_names(root)
-        manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
         original_manifest_text = self._read_text(manifest_path)
         manifest_text = original_manifest_text
         manifest = ProjectManifest.from_dict(
@@ -726,7 +837,13 @@ class ProjectService:
             self.atomic_write(manifest_path, manifest_text)
             manifest_replaced = True
         try:
-            return self._index_manifest(root, manifest_path, manifest_text, manifest)
+            return self._index_manifest(
+                root,
+                manifest_path,
+                manifest_text,
+                manifest,
+                allow_relocate=allow_relocate,
+            )
         except BaseException as exc:
             if manifest_replaced:
                 try:
@@ -743,21 +860,34 @@ class ProjectService:
         manifest: ProjectManifest,
         *,
         imported_bundle: ProjectArchive | None = None,
+        allow_relocate: bool = False,
     ) -> dict[str, Any]:
         records, indexed_files = self._collect_allowed_files(
             root, manifest, manifest_path
         )
         now = _utc_now()
-        root_text = str(root)
+        root_text = self._stored_root_text(root)
+        absolute_text = str(root.resolve(strict=True))
         with self.repository.transaction() as connection:
             bound_project = connection.execute(
                 "SELECT * FROM projects WHERE project_id = ?", (manifest.project_id,)
             ).fetchone()
             bound_root = connection.execute(
-                "SELECT * FROM projects WHERE root_path = ?", (root_text,)
+                "SELECT * FROM projects WHERE root_path IN (?, ?)",
+                (root_text, absolute_text),
             ).fetchone()
-            if bound_project is not None and bound_project["root_path"] != root_text:
-                raise ProjectError("duplicate Project ID; use explicit Fork/import")
+            if bound_project is not None and not self._same_stored_root(
+                bound_project["root_path"], root
+            ):
+                current_managed = False
+                try:
+                    current_managed = self._is_managed_root(
+                        self._existing_root(bound_project["root_path"])
+                    )
+                except ProjectError:
+                    current_managed = False
+                if not allow_relocate or current_managed:
+                    raise ProjectError("duplicate Project ID; use explicit Fork/import")
             if (
                 bound_root is not None
                 and bound_root["project_id"] != manifest.project_id
@@ -777,9 +907,14 @@ class ProjectService:
             else:
                 connection.execute(
                     """UPDATE projects
-                       SET name = ?, description = ?, manifest_hash = ?, indexed_at = ?
+                       SET root_path = ?,
+                           name = ?,
+                           description = ?,
+                           manifest_hash = ?,
+                           indexed_at = ?
                        WHERE project_id = ?""",
                     (
+                        root_text,
                         manifest.name,
                         manifest.description,
                         manifest_hash,
@@ -970,7 +1105,7 @@ class ProjectService:
         return {
             "schema_version": "1.0",
             "project_id": project["project_id"],
-            "root_path": project["root_path"],
+            "root_path": str(root),
             "name": project["name"],
             "description": project["description"],
             "pinned": project["pinned_at"] is not None,
@@ -1172,7 +1307,8 @@ class ProjectService:
             updated = manifest.to_dict()
             if name is not None:
                 updated["name"] = self._allocate_name(
-                    name, exclude_project_id=project_id
+                    self._folder_name_from_display(name),
+                    exclude_project_id=project_id,
                 )
             if description is not None:
                 updated["description"] = description
@@ -1181,6 +1317,9 @@ class ProjectService:
                 self.atomic_write(
                     manifest_path, self._canonical_source(validated.to_dict())
                 )
+                if self._is_managed_root(root):
+                    root = self._align_managed_folder(project_id, validated.name, root)
+                    manifest_path = root / "project.vproject.yaml"
                 result = self.index(root)
             except BaseException as exc:
                 try:
@@ -2157,12 +2296,26 @@ class ProjectService:
             current = current.parent
         return root
 
-    @staticmethod
-    def _existing_root(value: str | Path) -> Path:
-        root = Path(value).expanduser().absolute()
+    def _existing_root(self, value: str | Path) -> Path:
+        raw = Path(value)
+        if not raw.is_absolute():
+            if len(raw.parts) != 1 or raw.name in {".", ".."} or ".." in raw.parts:
+                raise ProjectError("selected Project directory is absent or a symlink")
+            raw = self._managed_storage_root() / raw
+        root = raw.expanduser().absolute()
         if not root.is_dir() or root.is_symlink():
             raise ProjectError("selected Project directory is absent or a symlink")
         return root.resolve(strict=True)
+
+    def _require_project_manifest(self, root: Path) -> Path:
+        """Reject ordinary folders before mutating them to look like a Project."""
+        relative = Path("project.vproject.yaml")
+        if not (root / relative).exists():
+            raise ProjectError(
+                "selected folder is not a Veyra Project",
+                "not_a_project",
+            )
+        return self._safe_file(root, relative)
 
     @staticmethod
     def _safe_file(root: Path, relative: Path) -> Path:

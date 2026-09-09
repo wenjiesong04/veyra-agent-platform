@@ -63,6 +63,39 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({});
   });
 
+  it("uses a native archive picker and imports from the selected path", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ schema_version: "1.0", status: "selected", path: "/tmp/team.vproject.zip" }))
+      .mockResolvedValueOnce(response(summary({ project_id: "imported", name: "Imported" }), 201));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.selectArchive()).resolves.toEqual({ schema_version: "1.0", status: "selected", path: "/tmp/team.vproject.zip" });
+    await client.importProjectFromPath({ path: "/tmp/team.vproject.zip" });
+
+    expect(fetcher).toHaveBeenNthCalledWith(1, "/api/v1/system/select-archive", expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "X-Veyra-Desktop-Intent": "select-archive" }),
+    }));
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/import-path");
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ path: "/tmp/team.vproject.zip" });
+  });
+
+  it("reveals an indexed Project folder through the desktop intent header", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", status: "revealed", root_path: "/tmp/Inside" }));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.revealProject("project-1")).resolves.toEqual({
+      schema_version: "1.0",
+      status: "revealed",
+      root_path: "/tmp/Inside",
+    });
+    expect(fetcher).toHaveBeenCalledWith("/api/v1/system/reveal-project", expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "X-Veyra-Desktop-Intent": "reveal-project" }),
+    }));
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ project_id: "project-1" });
+  });
+
   it("uses JSON create/template bodies and multipart file import without local Agent parsing", async () => {
     const created = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "Reviews", source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" };
     const fetcher = vi.fn().mockResolvedValueOnce(response(created, 201)).mockResolvedValueOnce(response(created, 201));
@@ -81,10 +114,9 @@ describe("LocalApiClient Project requests", () => {
     expect(body.get("description")).toBe("Imported");
   });
 
-  it("downloads a Project zip and posts a Project archive without JSON parsing", async () => {
-    const zip = new Blob(["PK"], { type: "application/zip" });
+  it("downloads a Project zip through the existing export route", async () => {
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(zip, { status: 200, headers: { "Content-Type": "application/zip" } }))
+      .mockResolvedValueOnce(new Response("PK", { status: 200, headers: { "Content-Type": "application/zip" } }))
       .mockResolvedValueOnce(response(summary({ project_id: "imported", name: "Imported" }), 201));
     const client = new LocalApiClient({ fetcher });
     const file = new File(["PK"], "team.vproject.zip", { type: "application/zip" });
@@ -93,6 +125,7 @@ describe("LocalApiClient Project requests", () => {
     await client.importProject(file);
 
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/export");
+    expect(fetcher.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ method: "GET" }));
     expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/import");
     expect(fetcher.mock.calls[1]?.[1]?.body).toBeInstanceOf(FormData);
   });

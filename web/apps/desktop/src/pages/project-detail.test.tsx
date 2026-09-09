@@ -46,12 +46,12 @@ describe("ProjectDetailPage", () => {
     const api = {
       listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [summary] }),
       getProject: vi.fn().mockResolvedValue(summary),
-      exportProject: vi.fn().mockResolvedValue(new Blob(["zip"])),
+      revealProject: vi.fn().mockResolvedValue({ schema_version: "1.0", status: "revealed", root_path: "/tmp/project-1" }),
     } as unknown as LocalProjectApi;
     renderPage(api);
     expect(await screen.findByText("agents/grand/agent.vagent.yaml")).toBeInTheDocument();
     expect(screen.getByText("grand child-of child")).toBeInTheDocument();
     expect(screen.getByText("child child-of parent")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Export Project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show Project Location" })).toBeInTheDocument();
   });
 });

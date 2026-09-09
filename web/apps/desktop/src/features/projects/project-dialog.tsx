@@ -1,7 +1,8 @@
-import { Box, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
+import { Box, FileArchive, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
 import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, RuntimeApiProfileInput, WorkflowSource } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { LocalApiClientError } from "../../api/local-client";
 import { useProjectWorkspace } from "../../api/project-workspace";
 import { RuntimeProfileFields, profileInput } from "./runtime-profile-fields";
@@ -13,6 +14,20 @@ function folderName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).at(-1) || path;
 }
 
+function pickerFailure(
+  cause: unknown,
+  copy: { pickFailed: string; pickFolderFailed: string; pickArchiveFailed: string; pickUnsupported: string },
+  kind: "folder" | "archive",
+): string {
+  if (cause instanceof LocalApiClientError) {
+    if (cause.code === "directory_picker_unsupported") return copy.pickUnsupported;
+    if (cause.code === "directory_picker_failed") {
+      return kind === "archive" ? copy.pickArchiveFailed : copy.pickFolderFailed;
+    }
+  }
+  return copy.pickFailed;
+}
+
 export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onClose: () => void }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
@@ -21,14 +36,17 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
   const [description, setDescription] = useState("");
   const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [archivePath, setArchivePath] = useState<string | null>(null);
+  const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const [picking, setPicking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
   const copy = zh ? {
-    title: mode === "create" ? "创建项目" : "打开已有项目", name: "项目名称", description: "描述（可选）", namePlaceholder: "留空以自动命名", descriptionPlaceholder: "这个项目要完成什么？", select: "选择文件夹", selected: "已选择", selectHint: "选择一个已有的 Veyra 项目文件夹。", chooseAgain: "重新选择", cancel: "取消", create: "创建", open: "打开项目", close: "关闭对话框", invalidFolder: "请选择文件夹。", pickFailed: "无法打开文件夹选择器，请重试。", createFailed: "创建项目失败，请稍后重试。", nameInvalid: "项目名称无效，请修改后重试。", openFailed: "打开项目失败。"
+    title: mode === "create" ? "创建项目" : "打开已有项目", name: "项目名称", description: "描述（可选）", namePlaceholder: "留空以自动命名", descriptionPlaceholder: "这个项目要完成什么？", select: "选择文件夹", selected: "已选择", selectHint: "选择本机上已有的 Veyra 项目文件夹。", chooseAgain: "重新选择", import: "导入压缩包", importHint: "选择本机上的 .vproject.zip 压缩包。", importSelected: "已选择压缩包", importConfirm: "导入项目", cancel: "取消", create: "创建", open: "打开项目", close: "关闭对话框", invalidFolder: "请选择文件夹，或导入一个项目压缩包。", pickFailed: "无法打开系统选择器，请允许本机访问磁盘后重试。", pickFolderFailed: "无法打开文件夹选择器。请允许本机访问磁盘后重试。", pickArchiveFailed: "无法打开文件选择器。请选择 .zip 或 .vproject.zip 文件，并允许本机访问磁盘后重试。", pickUnsupported: "当前系统无法打开选择器，请改用手动选择文件。", createFailed: "创建项目失败，请稍后重试。", nameInvalid: "项目名称无效，请修改后重试。", openFailed: "打开项目失败。", importFailed: "导入项目失败。", notAProject: "所选文件夹不是 Veyra 项目。请选择项目根目录，不要选其中的子文件夹。", serviceFailed: "本机服务执行失败。请重启本机 sidecar 后再试。"
   } : {
-    title: mode === "create" ? "Create project" : "Open existing project", name: "Project name", description: "Description (optional)", namePlaceholder: "Leave blank to auto-name", descriptionPlaceholder: "What belongs in this Project?", select: "Select folder", selected: "Selected", selectHint: "Choose an existing Veyra project folder.", chooseAgain: "Choose another folder", cancel: "Cancel", create: "Create", open: "Open project", close: "Close dialog", invalidFolder: "Select a folder.", pickFailed: "The folder picker could not be opened. Try again.", createFailed: "The Project could not be created. Try again later.", nameInvalid: "The Project name is invalid. Update it and try again.", openFailed: "The Project could not be opened."
+    title: mode === "create" ? "Create project" : "Open existing project", name: "Project name", description: "Description (optional)", namePlaceholder: "Leave blank to auto-name", descriptionPlaceholder: "What belongs in this Project?", select: "Select folder", selected: "Selected", selectHint: "Choose an existing Veyra Project folder on this computer.", chooseAgain: "Choose another folder", import: "Import archive", importHint: "Choose a .vproject.zip archive on this computer.", importSelected: "Archive selected", importConfirm: "Import project", cancel: "Cancel", create: "Create", open: "Open project", close: "Close dialog", invalidFolder: "Select a folder or import a Project archive.", pickFailed: "The system picker could not be opened. Allow disk access and try again.", pickFolderFailed: "The folder picker could not be opened. Allow disk access and try again.", pickArchiveFailed: "The archive picker could not be opened. Choose a .zip or .vproject.zip file, and allow disk access.", pickUnsupported: "This system cannot open the native picker. Choose a file manually instead.", createFailed: "The Project could not be created. Try again later.", nameInvalid: "The Project name is invalid. Update it and try again.", openFailed: "The Project could not be opened.", importFailed: "The Project archive could not be imported.", notAProject: "That folder is not a Veyra Project. Choose the Project root, not a subfolder inside it.", serviceFailed: "The local service failed. Restart the desktop sidecar and retry."
   };
 
   useEffect(() => {
@@ -42,9 +60,39 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
     setPicking(true); setError(null);
     try {
       const result = await api.selectDirectory();
-      if (result.status === "selected") setSelectedPath(result.root_path);
+      if (result.status === "selected") {
+        setSelectedPath(result.root_path);
+        setArchiveFile(null);
+        setArchivePath(null);
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : copy.pickFailed);
+      setError(pickerFailure(cause, copy, "folder"));
+    } finally { setPicking(false); }
+  };
+  const chooseArchive = async () => {
+    setPicking(true); setError(null);
+    try {
+      if (api.selectArchive) {
+        try {
+          const result = await api.selectArchive();
+          if (result.status === "selected") {
+            setArchivePath(result.path);
+            setArchiveFile(null);
+            setSelectedPath(null);
+          }
+          return;
+        } catch (cause) {
+          const fallback = cause instanceof LocalApiClientError && (
+            cause.code === "directory_picker_unsupported" ||
+            cause.status === 404 ||
+            cause.status === 501
+          );
+          if (!fallback) throw cause;
+        }
+      }
+      archiveInputRef.current?.click();
+    } catch (cause) {
+      setError(pickerFailure(cause, copy, "archive"));
     } finally { setPicking(false); }
   };
   const createError = (cause: unknown): string => {
@@ -52,33 +100,54 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
     if (cause.code === "project_name_invalid") return copy.nameInvalid;
     return copy.createFailed;
   };
+  const openError = (cause: unknown): string => {
+    if (cause instanceof LocalApiClientError) {
+      if (cause.code === "not_a_project") return copy.notAProject;
+      if (cause.status >= 500) return copy.serviceFailed;
+    }
+    return archiveFile || archivePath ? copy.importFailed : copy.openFailed;
+  };
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (mode === "open" && !selectedPath) return setError(copy.invalidFolder);
+    if (mode === "open" && !selectedPath && !archiveFile && !archivePath) return setError(copy.invalidFolder);
     setSaving(true); setError(null);
     try {
       const project = mode === "create"
         ? await api.createProject({ ...(name.trim() ? { name: name.trim() } : {}), description: description.trim(), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) })
-        : await api.openProject({ root_path: selectedPath! });
+        : archivePath && api.importProjectFromPath
+          ? await api.importProjectFromPath({ path: archivePath })
+          : archiveFile && api.importProject
+            ? await api.importProject(archiveFile)
+            : await api.openProject({ root_path: selectedPath! });
       upsertProject(project); onClose(); void refresh().catch(() => undefined);
     } catch (cause) {
-      setError(mode === "create" ? createError(cause) : cause instanceof Error ? cause.message : copy.openFailed);
+      setError(mode === "create" ? createError(cause) : openError(cause));
     } finally { setSaving(false); }
   };
   const busy = picking || saving;
-  return <div className="project-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  const canImport = Boolean(api.importProject || api.importProjectFromPath);
+  const archiveName = archiveFile?.name ?? (archivePath ? folderName(archivePath) : null);
+  return createPortal(<div className="project-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
       <div className="project-modal-header"><h2 id="project-modal-title">{copy.title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={copy.close} disabled={busy}><X size={18} /></button></div>
       <form className="project-form" onSubmit={submit}>
         {mode === "create" ? <><label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" /></label><label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} /><small>{description.length}/500</small></label><RuntimeProfileFields value={runtimeProfile} onChange={setRuntimeProfile} locale={locale} /></> : null}
-        {mode === "open" ? <button className={`folder-selection ${selectedPath ? "is-selected" : ""}`} type="button" onClick={() => void chooseFolder()} disabled={busy} aria-label={selectedPath ? copy.chooseAgain : copy.select} aria-busy={picking}>
-          <FolderOpen size={24} aria-hidden="true" /><div><strong>{selectedPath ? `${copy.selected}: ${folderName(selectedPath)}` : copy.select}</strong><p>{selectedPath ? copy.chooseAgain : copy.selectHint}</p></div>
-        </button> : null}
+        {mode === "open" ? <>
+          <button className={`folder-selection ${selectedPath ? "is-selected" : ""}`} type="button" onClick={() => void chooseFolder()} disabled={busy} aria-label={selectedPath ? copy.chooseAgain : copy.select} aria-busy={picking}>
+            <FolderOpen size={24} aria-hidden="true" /><div><strong>{selectedPath ? `${copy.selected}: ${folderName(selectedPath)}` : copy.select}</strong><p>{selectedPath ? copy.chooseAgain : copy.selectHint}</p></div>
+          </button>
+          {canImport ? <>
+            <input ref={archiveInputRef} className="sidebar-import-input" type="file" accept=".zip,.vproject.zip,application/zip" tabIndex={-1} onChange={(event) => { const file = event.target.files?.item(0) ?? null; setArchiveFile(file); if (file) { setSelectedPath(null); setArchivePath(null); } event.target.value = ""; }} />
+            <button className={`folder-selection ${archiveName ? "is-selected" : ""}`} type="button" onClick={() => void chooseArchive()} disabled={busy} aria-label={copy.import}>
+              <FileArchive size={24} aria-hidden="true" /><div><strong>{archiveName ? `${copy.importSelected}: ${archiveName}` : copy.import}</strong><p>{copy.importHint}</p></div>
+            </button>
+          </> : null}
+        </> : null}
         {error ? <p className="project-form-error" role="alert">{error}</p> : null}
-        <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={busy}>{copy.cancel}</Button><Button icon={mode === "open" ? FolderOpen : undefined} variant="primary" type="submit" disabled={busy}>{saving ? "…" : mode === "create" ? copy.create : copy.open}</Button></div>
+        <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={busy}>{copy.cancel}</Button><Button icon={mode === "open" ? (archiveName ? FileArchive : FolderOpen) : undefined} variant="primary" type="submit" disabled={busy}>{saving ? "…" : mode === "create" ? copy.create : archiveName ? copy.importConfirm : copy.open}</Button></div>
       </form>
     </div>
-  </div>;
+  </div>, document.body);
 }
 
 export function ProjectEditDialog({ project, onClose }: { project: ProjectSummaryResponse; onClose: () => void }) {
@@ -143,7 +212,7 @@ export function ProjectDeleteDialog({ project, onClose, onDeleted }: { project: 
 }
 
 function Modal({ title, closeLabel, onClose, busy, children }: { title: string; closeLabel: string; onClose: () => void; busy: boolean; children: ReactNode }) {
-  return <div className="project-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}><div className="project-modal" role="dialog" aria-modal="true" aria-label={title}><div className="project-modal-header"><h2>{title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={closeLabel} disabled={busy}><X size={18} /></button></div>{children}</div></div>;
+  return createPortal(<div className="project-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}><div className="project-modal" role="dialog" aria-modal="true" aria-label={title}><div className="project-modal-header"><h2>{title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={closeLabel} disabled={busy}><X size={18} /></button></div>{children}</div></div>, document.body);
 }
 
 export function AgentEditDialog({ project, agent, onClose }: { project: ProjectSummaryResponse; agent: ProjectAgentRecord; onClose: () => void }) {

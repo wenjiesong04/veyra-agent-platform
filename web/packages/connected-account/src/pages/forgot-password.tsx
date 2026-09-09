@@ -33,7 +33,7 @@ export function ForgotPasswordPage() {
       cooldown.start();
       setStep("reset");
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "reset"));
     } finally {
       setSubmitting(false);
     }
@@ -56,7 +56,7 @@ export function ForgotPasswordPage() {
       await resetPassword({ email, verification_code: code, new_password: password });
       setStep("done");
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "reset"));
     } finally {
       setSubmitting(false);
     }

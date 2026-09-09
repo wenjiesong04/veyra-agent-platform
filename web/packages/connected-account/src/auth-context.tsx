@@ -15,6 +15,7 @@ type AuthContextValue = {
   status: AuthStatus;
   account: CommunityAccount | null;
   bootstrapError: CommunityApiError | null;
+  ensureSession: () => Promise<AuthStatus>;
   login: (email: string, password: string) => Promise<CommunityAccount>;
   register: (payload: Omit<CommunityRegistrationRequest, "device_name">) => Promise<CommunityAccount>;
   requestCode: (email: string, purpose: VerificationPurpose) => Promise<void>;
@@ -80,6 +81,43 @@ export function AuthProvider({ children, api = defaultApi }: PropsWithChildren<{
       cancelled = true;
     };
   }, [api]);
+
+  const applyAccount = useCallback((nextAccount: CommunityAccount | null) => {
+    setAccount(nextAccount);
+    setStatus(nextAccount ? "authenticated" : "anonymous");
+    setBootstrapError(null);
+  }, []);
+
+  const ensureSession = useCallback(async (): Promise<AuthStatus> => {
+    if (!api.hasRefreshEvidence()) {
+      applyAccount(null);
+      return "anonymous";
+    }
+    try {
+      applyAccount(await api.me());
+      return "authenticated";
+    } catch (error) {
+      if (isCommunityOffline(error)) {
+        applyAccount(null);
+        return "anonymous";
+      }
+      if (!(error instanceof CommunityApiError) || error.status !== 401) {
+        applyAccount(null);
+        setBootstrapError(error instanceof CommunityApiError ? error : new CommunityApiError("request_failed"));
+        return "anonymous";
+      }
+      try {
+        applyAccount(await api.refresh());
+        return "authenticated";
+      } catch (refreshError) {
+        applyAccount(null);
+        if (refreshError instanceof CommunityApiError && ![401, 403].includes(refreshError.status) && !isCommunityOffline(refreshError)) {
+          setBootstrapError(refreshError);
+        }
+        return "anonymous";
+      }
+    }
+  }, [api, applyAccount]);
 
   const login = useCallback(async (email: string, password: string) => {
     const nextAccount = await api.login({ email, password });
@@ -163,6 +201,7 @@ export function AuthProvider({ children, api = defaultApi }: PropsWithChildren<{
     status,
     account,
     bootstrapError,
+    ensureSession,
     login,
     register,
     requestCode,
@@ -174,7 +213,7 @@ export function AuthProvider({ children, api = defaultApi }: PropsWithChildren<{
     uploadAvatar,
     replaceAvatar,
     deleteAvatar,
-  }), [account, bootstrapError, deleteAvatar, listSessions, login, logout, register, requestCode, replaceAvatar, resetPassword, revokeSession, status, updateProfile, uploadAvatar]);
+  }), [account, bootstrapError, deleteAvatar, ensureSession, listSessions, login, logout, register, requestCode, replaceAvatar, resetPassword, revokeSession, status, updateProfile, uploadAvatar]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -3,7 +3,9 @@ import {
   Box,
   Braces,
   FileCode2,
+  LayoutGrid,
   Network,
+  Search,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
@@ -30,11 +32,10 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useProjectWorkspace } from "../../api/project-workspace";
 import type { LocalProjectApi } from "../../api/local-client";
-import { resourceLibraryTabFromHash, resourceLibraryTabPaths, type ResourceLibraryTab } from "./library-navigation";
+import { resourceLibraryCatalogHref, resourceLibraryTabFromHash, type ResourceLibraryTab } from "./library-navigation";
 
-type ResourceTab = ResourceLibraryTab;
-
-const tabKinds: Array<{ id: ResourceTab; kinds: ResourceKind[] }> = [
+const tabKinds: Array<{ id: ResourceLibraryTab; kinds: ResourceKind[] }> = [
+  { id: "all", kinds: ["component", "tool", "mcp_tool", "skill", "policy", "template"] },
   { id: "component", kinds: ["component"] },
   { id: "tooling", kinds: ["tool", "mcp_tool"] },
   { id: "skill", kinds: ["skill"] },
@@ -54,13 +55,13 @@ const iconForKind: Record<ResourceKind, typeof Box> = {
 function resourceKindLabel(kind: ResourceKind, zh: boolean): string {
   return zh
     ? { component: "组件", tool: "工具", mcp_tool: "MCP", skill: "技能", policy: "策略", template: "模板" }[kind]
-    : { component: "Components", tool: "Tools", mcp_tool: "MCP", skill: "Skills", policy: "Policies", template: "Templates" }[kind];
+    : { component: "Component", tool: "Tool", mcp_tool: "MCP", skill: "Skill", policy: "Policy", template: "Template" }[kind];
 }
 
-function tabLabel(tab: ResourceTab, zh: boolean): string {
+function tabLabel(tab: ResourceLibraryTab, zh: boolean): string {
   return zh
-    ? { component: "组件", tooling: "工具 / MCP", skill: "技能", policy: "策略", template: "模板" }[tab]
-    : { component: "Components", tooling: "Tools / MCP", skill: "Skills", policy: "Policies", template: "Templates" }[tab];
+    ? { all: "全部", component: "组件", tooling: "工具 / MCP", skill: "技能", policy: "策略", template: "模板" }[tab]
+    : { all: "All", component: "Components", tooling: "Tools / MCP", skill: "Skills", policy: "Policies", template: "Templates" }[tab];
 }
 
 function availabilityLabel(value: ResourceDescriptor["availability"], zh: boolean): string {
@@ -79,21 +80,25 @@ function statusTone(value: ResourceDescriptor["availability"]): "good" | "warn" 
   return value === "ready" ? "good" : value === "disabled" || value === "unavailable" ? "bad" : "warn";
 }
 
-function resourceText(value: ResourceDescriptor, zh: boolean): string {
-  return `${resourceKindLabel(value.kind, zh)} · v${value.version}`;
+function matchesQuery(item: ResourceDescriptor, query: string): boolean {
+  if (!query) return true;
+  const haystack = `${item.name} ${item.description} ${item.reference} ${item.tags.join(" ")}`.toLowerCase();
+  return haystack.includes(query);
 }
 
-export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
+export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePaths.components }: { resourceId?: string; catalogHref?: string }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api } = useProjectWorkspace();
-  const [tab, setTab] = useState<ResourceTab>(() => resourceLibraryTabFromHash(window.location.hash));
+  const [tab, setTab] = useState<ResourceLibraryTab>(() => resourceLibraryTabFromHash(window.location.hash));
+  const [query, setQuery] = useState("");
   const [resources, setResources] = useState<ResourceDescriptor[]>([]);
   const [selected, setSelected] = useState<ResourceDescriptor | null>(null);
+  const [detailMissing, setDetailMissing] = useState(false);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const currentKinds = useMemo(
-    () => tabKinds.find((item) => item.id === tab)?.kinds ?? (["component"] as ResourceKind[]),
+    () => tabKinds.find((item) => item.id === tab)?.kinds ?? tabKinds[0]!.kinds,
     [tab],
   );
 
@@ -106,19 +111,14 @@ export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
     setStatus("loading");
     setError(null);
     try {
-      const responses = await Promise.all(currentKinds.map((kind) => api.listResources?.({ kind })));
-      const next = responses.flatMap((response) => response?.resources ?? []);
-      setResources(next);
-      setSelected((current) => {
-        if (resourceId || !current) return current;
-        return next.find((item) => item.reference === current.reference) ?? next[0] ?? null;
-      });
+      const response = await api.listResources();
+      setResources(response.resources);
       setStatus("ready");
     } catch (cause) {
       setStatus("error");
       setError(cause instanceof Error ? cause.message : (zh ? "资源库暂时不可用。" : "The Resource Library is unavailable."));
     }
-  }, [api, currentKinds, resourceId, zh]);
+  }, [api, zh]);
 
   useEffect(() => {
     void load();
@@ -135,48 +135,158 @@ export function ResourceLibraryPage({ resourceId }: { resourceId?: string }) {
     if (!resourceId || !api.getResource) return;
     const separator = resourceId.lastIndexOf("@");
     if (separator < 1) return;
+    setDetailMissing(false);
     void api.getResource(resourceId.slice(0, separator), resourceId.slice(separator + 1))
-      .then(setSelected)
-      .catch(() => setSelected(null));
+      .then((item) => {
+        setSelected(item);
+        setDetailMissing(false);
+      })
+      .catch(() => {
+        setSelected(null);
+        setDetailMissing(true);
+      });
   }, [api, resourceId]);
 
-  const changeTab = (next: ResourceTab) => {
+  const changeTab = (next: ResourceLibraryTab) => {
+    if (next === tab) return;
     setTab(next);
-    setSelected(null);
-    const href = resourceLibraryTabPaths[next];
+    const href = resourceLibraryCatalogHref(next, catalogHref);
     if (window.location.hash !== href) window.location.hash = href;
   };
+
   const copy = zh
     ? {
-      eyebrow: "资源库", title: "可复用能力", description: "组件、工具、MCP、技能、策略和模板都从一个有版本的目录进入 Factory 与 Studio。", count: "个资源", local: "本机目录", empty: "这个分类暂时没有可用资源", emptyDetail: "目录会明确显示未配置或暂不支持的能力，不会伪造可运行项目。", unavailable: "资源库暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源库", tags: "标签",
+      eyebrow: "资源库", title: "资源库", description: "组件、工具、MCP、技能、策略和模板都在同一个本机目录里，供 Factory 与 Studio 使用。", count: "项", search: "搜索资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源库暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源库", tags: "标签",
     }
     : {
-      eyebrow: "Resource Library", title: "Reusable capabilities", description: "Components, tools, MCP, Skills, Policies, and Templates enter Factory and Studio through one versioned catalog.", count: "resources", local: "Local catalog", empty: "No resources in this category yet", emptyDetail: "The catalog will show unavailable or unconfigured capabilities honestly instead of pretending they can run.", unavailable: "The Resource Library is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Library", tags: "Tags",
+      eyebrow: "Resource Library", title: "Resource Library", description: "Components, tools, MCP, Skills, Policies, and Templates live in one local catalog for Factory and Studio.", count: "items", search: "Search resources", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Library is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Library", tags: "Tags",
     };
-  const selectedResource = selected;
-  const DetailIcon = selectedResource ? iconForKind[selectedResource.kind] : Box;
 
-  return (
-    <div className="page-stack resource-library-page">
-      <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div></div>
-      <div className="resource-library-tabs" role="tablist" aria-label={copy.title}>
-        {tabKinds.map((item) => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={tab === item.id ? "active" : ""} onClick={() => changeTab(item.id)}>{tabLabel(item.id, zh)}</button>)}
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return resources.filter((item) => currentKinds.includes(item.kind) && matchesQuery(item, needle));
+  }, [currentKinds, query, resources]);
+
+  if (resourceId && detailMissing) {
+    return (
+      <div className="page-stack resource-library-page">
+        <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2></div><LinkButton href={desktopRoutePaths.components} icon={ArrowLeft} variant="ghost">{copy.back}</LinkButton></div>
+        <ErrorState message={copy.unavailable} />
       </div>
-      {status === "error" ? <ErrorState message={error ?? copy.unavailable} onRetry={() => void load()} /> : null}
-      {status === "loading" ? <Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel> : null}
-      {status === "ready" ? <div className="resource-library-grid">
-        <Panel>
-          <SectionHeading eyebrow={copy.local} title={`${resources.length} ${copy.count}`} detail={tabLabel(tab, zh)} />
-          {resources.length ? <div className="resource-list">{resources.map((item) => { const Icon = iconForKind[item.kind]; return <a className={`resource-row ${selectedResource?.reference === item.reference ? "active" : ""}`} href={libraryRoutePaths.component(`${item.resource_id}@${item.version}`)} key={item.reference} onClick={() => setSelected(item)}><span className="resource-icon"><Icon size={16} aria-hidden="true" /></span><span className="row-copy"><strong>{item.name}</strong><small>{item.description}</small><em><Tag>{resourceText(item, zh)}</Tag>{item.tags.slice(0, 2).map((tag) => <Tag key={tag}>{tag}</Tag>)}</em></span><StatusBadge label={availabilityLabel(item.availability, zh)} tone={statusTone(item.availability)} /></a>; })}</div> : <EmptyState icon={Network} title={copy.empty} detail={copy.emptyDetail} />}
-        </Panel>
-        {selectedResource ? <Panel className="resource-detail">
-          <div className="resource-detail-header"><div><span className="resource-icon"><DetailIcon size={17} aria-hidden="true" /></span><h3>{selectedResource.name}</h3><p>{selectedResource.description}</p></div><LinkButton href={desktopRoutePaths.components} icon={ArrowLeft} variant="ghost" size="sm">{copy.back}</LinkButton></div>
-          <div className="resource-detail-facts"><div><span>{copy.availability}</span><StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} /></div><div><span>{copy.runtime}</span><strong>{runtimeLabel(selectedResource.runtime_status, zh)}</strong></div><div><span>{copy.factorySelectable}</span><strong>{selectedResource.factory_selectable ? copy.selectable : copy.notSelectable}</strong></div><div><span>{copy.hash}</span><strong>{selectedResource.content_hash}</strong></div></div>
+    );
+  }
+  if (resourceId && !selected) {
+    return <div className="page-stack resource-library-page"><Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel></div>;
+  }
+
+  const selectedResource = selected;
+  const DetailIcon = selectedResource ? iconForKind[selectedResource.kind] : LayoutGrid;
+  const inProjectCatalog = catalogHref.startsWith("#/projects/");
+  const closeDetail = (event?: { preventDefault: () => void }) => {
+    if (!resourceId) {
+      event?.preventDefault();
+      setSelected(null);
+    }
+  };
+
+  if (selectedResource) {
+    return (
+      <div className="page-stack resource-library-page">
+        <div className="page-intro">
+          <div>
+            <span className="ui-eyebrow">{copy.detail}</span>
+            <h2>{selectedResource.name}</h2>
+            <p>{selectedResource.description}</p>
+          </div>
+          <LinkButton href={catalogHref} icon={ArrowLeft} variant="ghost" onClick={closeDetail}>{copy.back}</LinkButton>
+        </div>
+        <Panel className="resource-detail">
+          <div className="resource-detail-header">
+            <span className={`resource-icon kind-${selectedResource.kind}`}><DetailIcon size={22} aria-hidden="true" /></span>
+            <div>
+              <div className="resource-card-meta">
+                <Tag>{resourceKindLabel(selectedResource.kind, zh)}</Tag>
+                <Tag>v{selectedResource.version}</Tag>
+                <StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} />
+              </div>
+              <p className="resource-detail-reference">{selectedResource.reference}</p>
+            </div>
+          </div>
+          <div className="resource-detail-facts">
+            <div><span>{copy.availability}</span><StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} /></div>
+            <div><span>{copy.runtime}</span><strong>{runtimeLabel(selectedResource.runtime_status, zh)}</strong></div>
+            <div><span>{copy.factorySelectable}</span><strong>{selectedResource.factory_selectable ? copy.selectable : copy.notSelectable}</strong></div>
+            <div><span>{copy.hash}</span><strong>{selectedResource.content_hash}</strong></div>
+          </div>
           <div className="resource-detail-block"><strong>{copy.tags}</strong><div className="resource-tags">{selectedResource.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}</div></div>
           <div className="resource-detail-block"><strong>{copy.permissions}</strong>{Object.values(selectedResource.required_permissions).some((value) => Array.isArray(value) ? value.length : value) ? <ul className="resource-permission-list">{selectedResource.required_permissions.network_hosts.map((host) => <li key={`host-${host}`}>Network: {host}</li>)}{selectedResource.required_permissions.tools.map((tool) => <li key={`tool-${tool}`}>Tool: {tool}</li>)}{selectedResource.required_permissions.filesystem_read_roots.map((path) => <li key={`read-${path}`}>Read: {path}</li>)}{selectedResource.required_permissions.filesystem_write_roots.map((path) => <li key={`write-${path}`}>Write: {path}</li>)}{selectedResource.required_permissions.shell_workspace_only ? <li>Workspace shell only</li> : null}</ul> : <p className="resource-detail-muted">{copy.noPermissions}</p>}</div>
           <div className="resource-detail-block"><strong>{copy.spec}</strong><pre className="resource-spec"><code>{JSON.stringify(selectedResource.spec, null, 2)}</code></pre></div>
-        </Panel> : null}
-      </div> : null}
+        </Panel>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-stack resource-library-page">
+      <div className="page-intro">
+        <div>
+          <span className="ui-eyebrow">{copy.eyebrow}</span>
+          <h2>{copy.title}</h2>
+          <p>{copy.description}</p>
+        </div>
+        <Tag>{`${resources.length} ${copy.count}`}</Tag>
+      </div>
+      <div className="resource-library-toolbar">
+        <div className="resource-library-tabs" role="tablist" aria-label={copy.title}>
+          {tabKinds.map((item) => {
+            const count = resources.filter((resource) => item.kinds.includes(resource.kind)).length;
+            return (
+              <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={tab === item.id ? "active" : ""} onClick={() => changeTab(item.id)}>
+                <span>{tabLabel(item.id, zh)}</span>
+                <em aria-hidden="true">{count}</em>
+              </button>
+            );
+          })}
+        </div>
+        <label className="resource-library-search">
+          <Search size={15} aria-hidden="true" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.search} aria-label={copy.search} />
+        </label>
+      </div>
+      {status === "error" ? <ErrorState message={error ?? copy.unavailable} onRetry={() => void load()} /> : null}
+      {status === "loading" ? <Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel> : null}
+      {status === "ready" && visible.length === 0 ? <Panel><EmptyState icon={LayoutGrid} title={copy.empty} detail={copy.emptyDetail} /></Panel> : null}
+      {status === "ready" && visible.length > 0 ? (
+        <div className="resource-card-grid">
+          {visible.map((item) => {
+            const Icon = iconForKind[item.kind];
+            return (
+              <a
+                className={`resource-card kind-${item.kind}`}
+                href={inProjectCatalog ? catalogHref : libraryRoutePaths.component(`${item.resource_id}@${item.version}`)}
+                key={item.reference}
+                onClick={(event) => {
+                  if (!inProjectCatalog) return;
+                  event.preventDefault();
+                  setSelected(item);
+                }}
+              >
+                <div className="resource-card-top">
+                  <span className={`resource-icon kind-${item.kind}`}><Icon size={18} aria-hidden="true" /></span>
+                  <StatusBadge label={availabilityLabel(item.availability, zh)} tone={statusTone(item.availability)} />
+                </div>
+                <h3>{item.name}</h3>
+                <p>{item.description}</p>
+                <div className="resource-card-meta">
+                  <Tag>{resourceKindLabel(item.kind, zh)}</Tag>
+                  <Tag>v{item.version}</Tag>
+                  {item.tags.slice(0, 2).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                </div>
+              </a>
+            );
+          })}
+        </div>
+      ) : null}
       {tab === "tooling" ? <McpServerPanel api={api} zh={zh} onChanged={() => void load()} /> : null}
     </div>
   );

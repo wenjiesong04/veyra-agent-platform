@@ -9,7 +9,6 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
@@ -944,7 +943,7 @@ class RuntimeService:
                     if authorization.decision != "allowed":
                         raise RuntimeError(authorization.code, authorization.reason)
                     execution = self.tools.execute(
-                        project_root=Path(project["root_path"]),
+                        project_root=self.projects._existing_root(project["root_path"]),
                         source=source,
                         node=node,
                         values=values,

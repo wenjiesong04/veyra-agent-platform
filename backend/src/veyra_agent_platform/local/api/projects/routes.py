@@ -55,6 +55,10 @@ class OpenProjectRequest(_ClosedModel):
     root_path: str = Field(min_length=1)
 
 
+class ImportProjectPathRequest(_ClosedModel):
+    path: str = Field(min_length=1)
+
+
 class UpdateProjectRequest(_ClosedModel):
     name: str | None = None
     description: str | None = None
@@ -154,6 +158,7 @@ def build_router() -> APIRouter:
     @router.get("")
     def list_projects(request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
+        projects.reconcile_managed_storage()
         return {
             "schema_version": "1.0",
             "projects": [
@@ -201,6 +206,17 @@ def build_router() -> APIRouter:
             lambda: _project_response(
                 request,
                 projects.import_archive(filename=file.filename, contents=contents),
+            )
+        )
+
+    @router.post("/import-path", status_code=status.HTTP_201_CREATED)
+    def import_project_from_path(
+        payload: ImportProjectPathRequest, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: _project_response(
+                request, projects.import_archive_from_path(payload.path)
             )
         )
 

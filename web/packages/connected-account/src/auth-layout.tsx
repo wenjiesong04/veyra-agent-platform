@@ -12,7 +12,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
       <header className="auth-header">
         <a className="auth-brand" href="#/community" aria-label="Veyra">
           <img src="/veyra-icon.png" alt="" />
-          <span><strong>Veyra</strong><small>/ Agent Platform</small></span>
+          <span><strong>Veyra</strong><small>Agent Platform</small></span>
         </a>
         <div className="auth-preferences">
           <button

@@ -345,6 +345,10 @@ export type OpenProjectRequest = {
   root_path: string;
 };
 
+export type ImportProjectPathRequest = {
+  path: string;
+};
+
 export type ProjectFileKind =
   | "manifest"
   | "agent_source"
@@ -378,6 +382,16 @@ export type ProjectFileContentResponse = ProjectFileRecord & {
   text: string;
 };
 
+export type RevealProjectRequest = {
+  project_id: string;
+};
+
+export type RevealProjectResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  status: "revealed";
+  root_path: string;
+};
+
 /** Result of a native desktop directory picker. Paths never come from typed UI input. */
 export type SelectDirectoryResponse =
   | {
@@ -389,6 +403,19 @@ export type SelectDirectoryResponse =
     schema_version: typeof LOCAL_API_SCHEMA_VERSION;
     status: "cancelled";
     root_path: null;
+  };
+
+/** Result of a native desktop archive picker. Paths never come from typed UI input. */
+export type SelectArchiveResponse =
+  | {
+    schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+    status: "selected";
+    path: string;
+  }
+  | {
+    schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+    status: "cancelled";
+    path: null;
   };
 
 export type DraftResponse = {

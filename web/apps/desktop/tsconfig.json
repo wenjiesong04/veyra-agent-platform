@@ -3,5 +3,5 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/desktop.tsbuildinfo"
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts", "community-proxy-origin.ts", "community-proxy-origin.test.ts"]
 }

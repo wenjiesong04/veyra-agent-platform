@@ -6,6 +6,7 @@ import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
 import { STUDIO_RAILS_STORAGE_KEY } from "../features/studio/StudioWorkbench";
+import { fluidRunHeight } from "../features/studio/studio-chrome";
 import { StudioPage } from "./studio";
 
 class TestResizeObserver {
@@ -18,6 +19,7 @@ globalThis.ResizeObserver = TestResizeObserver;
 afterEach(() => {
   cleanup();
   window.localStorage.removeItem(STUDIO_RAILS_STORAGE_KEY);
+  Reflect.deleteProperty(window, "matchMedia");
 });
 
 const source: AgentSource = {
@@ -33,6 +35,22 @@ const draft = (overrides: Partial<DraftResponse> = {}): DraftResponse => ({ sche
 function renderPage(api: LocalProjectApi, locale: "en" | "zh" = "en") {
   window.localStorage.setItem("veyra.language", locale);
   return render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={api}><StudioPage projectId="project-1" agentId="agent-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+}
+
+function stubCompactViewport(compact: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: compact && query.includes("max-width: 960px"),
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent() { return false; },
+    }),
+  });
 }
 
 describe("StudioPage source and conflict safety", () => {
@@ -106,7 +124,7 @@ describe("StudioPage source and conflict safety", () => {
   it("renders stable graph diagnostic codes as localized Studio copy", async () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft({ source: { ...source, nodes: [{ id: "out", component_type: "Output", output_name: "result" }], transitions: [] } })) } as unknown as LocalProjectApi;
     renderPage(api, "zh");
-    expect(await screen.findByText("必须且只能有一个 Start 节点。")).toBeInTheDocument();
+    expect(await screen.findByText("必须且只能有一个输入节点。")).toBeInTheDocument();
   });
 
   it("loads Catalog tools into the palette and attaches Read File uses, lock, and permissions", async () => {
@@ -179,6 +197,47 @@ describe("StudioPage source and conflict safety", () => {
     expect(screen.getByText("Select a canvas node or connection to edit.")).toBeInTheDocument();
   });
 
+  it("inserts an Agent palette component between Start and Output", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: /Start Entry point/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /Model Model instruction/ }));
+    expect(screen.queryByText(/is not wired into the flow/)).not.toBeInTheDocument();
+    expect(await screen.findByDisplayValue("model.primary")).toBeInTheDocument();
+  });
+
+  it("keeps compact viewports to one studio overlay so the canvas stays usable", async () => {
+    stubCompactViewport(true);
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: "Expand catalog" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand inspector" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand test panel" })).toBeInTheDocument();
+    expect(document.querySelector(".studio-stage.is-compact")).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Expand inspector" }));
+    expect(screen.getByText("Select a canvas node or connection to edit.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand catalog" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand test panel" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand catalog" }));
+    expect(screen.getByRole("button", { name: /Start Entry point/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand inspector" })).toBeInTheDocument();
+  });
+
+  it("expands the collapsed inspector with the clicked canvas node", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("button", { name: "Collapse inspector" }));
+    expect(screen.queryByText("Select a canvas node or connection to edit.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand inspector" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("start"));
+    expect(await screen.findByRole("button", { name: "Collapse inspector" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("start")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete node" })).toBeInTheDocument();
+  });
+
   it("overlays a collapsible test run panel without removing the run controls until collapsed", async () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
     const user = userEvent.setup();
@@ -189,6 +248,33 @@ describe("StudioPage source and conflict safety", () => {
     expect(screen.getByRole("button", { name: "Expand test panel" })).toHaveAttribute("aria-expanded", "false");
     await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     expect(screen.getByRole("button", { name: "Test run" })).toBeInTheDocument();
+  });
+
+  it("lets the user resize catalog, inspector, and test panels without keeping the sizes after remount", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    const { unmount } = renderPage(api);
+    const catalog = await screen.findByRole("separator", { name: "Resize catalog" });
+    expect(catalog).toHaveAttribute("aria-valuenow", "228");
+    fireEvent.keyDown(catalog, { key: "ArrowRight" });
+    expect(screen.getByRole("separator", { name: "Resize catalog" })).toHaveAttribute("aria-valuenow", "236");
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize inspector" }), { key: "ArrowLeft" });
+    expect(screen.getByRole("separator", { name: "Resize inspector" })).toHaveAttribute("aria-valuenow", "308");
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize test panel" }), { key: "ArrowUp" });
+    expect(screen.getByRole("separator", { name: "Resize test panel" })).toHaveAttribute("aria-valuenow", String(fluidRunHeight() + 8));
+    expect(screen.getByRole("toolbar", { name: "Canvas editing" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Duplicate" })).not.toBeInTheDocument();
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(STUDIO_RAILS_STORAGE_KEY) ?? "";
+      expect(stored).not.toContain("paletteWidth");
+    });
+    await user.click(screen.getByRole("button", { name: "Collapse catalog" }));
+    expect(screen.queryByRole("separator", { name: "Resize catalog" })).not.toBeInTheDocument();
+    unmount();
+    renderPage(api);
+    expect(await screen.findByRole("separator", { name: "Resize inspector" })).toHaveAttribute("aria-valuenow", "300");
+    expect(screen.getByRole("separator", { name: "Resize test panel" })).toHaveAttribute("aria-valuenow", String(fluidRunHeight()));
+    expect(screen.getByRole("button", { name: "Expand catalog" })).toBeInTheDocument();
   });
 
   it("remembers collapsed studio rails after remount", async () => {
@@ -288,5 +374,69 @@ describe("StudioPage source and conflict safety", () => {
     expect(screen.queryByText(/还没有接到流程上/)).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "去提交版本" })).toBeInTheDocument();
     expect(screen.getByText(/还没有绑定已提交的 Agent 版本/)).toBeInTheDocument();
+  });
+
+  it("undoes an inserted Workflow AgentCall from the canvas toolbar", async () => {
+    const workflow: WorkflowSource = {
+      schema_version: "1.0",
+      component_type: "Workflow",
+      workflow_id: "wf-1",
+      slug: "review-path",
+      name: "Review path",
+      description: "",
+      version: "1.0.0",
+      inputs: { prompt: "string" },
+      outputs: { result: "string" },
+      nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }],
+      transitions: [{ from: "start", port: "next", to: "out" }],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: { start: { x: 0, y: 0 }, out: { x: 100, y: 0 } } },
+      lock: {},
+    };
+    const workflowProject = {
+      ...project,
+      agents: [{ agent_id: "01900000-0000-7000-8000-000000000001", slug: "translation", name: "translation", description: "", pinned: false, source_path: "agents/translation/agent.vagent.yaml", source_file_hash: "file" }],
+    };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [workflowProject] }),
+      getWorkflowDraft: vi.fn().mockResolvedValue({ schema_version: "1.0", draft_id: "wf-draft", revision: 1, etag: '"etag-w"', source_file_hash: "wf-hash", source: workflow }),
+      listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [] }),
+    } as unknown as LocalProjectApi;
+    window.localStorage.setItem("veyra.language", "zh");
+    const user = userEvent.setup();
+    render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={api}><StudioPage projectId="project-1" workflowId="wf-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    await user.click(await screen.findByRole("button", { name: /translation 调用已提交版本/ }));
+    expect(await screen.findByRole("button", { name: "去提交版本" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(screen.queryByText(/还没有绑定已提交的 Agent 版本/)).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "重做" }));
+    expect(await screen.findByText(/还没有绑定已提交的 Agent 版本/)).toBeInTheDocument();
+  });
+
+  it("copies a Model node with select-all and pastes a new copy", async () => {
+    const withModel: AgentSource = {
+      ...source,
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "model", component_type: "Model", model_ref: "model.primary", system_prompt: "Hi" },
+        { id: "out", component_type: "Output", output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next", to: "model" },
+        { from: "model", port: "next", to: "out" },
+      ],
+      ui: { positions: { start: { x: 0, y: 0 }, model: { x: 120, y: 0 }, out: { x: 240, y: 0 } } },
+    };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft({ source: withModel })),
+    } as unknown as LocalProjectApi;
+    renderPage(api);
+    await screen.findByRole("button", { name: "Undo" });
+    fireEvent.keyDown(window, { key: "a", code: "KeyA", metaKey: true });
+    fireEvent.keyDown(window, { key: "c", code: "KeyC", metaKey: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Paste" })).toBeEnabled());
+    fireEvent.keyDown(window, { key: "v", code: "KeyV", metaKey: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled());
   });
 });

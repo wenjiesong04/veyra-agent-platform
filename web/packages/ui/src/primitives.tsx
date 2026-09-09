@@ -1,5 +1,5 @@
-import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import { forwardRef, useEffect, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
+import { CircleAlert, CircleCheck, Info, TriangleAlert, X, type LucideIcon } from "lucide-react";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md";
@@ -56,6 +56,58 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
       <span className="ui-error-mark" aria-hidden="true">!</span>
       <span>{message}</span>
       {onRetry ? <Button variant="ghost" size="sm" onClick={onRetry}>Retry</Button> : null}
+    </div>
+  );
+}
+
+export type AlertType = "success" | "warning" | "info" | "error";
+
+const alertIcon: Record<AlertType, LucideIcon> = {
+  success: CircleCheck,
+  warning: TriangleAlert,
+  info: Info,
+  error: CircleAlert,
+};
+
+export function Alert({
+  type = "info",
+  title,
+  description,
+  closable = false,
+  duration = 0,
+  onClose,
+  children,
+  className = "",
+}: {
+  type?: AlertType;
+  title?: string;
+  description?: ReactNode;
+  closable?: boolean;
+  duration?: number;
+  onClose?: () => void;
+  children?: ReactNode;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(true);
+  const Icon = alertIcon[type];
+  useEffect(() => {
+    if (!duration || duration <= 0) return;
+    const timer = window.setTimeout(() => {
+      setOpen(false);
+      onClose?.();
+    }, duration);
+    return () => window.clearTimeout(timer);
+  }, [duration, onClose]);
+  if (!open) return null;
+  return (
+    <div className={`ui-alert ${type} ${className}`.trim()} role="alert">
+      <span className="ui-alert-icon" aria-hidden="true"><Icon size={16} /></span>
+      <div className="ui-alert-body">
+        {title ? <strong className="ui-alert-title">{title}</strong> : null}
+        {description ? <div className="ui-alert-description">{description}</div> : null}
+        {children}
+      </div>
+      {closable ? <button className="ui-alert-close" type="button" aria-label="Close" onClick={() => { setOpen(false); onClose?.(); }}><X size={14} /></button> : null}
     </div>
   );
 }

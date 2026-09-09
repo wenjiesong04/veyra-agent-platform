@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { errorCopy } from "@veyra/connected-account";
 import { CommunityApp } from "./app";
 
 const account = {
@@ -74,6 +75,63 @@ describe("Community account flows", () => {
     await waitFor(() => expect(window.location.hash).toBe("#/account"));
     expect(requests.find((request) => request.url.endsWith("/auth/login"))?.body).toMatchObject({ email: "alice@example.com", password: "maplexyz" });
     expect(window.localStorage.getItem("account")).toBeNull();
+  });
+
+  it("explains credential failures without enumerating whether the email exists", async () => {
+    window.location.hash = "#/login";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/account/me")) return jsonResponse(401, { detail: "authentication_required" });
+      if (url.endsWith("/auth/login")) return jsonResponse(401, { detail: "invalid_credentials" });
+      return jsonResponse(404, { detail: "not_found" });
+    }));
+
+    const user = userEvent.setup();
+    render(<CommunityApp />);
+    await user.type(screen.getByLabelText("Email"), "alice@example.com");
+    await user.type(screen.getByLabelText("Password"), "wrongpass");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(errorCopy.en.invalidCredentials);
+    expect(screen.getByLabelText("Password")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.queryByText(errorCopy.en.generic)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not registered|does not exist/i)).not.toBeInTheDocument();
+  });
+
+  it("explains Community downtime instead of a generic retry banner", async () => {
+    window.location.hash = "#/login";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/account/me")) return jsonResponse(401, { detail: "authentication_required" });
+      if (url.endsWith("/auth/login")) return jsonResponse(503, { detail: "community_unavailable" });
+      return jsonResponse(404, { detail: "not_found" });
+    }));
+
+    const user = userEvent.setup();
+    render(<CommunityApp />);
+    await user.type(screen.getByLabelText("Email"), "alice@example.com");
+    await user.type(screen.getByLabelText("Password"), "maplexyz");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(errorCopy.en.network);
+  });
+
+  it("explains a rejected browser origin", async () => {
+    window.location.hash = "#/login";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/account/me")) return jsonResponse(401, { detail: "authentication_required" });
+      if (url.endsWith("/auth/login")) return jsonResponse(403, { detail: "origin_not_allowed" });
+      return jsonResponse(404, { detail: "not_found" });
+    }));
+
+    const user = userEvent.setup();
+    render(<CommunityApp />);
+    await user.type(screen.getByLabelText("Email"), "alice@example.com");
+    await user.type(screen.getByLabelText("Password"), "maplexyz");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(errorCopy.en.origin);
   });
 
   it("registers through email, six-digit code, and profile steps", async () => {

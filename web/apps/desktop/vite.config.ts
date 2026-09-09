@@ -2,6 +2,7 @@ import http from "node:http";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+import { rewriteOriginForCommunityProxy } from "./community-proxy-origin";
 
 const hopByHop = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade"]);
 
@@ -26,13 +27,17 @@ function optionalCommunityProxy(target = "http://127.0.0.1:8772"): Plugin {
           return;
         }
         const path = req.url.replace(/^\/community-api/, "") || "/";
+        const upstreamOrigin = `${upstream.protocol}//${upstream.host}`;
+        const headers = copyHeaders(req.headers, { host: `${upstream.hostname}:${upstream.port}` });
+        const origin = rewriteOriginForCommunityProxy(req.headers.origin, upstreamOrigin);
+        if (origin) headers.origin = origin;
         const proxyReq = http.request(
           {
             hostname: upstream.hostname,
             port: upstream.port,
             path,
             method: req.method,
-            headers: copyHeaders(req.headers, { host: `${upstream.hostname}:${upstream.port}` }),
+            headers,
           },
           (proxyRes) => {
             res.writeHead(proxyRes.statusCode ?? 502, copyHeaders(proxyRes.headers));

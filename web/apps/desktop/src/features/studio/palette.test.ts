@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, knowledgePalette, notePalette, paletteForMode, paletteFromCatalog, workflowAgentPalette } from "./palette";
+import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, grantCatalogResource, knowledgePalette, notePalette, paletteForMode, paletteFromCatalog, paletteItemBlocked, workflowAgentPalette } from "./palette";
 
 const source: AgentSource = {
   schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "",
@@ -51,6 +51,9 @@ describe("Studio catalog palette", () => {
     expect(next.extensions.veyra.permissions.tools).toEqual(["veyra.tool.filesystem.read"]);
     expect(next.extensions.veyra.permissions.filesystem_read_roots).toEqual(["project"]);
     expect(next.ui.positions["read-1"]).toEqual({ x: 40, y: 81 });
+    const granted = grantCatalogResource(source, resource);
+    expect(granted.nodes).toEqual(source.nodes);
+    expect(granted.lock[resource.reference]).toBe(resource.content_hash);
   });
 
   it("attaches Skills as catalog bindings without adding a Flow node", () => {
@@ -140,5 +143,14 @@ describe("Studio catalog palette", () => {
 
   it("exposes canvas notes as a non-executable palette card", () => {
     expect(notePalette()[0]).toMatchObject({ group: "note", titleZh: "文字卡片", draggable: true, runtimeStatus: "runtime_not_supported" });
+  });
+
+  it("blocks a second Start on an Agent graph", () => {
+    const start = fallbackPalette().find((item) => item.componentType === "Start");
+    const model = fallbackPalette().find((item) => item.componentType === "Model");
+    expect(start).toMatchObject({ title: "Start", titleZh: "输入" });
+    expect(model).toBeDefined();
+    expect(paletteItemBlocked(start!, [{ component_type: "Start" }])).toBe(true);
+    expect(paletteItemBlocked(model!, [{ component_type: "Start" }])).toBe(false);
   });
 });

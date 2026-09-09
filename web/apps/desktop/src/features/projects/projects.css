@@ -65,18 +65,25 @@
 
 .project-modal-backdrop {
   position: fixed;
-  z-index: 100;
+  z-index: 240;
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 20px;
+  box-sizing: border-box;
+  padding: 24px;
+  padding-left: calc(var(--shell-overlay-left, var(--sidebar-width)) + 24px);
   background: color-mix(in srgb, var(--ink) 36%, transparent);
   backdrop-filter: blur(5px);
 }
 
 .project-modal {
-  width: min(100%, 520px);
-  max-height: min(680px, calc(100dvh - 40px));
+  position: relative;
+  justify-self: center;
+  align-self: center;
+  width: min(520px, 100%);
+  max-width: 520px;
+  max-height: min(680px, calc(100dvh - 48px));
+  margin: 0;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 20px;
@@ -132,9 +139,9 @@
 .folder-selection.is-selected { border-style: solid; border-color: var(--accent); color: var(--ink); }
 .folder-selection > svg { flex: 0 0 auto; color: var(--accent-strong); }
 .folder-selection > div { min-width: 0; flex: 1; }
-.folder-selection strong, .folder-selection p { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.folder-selection strong { color: var(--ink); font-size: 13px; }
-.folder-selection p { margin: 4px 0 0; font-size: 12px; }
+.folder-selection strong, .folder-selection p { display: block; overflow: hidden; text-overflow: ellipsis; }
+.folder-selection strong { color: var(--ink); font-size: 13px; white-space: nowrap; }
+.folder-selection p { margin: 4px 0 0; font-size: 12px; line-height: 1.4; }
 
 .sidebar-project-actions { position: relative; display: inline-flex; align-items: center; height: 22px; gap: 2px; }
 .sidebar-import-input {
@@ -421,7 +428,7 @@ a.project-agent-row:hover { color: var(--accent-strong); background: var(--surfa
     display: none;
   }
 
-  .project-modal-backdrop { align-items: end; padding: 0; }
+  .project-modal-backdrop { align-items: flex-end; justify-content: center; padding: 0; }
   .project-modal { width: 100%; max-height: min(720px, 92dvh); border-radius: 20px 20px 0 0; }
   .project-modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .project-modal-actions .ui-button { justify-content: center; }

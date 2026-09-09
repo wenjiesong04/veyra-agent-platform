@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { AgentRunResponse, JsonValue, WorkflowRunResponse } from "@veyra/api-contracts";
+import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 
 export function initialSourceInputs(inputs: Record<string, string>): Record<string, JsonValue> {
@@ -90,12 +91,12 @@ export function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: 
   }, [api]);
   if (configured === null) return null;
   if (userProvidedOnly) {
-    return <p className="studio-run-note">{zh ? "上线模式不会使用本机共享密钥。请提供你自己的 Runtime API 后再运行。" : "Release mode will not use the host shared key. Provide your own Runtime API before running."}</p>;
+    return <Alert type="warning" title={zh ? "上线模式不会使用本机共享密钥。请提供你自己的 Runtime API 后再运行。" : "Release mode will not use the host shared key. Provide your own Runtime API before running."} />;
   }
   if (!configured) {
-    return <p className="studio-run-note">{zh ? "尚未配置 Runtime 模型。在进程环境中设置 MOONSHOT_API_KEY 后即可试跑。" : "The Runtime model is not configured. Set MOONSHOT_API_KEY in the process environment to test-run."}</p>;
+    return <Alert type="warning" title={zh ? "尚未配置 Runtime 模型。在进程环境中设置 MOONSHOT_API_KEY 后即可试跑。" : "The Runtime model is not configured. Set MOONSHOT_API_KEY in the process environment to test-run."} />;
   }
-  return <p className="studio-run-note">{zh ? "开发环境正使用本机 Runtime 密钥试跑。上线后用户必须使用他们自己的 API。" : "Local development is using the host Runtime key. Production runs will require the user's own API."}</p>;
+  return <Alert type="info" title={zh ? "开发环境正使用本机 Runtime 密钥试跑。上线后用户必须使用他们自己的 API。" : "Local development is using the host Runtime key. Production runs will require the user's own API."} closable duration={8000} />;
 }
 
 export function RunInputFields({

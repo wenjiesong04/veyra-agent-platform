@@ -1,3 +1,5 @@
+import { communityAuthRoutePaths } from "./community-auth";
+
 export const desktopRoutePaths = {
   chat: "#/chat",
   projects: "#/projects",
@@ -155,6 +157,40 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   }
 
   return { kind: "not-found", path };
+}
+
+export function isDesktopPublicAuthRoute(kind: DesktopRouteLocation["kind"]): boolean {
+  return kind === "login" || kind === "register" || kind === "forgot-password";
+}
+
+export function readDesktopLoginNext(hash: string): string | null {
+  const raw = hash.replace(/^#/, "");
+  const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
+  const value = new URLSearchParams(query).get("next");
+  if (!value) return null;
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+  if (!decoded.startsWith("#/")) return null;
+  if (isDesktopPublicAuthRoute(parseDesktopRoute(decoded).kind)) return null;
+  return decoded;
+}
+
+export function desktopLoginHash(fromHash = ""): string {
+  const parsed = parseDesktopRoute(fromHash);
+  if (isDesktopPublicAuthRoute(parsed.kind)) {
+    if (parsed.kind === "login") return fromHash.startsWith("#/login") ? fromHash : communityAuthRoutePaths.login;
+    return `#/${parsed.kind}`;
+  }
+  const target = fromHash.startsWith("#") ? fromHash : parsed.path;
+  return `${communityAuthRoutePaths.login}?next=${encodeURIComponent(target)}`;
+}
+
+export function desktopPathAfterAuth(hash: string, fallback: string): string {
+  return readDesktopLoginNext(hash) ?? fallback;
 }
 
 export type HealthTone = "good" | "warn" | "bad" | "neutral";

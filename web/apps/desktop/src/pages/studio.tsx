@@ -1,16 +1,17 @@
 import * as React from "react";
 import { Code2, LayoutPanelTop, Save, SlidersHorizontal } from "lucide-react";
 import type { ResourceDescriptor, StudioSource } from "@veyra/api-contracts";
-import { Button, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
+import { Button, Alert, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { StudioWorkbench } from "../features/studio/StudioWorkbench";
 import { repairAgentCallMappings } from "../features/studio/agent-call";
 import { graphDiagnostics, isAgentSourceCandidate, isWorkflowSourceCandidate, repairInvalidNodeIds, type GraphDiagnostic } from "../features/studio/graph";
 import { LiveRunProvider } from "../features/studio/live-run";
-import { StudioChromeProvider } from "../features/studio/studio-chrome";
+import { StudioChromeProvider, studioStageStyle, useStudioChrome } from "../features/studio/studio-chrome";
 import { WorkflowRunPanel } from "../features/studio/WorkflowRunPanel";
 import { TestRunPanel } from "../features/studio/TestRunPanel";
+import { StudioRunDock } from "../features/studio/studio-run-dock";
 import { NotFoundPage } from "./not-found";
 
 type StudioView = "canvas" | "form" | "source";
@@ -29,6 +30,8 @@ const studioCopy = {
 } as const;
 
 const AUTOSAVE_MS = 2000;
+const STUDIO_MESSAGE_ALERT_MS = 6000;
+const STUDIO_DIAGNOSTIC_ALERT_MS = 12000;
 
 function adoptStudioSource(source: StudioSource): StudioSource {
   const rewritten = repairInvalidNodeIds(source);
@@ -139,20 +142,80 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const statusLabel = status === "committed" ? copy.committed : status === "saving" ? copy.saving : dirty ? copy.dirty : copy.saved;
   const statusTone = status === "offline" || status === "conflict" ? "bad" : dirty || status === "saving" ? "warn" : "good";
   return <div className="page-stack studio-page">
-    {Boolean(message || diagnostics.length) ? <div className={status === "conflict" || status === "offline" || diagnostics.length ? "studio-alert bad" : "studio-alert"}>{message}{diagnostics.map((item, index) => <div key={`${item.code}-${index}`}>{graphDiagnosticText(item, locale)}</div>)}{status === "conflict" && canReloadDraft ? <Button size="sm" onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : null}</div> : null}
     <StudioChromeProvider>
       <LiveRunProvider api={api} projectId={projectId} agentId={agentId ?? ""} locale={locale} inactive={isWorkflow}>
         <div className="studio-body">
-          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}{copy[item]}</button>)}</div>{view === "canvas" ? <div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</div> : null}</div>
-          <div className={`studio-stage${view === "canvas" ? " is-canvas" : ""}`}>
+          {message || diagnostics.length ? (
+            <StudioNotice
+              message={message}
+              diagnostics={diagnostics}
+              status={status}
+              locale={locale}
+              canReloadDraft={canReloadDraft}
+              onLoadDisk={() => void loadDiskVersion()}
+            />
+          ) : null}
+          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{copy[item]}</span></button>)}</div>{view === "canvas" ? <div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</div> : null}</div>
+          <StudioStage view={view}>
             {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
-            {isWorkflow && workflowId && source.component_type === "Workflow" ? <WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /> : null}
-            {!isWorkflow && agentId && source.component_type === "Flow" ? <TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /> : null}
-          </div>
+            {isWorkflow && workflowId && source.component_type === "Workflow" ? <StudioRunDock locale={locale}><WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
+            {!isWorkflow && agentId && source.component_type === "Flow" ? <StudioRunDock locale={locale}><TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
+          </StudioStage>
         </div>
       </LiveRunProvider>
     </StudioChromeProvider>
   </div>;
+}
+
+function StudioNotice({
+  message,
+  diagnostics,
+  status,
+  locale,
+  canReloadDraft,
+  onLoadDisk,
+}: {
+  message: string;
+  diagnostics: GraphDiagnostic[];
+  status: string;
+  locale: "zh" | "en";
+  canReloadDraft: boolean;
+  onLoadDisk: () => void;
+}) {
+  const zh = locale === "zh";
+  const blocking = status === "conflict" || status === "offline";
+  return (
+    <div className="studio-notice" role="region" aria-label={zh ? "Studio 提示" : "Studio notices"}>
+      {message ? (
+        <Alert
+          type={blocking ? "error" : "success"}
+          title={message}
+          closable
+          duration={blocking ? 0 : STUDIO_MESSAGE_ALERT_MS}
+        >
+          {status === "conflict" && canReloadDraft ? <Button size="sm" onClick={onLoadDisk}>{zh ? "加载磁盘版本" : "Load disk version"}</Button> : null}
+        </Alert>
+      ) : null}
+      {diagnostics.map((item, index) => (
+        <Alert
+          key={`${item.code}-${item.params?.nodeId ?? item.params?.from ?? index}`}
+          type="error"
+          title={graphDiagnosticText(item, locale)}
+          closable
+          duration={STUDIO_DIAGNOSTIC_ALERT_MS}
+        />
+      ))}
+    </div>
+  );
+}
+
+function StudioStage({ view, children }: { view: StudioView; children: React.ReactNode }) {
+  const { chrome, compact } = useStudioChrome();
+  return (
+    <div className={`studio-stage${view === "canvas" ? " is-canvas" : ""}${view === "canvas" && compact ? " is-compact" : ""}`} style={view === "canvas" ? studioStageStyle(chrome, compact) : undefined}>
+      {children}
+    </div>
+  );
 }
 
 function FormView({ source, onChange }: { source: StudioSource; onChange: (source: StudioSource) => void }) { const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow"; const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value }); return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} onValid={(inputs) => onChange({ ...source, inputs })} /><JsonField label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} onValid={(outputs) => onChange({ ...source, outputs })} /></div></Panel>; }
@@ -168,7 +231,7 @@ function graphDiagnosticText(diagnostic: GraphDiagnostic, locale: "zh" | "en"): 
     case "agent_version_unavailable": return zh ? `${p.nodeId} 引用的版本不可用。` : `${p.nodeId} references an unavailable version.`;
     case "agent_lock_mismatch": return zh ? `${p.nodeId} 的版本依赖锁不匹配。` : `${p.nodeId} has a mismatched version lock.`;
     case "agent_mapping_invalid": return zh ? `${p.nodeId} 还要把 Agent 参数接到工作流变量。右侧把例如 request 选成 prompt。名字可以不一样。` : `${p.nodeId} still needs Agent parameters connected to Workflow values. In the inspector, map e.g. request to prompt. Names do not have to match.`;
-    case "start_count": return zh ? "必须且只能有一个 Start 节点。" : "Exactly one Start node is required.";
+    case "start_count": return zh ? "必须且只能有一个输入节点。" : "Exactly one Start node is required.";
     case "output_missing": return zh ? "必须有一个 Output 节点。" : "An Output node is required.";
     case "output_declaration": return zh ? "每个 Output 节点都必须匹配一个已声明的输出。" : "Every Output node must match one declared output.";
     case "verifier_required": return zh ? "要求验证时必须添加 Verifier 节点。" : "Required verification needs a Verifier node.";
@@ -177,7 +240,7 @@ function graphDiagnosticText(diagnostic: GraphDiagnostic, locale: "zh" | "en"): 
     case "write_requires_approval": return zh ? `${p.nodeId} 写入前必须有人工审批节点，否则运行会失败而不是假成功。` : `${p.nodeId} needs a Human approval node before a write can run.`;
     case "transition_unknown_node": return zh ? `连线 ${p.from} → ${p.to} 引用了未知节点。` : `Transition ${p.from} → ${p.to} has an unknown node.`;
     case "transition_invalid_port": return zh ? `端口 ${p.port} 不适用于 ${p.nodeId}。` : `Port ${p.port} is not valid for ${p.nodeId}.`;
-    case "node_ports_incomplete": return zh ? `${p.nodeId} 还没有接到流程上。把单出口节点插到「开始」和「输出」之间，或点连线中间的 +。` : `${p.nodeId} is not wired into the flow. Insert a single-output node between Start and Output, or use the + on a connection.`;
+    case "node_ports_incomplete": return zh ? `${p.nodeId} 还没有接到流程上。把单出口节点插到「输入」和「输出」之间，或点连线中间的 +。` : `${p.nodeId} is not wired into the flow. Insert a single-output node between Start and Output, or use the + on a connection.`;
     default: return diagnostic.code;
   }
 }

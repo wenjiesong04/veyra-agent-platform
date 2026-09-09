@@ -28,6 +28,7 @@ SESSION_COOKIE = DEVELOPMENT_SESSION_COOKIE
 REFRESH_COOKIE = DEVELOPMENT_REFRESH_COOKIE
 CSRF_COOKIE = DEVELOPMENT_CSRF_COOKIE
 CSRF_HEADER = "X-CSRF-Token"
+_LOOPBACK_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True)
@@ -163,10 +164,29 @@ def require_trusted_origin(request: Request, settings: CommunitySettings) -> Non
     allowed_origins = {request_origin}
     if settings.public_origin is not None:
         allowed_origins.add(settings.public_origin.lower())
-    if normalized_origin not in allowed_origins:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="origin_not_allowed"
-        )
+    if normalized_origin in allowed_origins:
+        return
+    if settings.mode != "production" and _is_loopback_http_origin(origin):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="origin_not_allowed"
+    )
+
+
+def _is_loopback_http_origin(origin: str) -> bool:
+    """Allow local Desktop/Community Vite origins in development and tests."""
+
+    parsed = urlsplit(origin)
+    hostname = (parsed.hostname or "").lower()
+    return (
+        parsed.scheme == "http"
+        and hostname in _LOOPBACK_ORIGIN_HOSTS
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def set_auth_cookies(

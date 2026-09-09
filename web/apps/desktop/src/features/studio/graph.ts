@@ -247,9 +247,21 @@ function persistNotes(nodes: Node<CanvasNodeData>[]): Record<string, StudioNote>
   return Object.keys(notes).length ? notes : undefined;
 }
 
+export function portHandleTop(index: number, count: number): number {
+  if (count <= 1) return 50;
+  const gap = 28;
+  const start = 50 - ((count - 1) * gap) / 2;
+  return start + index * gap;
+}
+
 export function flowNodeOutgoingPort(componentType: FlowNode["component_type"]): string | null {
   const outgoing = componentFor(componentType).ports;
   return outgoing.length === 1 ? outgoing[0] : null;
+}
+
+export function shouldSplicePaletteItem(componentType: FlowNode["component_type"], group: string): boolean {
+  if (group === "note" || componentType === "Start" || componentType === "Output") return false;
+  return Boolean(flowNodeOutgoingPort(componentType));
 }
 
 export function defaultSpliceEdgeId(nodes: Node<CanvasNodeData>[], edges: Edge[]): string | null {
@@ -274,7 +286,7 @@ export function insertFlowNodeOnEdge(
     ...node,
     position: {
       x: Math.round(((sourceNode?.position.x ?? 0) + (targetNode?.position.x ?? 0)) / 2),
-      y: Math.round(((sourceNode?.position.y ?? 0) + (targetNode?.position.y ?? 0)) / 2) + 28,
+      y: Math.round(((sourceNode?.position.y ?? 0) + (targetNode?.position.y ?? 0)) / 2),
     },
   };
   const port = typeof edge.sourceHandle === "string" ? edge.sourceHandle : "next";

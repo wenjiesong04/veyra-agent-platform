@@ -1,7 +1,7 @@
 import * as React from "react";
 import { PanelBottomClose, PanelBottomOpen, Play, RotateCcw } from "lucide-react";
 import type { AgentSource, JsonValue } from "@veyra/api-contracts";
-import { Button, Panel, StatusBadge } from "@veyra/ui";
+import { Alert, Button, Panel, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { nodeRunStates, useLiveRun } from "./live-run";
 import { RunApprovalBar } from "./RunApprovalBar";
@@ -79,13 +79,13 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => live.clear()}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
           <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
-          {disabled ? <p className="studio-run-note">{zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."}</p> : null}
-          {!api.runAgent ? <p className="studio-run-note">{zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."}</p> : null}
+          {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
+          {!api.runAgent ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
           {api.runtimeStatus && !disabled ? <RuntimeKeyNote api={api} locale={locale} /> : null}
         </div>
         <div className={`studio-run-result${!run && !live.error ? " is-empty" : ""}`} aria-live="polite">
-          {live.error ? <div className="studio-alert bad">{live.error}</div> : null}
-          {run?.error ? <div className="studio-alert bad"><span>{run.error.message}</span><small>{zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`}</small></div> : null}
+          {live.error ? <Alert type="error" title={live.error} /> : null}
+          {run?.error ? <Alert type="error" title={run.error.message} description={zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`} /> : null}
           {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
           {run ? (
             <ol className="studio-run-nodes" aria-label={zh ? "节点运行状态" : "Node run states"}>

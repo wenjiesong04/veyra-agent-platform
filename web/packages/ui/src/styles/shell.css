@@ -1130,6 +1130,7 @@ a.header-control.is-current:hover {
 @media (max-width: 960px) {
   :root {
     --header-height: 52px;
+    --shell-overlay-left: 0px;
   }
 
   .app-shell,
@@ -1153,6 +1154,10 @@ a.header-control.is-current:hover {
     transform: translateX(-102%);
     box-shadow: 16px 0 44px color-mix(in srgb, var(--ink) 16%, transparent);
     transition: transform 180ms ease, visibility 0s linear 180ms;
+  }
+
+  .app-sidebar .pane-resize-handle {
+    display: none;
   }
 
   .is-mobile-open .app-sidebar {
@@ -1259,7 +1264,29 @@ a.header-control.is-current:hover {
     padding-inline: 16px;
   }
 
-  .header-breadcrumbs { max-width: 36vw; gap: 5px; font-size: 11px; }
+  .header-copy.has-breadcrumbs {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .header-breadcrumbs {
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    gap: 5px;
+    font-size: 11px;
+  }
+
+  .breadcrumb-part {
+    min-width: 0;
+  }
+
+  .breadcrumb-part > a,
+  .breadcrumb-part > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   .page-content {
     padding: 20px 20px 32px;

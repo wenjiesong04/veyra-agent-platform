@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowRight, LoaderCircle, MailCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { communityAuthRoutePaths } from "@veyra/api-contracts";
+import { communityAuthRoutePaths, desktopPathAfterAuth } from "@veyra/api-contracts";
 import { Button, useLocale } from "@veyra/ui";
 import { useAuth } from "../auth-context";
 import { AuthLayout } from "../auth-layout";
@@ -8,7 +8,7 @@ import { AuthCard, FormField, FormNotice, PasswordInput, StepIndicator, authErro
 
 type RegisterStep = "email" | "code" | "profile";
 
-export function RegisterPage() {
+export function RegisterPage({ afterAuthHref = communityAuthRoutePaths.account }: { afterAuthHref?: string } = {}) {
   const { locale } = useLocale();
   const { register, requestCode } = useAuth();
   const [step, setStep] = useState<RegisterStep>("email");
@@ -37,7 +37,7 @@ export function RegisterPage() {
       cooldown.start();
       setStep("code");
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "register"));
     } finally {
       setSubmitting(false);
     }
@@ -65,9 +65,9 @@ export function RegisterPage() {
     setError(null);
     try {
       await register({ email, verification_code: code, display_name: displayName, password });
-      window.location.hash = communityAuthRoutePaths.account;
+      window.location.hash = desktopPathAfterAuth(window.location.hash, afterAuthHref);
     } catch (caught) {
-      setError(authErrorMessage(caught, errorCopy[locale]));
+      setError(authErrorMessage(caught, errorCopy[locale], "register"));
     } finally {
       setSubmitting(false);
     }

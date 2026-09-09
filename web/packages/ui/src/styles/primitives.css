@@ -225,6 +225,98 @@
   font-weight: 850;
 }
 
+.ui-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.ui-alert-icon {
+  display: grid;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  place-items: center;
+}
+
+.ui-alert-body {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 4px;
+}
+
+.ui-alert-title {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.ui-alert-description,
+.ui-alert-body > p,
+.ui-alert-list {
+  margin: 0;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.ui-alert-list {
+  display: grid;
+  gap: 4px;
+  padding-left: 1.1em;
+}
+
+.ui-alert-close {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ui-alert-close:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.ui-alert.error {
+  border-color: color-mix(in srgb, var(--bad) 42%, var(--line));
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad-soft) 82%, var(--surface));
+}
+
+.ui-alert.warning {
+  border-color: color-mix(in srgb, var(--warn) 46%, var(--line));
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn-soft) 78%, var(--surface));
+}
+
+.ui-alert.info {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface));
+}
+
+.ui-alert.success {
+  border-color: color-mix(in srgb, var(--good) 42%, var(--line));
+  color: var(--good);
+  background: color-mix(in srgb, var(--good-soft) 78%, var(--surface));
+}
+
 .ui-empty {
   display: grid;
   min-height: 180px;
@@ -337,5 +429,119 @@
 @keyframes ui-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+.pane-resize-handle {
+  position: absolute;
+  z-index: 6;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: transparent;
+  touch-action: none;
+}
+
+.pane-resize-handle::after {
+  content: "";
+  position: absolute;
+  border-radius: 99px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pane-resize-handle[data-edge="right"],
+.pane-resize-handle[data-edge="left"] {
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: col-resize;
+}
+
+.pane-resize-handle[data-edge="right"] {
+  right: 0;
+}
+
+.pane-resize-handle[data-edge="left"] {
+  left: 0;
+}
+
+.pane-resize-handle[data-edge="top"],
+.pane-resize-handle[data-edge="bottom"] {
+  right: 0;
+  left: 0;
+  height: 10px;
+  cursor: row-resize;
+}
+
+.pane-resize-handle[data-edge="top"] {
+  top: 0;
+}
+
+.pane-resize-handle[data-edge="bottom"] {
+  bottom: 0;
+}
+
+.pane-resize-handle[data-edge="right"]::after,
+.pane-resize-handle[data-edge="left"]::after {
+  top: 22%;
+  bottom: 22%;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+}
+
+.pane-resize-handle[data-edge="top"]::after,
+.pane-resize-handle[data-edge="bottom"]::after {
+  right: 22%;
+  left: 22%;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+}
+
+.pane-resize-handle:hover::after,
+.pane-resize-handle:focus-visible::after,
+.pane-resize-handle.is-dragging::after {
+  opacity: 0.9;
+}
+
+.pane-resize-handle:focus-visible {
+  outline: none;
+}
+
+html.is-pane-resizing {
+  cursor: col-resize;
+}
+
+html.is-pane-resizing-y {
+  cursor: row-resize;
+}
+
+html.is-pane-resizing,
+html.is-pane-resizing * {
+  user-select: none !important;
+}
+
+html.is-pane-resizing-x,
+html.is-pane-resizing-x * {
+  cursor: col-resize !important;
+}
+
+html.is-pane-resizing-y,
+html.is-pane-resizing-y * {
+  cursor: row-resize !important;
+}
+
+html.is-pane-resizing .app-shell,
+html.is-pane-resizing .app-sidebar {
+  transition: none !important;
+}
+
+@media (max-width: 800px) {
+  .pane-resize-handle {
+    display: none;
   }
 }

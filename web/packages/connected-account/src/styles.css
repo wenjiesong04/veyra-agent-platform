@@ -342,6 +342,12 @@
   color: var(--muted);
 }
 
+.auth-field > label {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
 .auth-field-label {
   color: var(--ink);
   font-size: 12px;

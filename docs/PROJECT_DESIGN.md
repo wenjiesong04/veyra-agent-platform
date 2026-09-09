@@ -2,7 +2,7 @@
 
 > Status: **ONLY CURRENT PRODUCT AND ENGINEERING AUTHORITY**
 > Revision: 1.4
-> Date: 2026-09-06
+> Date: 2026-09-09
 > Repository: `/Users/spectre/PycharmProjects/veyra-agent-platform`
 > Development branch: `codex/agent-platform`
 > Legacy source: `/Users/spectre/PycharmProjects/veyra @ 1ffb4cdd45c798556390c20e53fc2d265cd56471`
@@ -331,7 +331,10 @@ That combination is the product. No single individual feature is the moat.
 
 ### 3.2 Phase boundaries
 
-Local product must remain usable without an account.
+The desktop shell requires a Community session. Unauthenticated routes,
+including pasted Studio links, resolve to `#/login` and never render Project
+workspace chrome. Local Project files remain machine-scoped; login does not
+partition them by account.
 
 Community does not execute downloaded Agents on the server. Users explicitly import and run them locally.
 
@@ -419,17 +422,31 @@ Run state, account tokens, secrets, caches, and event history never enter the
 Project directory.
 
 Desktop-created V1 Projects are allocated automatically under the Veyra
-application-data `v1/projects/` root. Project creation asks only for the name
-and optional description; it never asks the user to choose or type a storage
-path. Opening an existing Project remains an explicit action for indexing a
-user-owned directory that already contains `project.vproject.yaml`.
+application-data `v1/projects/` root. That root is resolved from the host
+application-data directory at runtime, never a hardcoded user path, so each
+install (and a later packaged app or server) gets its own location. The local
+index stores a storage-root-relative folder name that matches the unique
+display name (for example `dddd/` or `New project(1)/`). Project creation asks
+only for the name and optional description; it never asks the user to choose
+or type a storage path. Opening an existing folder indexes that directory in
+place and does not copy it into managed storage. Native folder and archive
+pickers use the host file dialog's default location; they do not jump into
+the managed application-data root.
 
 `project_id` is the stable identity; the name is a unique active-workspace
 label assigned by the local service. An empty name becomes `New project`, and
-collisions use the first free suffix such as `New project(1)`. At most one
-active Project is pinned. Removing a managed Project moves it to Veyra Trash;
-removing an externally opened Project only unlinks it and never deletes the
-external directory.
+collisions use the first free suffix such as `New project(1)`. The on-disk
+folder uses that same unique name after stripping characters that filesystems
+reject. At most one active Project is pinned. Removing a managed Project moves
+it to Veyra Trash. Removing an externally indexed Project unlinks it from the
+workspace and leaves the original folder on disk. Desktop shows **查看项目位置**
+and reveals the indexed folder in Finder. Portable `.vproject.zip` export
+remains a local API for later web or sharing flows; it is not a Desktop
+sidebar action.
+
+The native pickers must not surface raw sidecar exceptions such as
+`native directory picker failed`. Desktop maps `directory_picker_failed` and
+`directory_picker_unsupported` to language-specific recovery text.
 
 V1 permits an empty Project: `agents` may be empty and then
 `default_agent_id` is `null`. When Agents exist, `default_agent_id` identifies
@@ -846,28 +863,28 @@ removed:
 New chat
 Run workspace
 Resource library
-  Components
-  Tools / MCP
-  Skills
-  Policies
-  Templates
 Knowledge base
 Community
 Projects tree
 ```
 
-Catalog children appear when Resource Library is the current home route.
-They are not Project resources. Settings and Account stay in the account
-menu. Resource Library (`#/components`) is the independent Component entry.
+Catalog kinds are page tabs, not sidebar children. The default Resource
+Library view is the full catalog. Home Resource library opens the last
+Project workspace Resource library when a Project exists, so the chrome
+stays New chat / Resource library / Analysis. `#/components` remains the
+fallback when no Project is indexed. Settings and Account stay in the
+account menu.
 
 Project sidebar (any route inside a Project, including Agent Canvas):
 
 ```text
-New chat / Overview / Analysis
+New chat / Resource library / Analysis
 ```
 
-Those three items are workspace surfaces, not resource kinds. The Project
-tree below them is the resource model:
+Those three items are workspace surfaces, not resource kinds. Resource
+library opens the same versioned catalog as `#/components` while keeping
+Project chrome. Catalog kinds stay out of the Project tree. The Project
+tree below the workspace list is the resource model:
 
 ```text
 Project
@@ -886,9 +903,10 @@ leaf because it is an index, not a Canvas instance. Run history is not a
 Project-tree item. The header History control opens `#/runs` on the home
 workspace and `#/projects/:projectId/runs` inside a Project.
 
-Resource Library (`#/components`) stays on the home sidebar. It is not a
-Project child. Opening it reveals catalog kinds with a distinct catalog
-style: Components, Tools / MCP, Skills, Policies, Templates. MCP is grouped
+Resource Library is a Project workspace surface, not a home-sidebar
+catalog tree. The same page is used from `#/projects/:projectId` and the
+`#/components` fallback. Catalog kinds stay on the page tabs: All,
+Components, Tools / MCP, Skills, Policies, Templates. MCP is grouped
 with Tools and is not a product layer beside Agent, Workflow, Knowledge, or
 Component. The Agent/Workflow Canvas palette remains a projection of that
 catalog.
@@ -924,7 +942,8 @@ Routes:
 #/account
 ```
 
-`#/components` is the Resource Library: a first-class home destination and
+`#/projects/:projectId` is the Project-chrome Resource Library: the same
+catalog as `#/components`. `#/components` remains the home destination and
 a deep link into catalog detail. It is not deleted, not absorbed into the
 Agent palette, and not drawn as a flowchart. The Desktop header uses one
 title for a root page and a horizontal, linked breadcrumb for nested
@@ -1280,9 +1299,13 @@ Logout does not delete or change local Agent IDs, versions, or Runs.
 
 ### 12.1 Modes
 
-Local Guest Mode provides Studio, Runtime, Orchestrator, Monitor, Library, and Files without login.
+The desktop shell requires a Connected Account. Guest chrome is not shown.
+Unauthenticated hash routes, including pasted Agent/Studio links, resolve to
+`#/login` and the shell re-checks the Community session on every navigation.
+Local Project files remain machine-scoped; signing in does not isolate them
+by account.
 
-Connected Account Mode adds:
+Connected Account Mode also adds:
 
 - publish
 - download/import
@@ -1304,7 +1327,11 @@ email challenge. The implementation requires:
 - challenge purpose, expiry, resend, attempt, and consumed state
 - opaque server sessions
 - hashed rotating refresh/session tokens and reuse detection
-- CSRF/Origin/SameSite/secure cookie
+- CSRF/Origin/SameSite/secure cookie. Desktop and Community Vite proxies
+  rewrite loopback browser Origins to the Community service origin so local
+  sign-in is same-origin to Community. Cross-site Origins are forwarded
+  unchanged and rejected. Production still allows only the request origin
+  and `VEYRA_COMMUNITY_ORIGIN`.
 - password reset
 - email/IP/device rate limits and anti-enumeration responses
 - device/session revoke
@@ -1385,6 +1412,10 @@ Star does not mean safe or effective.
 - `POST /api/v1/projects/open`
 - `GET /api/v1/projects/{project_id}`
 - `PATCH/DELETE /api/v1/projects/{project_id}`
+- `GET /api/v1/projects/{project_id}/export`
+- `POST /api/v1/system/select-directory`
+- `POST /api/v1/system/select-archive`
+- `POST /api/v1/system/reveal-project`
 - `GET/POST /api/v1/projects/{project_id}/agents`
 - `GET /api/v1/projects/{project_id}/agent-templates`
 - `POST /api/v1/projects/{project_id}/agents/import`
@@ -1749,7 +1780,7 @@ Stop expanding if:
 - SQLite access goes through repositories and migrations.
 - Large files are content-addressed objects, not database blobs.
 - Secrets never enter source, SQLite plaintext, logs, artifacts, or packages.
-- Local product remains usable without account/community.
+- Desktop UI requires a Community session; local Project files remain machine-scoped.
 - Community server and desktop sidecar are separate deployments.
 - No giant `main.py`, `LegacyConsole.tsx`, or global raw-dict state store.
 - Every feature owns contracts, services, routes, UI, tests, and docs.

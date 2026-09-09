@@ -1,14 +1,14 @@
 import * as React from "react";
 import { Boxes, FileText, Gauge, Globe2, MessageCirclePlus } from "lucide-react";
-import { desktopRoutePaths, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
-import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
+import { desktopLoginHash, desktopPathAfterAuth, desktopRoutePaths, isDesktopPublicAuthRoute, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
+import { accountInitials, AuthLayout, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
 import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { desktopHeader } from "./desktop-header";
 import { agentRecentNavigation, isAgentContextRoute, projectContextActiveHref, projectContextNavigation, projectTreeSelection, workspaceNavRoute } from "./features/agents/agent-navigation";
-import { resourceLibraryChildren } from "./features/resources/library-navigation";
+import { resourceLibraryHref, rememberProjectId } from "./features/resources/library-navigation";
 import { AccountPage } from "./pages/account";
 import { AgentAnalysisPage } from "./pages/agent-analysis";
 import { AgentRunPage } from "./pages/agent-run";
@@ -34,24 +34,14 @@ import { StudioPage } from "./pages/studio";
 
 const desktopCommunityApi = createCommunityApi({ baseUrl: "/community-api/api/v1" });
 
-function homeNavigation(route: DesktopRouteLocation, hash: string): NavigationGroup {
-  const libraryChildren = resourceLibraryChildren(route, hash);
-  const onLibrary = route.kind === "components" || route.kind === "component";
+function homeNavigation(libraryHref: string): NavigationGroup {
   return {
     label: "Features",
     section: "fixed",
     items: [
       { href: desktopRoutePaths.chat, label: "New chat", icon: MessageCirclePlus },
       { href: desktopRoutePaths.monitor, label: "Run workspace", icon: Gauge },
-      {
-        href: desktopRoutePaths.components,
-        label: "Resource library",
-        icon: Boxes,
-        active: onLibrary ? false : undefined,
-        contextual: onLibrary,
-        expanded: Boolean(libraryChildren),
-        children: libraryChildren,
-      },
+      { href: libraryHref, label: "Resource library", icon: Boxes },
       { href: desktopRoutePaths.files, label: "Knowledge base", icon: FileText },
       { href: desktopRoutePaths.community, label: "Community", icon: Globe2 },
     ],
@@ -74,6 +64,61 @@ function useHashRoute(): DesktopRouteLocation {
   return route;
 }
 
+function AuthBootScreen() {
+  const { locale } = useLocale();
+  return (
+    <AuthLayout>
+      <p role="status">{locale === "zh" ? "正在确认登录状态…" : "Checking sign-in…"}</p>
+    </AuthLayout>
+  );
+}
+
+function DesktopAuthPages({ route }: { route: DesktopRouteLocation }) {
+  const home = desktopRoutePaths.chat;
+  if (route.kind === "register") return <RegisterPage afterAuthHref={home} />;
+  if (route.kind === "forgot-password") return <ForgotPasswordPage />;
+  return <LoginPage afterAuthHref={home} />;
+}
+
+function DesktopSession({ children }: { children: React.ReactNode }) {
+  const { status, ensureSession } = useAuth();
+  const route = useHashRoute();
+  const publicAuth = isDesktopPublicAuthRoute(route.kind);
+
+  const booted = status !== "booting";
+
+  React.useEffect(() => {
+    if (!booted) return;
+    void ensureSession();
+  }, [booted, ensureSession, route.path]);
+
+  React.useEffect(() => {
+    if (status === "booting") return;
+    if (status !== "authenticated") {
+      const nextHash = desktopLoginHash(window.location.hash);
+      if (window.location.hash !== nextHash) window.location.hash = nextHash;
+      return;
+    }
+    if (publicAuth) {
+      const destination = desktopPathAfterAuth(window.location.hash, desktopRoutePaths.chat);
+      if (window.location.hash !== destination) window.location.hash = destination;
+    }
+  }, [publicAuth, route.path, status]);
+
+  React.useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void ensureSession();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [ensureSession]);
+
+  if (status === "booting") return <AuthBootScreen />;
+  if (status !== "authenticated") return <DesktopAuthPages route={route} />;
+  if (publicAuth) return <AuthBootScreen />;
+  return children;
+}
+
 function PageContent({ route }: { route: DesktopRouteLocation }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
@@ -82,7 +127,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   if (route.kind === "chat") return <NewChatPage />;
   if (route.kind === "projects") return <NewChatPage />;
-  if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
+  if (route.kind === "project") return <ComponentsPage catalogHref={projectRoutePaths.project(route.projectId)} />;
   if (route.kind === "project-chat") return <ProjectChatPage projectId={route.projectId} />;
   if (route.kind === "project-analysis") return <ProjectAnalysisPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
@@ -120,14 +165,15 @@ function DesktopWorkspace() {
   const route = useHashRoute();
   const { account, logout } = useAuth();
   const { projects } = useProjectWorkspace();
-  if (route.kind === "login") return <LoginPage />;
-  if (route.kind === "register") return <RegisterPage />;
-  if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   const agentContextRoute = isAgentContextRoute(route) ? route : undefined;
   const workspaceRoute = workspaceNavRoute(route);
   const treeSelection = projectTreeSelection(route);
   const scopedProjectId = treeSelection.projectId;
   const activeAgentId = agentContextRoute?.agentId;
+  React.useEffect(() => {
+    if (scopedProjectId) rememberProjectId(scopedProjectId);
+  }, [scopedProjectId]);
+  const libraryHref = resourceLibraryHref(projects);
   const activeHref = workspaceRoute
     ? projectContextActiveHref(workspaceRoute) || (workspaceRoute.kind === "factory" ? projectRoutePaths.factory(workspaceRoute.projectId) : projectRoutePaths.project(workspaceRoute.projectId))
     : route.kind === "projects" || route.kind === "chat"
@@ -143,7 +189,7 @@ function DesktopWorkspace() {
   const historyActive = route.kind === "runs" || route.kind === "project-runs";
   const navigation: NavigationGroup[] = workspaceRoute
     ? [projectContextNavigation(workspaceRoute, locale), ...projectNavigation, agentRecentNavigation(locale)]
-    : [homeNavigation(route, window.location.hash), ...projectNavigation];
+    : [homeNavigation(libraryHref), ...projectNavigation];
 
   return (
     <ApplicationShell
@@ -193,9 +239,11 @@ export function DesktopApp({ api, communityApi }: DesktopAppProps = {}) {
   return (
     <ThemeProvider>
       <AuthProvider api={accountApi}>
-        <ProjectWorkspaceProvider api={projectApi}>
-          <DesktopWorkspace />
-        </ProjectWorkspaceProvider>
+        <DesktopSession>
+          <ProjectWorkspaceProvider api={projectApi}>
+            <DesktopWorkspace />
+          </ProjectWorkspaceProvider>
+        </DesktopSession>
       </AuthProvider>
     </ThemeProvider>
   );

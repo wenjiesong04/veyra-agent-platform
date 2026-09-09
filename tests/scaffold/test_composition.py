@@ -54,6 +54,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects",
         "/api/v1/projects/open",
         "/api/v1/projects/import",
+        "/api/v1/projects/import-path",
         "/api/v1/projects/{project_id}",
         "/api/v1/projects/{project_id}/export",
         "/api/v1/projects/{project_id}/files",
@@ -100,6 +101,8 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate",
         "/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
         "/api/v1/system/select-directory",
+        "/api/v1/system/select-archive",
+        "/api/v1/system/reveal-project",
         "/api/v1/factory/status",
         "/api/v1/runtime/status",
     }

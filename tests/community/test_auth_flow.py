@@ -324,6 +324,38 @@ def test_login_has_generic_failures_and_code_requests_do_not_enumerate(
     )
 
 
+def test_login_accepts_desktop_loopback_origin(
+    community: CommunityHarness,
+) -> None:
+    _register(community)
+    community.client.cookies.clear()
+    response = community.client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "alice@example.com",
+            "password": "correct-horse-battery-staple",
+        },
+        headers={"Origin": "http://127.0.0.1:5173"},
+    )
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+
+
+def test_login_rejects_cross_site_origin(community: CommunityHarness) -> None:
+    _register(community)
+    community.client.cookies.clear()
+    response = community.client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "alice@example.com",
+            "password": "correct-horse-battery-staple",
+        },
+        headers={"Origin": "https://attacker.example"},
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "origin_not_allowed"}
+
+
 def test_refresh_rotation_detects_reuse_and_revokes_its_family(
     community: CommunityHarness,
 ) -> None:

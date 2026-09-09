@@ -1,9 +1,16 @@
 import { ArrowLeft, History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, UserRound, X, type LucideIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useLocale } from "./i18n";
+import { PaneResizeHandle } from "./pane-resize";
 import { IconButton } from "./primitives";
 import { useTheme } from "./theme";
 import type { AccountMenuConfig, Brand, NavigationGroup, NavigationItem } from "./types";
+
+export const SIDEBAR_WIDTH_MIN = 200;
+const SIDEBAR_WIDTH_MAX = 420;
+const SIDEBAR_WIDTH_DEFAULT = 248;
+const SIDEBAR_WIDTH_COLLAPSED = 64;
+const SHELL_OVERLAY_LEFT_VAR = "--shell-overlay-left";
 
 type ApplicationShellProps = {
   brand: Brand;
@@ -285,6 +292,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileViewport, setMobileViewport] = useState(readMobileViewport);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
@@ -322,6 +330,21 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
     return () => media.removeEventListener("change", onChange);
   }, []);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mobileViewport) {
+      root.style.setProperty(SHELL_OVERLAY_LEFT_VAR, "0px");
+    } else {
+      const sidebar = document.getElementById("primary-navigation");
+      const measured = sidebar?.getBoundingClientRect().width ?? 0;
+      const width = measured > 0 ? Math.round(measured) : collapsed ? SIDEBAR_WIDTH_COLLAPSED : sidebarWidth;
+      root.style.setProperty(SHELL_OVERLAY_LEFT_VAR, `${width}px`);
+    }
+    return () => {
+      root.style.removeProperty(SHELL_OVERLAY_LEFT_VAR);
+    };
+  }, [collapsed, mobileViewport, sidebarWidth]);
+
   const openMobile = () => {
     setMobileOpen(true);
     window.requestAnimationFrame(() => sidebarCloseRef.current?.focus());
@@ -345,7 +368,10 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   };
 
   return (
-    <div className={`app-shell ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-mobile-open" : ""}`}>
+    <div
+      className={`app-shell ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-mobile-open" : ""}`}
+      style={!collapsed ? { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties : undefined}
+    >
       <aside id="primary-navigation" className="app-sidebar" aria-label={`${brand.name} navigation`} aria-hidden={mobileViewport && !mobileOpen ? true : undefined} inert={mobileViewport && !mobileOpen ? true : undefined}>
         <div className="sidebar-header">
           <a className="brand" href={navigation[0]?.items[0]?.href ?? "#/"} onClick={() => setMobileOpen(false)}>
@@ -392,6 +418,16 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
           <SidebarAccountMenu account={resolvedAccount} collapsed={collapsed && !mobileViewport} onNavigate={closeMobile} />
           {footer}
         </div>
+        {collapsed || mobileViewport ? null : (
+          <PaneResizeHandle
+            label={t("resizeSidebar")}
+            edge="right"
+            value={sidebarWidth}
+            min={SIDEBAR_WIDTH_MIN}
+            max={SIDEBAR_WIDTH_MAX}
+            onChange={setSidebarWidth}
+          />
+        )}
       </aside>
 
       {mobileOpen ? <button className="sidebar-backdrop" type="button" aria-label="Close navigation" aria-controls="primary-navigation" onClick={closeMobile} /> : null}

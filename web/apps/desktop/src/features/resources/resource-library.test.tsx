@@ -35,16 +35,11 @@ const tools = [
   descriptor("tool", "GitHub Read", "github.read", "unavailable"),
 ];
 const mcp = [descriptor("mcp_tool", "MCP Call", "call", "requires_configuration")];
+const catalog = [...components, ...skills, ...policies, ...tools, ...mcp];
 
 function apiFor(): LocalProjectApi & { listResources: ReturnType<typeof vi.fn>; getResource: ReturnType<typeof vi.fn> } {
   const listResources = vi.fn(async ({ kind }: { kind?: string } = {}): Promise<ListResourcesResponse> => {
-    const resources =
-      kind === "component" ? components
-      : kind === "skill" ? skills
-      : kind === "policy" ? policies
-      : kind === "tool" ? tools
-      : kind === "mcp_tool" ? mcp
-      : [];
+    const resources = kind ? catalog.filter((item) => item.kind === kind) : catalog;
     return { schema_version: "1.0", resources: resources as never, kinds: ["component", "tool", "mcp_tool", "skill", "policy", "template"].map((item) => ({ kind: item, count: resources.filter((resource) => resource.kind === item).length })) as never };
   });
   const getResource = vi.fn(async (resourceId: string) => skills.find((resource) => resource.resource_id === resourceId));
@@ -66,18 +61,34 @@ afterEach(() => {
 });
 
 describe("ResourceLibraryPage", () => {
-  it("loads real Component resources and switches to Skills and Policies", async () => {
+  it("opens on the full catalog and filters to Skills and Policies", async () => {
     const api = apiFor();
     const user = userEvent.setup();
     renderPage(api);
 
-    expect(await screen.findByText("Start")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Start")).toBeInTheDocument();
+    expect(screen.getByText("Research Brief")).toBeInTheDocument();
+    expect(screen.getByText("Local Only")).toBeInTheDocument();
+    expect(api.listResources).toHaveBeenCalledWith();
     await user.click(screen.getByRole("tab", { name: "Skills" }));
     expect(await screen.findByText("Research Brief")).toBeInTheDocument();
+    expect(screen.queryByText("Start")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Policies" }));
     expect(await screen.findByText("Local Only")).toBeInTheDocument();
-    expect(api.listResources).toHaveBeenCalledWith({ kind: "policy" });
     expect(window.location.hash).toBe("#/components?tab=policy");
+  });
+
+  it("keeps catalog tabs on the Project workspace route", async () => {
+    const api = apiFor();
+    const user = userEvent.setup();
+    window.location.hash = "#/projects/library-project";
+    render(<ThemeProvider><ProjectWorkspaceProvider api={api}><ResourceLibraryPage catalogHref="#/projects/library-project" /></ProjectWorkspaceProvider></ThemeProvider>);
+
+    expect(await screen.findByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(await screen.findByText("Research Brief")).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/projects/library-project?tab=skill");
   });
 
   it("shows registered Tools including unavailable GitHub entries", async () => {

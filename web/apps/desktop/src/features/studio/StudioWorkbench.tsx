@@ -1,5 +1,5 @@
 import * as React from "react";
-import { addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, reconnectEdge, type Connection, type Edge, type Node, type NodeProps, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
+import { addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, reconnectEdge, SelectionMode, type Connection, type Edge, type Node, type NodeProps, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
   BadgeCheck,
@@ -29,13 +29,14 @@ import {
 } from "lucide-react";
 import { projectRoutePaths, type AgentVersionSnapshot, type FlowNode, type ProjectAgentRecord, type ProjectKnowledgeRecord, type ResourceDescriptor, type StudioSource } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, Tag } from "@veyra/ui";
-import { attachFlowNodeOnEdge, defaultSpliceEdgeId, flowNodeOutgoingPort, insertFlowNodeOnEdge, newFlowNodeId, sourceWithGraph, toCanvas, type CanvasNodeData } from "./graph";
+import { attachFlowNodeOnEdge, defaultSpliceEdgeId, flowNodeOutgoingPort, insertFlowNodeOnEdge, newFlowNodeId, portHandleTop, shouldSplicePaletteItem, sourceWithGraph, toCanvas, type CanvasNodeData } from "./graph";
 import { nodeRunStates, useLiveRun } from "./live-run";
 import {
   attachCatalogResource,
   attachCatalogBinding,
   attachKnowledgeBinding,
   fallbackPalette,
+  grantCatalogResource,
   knowledgePalette,
   newCatalogNode,
   nodeDisplayTitle,
@@ -43,6 +44,7 @@ import {
   PALETTE_MIME,
   paletteForMode,
   paletteFromCatalog,
+  paletteItemBlocked,
   workflowAgentPalette,
   type PaletteItem,
 } from "./palette";
@@ -53,7 +55,12 @@ import { NoteNode } from "./canvas-note";
 import { componentFor } from "./registry";
 import { RunApprovalBar } from "./RunApprovalBar";
 import { useStudioChrome } from "./studio-chrome";
+import { StudioPaneResizeHandle } from "./studio-pane-resize";
 import type { LocalProjectApi } from "../../api/local-client";
+import { copySelection, deleteSelection, isProtectedFlowNode, loadCanvasClipboard, pasteClipboard, readCanvasClipboard, selectableCanvasIds, writeCanvasClipboard } from "./canvas-edit";
+import { emptyCanvasHistory, recordCanvasChange, redoCanvasChange, undoCanvasChange, type CanvasHistory } from "./canvas-history";
+import { canvasShortcut } from "./canvas-shortcuts";
+import { CanvasEditToolbar } from "./canvas-tools";
 
 const PALETTE_ICONS: Record<string, LucideIcon> = {
   "circle-play": CirclePlay,
@@ -87,13 +94,14 @@ function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "agentNode
   if (!data.flow) return null;
   const component = componentFor(data.flow.component_type);
   const title = data.title ?? component.label;
+  const showTarget = data.flow.component_type !== "Start";
   return (
     <div className={`agent-flow-node ${selected ? "selected" : ""}`} data-state={data.runState ?? "pending"}>
-      <Handle type="target" position={Position.Left} />
+      {showTarget ? <Handle type="target" position={Position.Left} style={{ top: "50%" }} /> : null}
       <strong>{title}</strong>
       <small>{data.flow.id}</small>
-      {component.ports.map((port) => (
-        <Handle key={port} id={port} type="source" position={Position.Right} style={{ top: `${25 + component.ports.indexOf(port) * 20}%` }} title={port} />
+      {component.ports.map((port, index) => (
+        <Handle key={port} id={port} type="source" position={Position.Right} style={{ top: `${portHandleTop(index, component.ports.length)}%` }} title={port} />
       ))}
     </div>
   );
@@ -160,6 +168,7 @@ function StudioRail({
             />
           </div>
           <div id={id} className="studio-rail-body">{children}</div>
+          <StudioPaneResizeHandle pane={side} locale={locale} />
         </>
       )}
     </Panel>
@@ -216,12 +225,31 @@ export function StudioWorkbench({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<CanvasNodeData>>(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
   const [selected, setSelected] = React.useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
+  const [selectedEdgeIds, setSelectedEdgeIds] = React.useState<string[]>([]);
+  const [boxSelect, setBoxSelect] = React.useState(false);
+  const [shiftPressed, setShiftPressed] = React.useState(false);
+  const [hasClipboard, setHasClipboard] = React.useState(() => Boolean(loadCanvasClipboard()));
+  const [history, setHistory] = React.useState<CanvasHistory>(emptyCanvasHistory);
   const [flowInstance, setFlowInstance] = React.useState<ReactFlowInstance<Node<CanvasNodeData>, Edge> | null>(null);
   const [pendingCallAgentId, setPendingCallAgentId] = React.useState("");
   const [insertMenu, setInsertMenu] = React.useState<{ edgeId: string; x: number; y: number } | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = React.useState<string | null>(null);
   const canvasRef = React.useRef<HTMLDivElement>(null);
   const edgeHoverTimer = React.useRef<number>(0);
+  const historyRef = React.useRef(emptyCanvasHistory());
+  const sourceRef = React.useRef(source);
+  const nodesRef = React.useRef(nodes);
+  const edgesRef = React.useRef(edges);
+  const selectedIdsRef = React.useRef(selectedIds);
+  const selectedEdgeIdsRef = React.useRef(selectedEdgeIds);
+  const selecting = boxSelect || shiftPressed;
+  sourceRef.current = source;
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
+  selectedIdsRef.current = selectedIds;
+  selectedEdgeIdsRef.current = selectedEdgeIds;
+  const sourceKey = source.component_type === "Workflow" ? source.workflow_id : source.agent_id;
   const palette = React.useMemo(() => [
     ...paletteForMode(catalog.length ? paletteFromCatalog(catalog) : fallbackPalette(), mode),
     ...(mode === "workflow" ? workflowAgentPalette(agents) : []),
@@ -234,10 +262,31 @@ export function StudioWorkbench({
   );
 
   React.useEffect(() => {
-    setNodes(initial.nodes.map((node) => ({ ...node, selected: node.id === selected })));
-    setEdges(initial.edges.map((edge) => ({ ...edge, selected: edge.id === selected })));
-  }, [initial, selected, setNodes, setEdges]);
+    setNodes((current) => {
+      const next = initial.nodes.map((node) => ({
+        ...node,
+        selected: selectedIdsRef.current.includes(node.id) || current.some((item) => item.id === node.id && item.selected),
+      }));
+      const unchanged = current.length === next.length && current.every((node, index) => {
+        const mapped = next[index];
+        return mapped && node.id === mapped.id && node.selected === mapped.selected && node.position.x === mapped.position.x && node.position.y === mapped.position.y;
+      });
+      return unchanged ? current : next;
+    });
+    setEdges((current) => {
+      const next = initial.edges.map((edge) => ({
+        ...edge,
+        selected: selectedEdgeIdsRef.current.includes(edge.id) || current.some((item) => item.id === edge.id && item.selected),
+      }));
+      const unchanged = current.length === next.length && current.every((edge, index) => edge.id === next[index]?.id && edge.selected === next[index]?.selected);
+      return unchanged ? current : next;
+    });
+  }, [initial, setNodes, setEdges]);
   React.useEffect(() => () => window.clearTimeout(edgeHoverTimer.current), []);
+  React.useEffect(() => {
+    historyRef.current = emptyCanvasHistory();
+    setHistory(emptyCanvasHistory());
+  }, [sourceKey]);
   React.useEffect(() => {
     setNodes((current) => {
       let changed = false;
@@ -259,24 +308,74 @@ export function StudioWorkbench({
       instance.fitView(CANVAS_FIT_VIEW);
     });
   }, []);
-  const emit = React.useCallback((nextNodes: Node<CanvasNodeData>[], nextEdges: Edge[]) => onChange(sourceWithGraph(source, nextNodes, nextEdges)), [onChange, source]);
+  const applySource = React.useCallback((next: StudioSource) => {
+    const recorded = recordCanvasChange(historyRef.current, sourceRef.current, next);
+    historyRef.current = recorded;
+    setHistory(recorded);
+    onChange(next);
+  }, [onChange]);
+  const emit = React.useCallback((nextNodes: Node<CanvasNodeData>[], nextEdges: Edge[]) => applySource(sourceWithGraph(sourceRef.current, nextNodes, nextEdges)), [applySource]);
+  const graphNow = React.useCallback(() => sourceWithGraph(sourceRef.current, nodesRef.current, edgesRef.current), []);
+  const restoreSource = React.useCallback((next: StudioSource) => {
+    setSelected(null);
+    setSelectedIds([]);
+    setSelectedEdgeIds([]);
+    onChange(next);
+  }, [onChange]);
+  const revealInspector = React.useCallback(() => {
+    setChrome({ inspectorCollapsed: false });
+  }, [setChrome]);
+  const markSelection = React.useCallback((ids: string[], edgeIds: string[] = [], primary?: string | null) => {
+    setSelectedIds(ids);
+    setSelectedEdgeIds(edgeIds);
+    setSelected(primary ?? ids[0] ?? edgeIds[0] ?? null);
+    setNodes((current) => current.map((node) => ({ ...node, selected: ids.includes(node.id) })));
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: edgeIds.includes(edge.id) })));
+    if (ids.length || edgeIds.length) setChrome({ inspectorCollapsed: false });
+  }, [setChrome, setEdges, setNodes]);
   const bindLatestCommittedVersion = React.useCallback(async (nodeId: string, targetAgentId: string, base: StudioSource) => {
     if (base.component_type !== "Workflow" || !api.listAgentVersions) return;
     try {
       const result = await api.listAgentVersions(projectId, targetAgentId);
       const latest = latestAgentVersion(result.versions.filter((item) => item.agent_id === targetAgentId));
       if (!latest) return;
-      onChange(bindWorkflowAgentCall(base, nodeId, latest));
+      applySource(bindWorkflowAgentCall(base, nodeId, latest));
     } catch {
       /* AgentCallInspector explains missing committed versions. */
     }
-  }, [api, onChange, projectId]);
+  }, [api, applySource, projectId]);
+  const revealAdded = (id: string) => {
+    window.requestAnimationFrame(() => {
+      flowInstance?.fitView({ ...CANVAS_FIT_VIEW, nodes: [{ id }] });
+    });
+  };
+  const insertOnEdge = (edgeId: string, item: PaletteItem) => {
+    if (!item.draggable || item.group === "note" || paletteItemBlocked(item, source.nodes)) return;
+    const id = newFlowNodeId(item.componentType);
+    const flow = newCatalogNode(item, id);
+    const outgoing = flowNodeOutgoingPort(flow.component_type);
+    if (!outgoing) return;
+    const next = insertFlowNodeOnEdge(nodes, edges, edgeId, { id, type: "agentNode", position: { x: 0, y: 0 }, data: { flow } }, outgoing);
+    if (!next) return;
+    let nextSource = sourceWithGraph(source, next.nodes, next.edges);
+    if (nextSource.component_type === "Flow" && (item.group === "tool" || item.group === "mcp") && item.resource) {
+      nextSource = grantCatalogResource(nextSource, item.resource);
+    }
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    markSelection([id]);
+    setInsertMenu(null);
+    setPendingCallAgentId(item.group === "agent" ? item.agent?.agent_id ?? "" : "");
+    applySource(nextSource);
+    revealAdded(id);
+    if (item.group === "agent" && item.agent) void bindLatestCommittedVersion(id, item.agent.agent_id, nextSource);
+  };
   const addItem = (item: PaletteItem, position?: { x: number; y: number }) => {
-    if (!item.draggable) return;
+    if (!item.draggable || paletteItemBlocked(item, source.nodes)) return;
     const nextPosition = position ?? { x: 120 + (source.nodes.length % 3) * 220, y: 100 + Math.floor(source.nodes.length / 3) * 160 };
     if (item.group === "note") {
       const id = `note_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
-      onChange({
+      applySource({
         ...source,
         ui: {
           ...source.ui,
@@ -286,41 +385,46 @@ export function StudioWorkbench({
           },
         },
       });
-      setSelected(id);
+      markSelection([id]);
+      revealAdded(id);
       return;
     }
     if (source.component_type === "Flow" && item.group === "knowledge" && item.knowledge) {
       const id = `bind_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
-      onChange(attachKnowledgeBinding(source, item.knowledge, id, nextPosition));
-      setSelected(id);
+      applySource(attachKnowledgeBinding(source, item.knowledge, id, nextPosition));
+      markSelection([id]);
+      revealAdded(id);
       return;
     }
     if (source.component_type === "Flow" && (item.group === "skill" || item.group === "policy" || item.group === "template") && item.resource) {
       const id = `bind_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
-      onChange(attachCatalogBinding(source, item.resource, id, nextPosition));
-      setSelected(id);
+      applySource(attachCatalogBinding(source, item.resource, id, nextPosition));
+      markSelection([id]);
+      revealAdded(id);
       return;
     }
     const outgoing = flowNodeOutgoingPort(item.componentType);
-    if (mode === "workflow" && outgoing && defaultSpliceEdgeId(nodes, edges)) {
-      insertOnEdge(defaultSpliceEdgeId(nodes, edges)!, item);
+    const spliceId = defaultSpliceEdgeId(nodes, edges);
+    if (outgoing && spliceId && shouldSplicePaletteItem(item.componentType, item.group)) {
+      insertOnEdge(spliceId, item);
       return;
     }
     const id = newFlowNodeId(item.componentType);
     const flow = newCatalogNode(item, id);
     if (source.component_type === "Flow" && (item.group === "tool" || item.group === "mcp") && item.resource) {
-      onChange(attachCatalogResource(source, item.resource, flow, nextPosition));
+      applySource(attachCatalogResource(source, item.resource, flow, nextPosition));
     } else {
       const nextSource = {
         ...source,
         nodes: [...source.nodes, flow],
         ui: { ...source.ui, positions: { ...source.ui.positions, [id]: { x: Math.round(nextPosition.x), y: Math.round(nextPosition.y) } } },
       };
-      onChange(nextSource);
+      applySource(nextSource);
       if (item.group === "agent" && item.agent) void bindLatestCommittedVersion(id, item.agent.agent_id, nextSource);
     }
-    setSelected(id);
+    markSelection([id]);
     setPendingCallAgentId(item.group === "agent" ? item.agent?.agent_id ?? "" : "");
+    revealAdded(id);
   };
   const connect = (connection: Connection) => {
     if (!connection.source || !connection.target || !connection.sourceHandle) return;
@@ -341,26 +445,10 @@ export function StudioWorkbench({
     const nextEdges = edges.filter((edge) => edge.id !== edgeId);
     setEdges(nextEdges);
     setSelected((current) => current === edgeId ? null : current);
+    setSelectedEdgeIds((current) => current.filter((id) => id !== edgeId));
     setInsertMenu(null);
     emit(nodes, nextEdges);
   }, [edges, emit, nodes, setEdges]);
-  const insertOnEdge = (edgeId: string, item: PaletteItem) => {
-    if (!item.draggable || item.group === "note") return;
-    const id = newFlowNodeId(item.componentType);
-    const flow = newCatalogNode(item, id);
-    const outgoing = flowNodeOutgoingPort(flow.component_type);
-    if (!outgoing) return;
-    const next = insertFlowNodeOnEdge(nodes, edges, edgeId, { id, type: "agentNode", position: { x: 0, y: 0 }, data: { flow } }, outgoing);
-    if (!next) return;
-    const nextSource = sourceWithGraph(source, next.nodes, next.edges);
-    setNodes(next.nodes);
-    setEdges(next.edges);
-    setSelected(id);
-    setInsertMenu(null);
-    setPendingCallAgentId(item.group === "agent" ? item.agent?.agent_id ?? "" : "");
-    onChange(nextSource);
-    if (item.group === "agent" && item.agent) void bindLatestCommittedVersion(id, item.agent.agent_id, nextSource);
-  };
   const attachSelectedToFlow = () => {
     if (!selected) return;
     const node = nodes.find((item) => item.id === selected);
@@ -373,14 +461,85 @@ export function StudioWorkbench({
     emit(next.nodes, next.edges);
   };
   const deleteSelected = () => {
-    if (!selected) return;
-    if (selected.includes(":")) {
-      deleteEdge(selected);
-      return;
-    }
-    const nextNodes = nodes.filter((node) => node.id !== selected); const nextEdges = edges.filter((edge) => edge.source !== selected && edge.target !== selected);
-    setNodes(nextNodes); setEdges(nextEdges); setSelected(null); emit(nextNodes, nextEdges);
+    const current = graphNow();
+    const next = deleteSelection(current, selectedIdsRef.current, selectedEdgeIdsRef.current);
+    if (JSON.stringify(next) === JSON.stringify(current)) return;
+    markSelection([], []);
+    applySource(next);
   };
+  const undoEdit = () => {
+    const undone = undoCanvasChange(historyRef.current, sourceRef.current);
+    if (!undone) return;
+    historyRef.current = undone.history;
+    setHistory(undone.history);
+    restoreSource(undone.source);
+  };
+  const redoEdit = () => {
+    const redone = redoCanvasChange(historyRef.current, sourceRef.current);
+    if (!redone) return;
+    historyRef.current = redone.history;
+    setHistory(redone.history);
+    restoreSource(redone.source);
+  };
+  const copyEdit = async () => {
+    const clip = copySelection(graphNow(), selectedIdsRef.current);
+    if (!clip) return;
+    await writeCanvasClipboard(clip);
+    setHasClipboard(true);
+  };
+  const pasteEdit = async () => {
+    const clip = await readCanvasClipboard();
+    if (!clip) return;
+    const pasted = pasteClipboard(graphNow(), clip);
+    if (!pasted) return;
+    setHasClipboard(true);
+    markSelection(pasted.selectedIds, [], pasted.selectedIds[0] ?? null);
+    applySource(pasted.source);
+  };
+  const duplicateEdit = async () => {
+    const clip = copySelection(graphNow(), selectedIdsRef.current);
+    if (!clip) return;
+    await writeCanvasClipboard(clip);
+    setHasClipboard(true);
+    const pasted = pasteClipboard(graphNow(), clip);
+    if (!pasted) return;
+    markSelection(pasted.selectedIds, [], pasted.selectedIds[0] ?? null);
+    applySource(pasted.source);
+  };
+  const selectAll = () => {
+    markSelection(selectableCanvasIds(graphNow()));
+  };
+  const editActions = React.useRef({ undoEdit, redoEdit, copyEdit, pasteEdit, duplicateEdit, deleteSelected, selectAll });
+  editActions.current = { undoEdit, redoEdit, copyEdit, pasteEdit, duplicateEdit, deleteSelected, selectAll };
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Shift") setShiftPressed(true);
+      const action = canvasShortcut(event);
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = editActions.current;
+      if (action === "undo") current.undoEdit();
+      else if (action === "redo") current.redoEdit();
+      else if (action === "copy") void current.copyEdit();
+      else if (action === "paste") void current.pasteEdit();
+      else if (action === "duplicate") void current.duplicateEdit();
+      else if (action === "delete") current.deleteSelected();
+      else current.selectAll();
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Shift") setShiftPressed(false);
+    };
+    const onBlur = () => setShiftPressed(false);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
   const updateNote = React.useCallback((id: string, patch: { text?: string; color?: "teal" | "amber" | "violet" | "slate"; width?: number }, persist = true) => {
     setNodes((current) => {
       const nextNodes = current.map((node) => node.id === id && node.data.note ? { ...node, data: { ...node.data, note: { ...node.data.note, ...patch } } } : node);
@@ -390,7 +549,7 @@ export function StudioWorkbench({
   }, [edges, emit, setNodes]);
   const bindAgent = React.useCallback((version: AgentVersionSnapshot) => {
     if (!selected || source.component_type !== "Workflow") return;
-    onChange(bindWorkflowAgentCall(source, selected, version));
+    applySource(bindWorkflowAgentCall(source, selected, version));
   }, [onChange, selected, source]);
   const openAgentCanvas = (targetAgentId: string) => {
     const href = workflowId
@@ -454,16 +613,18 @@ export function StudioWorkbench({
   const edgeActions = React.useMemo(() => ({
     locale,
     hoveredEdgeId,
-    onSelect: (edgeId: string) => setSelected(edgeId),
+    onSelect: (edgeId: string) => { setSelected(edgeId); revealInspector(); },
     onInsert: (edgeId: string, clientX: number, clientY: number) => {
       const box = canvasRef.current?.getBoundingClientRect();
       setInsertMenu({ edgeId, x: clientX - (box?.left ?? 0), y: clientY - (box?.top ?? 0) });
     },
     onDelete: deleteEdge,
     onNoteChange: updateNote,
-  }), [deleteEdge, hoveredEdgeId, locale, updateNote]);
-  const inspectorTitle = flow
-    ? nodeDisplayTitle(flow, catalog, locale)
+  }), [deleteEdge, hoveredEdgeId, locale, revealInspector, updateNote]);
+  const inspectorTitle = selectedIds.length > 1
+    ? (locale === "zh" ? `已选 ${selectedIds.length} 项` : `${selectedIds.length} selected`)
+    : flow
+    ? nodeDisplayTitle(flow, catalog, locale, agents)
     : note
       ? (locale === "zh" ? "文字卡片" : "Note")
       : selectedEdge
@@ -471,10 +632,21 @@ export function StudioWorkbench({
         : binding
           ? (locale === "zh" ? "Catalog 绑定" : "Catalog binding")
           : (locale === "zh" ? "选择节点" : "Select a node");
+  const canCopy = Boolean(copySelection(source, selectedIds));
+  const canDelete = selectedEdgeIds.length > 0 || selectedIds.some((id) => {
+    const node = source.nodes.find((item) => item.id === id);
+    return !node || !isProtectedFlowNode(node, source.nodes);
+  });
   return (
     <div className={`studio-layout${chrome.paletteCollapsed ? " palette-collapsed" : ""}${chrome.inspectorCollapsed ? " inspector-collapsed" : ""}`}>
       <Panel className="canvas-panel">
-        <div className="studio-canvas" ref={canvasRef} onDragOver={(event) => event.preventDefault()} onDrop={dropPalette}>
+        <div
+          className={`studio-canvas${selecting ? " is-selecting" : ""}`}
+          ref={canvasRef}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={dropPalette}
+          onPointerDown={(event) => { if (event.shiftKey) setShiftPressed(true); }}
+        >
           <CanvasEdgeActionsProvider value={edgeActions}>
             <ReactFlow<Node<CanvasNodeData>, Edge>
               nodes={nodes}
@@ -482,22 +654,46 @@ export function StudioWorkbench({
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               defaultEdgeOptions={{ type: "flowEdge" }}
-              edgesReconnectable
+              edgesReconnectable={!selecting}
               onInit={onFlowInit}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
-              onNodesDelete={(deleted) => { const ids = new Set(deleted.map((node) => node.id)); const nextNodes = nodes.filter((node) => !ids.has(node.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)); setNodes(nextNodes); setEdges(nextEdges); emit(nextNodes, nextEdges); }}
-              onEdgesDelete={(deleted) => { const ids = new Set(deleted.map((edge) => edge.id)); const nextEdges = edges.filter((edge) => !ids.has(edge.id)); setEdges(nextEdges); emit(nodes, nextEdges); }}
-              onNodeDragStop={(_, node) => { const next = nodes.map((item) => item.id === node.id ? { ...item, position: node.position } : item); setNodes(next); emit(next, edges); }}
+              selectionOnDrag={boxSelect}
+              selectionKeyCode="Shift"
+              selectionMode={SelectionMode.Partial}
+              multiSelectionKeyCode={["Meta", "Control"]}
+              panOnDrag={boxSelect ? [1] : true}
+              panActivationKeyCode="Space"
+              deleteKeyCode={null}
+              selectNodesOnDrag
+              onSelectionChange={({ nodes: nextNodes, edges: nextEdges }) => {
+                const ids = nextNodes.map((node) => node.id);
+                const edgeIds = nextEdges.map((edge) => edge.id);
+                const idKey = ids.join("\n");
+                const edgeKey = edgeIds.join("\n");
+                setSelectedIds((current) => current.join("\n") === idKey ? current : ids);
+                setSelectedEdgeIds((current) => current.join("\n") === edgeKey ? current : edgeIds);
+                setSelected((current) => {
+                  if (current && (ids.includes(current) || edgeIds.includes(current))) return current;
+                  const next = ids[0] ?? edgeIds[0] ?? null;
+                  return current === next ? current : next;
+                });
+              }}
+              onNodeDragStop={(_, _node, dragged) => {
+                const moved = new Map(dragged.map((item) => [item.id, item.position]));
+                const next = nodes.map((item) => moved.has(item.id) ? { ...item, position: moved.get(item.id)! } : item);
+                setNodes(next);
+                emit(next, edges);
+              }}
               onConnect={connect}
               reconnectRadius={28}
               onReconnect={reconnect}
-              onNodeClick={(_, node) => setSelected((current) => current === node.id ? current : node.id)}
-              onEdgeClick={(_, edge) => { setSelected((current) => current === edge.id ? current : edge.id); setInsertMenu(null); }}
-              onEdgeContextMenu={(event, edge) => { event.preventDefault(); setSelected((current) => current === edge.id ? current : edge.id); setInsertMenu(null); }}
+              onNodeClick={(_, node) => { setSelected(node.id); revealInspector(); }}
+              onEdgeClick={(_, edge) => { setSelected(edge.id); setInsertMenu(null); revealInspector(); }}
+              onEdgeContextMenu={(event, edge) => { event.preventDefault(); setSelected(edge.id); setInsertMenu(null); revealInspector(); }}
               onEdgeMouseEnter={(_, edge) => hoverEdge(edge.id)}
               onEdgeMouseLeave={() => hoverEdge(null)}
-              onPaneClick={() => { setSelected(null); setInsertMenu(null); }}
+              onPaneClick={() => { setInsertMenu(null); }}
               fitView
               fitViewOptions={CANVAS_FIT_VIEW}
               minZoom={0.15}
@@ -533,19 +729,19 @@ export function StudioWorkbench({
         title={mode === "workflow" ? "Workflow" : "Agent"}
         locale={locale}
       >
-        {projectAgents.length ? <><p className="rail-section-label">{locale === "zh" ? "项目 Agent" : "Project Agents"}</p><PaletteList items={projectAgents} locale={locale} onAdd={addItem} /></> : null}
+        {projectAgents.length ? <><p className="rail-section-label">{locale === "zh" ? "项目 Agent" : "Project Agents"}</p><PaletteList items={projectAgents} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
         <p className="rail-section-label">{locale === "zh" ? "组件" : "Components"}</p>
-        <PaletteList items={components} locale={locale} onAdd={addItem} />
-        {tools.length || mcp.length ? <><p className="rail-section-label">{locale === "zh" ? "工具" : "Tools"}</p><PaletteList items={[...tools, ...mcp]} locale={locale} onAdd={addItem} /></> : null}
-        {skills.length ? <><p className="rail-section-label">{locale === "zh" ? "技能" : "Skills"}</p><PaletteList items={skills} locale={locale} onAdd={addItem} /></> : null}
-        {policies.length ? <><p className="rail-section-label">{locale === "zh" ? "策略" : "Policies"}</p><PaletteList items={policies} locale={locale} onAdd={addItem} /></> : null}
-        {templates.length ? <><p className="rail-section-label">{locale === "zh" ? "模板" : "Templates"}</p><PaletteList items={templates} locale={locale} onAdd={addItem} /></> : null}
-        {knowledgeItems.length ? <><p className="rail-section-label">{locale === "zh" ? "知识" : "Knowledge"}</p><PaletteList items={knowledgeItems} locale={locale} onAdd={addItem} /></> : null}
+        <PaletteList items={components} locale={locale} nodes={source.nodes} onAdd={addItem} />
+        {tools.length || mcp.length ? <><p className="rail-section-label">{locale === "zh" ? "工具" : "Tools"}</p><PaletteList items={[...tools, ...mcp]} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
+        {skills.length ? <><p className="rail-section-label">{locale === "zh" ? "技能" : "Skills"}</p><PaletteList items={skills} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
+        {policies.length ? <><p className="rail-section-label">{locale === "zh" ? "策略" : "Policies"}</p><PaletteList items={policies} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
+        {templates.length ? <><p className="rail-section-label">{locale === "zh" ? "模板" : "Templates"}</p><PaletteList items={templates} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
+        {knowledgeItems.length ? <><p className="rail-section-label">{locale === "zh" ? "知识" : "Knowledge"}</p><PaletteList items={knowledgeItems} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
         <p className="rail-section-label">{locale === "zh" ? "画布注释" : "Canvas notes"}</p>
-        <PaletteList items={notes} locale={locale} onAdd={addItem} />
+        <PaletteList items={notes} locale={locale} nodes={source.nodes} onAdd={addItem} />
         <p className="rail-note">{mode === "workflow"
-          ? (locale === "zh" ? "点项目 Agent 会插入到开始和输出之间。悬停或点选连线，中点会出现 + 和红色「删除」。" : "Click a Project Agent to insert it between Start and Output. Hover or select a connection to see + and a red Delete on the line.")
-          : (locale === "zh" ? "这里只编辑这个 Agent 自己的模型、工具和知识。条件、转换和调用其他 Agent 请到工作流画布。" : "Edit this Agent’s own model, tools, and knowledge. Conditions, transforms, and calling other Agents belong on the Workflow canvas.")}</p>
+          ? (locale === "zh" ? "⌘Z / Ctrl+Z 撤销。Shift 拖拽或点「框选」可多选。⌘C / ⌘V 复制粘贴。点组件或项目 Agent 会插入到输入和输出之间。" : "⌘Z / Ctrl+Z undo. Shift-drag or Box select for multi-select. ⌘C / ⌘V copy and paste. Click a component or Project Agent to insert it between Start and Output.")
+          : (locale === "zh" ? "点左侧组件会插入到输入和输出之间。也可以拖到画布上。已有输入节点时不能再添加输入。" : "Click a component to insert it between Start and Output, or drag it onto the canvas. Start cannot be added twice.")}</p>
       </StudioRail>
       <StudioRail
         id="studio-inspector-rail"
@@ -558,23 +754,39 @@ export function StudioWorkbench({
       >
         {flow ? <div className="inspector-fields"><Tag>{flow.component_type === "Agent" ? "Model" : flow.component_type}</Tag><label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>{flow.component_type === "AgentCall" ? <AgentCallInspector key={flow.id} node={flow} agents={agents} api={api} projectId={projectId} zh={locale === "zh"} initialAgentId={pendingCallAgentId} workflowInputs={Object.keys(source.inputs)} workflowOutputs={Object.keys(source.outputs)} onBind={bindAgent} onMapping={(field, mapping) => updateNode(field, JSON.stringify(mapping))} onOpenAgent={openAgentCanvas} onAttachToFlow={attachSelectedToFlow} canAttachToFlow={canAttachSelected} /> : fieldFor(flow, updateNode, locale)}{flow.component_type === "AgentCall" && parseAgentCallRef(flow.agent_ref) ? <Button onClick={() => openAgentCall(flow.agent_ref)}>{locale === "zh" ? "打开已绑定版本" : "Open bound version"}</Button> : null}{flow.component_type === "Tool" ? <><label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label><label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label></> : null}{flow.component_type === "AgentCall" ? <label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label> : null}<Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button></div> : note ? <div className="inspector-fields"><Tag>{locale === "zh" ? "文字卡片" : "Note"}</Tag><label>{locale === "zh" ? "内容" : "Text"}<textarea rows={6} value={note.text} onChange={(event) => updateNote(selected!, { text: event.target.value.slice(0, 4000) })} /></label><p className="rail-note">{locale === "zh" ? "这是画布注释，不会进入运行图或改变 behavior hash。" : "This is a canvas note. It is not executed and does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除卡片" : "Delete note"}</Button></div> : selectedEdge ? <div className="inspector-fields"><Tag>{locale === "zh" ? "连线" : "Connection"}</Tag><label>{locale === "zh" ? "从" : "From"}<input value={selectedEdge.source} readOnly /></label><label>{locale === "zh" ? "端口" : "Port"}<input value={String(selectedEdge.sourceHandle ?? "")} readOnly /></label><label>{locale === "zh" ? "到" : "To"}<input value={selectedEdge.target} readOnly /></label><p className="rail-note">{locale === "zh" ? "悬停或点选这条线，中点会出现蓝色圆点和红色「删除」。点圆点插入节点，点删除去掉连线。" : "Hover or select this line to see the blue handle and red Delete. Use the handle to insert a node, or Delete to remove the connection."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除连线" : "Delete connection"}</Button></div> : binding ? <div className="inspector-fields"><Tag>{binding.kind}</Tag><label>{locale === "zh" ? "引用" : "Reference"}<input value={binding.reference} readOnly /></label><p className="rail-note">{locale === "zh" ? "这是 Catalog 绑定，不是 Flow 组件。移动它不会改变 behavior hash。" : "This is a catalog binding, not a Flow component. Moving it does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除绑定" : "Delete binding"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点或连线以编辑。" : "Select a canvas node or connection to edit."}</p>}
       </StudioRail>
+      <CanvasEditToolbar
+        locale={locale}
+        canUndo={history.past.length > 0}
+        canRedo={history.future.length > 0}
+        canCopy={canCopy}
+        canPaste={hasClipboard}
+        canDelete={canDelete}
+        boxSelect={boxSelect}
+        onUndo={undoEdit}
+        onRedo={redoEdit}
+        onCopy={() => void copyEdit()}
+        onPaste={() => void pasteEdit()}
+        onDelete={deleteSelected}
+        onToggleBoxSelect={() => setBoxSelect((value) => !value)}
+      />
     </div>
   );
 }
 
-function PaletteList({ items, locale, onAdd }: { items: PaletteItem[]; locale: "zh" | "en"; onAdd: (item: PaletteItem) => void }) {
+function PaletteList({ items, locale, nodes, onAdd }: { items: PaletteItem[]; locale: "zh" | "en"; nodes: { component_type: string }[]; onAdd: (item: PaletteItem) => void }) {
   return (
     <div className="component-list">
       {items.map((item) => {
         const badge = runtimeBadge(item, locale);
+        const blocked = paletteItemBlocked(item, nodes);
         return (
           <button
             key={item.key}
             type="button"
-            draggable={item.draggable}
-            disabled={!item.draggable}
+            draggable={item.draggable && !blocked}
+            disabled={blocked}
             onDragStart={(event) => {
-              if (!item.draggable) return;
+              if (!item.draggable || blocked) return;
               event.dataTransfer.setData(PALETTE_MIME, item.key);
             }}
             onClick={() => onAdd(item)}

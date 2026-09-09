@@ -1,5 +1,8 @@
 export { CommunityApiError, createCommunityApi, normalizeCommunityAvatarUrl, readCommunityCsrfToken } from "./api";
 export type { CommunityApi, CommunityApiOptions } from "./api";
+export { authErrorMessage, errorCopy, explainAuthError } from "./auth-errors";
+export type { AuthErrorExplanation, AuthErrorField, AuthErrorSurface, ErrorCopy } from "./auth-errors";
+export { AuthLayout } from "./auth-layout";
 export { AuthProvider, useAuth } from "./auth-context";
 export type { AuthStatus, VerificationPurpose } from "./auth-context";
 export { ConnectedAccountPage } from "./pages/account";

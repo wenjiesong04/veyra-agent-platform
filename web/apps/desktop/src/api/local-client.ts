@@ -44,6 +44,7 @@ import {
   type ListWorkItemsResponse,
   type CreateMcpServerRequest,
   type McpServer,
+  type ImportProjectPathRequest,
   type OpenProjectRequest,
   type ProjectAgentRecord,
   type ProjectFileContentResponse,
@@ -53,10 +54,12 @@ import {
   type ProjectKnowledgeRecord,
   type ProjectSummaryResponse,
   type ProjectWorkflowRecord,
+  type RevealProjectResponse,
   type SaveDraftRequest,
   type SaveDraftResponse,
   type SaveWorkflowDraftRequest,
   type SaveWorkflowDraftResponse,
+  type SelectArchiveResponse,
   type SelectDirectoryResponse,
   type StartAgentRunRequest,
   type RunCommandRequest,
@@ -133,6 +136,8 @@ export type LocalProjectApi = {
   deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; }): Promise<CreatedAgentResponse>;
   importProject?(file: File): Promise<ProjectSummaryResponse>;
+  importProjectFromPath?(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse>;
+  revealProject?(projectId: string): Promise<RevealProjectResponse>;
   exportProject?(projectId: string): Promise<Blob>;
   exportAgent?(projectId: string, agentId: string): Promise<ExportResponse>;
   listProjectFiles?(projectId: string): Promise<ProjectFilesResponse>;
@@ -194,6 +199,7 @@ export type LocalProjectApi = {
     options?: { after?: number },
   ): () => void;
   selectDirectory(): Promise<SelectDirectoryResponse>;
+  selectArchive?(): Promise<SelectArchiveResponse>;
 };
 
 type RequestOptions = {
@@ -453,11 +459,30 @@ function listProjects(value: unknown, status = 502): ListProjectsResponse {
   };
 }
 
+function revealedProject(value: unknown, status = 502): RevealProjectResponse {
+  const record = schemaRecord(value, status);
+  if (record.status !== "revealed") {
+    throw new LocalApiClientError("The local service returned an invalid Project reveal.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    status: "revealed",
+    root_path: asString(record.root_path, "root_path", status),
+  };
+}
+
 function selectedDirectory(value: unknown, status = 502): SelectDirectoryResponse {
   const record = schemaRecord(value, status);
   if (record.status === "selected") return { schema_version: LOCAL_API_SCHEMA_VERSION, status: "selected", root_path: asString(record.root_path, "root_path", status) };
   if (record.status === "cancelled" && record.root_path === null) return { schema_version: LOCAL_API_SCHEMA_VERSION, status: "cancelled", root_path: null };
   throw new LocalApiClientError("The local service returned an invalid directory selection.", { status, code: "invalid_response" });
+}
+
+function selectedArchive(value: unknown, status = 502): SelectArchiveResponse {
+  const record = schemaRecord(value, status);
+  if (record.status === "selected") return { schema_version: LOCAL_API_SCHEMA_VERSION, status: "selected", path: asString(record.path, "path", status) };
+  if (record.status === "cancelled" && record.path === null) return { schema_version: LOCAL_API_SCHEMA_VERSION, status: "cancelled", path: null };
+  throw new LocalApiClientError("The local service returned an invalid archive selection.", { status, code: "invalid_response" });
 }
 
 function listAgents(value: unknown, status = 502): ListAgentsResponse {
@@ -1317,6 +1342,22 @@ export class LocalApiClient {
     });
   }
 
+  selectArchive(): Promise<SelectArchiveResponse> {
+    return this.request("system/select-archive", selectedArchive, {
+      method: "POST",
+      body: {},
+      headers: { "X-Veyra-Desktop-Intent": "select-archive" },
+    });
+  }
+
+  revealProject(projectId: string): Promise<RevealProjectResponse> {
+    return this.request("system/reveal-project", revealedProject, {
+      method: "POST",
+      body: { project_id: projectId },
+      headers: { "X-Veyra-Desktop-Intent": "reveal-project" },
+    });
+  }
+
   getProject(projectId: string): Promise<ProjectSummaryResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}`, projectSummary);
   }
@@ -1421,6 +1462,13 @@ export class LocalApiClient {
     return this.request("projects/import", projectSummary, {
       method: "POST",
       formData,
+    });
+  }
+
+  importProjectFromPath(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse> {
+    return this.request("projects/import-path", projectSummary, {
+      method: "POST",
+      body: input,
     });
   }
 

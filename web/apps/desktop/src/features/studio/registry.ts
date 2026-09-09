@@ -10,7 +10,7 @@ export type StudioComponent = {
 };
 
 export const studioComponents: StudioComponent[] = [
-  { type: "Start", label: "Start", labelZh: "开始", detail: "Entry point", detailZh: "输入入口", ports: ["next"] },
+  { type: "Start", label: "Start", labelZh: "输入", detail: "Entry point", detailZh: "流程入口，接收声明的输入", ports: ["next"] },
   { type: "Agent", label: "Model (legacy)", labelZh: "模型（旧格式）", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
   { type: "Model", label: "Model", labelZh: "模型", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
   { type: "AgentCall", label: "AgentCall", labelZh: "AgentCall", detail: "Call a Project Agent", detailZh: "调用项目 Agent", ports: ["next"] },

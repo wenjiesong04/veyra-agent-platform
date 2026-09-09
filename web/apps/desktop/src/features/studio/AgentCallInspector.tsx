@@ -84,7 +84,7 @@ export function AgentCallInspector({
     </> : <p className="rail-note">{zh ? "先选一个项目里的 Agent。有已提交版本时会自动绑定最新的那一个。" : "Pick a Project Agent. If it has committed versions, the latest one is bound automatically."}</p>}
     {canAttachToFlow && onAttachToFlow ? (
       <div className="inspector-callout">
-        <p>{zh ? "这个节点还没接到主流程上，所以无法运行。点下面把它插到「开始」和「输出」之间。" : "This node is not wired into the main path, so it cannot run. Attach it between Start and Output."}</p>
+        <p>{zh ? "这个节点还没接到主流程上，所以无法运行。点下面把它插到「输入」和「输出」之间。" : "This node is not wired into the main path, so it cannot run. Attach it between Start and Output."}</p>
         <Button variant="primary" onClick={onAttachToFlow}>{zh ? "接入主流程" : "Attach to main path"}</Button>
       </div>
     ) : null}

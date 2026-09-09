@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachFlowNodeOnEdge, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, newFlowNodeId, repairInvalidNodeIds, sourceWithGraph, toCanvas } from "./graph";
+import { attachFlowNodeOnEdge, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
 
@@ -150,9 +150,17 @@ describe("Studio graph adapter", () => {
     const inserted = insertFlowNodeOnEdge(graph.nodes, graph.edges, "start:next:out", { id: "call", type: "agentNode", position: { x: 0, y: 0 }, data: { flow: { id: "call", component_type: "AgentCall" } } }, "next");
     expect(inserted).not.toBeNull();
     expect(inserted?.edges.map((edge) => edge.id)).toEqual(["start:next:call", "call:next:out"]);
+    expect(inserted?.nodes.find((node) => node.id === "call")?.position).toEqual({ x: 2, y: 3 });
     const next = sourceWithGraph(source, inserted!.nodes, inserted!.edges);
     expect(next.nodes.map((node) => node.id)).toEqual(["start", "out", "call"]);
     expect(next.transitions).toEqual([{ from: "start", port: "next", to: "call" }, { from: "call", port: "next", to: "out" }]);
+  });
+
+  it("centers a single outgoing port and fans multiple ports around mid-height", () => {
+    expect(portHandleTop(0, 1)).toBe(50);
+    expect(portHandleTop(0, 0)).toBe(50);
+    expect(portHandleTop(0, 2)).toBe(36);
+    expect(portHandleTop(1, 2)).toBe(64);
   });
 
   it("picks the unique edge into Output as the default splice target", () => {
@@ -160,6 +168,15 @@ describe("Studio graph adapter", () => {
     expect(defaultSpliceEdgeId(blank.nodes, blank.edges)).toBe("start:next:out");
     const inserted = insertFlowNodeOnEdge(blank.nodes, blank.edges, "start:next:out", { id: "call", type: "agentNode", position: { x: 0, y: 0 }, data: { flow: { id: "call", component_type: "AgentCall" } } }, "next");
     expect(defaultSpliceEdgeId(inserted!.nodes, inserted!.edges)).toBe("call:next:out");
+  });
+
+  it("splices single-exit Agent components onto the flow but not Start, Output, or branches", () => {
+    expect(shouldSplicePaletteItem("Model", "component")).toBe(true);
+    expect(shouldSplicePaletteItem("Tool", "tool")).toBe(true);
+    expect(shouldSplicePaletteItem("Start", "component")).toBe(false);
+    expect(shouldSplicePaletteItem("Output", "component")).toBe(false);
+    expect(shouldSplicePaletteItem("HumanApproval", "component")).toBe(false);
+    expect(shouldSplicePaletteItem("Start", "note")).toBe(false);
   });
 
   it("attaches an existing disconnected node onto the default splice edge", () => {

@@ -39,6 +39,7 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         assert project["indexed_at"]
         root = Path(project["root_path"])
         assert root.is_relative_to(managed_root)
+        assert root.name == "Empty"
         assert preserved.read_text(encoding="utf-8") == "keep"
 
         duplicate = client.post(
@@ -46,6 +47,7 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
             json={"name": "Empty"},
         )
         assert duplicate.status_code == 201
+        assert Path(duplicate.json()["root_path"]).name == "Empty(1)"
         assert duplicate.json()["root_path"] != project["root_path"]
 
         rejected_parent = client.post(
@@ -71,6 +73,15 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         fetched = client.get(f"/api/v1/projects/{project['project_id']}")
         assert fetched.status_code == 200
         assert fetched.json() == reopened.json()
+
+        nested = root / "assets"
+        opened_nested = client.post(
+            "/api/v1/projects/open", json={"root_path": str(nested)}
+        )
+        assert opened_nested.status_code == 422
+        assert opened_nested.json()["code"] == "not_a_project"
+        assert not (nested / "agents").exists()
+        assert not (nested / "project.vproject.yaml").exists()
 
 
 def test_project_metadata_description_pinning_and_closed_patch_body(
@@ -400,6 +411,13 @@ def test_project_delete_trashes_managed_and_unlinks_external(tmp_path: Path) -> 
         )
         assert reopened.status_code == 200
         assert reopened.json()["project_id"] == external["project_id"]
+        assert Path(reopened.json()["root_path"]) == external_root.resolve()
+        listed = client.get("/api/v1/projects")
+        assert listed.status_code == 200
+        listed_projects = listed.json()["projects"]
+        listed_ids = {item["project_id"] for item in listed_projects}
+        assert listed_ids == {external["project_id"]}
+        assert Path(listed_projects[0]["root_path"]) == external_root.resolve()
 
 
 def test_project_description_length_returns_typed_contract_error(
@@ -583,6 +601,23 @@ def test_project_export_import_files_and_parent_remap(tmp_path: Path) -> None:
         assert (
             imported_root / "agents" / imported_parent["slug"] / "tests" / "check.md"
         ).read_text(encoding="utf-8") == "ok\n"
+        archive_path = tmp_path / "reimport.vproject.zip"
+        archive_path.write_bytes(exported.content)
+        imported_from_path = client.post(
+            "/api/v1/projects/import-path",
+            json={"path": str(archive_path)},
+        )
+        assert imported_from_path.status_code == 201
+        assert imported_from_path.json()["project_id"] not in {
+            project_id,
+            payload["project_id"],
+        }
+        missing_archive = client.post(
+            "/api/v1/projects/import-path",
+            json={"path": str(tmp_path / "missing.vproject.zip")},
+        )
+        assert missing_archive.status_code == 422
+        assert missing_archive.json()["code"] == "project_package_invalid"
         rejected = client.post(
             "/api/v1/projects/import",
             files={"file": ("notes.txt", b"not a zip", "text/plain")},

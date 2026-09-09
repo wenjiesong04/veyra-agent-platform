@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { LayoutPanelTop, X } from "lucide-react";
 import type { FactoryResourcePlanItem, FactorySession } from "@veyra/api-contracts";
-import { Button, IconButton, LinkButton, StatusBadge } from "@veyra/ui";
+import { Alert, Button, IconButton, LinkButton, StatusBadge } from "@veyra/ui";
 import { blueprintGraph } from "./factory-blueprint";
 
 type Locale = "zh" | "en";
@@ -234,10 +234,9 @@ export function FactoryAssemblyCanvas({
           </div>
         ) : null}
         {session?.diagnostics.length ? (
-          <div className="draft-note">
-            <strong>{text.diagnostics}</strong>
+          <Alert type="warning" title={text.diagnostics}>
             {session.diagnostics.map((item) => <p key={item}>{item}</p>)}
-          </div>
+          </Alert>
         ) : null}
         {createdAgentId ? (
           <div className="draft-note">

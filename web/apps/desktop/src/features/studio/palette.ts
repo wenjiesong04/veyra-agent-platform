@@ -35,7 +35,7 @@ const WORKFLOW_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
 ]);
 
 const ZH_TITLE: Record<string, string> = {
-  Start: "开始",
+  Start: "输入",
   Agent: "Agent",
   Model: "模型",
   AgentCall: "AgentCall",
@@ -162,12 +162,7 @@ export function fallbackPalette(): PaletteItem[] {
   }));
 }
 
-export function attachCatalogResource(
-  source: AgentSource,
-  resource: ResourceDescriptor,
-  node: FlowNode,
-  position: { x: number; y: number },
-): AgentSource {
+export function grantCatalogResource(source: AgentSource, resource: ResourceDescriptor): AgentSource {
   const permissions = source.extensions.veyra.permissions;
   const required = resource.required_permissions;
   const lock = resource.kind === "tool" || resource.kind === "mcp_tool"
@@ -175,7 +170,6 @@ export function attachCatalogResource(
     : source.lock;
   return {
     ...source,
-    nodes: [...source.nodes, node],
     extensions: {
       ...source.extensions,
       veyra: {
@@ -191,9 +185,22 @@ export function attachCatalogResource(
       },
     },
     lock,
+  };
+}
+
+export function attachCatalogResource(
+  source: AgentSource,
+  resource: ResourceDescriptor,
+  node: FlowNode,
+  position: { x: number; y: number },
+): AgentSource {
+  const granted = grantCatalogResource(source, resource);
+  return {
+    ...granted,
+    nodes: [...granted.nodes, node],
     ui: {
-      ...source.ui,
-      positions: { ...source.ui.positions, [node.id]: { x: Math.round(position.x), y: Math.round(position.y) } },
+      ...granted.ui,
+      positions: { ...granted.ui.positions, [node.id]: { x: Math.round(position.x), y: Math.round(position.y) } },
     },
   };
 }
@@ -315,6 +322,11 @@ export function attachCatalogBinding(
       },
     },
   };
+}
+
+export function paletteItemBlocked(item: PaletteItem, nodes: { component_type: string }[]): boolean {
+  if (!item.draggable) return true;
+  return item.group === "component" && item.componentType === "Start" && nodes.some((node) => node.component_type === "Start");
 }
 
 export function newCatalogNode(item: PaletteItem, id: string): FlowNode {

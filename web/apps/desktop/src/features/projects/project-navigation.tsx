@@ -1,4 +1,4 @@
-import { BookOpen, Bot, Box, ChevronDown, ChevronRight, Download, FileArchive, FileText, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, Box, ChevronDown, ChevronRight, FileText, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { ProjectAgentRecord, ProjectKnowledgeRecord, ProjectWorkflowRecord } from "@veyra/api-contracts";
 import type { NavigationGroup, NavigationItem } from "@veyra/ui";
@@ -29,13 +29,12 @@ type SidebarPopover =
 
 export function useProjectNavigation({ scopedProjectId, activeAgentId, selection, routeKey, suppressProjectHighlight = false }: ProjectNavigationProps): { navigation: NavigationGroup[]; dialogs: ReactNode } {
   const { t, locale } = useLocale();
-  const { api, projects, status, setProjectPinned, upsertProject, refresh } = useProjectWorkspace();
+  const { api, projects, status, setProjectPinned, upsertProject } = useProjectWorkspace();
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set(scopedProjectId ? [scopedProjectId] : []));
   const [popover, setPopover] = useState<SidebarPopover>(null);
   const [modal, setModal] = useState<ProjectModal>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [resourcePins, setResourcePins] = useState<SidebarResourcePins>(readSidebarResourcePins);
-  const importInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (scopedProjectId) setExpandedProjectIds((current) => current.has(scopedProjectId) ? current : new Set(current).add(scopedProjectId)); }, [scopedProjectId]);
   useEffect(() => { setPopover(null); }, [activeAgentId, routeKey, scopedProjectId]);
@@ -97,22 +96,17 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       return next;
     });
   };
-  const exportProject = (project: ProjectSummaryResponse) => {
+  const revealProject = (project: ProjectSummaryResponse) => {
     setPopover(null);
-    if (!api.exportProject) return;
-    void api.exportProject(project.project_id).then((blob) => downloadBlob(blob, `${project.name}.vproject.zip`)).catch(() => undefined);
-  };
-  const importProjectFile = (file: File | null) => {
-    if (!file || !api.importProject) return;
-    void api.importProject(file).then((project) => {
-      upsertProject(project);
-      window.location.hash = projectRoutePaths.project(project.project_id);
-      void refresh().catch(() => undefined);
-    }).catch(() => undefined);
+    if (!api.revealProject) return;
+    setActionError(null);
+    void api.revealProject(project.project_id).catch((cause) => {
+      setActionError(localActionError(cause, locale, locale === "zh" ? "无法在访达中显示项目文件夹。" : "The Project folder could not be shown in Finder."));
+    });
   };
   const makeGroup = (label: "Projects" | "Pinned", items: ProjectSummaryResponse[], showActions: boolean): NavigationGroup => ({
     label, section: label === "Pinned" ? "pinned" : "projects", status: label === "Projects" ? (actionError ? "error" : statusValue) : undefined, statusText: label === "Projects" && actionError ? actionError : undefined,
-    action: showActions ? <span className="sidebar-project-actions"><button className="sidebar-section-button" type="button" onClick={() => setModal({ kind: "open" })} aria-label={t("openExistingProject")} title={t("openExistingProject")}><FolderOpen size={15} aria-hidden="true" /></button><button className="sidebar-section-button" type="button" onClick={() => importInputRef.current?.click()} aria-label={t("importProject")} title={t("importProject")}><FileArchive size={15} aria-hidden="true" /></button><button className="sidebar-section-button" type="button" onClick={() => setModal({ kind: "create" })} aria-label={t("createProjectShortcut")} title={t("createProjectShortcut")}><Plus size={15} aria-hidden="true" /></button><input ref={importInputRef} className="sidebar-import-input" type="file" accept=".zip,.vproject.zip,application/zip" tabIndex={-1} onChange={(event) => { importProjectFile(event.target.files?.item(0) ?? null); event.target.value = ""; }} /></span> : undefined,
+    action: showActions ? <span className="sidebar-project-actions"><button className="sidebar-section-button" type="button" onClick={() => setModal({ kind: "open" })} aria-label={t("openExistingProject")} title={t("openExistingProject")}><FolderOpen size={15} aria-hidden="true" /></button><button className="sidebar-section-button" type="button" onClick={() => setModal({ kind: "create" })} aria-label={t("createProjectShortcut")} title={t("createProjectShortcut")}><Plus size={15} aria-hidden="true" /></button></span> : undefined,
     items: items.map((project) => projectItem(project)),
   });
 
@@ -272,7 +266,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
   ) : null;
   const dialogs = <>
     {popover ? <FixedSidebarPopover anchor={popover.anchor} estimatedWidth={168} className={popover.kind === "agent-chooser" ? "agent-add-chooser" : popover.kind === "project-actions" ? "sidebar-project-menu" : "sidebar-agent-menu"} onClose={() => setPopover(null)}>
-      {popover.kind === "project-actions" ? <ProjectActionsPopover onPin={() => { setPopover(null); void setProjectPinned(popover.project.project_id, !popover.project.pinned).catch(() => undefined); }} onExport={() => exportProject(popover.project)} onEdit={() => { setPopover(null); setModal({ kind: "edit", project: popover.project }); }} onDelete={() => { setPopover(null); setModal({ kind: "delete", project: popover.project }); }} labels={{ pin: popover.project.pinned ? t("unpinProject") : t("pinProject"), export: t("exportProject"), edit: t("editProject"), delete: t("deleteProject"), pinDetail: t("pinProjectDetail"), exportDetail: t("exportProjectDetail"), editDetail: t("editProjectDetail"), deleteDetail: t("deleteProjectDetail"), actions: `${t("projectActions")}: ${popover.project.name}` }} /> : popover.kind === "agent-chooser" ? <AgentChooserPopover project={popover.project} zh={locale === "zh"} onChoose={chooseAgentMode} /> : resourceMenu}
+      {popover.kind === "project-actions" ? <ProjectActionsPopover onPin={() => { setPopover(null); void setProjectPinned(popover.project.project_id, !popover.project.pinned).catch(() => undefined); }} onReveal={() => revealProject(popover.project)} onEdit={() => { setPopover(null); setModal({ kind: "edit", project: popover.project }); }} onDelete={() => { setPopover(null); setModal({ kind: "delete", project: popover.project }); }} labels={{ pin: popover.project.pinned ? t("unpinProject") : t("pinProject"), reveal: t("revealProject"), edit: t("editProject"), delete: t("deleteProject"), pinDetail: t("pinProjectDetail"), revealDetail: t("revealProjectDetail"), editDetail: t("editProjectDetail"), deleteDetail: t("deleteProjectDetail"), actions: `${t("projectActions")}: ${popover.project.name}` }} /> : popover.kind === "agent-chooser" ? <AgentChooserPopover project={popover.project} zh={locale === "zh"} onChoose={chooseAgentMode} /> : resourceMenu}
     </FixedSidebarPopover> : null}
     {modal?.kind === "create" || modal?.kind === "open" ? <ProjectDialog mode={modal.kind as ProjectDialogMode} onClose={() => setModal(null)} /> : null}
     {modal?.kind === "edit" ? <ProjectEditDialog project={modal.project} onClose={() => setModal(null)} /> : null}
@@ -288,8 +282,8 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
   return { navigation, dialogs };
 }
 
-function ProjectActionsPopover({ labels, onPin, onExport, onEdit, onDelete }: { labels: { pin: string; export: string; edit: string; delete: string; pinDetail: string; exportDetail: string; editDetail: string; deleteDetail: string; actions: string }; onPin: () => void; onExport: () => void; onEdit: () => void; onDelete: () => void }) {
-  return <div className="sidebar-action-menu" role="menu" aria-label={labels.actions}><SidebarMenuItem icon={Pin} title={labels.pin} detail={labels.pinDetail} onClick={onPin} /><SidebarMenuItem icon={Download} title={labels.export} detail={labels.exportDetail} onClick={onExport} /><SidebarMenuItem icon={Pencil} title={labels.edit} detail={labels.editDetail} onClick={onEdit} /><SidebarMenuItem icon={Trash2} title={labels.delete} detail={labels.deleteDetail} onClick={onDelete} destructive /></div>;
+function ProjectActionsPopover({ labels, onPin, onReveal, onEdit, onDelete }: { labels: { pin: string; reveal: string; edit: string; delete: string; pinDetail: string; revealDetail: string; editDetail: string; deleteDetail: string; actions: string }; onPin: () => void; onReveal: () => void; onEdit: () => void; onDelete: () => void }) {
+  return <div className="sidebar-action-menu" role="menu" aria-label={labels.actions}><SidebarMenuItem icon={Pin} title={labels.pin} detail={labels.pinDetail} onClick={onPin} /><SidebarMenuItem icon={FolderOpen} title={labels.reveal} detail={labels.revealDetail} onClick={onReveal} /><SidebarMenuItem icon={Pencil} title={labels.edit} detail={labels.editDetail} onClick={onEdit} /><SidebarMenuItem icon={Trash2} title={labels.delete} detail={labels.deleteDetail} onClick={onDelete} destructive /></div>;
 }
 
 function ResourceActionsPopover({ labels, onPin, onEdit, onDelete }: { labels: { pin: string; edit: string; delete: string; pinDetail: string; editDetail: string; deleteDetail: string; actions: string }; onPin: () => void; onEdit: () => void; onDelete: () => void }) {
@@ -335,20 +329,17 @@ function popoverPosition(anchor: HTMLButtonElement, width: number): { top: numbe
 function byIndexedAt(left: ProjectSummaryResponse, right: ProjectSummaryResponse): number { return right.indexed_at.localeCompare(left.indexed_at); }
 
 function localActionError(cause: unknown, locale: string, fallback: string): string {
-  if (cause instanceof LocalApiClientError && cause.status >= 500) {
-    return locale === "zh"
-      ? `本机服务执行失败（${cause.status}）。请重启本机 sidecar 后再试。`
-      : `The local service failed (${cause.status}). Restart the desktop sidecar and retry.`;
+  if (cause instanceof LocalApiClientError) {
+    if (cause.code === "directory_picker_failed" || cause.code === "directory_picker_unsupported") {
+      return locale === "zh"
+        ? "无法在访达中显示项目文件夹。请允许本机访问磁盘后重试。"
+        : "The Project folder could not be shown in Finder. Allow disk access and try again.";
+    }
+    if (cause.status >= 500) {
+      return locale === "zh"
+        ? `本机服务执行失败（${cause.status}）。请重启本机 sidecar 后再试。`
+        : `The local service failed (${cause.status}). Restart the desktop sidecar and retry.`;
+    }
   }
   return cause instanceof Error ? cause.message : fallback;
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  if (typeof URL.createObjectURL !== "function") return;
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
