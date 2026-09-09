@@ -99,6 +99,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   const [addState, setAddState] = useState<"idle" | "adding" | "added" | "error">("idle");
   const [workshopInstruction, setWorkshopInstruction] = useState("");
   const [workshopState, setWorkshopState] = useState<"idle" | "approving" | "approved" | "error">("idle");
+  const [skillDraftName, setSkillDraftName] = useState("");
+  const [skillDraftReference, setSkillDraftReference] = useState("veyra.skill.custom@1.0.0");
+  const [skillDraftInstruction, setSkillDraftInstruction] = useState("");
+  const [skillDraftState, setSkillDraftState] = useState<"idle" | "creating" | "created" | "error">("idle");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const currentKinds = useMemo(
@@ -175,10 +179,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
 
   const copy = zh
     ? {
-      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败",
+      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败", createSkill: "创建 Skill 草稿", skillName: "Skill 名称", skillReference: "请求引用", skillDraftInstruction: "初始指令", skillReferenceHint: "例如 veyra.skill.invoice-review@1.0.0", skillDraftHint: "创建后会进入隔离状态，审核前不会被 Factory 选择。", createSkillAction: "创建隔离草稿", skillCreated: "草稿已创建", skillCreateFailed: "Skill 草稿创建失败",
     }
     : {
-      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed",
+      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed", createSkill: "Create Skill draft", skillName: "Skill name", skillReference: "Requested reference", skillDraftInstruction: "Initial instruction", skillReferenceHint: "For example veyra.skill.invoice-review@1.0.0", skillDraftHint: "The draft is quarantined and cannot be selected by Factory until reviewed.", createSkillAction: "Create quarantined draft", skillCreated: "Draft created", skillCreateFailed: "Skill draft could not be created",
     };
 
   const visible = useMemo(() => {
@@ -223,6 +227,25 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
       await load();
     } catch {
       setWorkshopState("error");
+    }
+  };
+
+  const createSkillDraft = async () => {
+    if (!api.createResourceDraft || !skillDraftReference.trim() || !skillDraftInstruction.trim()) return;
+    setSkillDraftState("creating");
+    try {
+      const result = await api.createResourceDraft({
+        confirm: true,
+        kind: "skill",
+        requested_reference: skillDraftReference.trim(),
+        name: skillDraftName.trim() || undefined,
+        instruction: skillDraftInstruction.trim(),
+      });
+      setSelected(result.resource);
+      setSkillDraftState("created");
+      await load();
+    } catch {
+      setSkillDraftState("error");
     }
   };
 
@@ -300,6 +323,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.search} aria-label={copy.search} />
         </label>
       </div>
+      {tab === "skill" ? <Panel><SectionHeading eyebrow={copy.createSkill} title={copy.createSkill} detail={copy.skillDraftHint} /><div className="inspector-fields"><label><span>{copy.skillName}</span><input value={skillDraftName} onChange={(event) => setSkillDraftName(event.target.value)} /></label><label><span>{copy.skillReference}</span><input value={skillDraftReference} onChange={(event) => setSkillDraftReference(event.target.value)} placeholder={copy.skillReferenceHint} /></label><label><span>{copy.skillDraftInstruction}</span><textarea value={skillDraftInstruction} onChange={(event) => setSkillDraftInstruction(event.target.value)} rows={5} /></label><div className="button-row"><Button variant="primary" disabled={!api.createResourceDraft || skillDraftState === "creating" || !skillDraftReference.trim() || !skillDraftInstruction.trim()} onClick={() => void createSkillDraft()}>{skillDraftState === "creating" ? "…" : skillDraftState === "created" ? copy.skillCreated : copy.createSkillAction}</Button>{skillDraftState === "error" ? <span className="resource-detail-error">{copy.skillCreateFailed}</span> : null}</div></div></Panel> : null}
       {status === "error" ? <ErrorState message={error ?? copy.unavailable} onRetry={() => void load()} /> : null}
       {status === "loading" ? <Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel> : null}
       {status === "ready" && visible.length === 0 ? <Panel><EmptyState icon={LayoutGrid} title={copy.empty} detail={copy.emptyDetail} /></Panel> : null}
