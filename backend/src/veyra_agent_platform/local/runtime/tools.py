@@ -22,6 +22,7 @@ _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
 _FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".token")
 _READ_ADAPTER = "veyra.runtime.filesystem.read"
 _LIST_ADAPTER = "veyra.runtime.filesystem.list"
+_SEARCH_ADAPTER = "veyra.runtime.filesystem.search"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
@@ -89,6 +90,7 @@ class ToolRuntime:
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
             _LIST_ADAPTER: self._execute_list,
+            _SEARCH_ADAPTER: self._execute_search,
             _WRITE_ADAPTER: self._execute_write,
             _MCP_ADAPTER: self._execute_mcp,
             _HTTP_ADAPTER: self._execute_http,
@@ -270,6 +272,24 @@ class ToolRuntime:
         del source, node, approved
         output, byte_length, relative_path = self._list_project_directory(
             project_root, values.get("path")
+        )
+        return self._receipt_execution(
+            authorization, output, byte_length, relative_path
+        )
+
+    def _execute_search(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del source, node, approved
+        output, byte_length, relative_path = self._search_project_files(
+            project_root, values.get("path"), values.get("query")
         )
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
@@ -551,6 +571,62 @@ class ToolRuntime:
                     "tool_path_denied", "Tool directory is unavailable or unsafe"
                 )
         return current, relative_path
+
+    @classmethod
+    def _search_project_files(
+        cls, project_root: Path, raw_path: Any, raw_query: Any
+    ) -> tuple[dict[str, Any], int, str]:
+        if not isinstance(raw_query, str) or not raw_query.strip():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Filesystem Search requires a query"
+            )
+        directory, relative_path = cls._project_directory(project_root, raw_path)
+        query = raw_query.casefold()
+        matches: list[dict[str, Any]] = []
+        scanned = 0
+        try:
+            candidates = sorted(
+                directory.rglob("*"), key=lambda item: item.as_posix().lower()
+            )
+        except OSError as exc:
+            raise ToolRuntimeError(
+                "tool_failed", "Tool could not scan the Project directory"
+            ) from exc
+        for candidate in candidates:
+            if scanned >= 2_000 or len(matches) >= 100:
+                break
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or cls._is_forbidden_path(candidate.name)
+            ):
+                continue
+            scanned += 1
+            try:
+                if candidate.stat().st_size > _MAX_FILE_BYTES:
+                    continue
+                text = candidate.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if query not in line.casefold():
+                    continue
+                matches.append(
+                    {
+                        "path": candidate.relative_to(project_root).as_posix(),
+                        "line": line_number,
+                        "snippet": line[:2_000],
+                    }
+                )
+                if len(matches) >= 100:
+                    break
+        output = {"matches": matches}
+        encoded = json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        if len(encoded) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Search results exceed the 1 MiB limit"
+            )
+        return output, len(encoded), relative_path
 
     @staticmethod
     def _is_forbidden_path(name: str) -> bool:

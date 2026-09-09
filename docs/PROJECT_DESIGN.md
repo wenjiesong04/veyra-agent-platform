@@ -602,6 +602,7 @@ Initial tools:
 
 - filesystem.read — current Runtime adapter, Project workspace only
 - filesystem.list — current Runtime adapter, bounded Project directory listing
+- filesystem.search — current Runtime adapter, bounded UTF-8 Project search
 - filesystem.write — current Runtime adapter, HumanApproval by default, Project workspace only
 - shell.exec, approval and workspace scope by default
 - http.request — current Runtime adapter, explicit per-node host allowlist and HumanApproval

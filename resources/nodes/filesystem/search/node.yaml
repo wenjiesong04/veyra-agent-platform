@@ -1,0 +1,34 @@
+# veyra.tool.filesystem.search@1.0.0
+availability: ready
+description: Search UTF-8 text files inside a Project and return bounded matches.
+factory_selectable: true
+kind: tool
+name: Filesystem Search
+required_permissions:
+  filesystem_read_roots:
+  - project
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.filesystem.search
+resource_id: veyra.tool.filesystem.search
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.filesystem.search
+  approval_required: false
+  input_schema:
+    path: string
+    query: string
+  output_schema:
+    matches: array
+  tool_name: filesystem.search
+  ui:
+    category: filesystem
+    icon: search
+    title: Search Files
+tags:
+- filesystem
+- local
+- read_only
+version: 1.0.0
