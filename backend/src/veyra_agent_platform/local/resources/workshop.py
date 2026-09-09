@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ class ResourceWorkshop:
         requested_reference: str,
         name: str | None = None,
         description: str | None = None,
+        instruction: str | None = None,
     ) -> dict[str, Any]:
         if not confirm:
             raise ResourceWorkshopError(
@@ -72,6 +74,11 @@ class ResourceWorkshop:
             description
             or f"Quarantined proposal for {requested_reference}. Not executable."
         ).strip()
+        clean_instruction = (instruction or "").strip()
+        if clean_instruction and len(clean_instruction) > 20_000:
+            raise ResourceWorkshopError(
+                "workshop_instruction_invalid", "Skill instruction is too large"
+            )
         package_id = draft_id.replace("-", "")
         payload = {
             "resource_id": resource_id,
@@ -100,6 +107,8 @@ class ResourceWorkshop:
             },
             "version": "0.0.1",
         }
+        if kind == "skill" and clean_instruction:
+            payload["spec"]["instruction"] = clean_instruction
         target = self.overlay_root / "workshop" / package_id / "node.yaml"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -121,6 +130,91 @@ class ResourceWorkshop:
             "executable": False,
             "resource": resource,
         }
+
+    def approve_skill(
+        self, resource_id: str, version: str, instruction: str | None = None
+    ) -> dict[str, Any]:
+        """Promote a reviewed declarative Skill draft into the local Catalog."""
+        try:
+            resource = self.catalog.detail(resource_id, version)
+        except ResourceCatalogError as exc:
+            raise ResourceWorkshopError("workshop_draft_not_found", str(exc)) from exc
+        if resource.get("origin") != "workshop" or resource.get("kind") != "skill":
+            raise ResourceWorkshopError(
+                "workshop_skill_invalid",
+                "Only quarantined Skill drafts can be approved",
+            )
+        target = self._workshop_package(resource_id, version)
+        if target is None:
+            raise ResourceWorkshopError(
+                "workshop_draft_not_found", "Skill draft package was not found"
+            )
+        try:
+            payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill draft could not be read"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill draft is invalid"
+            )
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill draft spec is invalid"
+            )
+        clean_instruction = (instruction or spec.get("instruction") or "").strip()
+        if not clean_instruction:
+            raise ResourceWorkshopError(
+                "workshop_instruction_required", "Add Skill instruction before approval"
+            )
+        if len(clean_instruction) > 20_000:
+            raise ResourceWorkshopError(
+                "workshop_instruction_invalid", "Skill instruction is too large"
+            )
+        spec["instruction"] = clean_instruction
+        payload["availability"] = "ready"
+        payload["factory_selectable"] = True
+        payload["runtime_status"] = "runtime_not_configured"
+        payload["tags"] = ["workshop", "approved", "instruction"]
+        spec["review_required"] = False
+        temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
+        try:
+            temporary.write_text(
+                yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+            self.catalog.reload_overlays()
+        except (OSError, NodePackageError) as exc:
+            temporary.unlink(missing_ok=True)
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill draft could not be approved"
+            ) from exc
+        return {
+            "schema_version": "1.0",
+            "resource": self.catalog.detail(resource_id, version),
+        }
+
+    def _workshop_package(self, resource_id: str, version: str) -> Path | None:
+        root = self.overlay_root / "workshop"
+        if not root.is_dir():
+            return None
+        for target in root.glob("*/node.yaml"):
+            if target.is_symlink() or not target.is_file():
+                continue
+            try:
+                payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            if (
+                isinstance(payload, dict)
+                and payload.get("resource_id") == resource_id
+                and payload.get("version") == version
+            ):
+                return target
+        return None
 
 
 def _workshop_resource_id(kind: str, requested_reference: str, draft_id: str) -> str:

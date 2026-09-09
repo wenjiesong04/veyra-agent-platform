@@ -29,6 +29,11 @@ class CreateResourceDraftRequest(_ClosedModel):
     requested_reference: str = Field(min_length=3, max_length=200)
     name: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
+    instruction: str | None = Field(default=None, max_length=20_000)
+
+
+class ApproveResourceDraftRequest(_ClosedModel):
+    instruction: str = Field(min_length=1, max_length=20_000)
 
 
 def build_router() -> APIRouter:
@@ -55,6 +60,20 @@ def build_router() -> APIRouter:
                 requested_reference=payload.requested_reference,
                 name=payload.name,
                 description=payload.description,
+                instruction=payload.instruction,
+            )
+        )
+
+    @router.post("/{resource_id}/versions/{version}/approve")
+    def approve_skill(
+        resource_id: str,
+        version: str,
+        payload: ApproveResourceDraftRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _workshop_translate(
+            lambda: _workshop(request).approve_skill(
+                resource_id, version, payload.instruction
             )
         )
 

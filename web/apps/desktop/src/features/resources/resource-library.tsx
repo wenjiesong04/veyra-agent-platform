@@ -97,6 +97,8 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   const [detailMissing, setDetailMissing] = useState(false);
   const [targetProjectId, setTargetProjectId] = useState("");
   const [addState, setAddState] = useState<"idle" | "adding" | "added" | "error">("idle");
+  const [workshopInstruction, setWorkshopInstruction] = useState("");
+  const [workshopState, setWorkshopState] = useState<"idle" | "approving" | "approved" | "error">("idle");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const currentKinds = useMemo(
@@ -173,10 +175,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
 
   const copy = zh
     ? {
-      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project",
+      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败",
     }
     : {
-      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available",
+      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed",
     };
 
   const visible = useMemo(() => {
@@ -197,12 +199,30 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   }
 
   const selectedResource = selected;
+  useEffect(() => {
+    const spec = (selectedResource?.spec ?? {}) as Record<string, unknown>;
+    setWorkshopInstruction(typeof spec.instruction === "string" ? spec.instruction : "");
+    setWorkshopState("idle");
+  }, [selectedResource?.reference]);
   const DetailIcon = selectedResource ? iconForKind[selectedResource.kind] : LayoutGrid;
   const inProjectCatalog = catalogHref.startsWith("#/projects/");
   const closeDetail = (event?: { preventDefault: () => void }) => {
     if (!resourceId) {
       event?.preventDefault();
       setSelected(null);
+    }
+  };
+
+  const approveSkill = async () => {
+    if (!selectedResource || selectedResource.origin !== "workshop" || selectedResource.kind !== "skill" || !api.approveResourceDraft) return;
+    setWorkshopState("approving");
+    try {
+      const result = await api.approveResourceDraft(selectedResource.resource_id, selectedResource.version, workshopInstruction);
+      setSelected(result.resource);
+      setWorkshopState("approved");
+      await load();
+    } catch {
+      setWorkshopState("error");
     }
   };
 
@@ -234,6 +254,11 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
             <Button size="sm" variant="primary" disabled={!targetProjectId || addState === "adding" || !api.addProjectResource} onClick={() => void addToProject()}>{addState === "adding" ? "…" : addState === "added" ? copy.added : copy.addToProject}</Button>
             {addState === "error" ? <span className="resource-detail-error">{copy.addFailed}</span> : null}
           </div>
+          {selectedResource.origin === "workshop" && selectedResource.kind === "skill" ? <div className="resource-detail-block">
+            <strong>{copy.skillInstruction}</strong>
+            <textarea value={workshopInstruction} onChange={(event) => setWorkshopInstruction(event.target.value)} placeholder={copy.skillInstructionHint} rows={6} />
+            <div className="button-row"><Button variant="primary" disabled={!api.approveResourceDraft || workshopState === "approving" || !workshopInstruction.trim()} onClick={() => void approveSkill()}>{workshopState === "approving" ? "…" : workshopState === "approved" ? copy.skillApproved : copy.approveSkill}</Button>{workshopState === "error" ? <span className="resource-detail-error">{copy.skillApprovalFailed}</span> : null}</div>
+          </div> : null}
           <div className="resource-detail-facts">
             <div><span>{copy.availability}</span><StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} /></div>
             <div><span>{copy.runtime}</span><strong>{runtimeLabel(selectedResource.runtime_status, zh)}</strong></div>

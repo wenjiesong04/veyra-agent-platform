@@ -175,7 +175,8 @@ export type LocalProjectApi = {
   addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
   generateFactoryBlueprint?(projectId: string, sessionId: string): Promise<FactorySession>;
   applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string; parent_agent_id?: string }): Promise<ApplyFactoryDraftResponse>;
-  createResourceDraft?(input: { confirm: boolean; kind: string; requested_reference: string; name?: string; description?: string }): Promise<ResourceDraftResponse>;
+  createResourceDraft?(input: { confirm: boolean; kind: string; requested_reference: string; name?: string; description?: string; instruction?: string }): Promise<ResourceDraftResponse>;
+  approveResourceDraft?(resourceId: string, version: string, instruction: string): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }>;
   listMcpServers?(): Promise<ListMcpServersResponse>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   discoverMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }>;
@@ -980,6 +981,11 @@ function resourceDraft(value: unknown, status = 502): ResourceDraftResponse {
     executable: false,
     resource: resource(record.resource, status),
   };
+}
+
+function approvedResourceDraft(value: unknown, status = 502): { schema_version: "1.0"; resource: ResourceDescriptor } {
+  const record = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, resource: resource(record.resource, status) };
 }
 
 function mcpServer(value: unknown, status = 502): McpServer {
@@ -1795,8 +1801,17 @@ export class LocalApiClient {
     requested_reference: string;
     name?: string;
     description?: string;
+    instruction?: string;
   }): Promise<ResourceDraftResponse> {
     return this.request("resources/drafts", resourceDraft, { method: "POST", body: input });
+  }
+
+  approveResourceDraft(resourceId: string, version: string, instruction: string): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }> {
+    return this.request(
+      `resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}/approve`,
+      approvedResourceDraft,
+      { method: "POST", body: { instruction } },
+    );
   }
 
   listMcpServers(): Promise<ListMcpServersResponse> {
