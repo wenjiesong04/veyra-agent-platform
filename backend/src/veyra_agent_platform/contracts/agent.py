@@ -30,6 +30,7 @@ from .common import (
 from .resource import (
     AgentVersionRef,
     ProjectOwnedResource,
+    ProjectResourceBinding,
     ResourceKind,
     ResourceRef,
     require_semver,
@@ -478,6 +479,7 @@ class ProjectManifest:
     components: tuple[ProjectOwnedResource, ...] = ()
     knowledge: tuple[ProjectOwnedResource, ...] = ()
     assets: tuple[ProjectOwnedResource, ...] = ()
+    resources: tuple[ProjectResourceBinding, ...] = ()
     _resource_fields: frozenset[str] = field(
         default_factory=frozenset, repr=False, compare=False
     )
@@ -500,6 +502,7 @@ class ProjectManifest:
                 "components",
                 "knowledge",
                 "assets",
+                "resources",
             },
             required={
                 "schema_version",
@@ -573,6 +576,12 @@ class ProjectManifest:
         )
         knowledge = _owned_resources(item.get("knowledge", []), ResourceKind.KNOWLEDGE)
         assets = _owned_resources(item.get("assets", []), ResourceKind.ASSET)
+        resources = tuple(
+            ProjectResourceBinding.from_dict(value)
+            for value in require_list(item.get("resources", []), "resources")
+        )
+        if len({binding.reference for binding in resources}) != len(resources):
+            raise ContractValidationError("project resource bindings must be unique")
         return cls(
             SCHEMA_VERSION,
             "1",
@@ -586,7 +595,11 @@ class ProjectManifest:
             components,
             knowledge,
             assets,
-            frozenset({"workflows", "components", "knowledge", "assets"} & set(item)),
+            resources,
+            frozenset(
+                {"workflows", "components", "knowledge", "assets", "resources"}
+                & set(item)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -605,6 +618,8 @@ class ProjectManifest:
             entries = getattr(self, key)
             if entries or key in self._resource_fields:
                 result[key] = [item.to_dict() for item in entries]
+        if self.resources or "resources" in self._resource_fields:
+            result["resources"] = [item.to_dict() for item in self.resources]
         return result
 
 

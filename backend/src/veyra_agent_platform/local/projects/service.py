@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import threading
 import unicodedata
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,11 @@ from veyra_agent_platform.contracts.agent import (
 )
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
-from veyra_agent_platform.contracts.resource import ResourceKind, ResourceManifest
+from veyra_agent_platform.contracts.resource import (
+    ProjectResourceBinding,
+    ResourceKind,
+    ResourceManifest,
+)
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.projects.layout import (
     INDEXED_ROOT_DIRECTORIES,
@@ -442,6 +447,67 @@ class ProjectService:
             "project_id": project_id,
             "text": self._read_text(path),
         }
+
+    def project_resource_bindings(
+        self, project_id: str
+    ) -> tuple[ProjectResourceBinding, ...]:
+        """Return the portable Catalog selections declared by one Project."""
+        _, _, _, _, manifest = self._project_manifest_state(project_id)
+        return manifest.resources
+
+    def project_resource_usage(
+        self, project_id: str
+    ) -> dict[str, list[dict[str, str]]]:
+        """Find Catalog references used by Agent and Workflow source definitions."""
+        _, root, _, _, manifest = self._project_manifest_state(project_id)
+        usage: dict[str, list[dict[str, str]]] = {}
+
+        def record(source: Any, kind: str, resource_id: str) -> None:
+            references = set(source.lock)
+            for node in source.nodes:
+                uses = getattr(node, "uses", None)
+                if uses:
+                    references.add(uses)
+            for binding in (source.ui.get("bindings") or {}).values():
+                if isinstance(binding, Mapping) and binding.get("reference"):
+                    references.add(binding["reference"])
+            for reference in references:
+                usage.setdefault(reference, []).append(
+                    {"kind": kind, "resource_id": resource_id, "name": source.name}
+                )
+
+        for agent_entry in manifest.agents:
+            record(self._agent_source(root, agent_entry), "agent", agent_entry.agent_id)
+        for workflow_entry in manifest.workflows:
+            record(
+                self._workflow_source(root, workflow_entry),
+                "workflow",
+                workflow_entry.resource_id,
+            )
+        return usage
+
+    def replace_project_resource_bindings(
+        self, project_id: str, bindings: tuple[ProjectResourceBinding, ...]
+    ) -> dict[str, Any]:
+        """Atomically replace the portable resource selection in the manifest."""
+        with self._writer_lock:
+            _, root, manifest_path, previous_text, manifest = (
+                self._project_manifest_state(project_id)
+            )
+            updated = manifest.to_dict()
+            updated["resources"] = [binding.to_dict() for binding in bindings]
+            validated = ProjectManifest.from_dict(updated)
+            try:
+                self.atomic_write(
+                    manifest_path, self._canonical_source(validated.to_dict())
+                )
+                return self.index(root)
+            except BaseException as exc:
+                try:
+                    self.atomic_write(manifest_path, previous_text)
+                except BaseException as rollback_exc:
+                    exc.add_note(f"rollback failed: {rollback_exc}")
+                raise
 
     def _allocate_name(
         self, requested_name: str | None, *, exclude_project_id: str | None = None

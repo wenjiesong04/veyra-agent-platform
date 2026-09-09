@@ -23,11 +23,15 @@ flowchart LR
   P --> F[Files]
   P --> R[Runs]
   W -.固定版本调用.-> A
-  A -.使用.-> C[Resource Library / Components]
+  C[Resource Catalog] -.选择版本.-> PR[Project Resource Library]
+  PR -.投影.-> A
   A -.显式绑定.-> K
 ```
 
-Agent 和 Workflow 在归属上平级；Workflow → Agent 是调用关系。Agent → Component 是组成或依赖关系。双击深入表示查看依赖对象，不会把 Agent 移进 Workflow 的目录。
+Agent 和 Workflow 在归属上平级；Workflow → Agent 是调用关系。Agent →
+Component 是组成或依赖关系。全局 Resource Catalog 负责发现平台能力，Project
+Resource Library 负责锁定 Project 依赖；双击深入表示查看依赖对象，不会把
+Agent 移进 Workflow 的目录。
 
 旧 `parent_agent_id` 是组织关系，不具有执行语义。读取旧项目时保留它，不据此生成可执行 Workflow，不自动移动或删除旧 Agent。
 

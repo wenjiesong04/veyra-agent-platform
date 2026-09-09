@@ -1,4 +1,4 @@
-import { desktopRoutePaths, projectRoutePaths } from "@veyra/api-contracts";
+import { desktopRoutePaths } from "@veyra/api-contracts";
 
 export type ResourceLibraryTab = "all" | "component" | "tooling" | "skill" | "policy" | "template";
 
@@ -13,15 +13,8 @@ export function rememberProjectId(projectId: string): void {
 }
 
 export function resourceLibraryHref(projects: Array<{ project_id: string }>): string {
-  let lastId: string | null = null;
-  try {
-    lastId = window.localStorage.getItem(lastProjectStorageKey);
-  } catch {
-    lastId = null;
-  }
-  const last = lastId ? projects.find((project) => project.project_id === lastId) : undefined;
-  const target = last ?? projects[0];
-  return target ? projectRoutePaths.project(target.project_id) : desktopRoutePaths.components;
+  void projects;
+  return desktopRoutePaths.resources;
 }
 
 export function resourceLibraryCatalogHref(tab: ResourceLibraryTab, catalogHref: string = desktopRoutePaths.components): string {

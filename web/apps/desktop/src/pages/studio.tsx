@@ -63,9 +63,12 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   }, [api, projectId, agentId, workflowId, isWorkflow, locale, adoptDraft]);
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
-    if (!api.listResources) return;
-    void api.listResources().then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
-  }, [api]);
+    if (api.listProjectResources) {
+      void api.listProjectResources(projectId).then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
+      return;
+    }
+    if (api.listResources) void api.listResources().then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
+  }, [api, projectId]);
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: StudioSource) => {
     const source = adoptStudioSource(next);

@@ -31,6 +31,7 @@ from .mcp.transport import TransportFactory
 from .orchestrator import OrchestratorService, OrchestratorStore
 from .projects import ProjectService
 from .resources import ResourceCatalog, ResourceWorkshop
+from .resources.project import ProjectResourceService
 from .runtime import (
     RuntimeModelClient,
     RuntimeProfileStore,
@@ -100,6 +101,7 @@ def create_app(
         )
         application.state.repository = repository
         application.state.projects = projects
+        application.state.project_resources = ProjectResourceService(projects, catalog)
         application.state.library = LibraryService(repository, projects)
         runtime_profiles = RuntimeProfileStore(repository)
         application.state.runtime_profiles = runtime_profiles

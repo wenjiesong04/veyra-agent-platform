@@ -608,6 +608,7 @@ export type ResourceDescriptor = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   resource_id: string;
   kind: ResourceKind;
+  component_class?: "primitive" | "composite";
   version: string;
   reference: string;
   name: string;
@@ -631,6 +632,37 @@ export type ListResourcesResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   resources: ResourceDescriptor[];
   kinds: ResourceKindCount[];
+};
+
+export type ProjectResourceScope = "project" | "used_unbound" | "builtin";
+
+export type ProjectResourceUsage = {
+  kind: "agent" | "workflow";
+  resource_id: string;
+  name: string;
+};
+
+export type ProjectResourceDescriptor = ResourceDescriptor & {
+  scope: ProjectResourceScope;
+  binding_source: "manual" | "factory" | "imported" | "reconciled" | null;
+  bound_content_hash: string | null;
+  used_by: ProjectResourceUsage[];
+};
+
+export type ProjectResourcesResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  resources: ProjectResourceDescriptor[];
+  missing_references: string[];
+  project_count: number;
+  used_count: number;
+  unbound_count: number;
+  builtin_count: number;
+};
+
+export type AddProjectResourceRequest = {
+  reference: string;
+  source?: "manual" | "factory" | "imported" | "reconciled";
 };
 
 export type ListResourceFilters = {

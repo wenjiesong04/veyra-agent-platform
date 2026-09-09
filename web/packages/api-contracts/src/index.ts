@@ -4,6 +4,7 @@ export const desktopRoutePaths = {
   chat: "#/chat",
   projects: "#/projects",
   components: "#/components",
+  resources: "#/resources",
   files: "#/files",
   runs: "#/runs",
   monitor: "#/monitor",
@@ -18,6 +19,7 @@ export const projectRoutePaths = {
   project: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}`,
   projectChat: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/chat`,
   projectAnalysis: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/analysis`,
+  projectResources: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/resources`,
   agents: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents`,
   agent: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}`,
   agentVersion: (projectId: string, agentId: string, versionId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/versions/${encodeRouteSegment(versionId)}`,
@@ -45,7 +47,7 @@ export const libraryRoutePaths = {
   file: (fileId: string) => `#/files/${encodeRouteSegment(fileId)}`,
 } as const;
 
-export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
+export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
 export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
 export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 
@@ -131,6 +133,7 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   if (parts.length === 2) return { kind: "project", path, projectId };
   if (parts.length === 3 && parts[2] === "chat") return { kind: "project-chat", path, projectId };
   if (parts.length === 3 && parts[2] === "analysis") return { kind: "project-analysis", path, projectId };
+  if (parts.length === 3 && parts[2] === "resources") return { kind: "project-resources", path, projectId };
   if (parts.length === 3 && parts[2] === "factory") return { kind: "factory", path, projectId };
 
   if (parts.length === 3 && parts[2] === "agents") return { kind: "project-agents", path, projectId };

@@ -28,6 +28,10 @@ from veyra_agent_platform.local.projects.service import (
     ProjectError,
     ProjectService,
 )
+from veyra_agent_platform.local.resources.project import (
+    ProjectResourceError,
+    ProjectResourceService,
+)
 from veyra_agent_platform.local.runtime.profiles import (
     RuntimeApiProfile,
     RuntimeApiProfileInput,
@@ -57,6 +61,11 @@ class OpenProjectRequest(_ClosedModel):
 
 class ImportProjectPathRequest(_ClosedModel):
     path: str = Field(min_length=1)
+
+
+class AddProjectResourceRequest(_ClosedModel):
+    reference: str = Field(min_length=3, max_length=200)
+    source: Literal["manual", "factory", "imported", "reconciled"] = "manual"
 
 
 class UpdateProjectRequest(_ClosedModel):
@@ -217,6 +226,30 @@ def build_router() -> APIRouter:
         return _translate(
             lambda: _project_response(
                 request, projects.import_archive_from_path(payload.path)
+            )
+        )
+
+    @router.get("/{project_id}/resources")
+    def list_project_resources(project_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _project_resources(request).list(project_id))
+
+    @router.post("/{project_id}/resources", status_code=status.HTTP_201_CREATED)
+    def add_project_resource(
+        project_id: str, payload: AddProjectResourceRequest, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _project_resources(request).add(
+                project_id, payload.reference, source=payload.source
+            )
+        )
+
+    @router.delete("/{project_id}/resources/{resource_id}/versions/{version}")
+    def remove_project_resource(
+        project_id: str, resource_id: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _project_resources(request).remove(
+                project_id, f"{resource_id}@{version}"
             )
         )
 
@@ -679,6 +712,12 @@ def _profiles(request: Request) -> RuntimeProfileStore:
     return cast(RuntimeProfileStore, request.app.state.runtime_profiles)
 
 
+def _project_resources(request: Request) -> ProjectResourceService:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(ProjectResourceService, request.app.state.project_resources)
+
+
 def _profile_summary(
     request: Request, profile: RuntimeApiProfile | None
 ) -> dict[str, Any] | None:
@@ -734,6 +773,9 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         if code != "project_invalid":
             raise TypedApiError(422, code, str(exc)) from exc
         raise TypedApiError(422, "project_invalid", str(exc)) from exc
+    except ProjectResourceError as exc:
+        status_code = 409 if exc.code == "resource_in_use" else 422
+        raise TypedApiError(status_code, exc.code, str(exc)) from exc
     except ContractValidationError as exc:
         raise TypedApiError(422, "contract_invalid", str(exc)) from exc
     except TypedApiError:

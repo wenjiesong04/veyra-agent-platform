@@ -156,10 +156,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
 
   const copy = zh
     ? {
-      eyebrow: "资源库", title: "资源库", description: "组件、工具、MCP、技能、策略和模板都在同一个本机目录里，供 Factory 与 Studio 使用。", count: "项", search: "搜索资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源库暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源库", tags: "标签",
+      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签",
     }
     : {
-      eyebrow: "Resource Library", title: "Resource Library", description: "Components, tools, MCP, Skills, Policies, and Templates live in one local catalog for Factory and Studio.", count: "items", search: "Search resources", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Library is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Library", tags: "Tags",
+      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags",
     };
 
   const visible = useMemo(() => {
@@ -170,7 +170,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   if (resourceId && detailMissing) {
     return (
       <div className="page-stack resource-library-page">
-        <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2></div><LinkButton href={desktopRoutePaths.components} icon={ArrowLeft} variant="ghost">{copy.back}</LinkButton></div>
+        <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2></div><LinkButton href={catalogHref} icon={ArrowLeft} variant="ghost">{copy.back}</LinkButton></div>
         <ErrorState message={copy.unavailable} />
       </div>
     );

@@ -80,6 +80,43 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ path: "/tmp/team.vproject.zip" });
   });
 
+  it("parses the Project Resource Library contract and mutates bindings", async () => {
+    const descriptor = {
+      schema_version: "1.0",
+      resource_id: "veyra.filesystem.read",
+      kind: "tool",
+      version: "1.0.0",
+      reference: "veyra.filesystem.read@1.0.0",
+      name: "Filesystem Read",
+      description: "Read a bounded Project path.",
+      origin: "builtin",
+      content_hash: "a".repeat(64),
+      availability: "ready",
+      factory_selectable: true,
+      runtime_status: "supported",
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: ["$PROJECT"], filesystem_write_roots: [], shell_workspace_only: false },
+      tags: ["filesystem"],
+      spec: {},
+      scope: "project",
+      binding_source: "manual",
+      bound_content_hash: "a".repeat(64),
+      used_by: [],
+    };
+    const payload = { schema_version: "1.0", project_id: "project-1", resources: [descriptor], missing_references: [], project_count: 1, used_count: 0, unbound_count: 0, builtin_count: 9 };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(payload))
+      .mockResolvedValueOnce(response(payload, 201))
+      .mockResolvedValueOnce(response(payload));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.listProjectResources("project-1")).resolves.toMatchObject({ project_count: 1, resources: [{ reference: descriptor.reference, scope: "project" }] });
+    await client.addProjectResource("project-1", { reference: descriptor.reference });
+    await client.removeProjectResource("project-1", "veyra.filesystem.read", "1.0.0");
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/resources");
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/resources");
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/v1/projects/project-1/resources/veyra.filesystem.read/versions/1.0.0");
+  });
+
   it("reveals an indexed Project folder through the desktop intent header", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", status: "revealed", root_path: "/tmp/Inside" }));
     const client = new LocalApiClient({ fetcher });

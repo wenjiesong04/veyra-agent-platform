@@ -25,6 +25,7 @@ from .common import (
 
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+_CATALOG_REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]*@[0-9]+\.[0-9]+\.[0-9]+$")
 _RESOURCE_REF = re.compile(
     r"^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
     r"@([0-9]+\.[0-9]+\.[0-9]+)$"
@@ -85,6 +86,41 @@ class ResourceRef:
 
     def as_ref(self) -> str:
         return f"{self.resource_id}@{self.version}"
+
+
+@dataclass(frozen=True)
+class ProjectResourceBinding:
+    """A Project-owned selection of one immutable Catalog resource version."""
+
+    reference: str
+    content_hash: str
+    source: str = "manual"
+
+    @classmethod
+    def from_dict(cls, data: Any) -> ProjectResourceBinding:
+        item = require_mapping(data, "project resource binding")
+        require_keys(
+            item,
+            allowed={"reference", "content_hash", "source"},
+            required={"reference", "content_hash"},
+        )
+        reference = require_string(
+            item["reference"], "reference", pattern=_CATALOG_REFERENCE
+        )
+        content_hash = require_string(item["content_hash"], "content_hash")
+        if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+            raise ContractValidationError("content_hash must be a SHA-256 digest")
+        source = require_string(item.get("source", "manual"), "source")
+        if source not in {"manual", "factory", "imported", "reconciled"}:
+            raise ContractValidationError("project resource binding source is invalid")
+        return cls(reference=reference, content_hash=content_hash, source=source)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "reference": self.reference,
+            "content_hash": self.content_hash,
+            "source": self.source,
+        }
 
 
 @dataclass(frozen=True)

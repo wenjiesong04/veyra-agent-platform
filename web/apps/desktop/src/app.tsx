@@ -25,6 +25,7 @@ import { PageErrorBoundary } from "./pages/page-error-boundary";
 import { ProjectAnalysisPage } from "./pages/project-analysis";
 import { ProjectChatPage } from "./pages/project-chat";
 import { ProjectDetailPage } from "./pages/project-detail";
+import { ProjectResourcesPage } from "./pages/project-resources";
 import { ProjectKnowledgePage } from "./pages/project-knowledge";
 import { ProjectWorkflowsPage } from "./pages/project-workflows";
 import { useProjectNavigation } from "./features/projects/project-navigation";
@@ -34,14 +35,15 @@ import { StudioPage } from "./pages/studio";
 
 const desktopCommunityApi = createCommunityApi({ baseUrl: "/community-api/api/v1" });
 
-function homeNavigation(libraryHref: string): NavigationGroup {
+function homeNavigation(libraryHref: string, locale: "zh" | "en"): NavigationGroup {
+  const resourceCatalog = locale === "zh" ? "资源目录" : "Resource catalog";
   return {
     label: "Features",
     section: "fixed",
     items: [
       { href: desktopRoutePaths.chat, label: "New chat", icon: MessageCirclePlus },
       { href: desktopRoutePaths.monitor, label: "Run workspace", icon: Gauge },
-      { href: libraryHref, label: "Resource library", icon: Boxes },
+      { href: libraryHref, label: resourceCatalog, icon: Boxes },
       { href: desktopRoutePaths.files, label: "Knowledge base", icon: FileText },
       { href: desktopRoutePaths.community, label: "Community", icon: Globe2 },
     ],
@@ -127,7 +129,8 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
   if (route.kind === "chat") return <NewChatPage />;
   if (route.kind === "projects") return <NewChatPage />;
-  if (route.kind === "project") return <ComponentsPage catalogHref={projectRoutePaths.project(route.projectId)} />;
+  if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
+  if (route.kind === "project-resources") return <ProjectResourcesPage projectId={route.projectId} />;
   if (route.kind === "project-chat") return <ProjectChatPage projectId={route.projectId} />;
   if (route.kind === "project-analysis") return <ProjectAnalysisPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
@@ -142,7 +145,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "agent-design") return <StudioPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "agent-analysis") return <AgentAnalysisPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "agent-run") return <AgentRunPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
-  if (route.kind === "components") return <ComponentsPage />;
+  if (route.kind === "components" || route.kind === "resources") return <ComponentsPage catalogHref={desktopRoutePaths.resources} />;
   if (route.kind === "component") return <ComponentsPage componentId={route.componentId} />;
   if (route.kind === "files") return <FilesPage />;
   if (route.kind === "file") return <FilesPage fileId={route.fileId} />;
@@ -189,7 +192,7 @@ function DesktopWorkspace() {
   const historyActive = route.kind === "runs" || route.kind === "project-runs";
   const navigation: NavigationGroup[] = workspaceRoute
     ? [projectContextNavigation(workspaceRoute, locale), ...projectNavigation, agentRecentNavigation(locale)]
-    : [homeNavigation(libraryHref), ...projectNavigation];
+    : [homeNavigation(libraryHref, locale), ...projectNavigation];
 
   return (
     <ApplicationShell

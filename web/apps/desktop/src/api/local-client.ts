@@ -45,6 +45,7 @@ import {
   type CreateMcpServerRequest,
   type McpServer,
   type ImportProjectPathRequest,
+  type AddProjectResourceRequest,
   type OpenProjectRequest,
   type ProjectAgentRecord,
   type ProjectFileContentResponse,
@@ -53,6 +54,8 @@ import {
   type ProjectFilesResponse,
   type ProjectKnowledgeRecord,
   type ProjectSummaryResponse,
+  type ProjectResourceDescriptor,
+  type ProjectResourcesResponse,
   type ProjectWorkflowRecord,
   type RevealProjectResponse,
   type SaveDraftRequest,
@@ -137,6 +140,9 @@ export type LocalProjectApi = {
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; }): Promise<CreatedAgentResponse>;
   importProject?(file: File): Promise<ProjectSummaryResponse>;
   importProjectFromPath?(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse>;
+  listProjectResources?(projectId: string): Promise<ProjectResourcesResponse>;
+  addProjectResource?(projectId: string, input: AddProjectResourceRequest): Promise<ProjectResourcesResponse>;
+  removeProjectResource?(projectId: string, resourceId: string, version: string): Promise<ProjectResourcesResponse>;
   revealProject?(projectId: string): Promise<RevealProjectResponse>;
   exportProject?(projectId: string): Promise<Blob>;
   exportAgent?(projectId: string, agentId: string): Promise<ExportResponse>;
@@ -898,6 +904,7 @@ function resource(value: unknown, status = 502): ResourceDescriptor {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     resource_id: asString(record.resource_id, "resource.resource_id", status),
     kind,
+    ...(record.component_class === undefined ? {} : { component_class: record.component_class === "composite" ? "composite" as const : "primitive" as const }),
     version: asString(record.version, "resource.version", status),
     reference: asString(record.reference, "resource.reference", status),
     name: asString(record.name, "resource.name", status),
@@ -922,6 +929,43 @@ function listedResources(value: unknown, status = 502): ListResourcesResponse {
     return { kind, count: asNumber(kindRecord.count, `resource kind ${kind} count`, status) };
   });
   return { schema_version: LOCAL_API_SCHEMA_VERSION, resources: asArray(record.resources, "resources", status).map((item) => resource(item, status)), kinds };
+}
+
+const projectResourceScopes = new Set(["project", "used_unbound", "builtin"]);
+
+function projectResource(value: unknown, status = 502): ProjectResourceDescriptor {
+  const record = asRecord(value, status);
+  const scope = asString(record.scope, "project_resource.scope", status);
+  if (!projectResourceScopes.has(scope)) {
+    throw new LocalApiClientError("The local service returned an invalid Project resource scope.", { status, code: "invalid_response" });
+  }
+  const bindingSource = record.binding_source === null ? null : asString(record.binding_source, "project_resource.binding_source", status);
+  return {
+    ...resource(record, status),
+    scope: scope as ProjectResourceDescriptor["scope"],
+    binding_source: bindingSource as ProjectResourceDescriptor["binding_source"],
+    bound_content_hash: record.bound_content_hash === null ? null : asString(record.bound_content_hash, "project_resource.bound_content_hash", status),
+    used_by: asArray(record.used_by, "project_resource.used_by", status).map((item) => {
+      const usage = asRecord(item, status);
+      const kind = asString(usage.kind, "project_resource.used_by.kind", status);
+      if (kind !== "agent" && kind !== "workflow") throw new LocalApiClientError("The local service returned an invalid Project resource usage kind.", { status, code: "invalid_response" });
+      return { kind, resource_id: asString(usage.resource_id, "project_resource.used_by.resource_id", status), name: asString(usage.name, "project_resource.used_by.name", status) };
+    }),
+  };
+}
+
+function projectResources(value: unknown, status = 502): ProjectResourcesResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_resources.project_id", status),
+    resources: asArray(record.resources, "project_resources.resources", status).map((item) => projectResource(item, status)),
+    missing_references: asArray(record.missing_references, "project_resources.missing_references", status).map((item) => asString(item, "project resource reference", status)),
+    project_count: asNumber(record.project_count, "project_resources.project_count", status),
+    used_count: asNumber(record.used_count, "project_resources.used_count", status),
+    unbound_count: asNumber(record.unbound_count, "project_resources.unbound_count", status),
+    builtin_count: asNumber(record.builtin_count, "project_resources.builtin_count", status),
+  };
 }
 
 function resourceDraft(value: unknown, status = 502): ResourceDraftResponse {
@@ -1630,6 +1674,18 @@ export class LocalApiClient {
     if (filters.availability) params.set("availability", filters.availability);
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return this.request(`resources${suffix}`, listedResources);
+  }
+
+  listProjectResources(projectId: string): Promise<ProjectResourcesResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/resources`, projectResources);
+  }
+
+  addProjectResource(projectId: string, input: AddProjectResourceRequest): Promise<ProjectResourcesResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/resources`, projectResources, { method: "POST", body: input });
+  }
+
+  removeProjectResource(projectId: string, resourceId: string, version: string): Promise<ProjectResourcesResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}`, projectResources, { method: "DELETE" });
   }
 
   getResource(resourceId: string, version: string): Promise<ResourceDescriptor> {

@@ -84,6 +84,66 @@ def test_project_routes_create_open_list_and_get_empty_project(tmp_path: Path) -
         assert not (nested / "project.vproject.yaml").exists()
 
 
+def test_project_resources_are_separate_from_global_catalog(tmp_path: Path) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/v1/projects", json={"name": "Resource scope"})
+        assert created.status_code == 201
+        project_id = created.json()["project_id"]
+
+        catalog = client.get("/api/v1/resources")
+        assert catalog.status_code == 200
+        candidate = next(
+            item
+            for item in catalog.json()["resources"]
+            if item["kind"] in {"tool", "skill", "policy", "template"}
+        )
+
+        project_resources = client.get(f"/api/v1/projects/{project_id}/resources")
+        assert project_resources.status_code == 200
+        assert project_resources.json()["project_count"] == 0
+        assert any(
+            item["scope"] == "builtin" for item in project_resources.json()["resources"]
+        )
+
+        added = client.post(
+            f"/api/v1/projects/{project_id}/resources",
+            json={"reference": candidate["reference"]},
+        )
+        assert added.status_code == 201
+        assert added.json()["project_count"] == 1
+        selected = next(
+            item
+            for item in added.json()["resources"]
+            if item["reference"] == candidate["reference"]
+        )
+        assert selected["scope"] == "project"
+        assert selected["binding_source"] == "manual"
+
+        manifest = Path(created.json()["root_path"]) / "project.vproject.yaml"
+        assert candidate["reference"] in manifest.read_text(encoding="utf-8")
+
+        removed = client.delete(
+            f"/api/v1/projects/{project_id}/resources/"
+            f"{candidate['resource_id']}/versions/{candidate['version']}"
+        )
+        assert removed.status_code == 200
+        assert removed.json()["project_count"] == 0
+
+        primitive = next(
+            item for item in catalog.json()["resources"] if item["kind"] == "component"
+        )
+        rejected = client.post(
+            f"/api/v1/projects/{project_id}/resources",
+            json={"reference": primitive["reference"]},
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "resource_builtin"
+
+
 def test_project_metadata_description_pinning_and_closed_patch_body(
     tmp_path: Path,
 ) -> None:

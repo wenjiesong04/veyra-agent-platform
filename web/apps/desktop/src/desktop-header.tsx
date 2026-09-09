@@ -7,8 +7,8 @@ type DesktopHeader = { title: string; breadcrumbs?: Crumb[] };
 type DesktopLocale = "zh" | "en";
 
 const rootTitles: Record<"en" | "zh", Partial<Record<DesktopRouteLocation["kind"], string>>> = {
-  en: { chat: "New chat", projects: "New chat", components: "Resource Library", files: "Knowledge base", runs: "History", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found" },
-  zh: { chat: "新聊天", projects: "新聊天", components: "资源库", files: "知识库", runs: "历史", monitor: "监控", community: "社区", account: "账号", settings: "设置", "not-found": "找不到页面" },
+  en: { chat: "New chat", projects: "New chat", components: "Resource Catalog", resources: "Resource Catalog", files: "Knowledge base", runs: "History", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found" },
+  zh: { chat: "新聊天", projects: "新聊天", components: "资源目录", resources: "资源目录", files: "知识库", runs: "历史", monitor: "监控", community: "社区", account: "账号", settings: "设置", "not-found": "找不到页面" },
 };
 
 function agentDisplayLabel(agent: ProjectAgentRecord): string {
@@ -29,8 +29,8 @@ function projectTrail(home: Crumb, project: Crumb, ...rest: Crumb[]): Crumb[] {
 
 export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSummaryResponse[], locale: DesktopLocale = "en"): DesktopHeader {
   const contextLabels = locale === "zh"
-    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", resourceLibrary: "资源库", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "历史" }
-    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", resourceLibrary: "Resource library", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "History" };
+    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", resourceLibrary: "项目资源", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "历史" }
+    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", resourceLibrary: "Project resources", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "History" };
   const title = rootTitles[locale][route.kind];
   if (title) return { title };
   const project = "projectId" in route ? projects.find((item) => item.project_id === route.projectId) : undefined;
@@ -40,7 +40,10 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   if (!projectCrumb) return { title: "Route not found" };
 
   if (route.kind === "project") {
-    return { title: contextLabels.resourceLibrary, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.resourceLibrary, href: projectCrumb.href, icon: Boxes }) };
+    return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: projectLabel, href: projectCrumb.href, icon: FolderKanban }) };
+  }
+  if (route.kind === "project-resources") {
+    return { title: contextLabels.resourceLibrary, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.resourceLibrary, href: projectRoutePaths.projectResources(route.projectId), icon: Boxes }) };
   }
   if (route.kind === "project-agents") {
     return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }) };

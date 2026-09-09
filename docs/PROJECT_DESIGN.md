@@ -312,9 +312,11 @@ That combination is the product. No single individual feature is the moat.
 - Files / Assets as raw file storage
 - immutable versions, imports/exports, packages
 - run artifacts, trash/restore
-- Component catalog keeps an independent Resource Library (list + detail)
-  at `#/components`. The Agent/Workflow palette is a projection of that
-  catalog, not a replacement for the library page.
+- Resource Catalog keeps an independent global list + detail at `#/resources`.
+  The Project Resource Library at `#/projects/:projectId/resources` shows
+  selected, locked, and source-referenced Project dependencies. The
+  Agent/Workflow palette is a projection of Project resources plus built-in
+  primitives, not a replacement for either page.
 
 #### Veyra Community
 
@@ -408,11 +410,19 @@ keeps each resource kind in its own folder:
   tests/
 ```
 
+Project Catalog dependencies are declared in `project.vproject.yaml` under
+`resources`. These bindings select immutable Catalog references and content
+hashes for the Project; Agent and Workflow source locks remain the usage-level
+proof. Built-in primitive Components are always available and do not need a
+Project binding. Optional Tools, MCP descriptors, Skills, Policies, Templates,
+and Composite Components do.
+
 Components remain a storage and catalog kind with required `primitive` or
-`composite` class. They keep an independent Resource Library workspace
-(`#/components`: list + detail for description, version, examples, and
-references). The Agent/Workflow Canvas palette is a filtered projection of
-the same catalog for drag-and-drop. Composite packages expand to locked
+`composite` class. The global Resource Catalog (`#/resources`) provides list +
+detail for description, version, examples, and references. The Project Resource
+Library binds optional Catalog versions for the current Project. The
+Agent/Workflow Canvas palette is a filtered projection of Project bindings plus
+built-in primitives. Composite packages expand to locked
 primitive nodes when dropped on a Canvas. Components are not a flowchart
 and are not renamed into a ninth Flow type.
 
@@ -849,7 +859,7 @@ workspace per layer, not one Canvas for every page.
 | Project | Dashboard | Status, resource counts, and settings. No graph editing. |
 | Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output. Left palette projects Model, Tool, Knowledge bindings, plus HumanApproval and Verifier. Condition, Transform, and AgentCall stay on the Workflow canvas. Right inspector edits parameters. Bottom panel test-runs. |
 | Workflow | Same Canvas shell | Declares its own inputs and outputs. Palette is AgentCall plus control flow (Condition, Transform, HumanApproval, Verifier). No Model or Tool nodes. Existing Agents are not renamed into Workflows. |
-| Component | Resource Library | Independent list + detail for description, version, examples, and references. Not a flowchart. Primitive vs composite stays a required class. The Studio palette projects this catalog; it does not replace the library. |
+| Component | Resource Catalog + Project Resource Library | Global Catalog owns description, version, examples, and references; Project Resource Library owns selected versions and usage. Not a flowchart. Primitive vs composite stays a required class. |
 | Knowledge | Library + preview | Project documents, metadata, and citations. Not a flowchart. |
 | Files / Assets | File manager | Raw indexed files, separate from Knowledge documents. |
 | Runs | List + timeline + logs | Inspect steps, outputs, and replay. No editing. |
@@ -862,29 +872,28 @@ removed:
 ```text
 New chat
 Run workspace
-Resource library
+Resource catalog
 Knowledge base
 Community
 Projects tree
 ```
 
-Catalog kinds are page tabs, not sidebar children. The default Resource
-Library view is the full catalog. Home Resource library opens the last
-Project workspace Resource library when a Project exists, so the chrome
-stays New chat / Resource library / Analysis. `#/components` remains the
-fallback when no Project is indexed. Settings and Account stay in the
-account menu.
+Catalog kinds are page tabs, not sidebar children. The Home Resource Catalog
+is the full platform Catalog and does not change scope based on the last
+Project. `#/components` remains a compatibility alias. Settings and Account
+stay in the account menu.
 
 Project sidebar (any route inside a Project, including Agent Canvas):
 
 ```text
-New chat / Resource library / Analysis
+New chat / Project resources / Analysis
 ```
 
-Those three items are workspace surfaces, not resource kinds. Resource
-library opens the same versioned catalog as `#/components` while keeping
-Project chrome. Catalog kinds stay out of the Project tree. The Project
-tree below the workspace list is the resource model:
+Those three items are workspace surfaces, not resource kinds. Project
+resources opens the current Project's selected and locked Catalog dependencies
+while keeping Project chrome. The global Resource Catalog stays at
+`#/resources`. Catalog kinds stay out of the Project tree. The Project tree
+below the workspace list is the resource model:
 
 ```text
 Project
@@ -903,13 +912,12 @@ leaf because it is an index, not a Canvas instance. Run history is not a
 Project-tree item. The header History control opens `#/runs` on the home
 workspace and `#/projects/:projectId/runs` inside a Project.
 
-Resource Library is a Project workspace surface, not a home-sidebar
-catalog tree. The same page is used from `#/projects/:projectId` and the
-`#/components` fallback. Catalog kinds stay on the page tabs: All,
-Components, Tools / MCP, Skills, Policies, Templates. MCP is grouped
-with Tools and is not a product layer beside Agent, Workflow, Knowledge, or
-Component. The Agent/Workflow Canvas palette remains a projection of that
-catalog.
+Resource Catalog is a Home workspace surface for discovering all immutable
+platform resources. Project Resource Library is a separate Project workspace
+surface for bindings, usage locations, locks, configuration state, and
+permission scope. MCP is grouped with Tools and is not a product layer beside
+Agent, Workflow, Knowledge, or Component. The Agent/Workflow Canvas palette
+projects the Project Resource Library plus built-in primitives.
 
 The Project-to-resource tree lets users pin, edit, delete, and add Agents,
 and add Workflows and Knowledge, without duplicating those kinds in the
@@ -922,6 +930,7 @@ Routes:
 
 ```text
 #/projects/:projectId
+#/projects/:projectId/resources
 #/projects/:projectId/agents
 #/projects/:projectId/agents/:agentId
 #/projects/:projectId/agents/:agentId/design
@@ -933,6 +942,7 @@ Routes:
 #/projects/:projectId/files
 #/projects/:projectId/runs
 #/components
+#/resources
 #/components/:componentId
 #/files
 #/community
@@ -942,12 +952,12 @@ Routes:
 #/account
 ```
 
-`#/projects/:projectId` is the Project-chrome Resource Library: the same
-catalog as `#/components`. `#/components` remains the home destination and
-a deep link into catalog detail. It is not deleted, not absorbed into the
-Agent palette, and not drawn as a flowchart. The Desktop header uses one
-title for a root page and a horizontal, linked breadcrumb for nested
-Project and Agent pages.
+`#/projects/:projectId` is the Project Dashboard. `#/resources` is the global
+Resource Catalog; `#/components` remains a compatibility alias and a deep link
+into Catalog detail. `#/projects/:projectId/resources` is the Project Resource
+Library. It is not absorbed into the Agent palette and is not drawn as a
+flowchart. The Desktop header uses one title for a root page and a horizontal,
+linked breadcrumb for nested Project and Agent pages.
 
 ### 7.2.1 Information architecture lock
 
@@ -963,9 +973,10 @@ not rename Agent into Workflow.
    Workflow share one Canvas shell. Components use Resource Library
    (list + detail). Knowledge uses document management. Runs use list +
    timeline. Files use the file manager.
-3. **Components keep an independent entry.** `#/components` stays on the
-   home sidebar. The left Studio palette is a filtered projection of the
-   same catalog for drag-and-drop.
+3. **The Catalog and Project Resource Library stay separate.** `#/resources`
+   is the global Catalog and `#/projects/:projectId/resources` is the selected
+   Project dependency set. The left Studio palette projects Project resources
+   plus built-in primitives for drag-and-drop.
 4. **MCP is not a product layer.** Catalog kind `mcp_tool` is a discovery
    record under Tools. After normalization it lands on the Canvas as a
    Tool node. Studio groups MCP with Tools. Architecture diagrams must
@@ -1435,6 +1446,9 @@ Star does not mean safe or effective.
 - `GET /api/v1/resources/{resource_id}/versions/{version}`
 - `POST /api/v1/resources/resolve`
 - `POST /api/v1/resources/drafts` (quarantined Resource Workshop intake)
+- `GET /api/v1/projects/{project_id}/resources`
+- `POST /api/v1/projects/{project_id}/resources`
+- `DELETE /api/v1/projects/{project_id}/resources/{resource_id}/versions/{version}`
 - `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`
 - `POST /api/v1/files/import`
