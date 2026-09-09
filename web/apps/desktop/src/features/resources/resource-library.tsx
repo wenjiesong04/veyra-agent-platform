@@ -89,12 +89,14 @@ function matchesQuery(item: ResourceDescriptor, query: string): boolean {
 export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePaths.components }: { resourceId?: string; catalogHref?: string }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
-  const { api } = useProjectWorkspace();
+  const { api, projects } = useProjectWorkspace();
   const [tab, setTab] = useState<ResourceLibraryTab>(() => resourceLibraryTabFromHash(window.location.hash));
   const [query, setQuery] = useState("");
   const [resources, setResources] = useState<ResourceDescriptor[]>([]);
   const [selected, setSelected] = useState<ResourceDescriptor | null>(null);
   const [detailMissing, setDetailMissing] = useState(false);
+  const [targetProjectId, setTargetProjectId] = useState("");
+  const [addState, setAddState] = useState<"idle" | "adding" | "added" | "error">("idle");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const currentKinds = useMemo(
@@ -147,6 +149,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
       });
   }, [api, resourceId]);
 
+  useEffect(() => {
+    if (!targetProjectId && projects[0]) setTargetProjectId(projects[0].project_id);
+  }, [projects, targetProjectId]);
+
   const changeTab = (next: ResourceLibraryTab) => {
     if (next === tab) return;
     setTab(next);
@@ -154,12 +160,23 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
     if (window.location.hash !== href) window.location.hash = href;
   };
 
+  const addToProject = async () => {
+    if (!selectedResource || !targetProjectId || !api.addProjectResource) return;
+    setAddState("adding");
+    try {
+      await api.addProjectResource(targetProjectId, { reference: selectedResource.reference });
+      setAddState("added");
+    } catch {
+      setAddState("error");
+    }
+  };
+
   const copy = zh
     ? {
-      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签",
+      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project",
     }
     : {
-      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags",
+      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available",
     };
 
   const visible = useMemo(() => {
@@ -211,6 +228,11 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
               </div>
               <p className="resource-detail-reference">{selectedResource.reference}</p>
             </div>
+          </div>
+          <div className="resource-detail-actions">
+            {projects.length ? <select value={targetProjectId} onChange={(event) => { setTargetProjectId(event.target.value); setAddState("idle"); }} aria-label={zh ? "选择目标 Project" : "Choose target Project"}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}</select> : <span className="resource-detail-muted">{copy.noProject}</span>}
+            <Button size="sm" variant="primary" disabled={!targetProjectId || addState === "adding" || !api.addProjectResource} onClick={() => void addToProject()}>{addState === "adding" ? "…" : addState === "added" ? copy.added : copy.addToProject}</Button>
+            {addState === "error" ? <span className="resource-detail-error">{copy.addFailed}</span> : null}
           </div>
           <div className="resource-detail-facts">
             <div><span>{copy.availability}</span><StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} /></div>

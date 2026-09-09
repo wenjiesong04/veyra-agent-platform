@@ -64,7 +64,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
     if (api.listProjectResources) {
-      void api.listProjectResources(projectId).then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
+      void api.listProjectResources(projectId).then((response) => setCatalog(response.resources.filter((item) => item.scope !== "used_unbound"))).catch(() => setCatalog([]));
       return;
     }
     if (api.listResources) void api.listResources().then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
