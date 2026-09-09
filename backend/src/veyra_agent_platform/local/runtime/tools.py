@@ -18,6 +18,7 @@ _MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
 _FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".token")
 _READ_ADAPTER = "veyra.runtime.filesystem.read"
+_LIST_ADAPTER = "veyra.runtime.filesystem.list"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 
@@ -78,6 +79,7 @@ class ToolRuntime:
         self.mcp = mcp
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
+            _LIST_ADAPTER: self._execute_list,
             _WRITE_ADAPTER: self._execute_write,
             _MCP_ADAPTER: self._execute_mcp,
         }
@@ -245,6 +247,24 @@ class ToolRuntime:
             authorization, output, byte_length, relative_path
         )
 
+    def _execute_list(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del source, node, approved
+        output, byte_length, relative_path = self._list_project_directory(
+            project_root, values.get("path")
+        )
+        return self._receipt_execution(
+            authorization, output, byte_length, relative_path
+        )
+
     def _execute_mcp(
         self,
         *,
@@ -395,6 +415,79 @@ class ToolRuntime:
                 "tool_failed", "Tool could not write the Project file"
             ) from exc
         return {"written": True}, len(encoded), relative_path
+
+    @classmethod
+    def _list_project_directory(
+        cls, project_root: Path, raw_path: Any
+    ) -> tuple[dict[str, Any], int, str]:
+        directory, relative_path = cls._project_directory(project_root, raw_path)
+        try:
+            children = sorted(directory.iterdir(), key=lambda item: item.name.lower())
+        except OSError as exc:
+            raise ToolRuntimeError(
+                "tool_failed", "Tool could not list the Project directory"
+            ) from exc
+        entries: list[dict[str, Any]] = []
+        for child in children[:1_000]:
+            if child.is_symlink() or cls._is_forbidden_path(child.name):
+                continue
+            try:
+                is_directory = child.is_dir()
+                entries.append(
+                    {
+                        "name": child.name,
+                        "kind": "directory" if is_directory else "file",
+                        "byte_length": 0 if is_directory else child.stat().st_size,
+                    }
+                )
+            except OSError:
+                continue
+        output = {"entries": entries}
+        encoded = json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        if len(encoded) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Directory listing exceeds the 1 MiB limit"
+            )
+        return output, len(encoded), relative_path
+
+    @classmethod
+    def _project_directory(cls, project_root: Path, raw_path: Any) -> tuple[Path, str]:
+        if raw_path is None or raw_path == "" or raw_path == ".":
+            parts: tuple[str, ...] = ()
+            relative_path = "."
+        elif isinstance(raw_path, str) and not os.path.isabs(raw_path):
+            portable = PurePosixPath(raw_path)
+            if portable.is_absolute() or any(
+                part in {"", ".", ".."} for part in portable.parts
+            ):
+                raise ToolRuntimeError(
+                    "tool_path_denied",
+                    "Tool paths may not escape the Project directory",
+                )
+            parts = portable.parts
+            relative_path = portable.as_posix()
+        else:
+            raise ToolRuntimeError(
+                "tool_path_denied", "Tool paths must be relative to the Project"
+            )
+        root = project_root.expanduser().absolute()
+        if root.is_symlink() or not root.is_dir():
+            raise ToolRuntimeError(
+                "project_unavailable", "Project directory is unavailable"
+            )
+        current = root
+        for part in parts:
+            current = current / part
+            if current.is_symlink() or not current.is_dir():
+                raise ToolRuntimeError(
+                    "tool_path_denied", "Tool directory is unavailable or unsafe"
+                )
+        return current, relative_path
+
+    @staticmethod
+    def _is_forbidden_path(name: str) -> bool:
+        lowered = name.lower()
+        return lowered in _FORBIDDEN_NAMES or lowered.endswith(_FORBIDDEN_SUFFIXES)
 
     def _call_mcp(
         self, resource: dict[str, Any], values: dict[str, Any]

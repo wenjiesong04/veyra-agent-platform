@@ -48,6 +48,7 @@ const ZH_TITLE: Record<string, string> = {
   Output: "输出",
   Note: "文字卡片",
   "Read File": "读取文件",
+  "List Files": "列出文件",
   "Write File": "写入文件",
   "Workspace Shell": "工作区 Shell",
   "HTTP Request": "HTTP 请求",

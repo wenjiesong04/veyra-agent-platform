@@ -601,6 +601,7 @@ primitive; it is a workshop proposal until promoted.
 Initial tools:
 
 - filesystem.read — current Runtime adapter, Project workspace only
+- filesystem.list — current Runtime adapter, bounded Project directory listing
 - filesystem.write — current Runtime adapter, HumanApproval by default, Project workspace only
 - shell.exec, approval and workspace scope by default
 - http.request, host allowlist
