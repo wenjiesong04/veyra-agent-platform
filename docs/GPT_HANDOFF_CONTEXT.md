@@ -312,7 +312,7 @@ Community 目前还没有 Agent registry、发布 quarantine、公开版本、�
 - `GET .../runs/{run_id}/events`（replayable SSE，waiting 时保持跟随直到终态）
 - `POST /api/v1/system/select-directory`
 
-Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落库，并可通过 SSE 回放/跟随。已有 idempotency、immutable version binding、Tool authorization/receipt、`waiting` 审批暂停，以及 durable `run_command`。完整 Studio 图上的 Run Canvas 尚未实现。`resume` 对审批等待不适用。
+Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行过程中落库，并可通过 SSE 回放/跟随。已有 idempotency、immutable version binding、Tool authorization/receipt、`waiting` 审批暂停、durable `run_command` 和本机 Agent conversation context。完整 token 流尚未实现。`resume` 对审批等待不适用。
 
 ### Community API
 
@@ -346,9 +346,9 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 - Root `#/projects` 当前兼容地显示 New Chat；真实 Project 列表主要在侧栏和 Project routes。是否恢复一个独立 Projects dashboard，要以用户后续 UX 决定。
 - `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
 - Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
-- `#/runs` 和 `#/monitor` 仍有静态演示数据，不是实时 Runtime 控制台。
+- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，仍可继续增强实时聚合和 reconcile 视图。
 - Desktop `#/community` 仍使用静态 entries；真实 Community registry 尚未实现。
-- Agent version detail 页面仍有静态展示数据，尚未接版本 API。
+- Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
 
 ## 8. 已知缺口和不可宣称的内容
@@ -359,7 +359,7 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
 4. Orchestrator：WorkItem、依赖、lease、worktree、retry、stall/reconcile。
-5. Monitor/Runs 从静态页面切换到真实 API。
+5. Monitor/Runs 已切换到真实 API；Orchestrator 的 lease、attempt、worktree、retry 和更丰富 reconcile 仍未完成。
 6. Community registry：publish/quarantine/hash scan/download/import/Fork/Star/Review/Report/moderation。
 7. Tauri/PyInstaller/macOS arm64 包。
 8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
@@ -385,21 +385,23 @@ Studio 从 Catalog（含 `spec.ui`）投影节点卡片。Tool 在画布上可�
 
 Filesystem、Shell、HTTP、GitHub 和 MCP discovered tools 已有 Runtime adapter、权限校验、审批/receipt 或 secret binding；MCP 使用 newline-delimited JSON-RPC，发现结果需审核后才能进入 Factory/Runtime。
 
-### 下一波 B：Agent conversation
+### 已完成：Agent conversation
 
 1. Factory conversation 与 Agent conversation 继续分开。
 2. Agent conversation 只服务已有 Agent 的输入、Run、历史和证据，不重新生成 Agent source。
 3. 复用 Runtime provider boundary；没有用户 API 时只允许设计/查看，明确禁止运行。
 
-### 下一波 C：真实 Monitor/Runs
+Agent Chat 现在从 Agent 详情入口直接进入，支持最近 Run 回放、conversation 列表/切换、新建会话和持久化消息上下文。
 
-把静态 `monitor.tsx`、`runs.tsx` 替换为真实 Local API 数据，显示运行状态、等待审批、失败、验证和 receipt；不要先做装饰性大屏。
+### 下一波 B：Orchestrator completion
 
-### 下一波 D：Community registry
+补齐 WorkItem lease、attempt、retry、stall/reconcile 和更清晰的 Monitor 状态；保持数据来自真实 Local API，不做装饰性大屏。
+
+### 下一波 C：Community registry
 
 先实现 Agent/template 不可变版本的 quarantine、hash/secret/path/symlink 扫描、下载、目标 Project 导入和 Fork lineage，再做 Star/Review/Report/审核。
 
-### 下一波 E：发行与部署
+### 下一波 D：发行与部署
 
 只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。
 
