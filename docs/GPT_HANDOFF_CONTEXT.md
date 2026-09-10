@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`7ac8f7e8c36b313894e59cf13e5a9f9da91bb96a`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析和 Tool 参数映射。
+- 最新功能代码基线：`779fb3415497f1db93381b4478b3a9dbe6608761`；后端 live 基线为 `a65386be506f3c70f0af799decf55134db8c5de1`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射和 Agent conversation。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -38,7 +38,7 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：`build_sha=4bbfaee372057fba745c5c36a1289ee54f925291`、`database_revision=local_0014_workflow_runs`、`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=a65386be506f3c70f0af799decf55134db8c5de1`、`database_revision=local_0015_agent_conversations`、`database_ready=true`。
 - Community `/api/v1/health`：`database_revision=community_0003_account_avatars`，`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 
@@ -344,7 +344,8 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 ### 仍是占位或静态演示
 
 - Root `#/projects` 当前兼容地显示 New Chat；真实 Project 列表主要在侧栏和 Project routes。是否恢复一个独立 Projects dashboard，要以用户后续 UX 决定。
-- `#/chat` New Chat 仍是入口提示；具体 Agent 对话需要在 Agent context 中继续实现。
+- `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
+- Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
 - `#/runs` 和 `#/monitor` 仍有静态演示数据，不是实时 Runtime 控制台。
 - Desktop `#/community` 仍使用静态 entries；真实 Community registry 尚未实现。
 - Agent version detail 页面仍有静态展示数据，尚未接版本 API。
@@ -440,8 +441,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push 和 Pull Request：`7ac8f7e` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=7ac8f7e...`、`local_0014_workflow_runs`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers` 可用，未输出任何密钥值。
+- GitHub Actions Push 和 Pull Request：`779fb34` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=a65386b...`、`local_0015_agent_conversations`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation routes 可用，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则

@@ -1288,6 +1288,8 @@ Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or
 - `tool_calls`
 - `approval_requests`
 - `run_commands`
+- `agent_conversations`
+- `agent_conversation_messages`
 - `runtime_connections`
 - `external_agent_sessions`
 - `workspace_locks`
@@ -1449,6 +1451,8 @@ Star does not mean safe or effective.
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/validate`
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/commit`
 - `GET /api/v1/projects/{project_id}/agents/{agent_id}/versions`
+- `GET/POST /api/v1/projects/{project_id}/agents/{agent_id}/conversations`
+- `GET /api/v1/projects/{project_id}/agents/{agent_id}/conversations/{conversation_id}`
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/fork`
 - `POST /api/v1/import`
 - `GET /api/v1/projects/{project_id}/agents/{agent_id}/export`
