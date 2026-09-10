@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`9ce006a3f83989d00fd582bdab252186e4d63642`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry 和目标 Project 导入 lineage。
+- 最新功能代码基线：`1cfe9ee8c50838617b6c62c16e01cc92f6980f25`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage 和 Desktop 发布面板。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -282,7 +282,7 @@ Community 已有真实账号基础：
 - 头像上传、读取和删除
 - Argon2id、HMAC/hash OTP、限流、HttpOnly/Secure/SameSite Cookie、CSRF 边界、邮件 outbox/QQ SMTP provider
 
-Community 已有最小可用 Agent registry：已认证用户可以上传经过 AgentSource schema、UTF-8、大小和明显凭据标记检查的 YAML；服务保存内容寻址包和不可变版本元数据，匿名用户可以浏览公开版本并下载。Desktop 详情页可以选择目标 Project，一键下载并交给本地导入器重新校验；本地会生成新 Agent 身份并记录远端 lineage。当前仍没有 quarantine/管理员审核队列、Fork 图关系、Star、Review 和 Report。
+Community 已有最小可用 Agent registry：Desktop 已能从本地 Project/Agent 导出并发布；服务执行 AgentSource schema、UTF-8、大小和明显凭据标记检查，保存内容寻址包和不可变版本元数据，用户可以浏览公开版本并下载。详情页可以选择目标 Project，一键下载并交给本地导入器重新校验；本地会生成新 Agent 身份并记录远端 lineage。当前仍没有 quarantine/管理员审核队列、Fork 图关系、Star、Review 和 Report。
 
 ## 6. 当前 API 入口
 
@@ -348,7 +348,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
 - Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
 - `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，仍可继续增强实时聚合和 reconcile 视图。
-- Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、YAML 下载和目标 Project 导入均已接入。发布入口暂时保留 API 级能力，下一步再补作者工作流 UI。
+- Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、YAML 下载、目标 Project 导入和从本地 Project 发布均已接入。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
 
@@ -444,7 +444,7 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34447638020` 和 Pull Request `34447642481`：`9ce006a` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- GitHub Actions Push `34448567162` 和 Pull Request `34448569868`：`1cfe9ee` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
 - Local live：`8771 /api/v1/health` 返回 `build_sha=9ce006a...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry 和 Community-origin import boundary 可用，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=15ee6f5...`、`community_0004_agent_registry`、`database_ready=true`；`GET /api/v1/registry/agents` 返回空目录，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。

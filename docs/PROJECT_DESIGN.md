@@ -1394,11 +1394,11 @@ Community data:
 ### 12.4 Upload pipeline
 
 The current local Community registry implements the first runnable slice:
-authenticated multipart YAML upload, AgentSource validation, size/UTF-8 checks,
-obvious credential-marker rejection, content-addressed storage, immutable
-version metadata, public listing/detail, and version download. It publishes
-directly after these checks, so it must not be described as the final
-quarantine/moderation pipeline.
+Desktop export plus authenticated multipart YAML upload, AgentSource validation,
+size/UTF-8 checks, obvious credential-marker rejection, content-addressed
+storage, immutable version metadata, public listing/detail, and version
+download. It publishes directly after these checks, so it must not be
+described as the final quarantine/moderation pipeline.
 
 ```text
 explicit upload
