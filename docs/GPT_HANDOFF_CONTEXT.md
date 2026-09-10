@@ -1,6 +1,6 @@
 # Veyra Agent Platform — GPT 交接上下文
 
-> 更新时间：2026-08-30
+> 更新时间：2026-09-10
 > 本文是给继续接手 Veyra Agent Platform 的 GPT/Agent 的工作上下文。它不是新的产品需求；如果它与用户的新消息冲突，以用户新消息和 `docs/PROJECT_DESIGN.md` 为准。
 
 ## 0. 交接指令
@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：本提交把 Resource Catalog 收成 `node.yaml` 包；上一刀 SSE 为 `5b07373`。
+- 最新功能代码基线：`4bbfaee372057fba745c5c36a1289ee54f925291`，已接入 Host Keychain 凭据、MCP 环境绑定和模型凭据解析。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -38,7 +38,7 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：目标为 `database_revision=local_0010_runtime_control_plane`，`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=4bbfaee372057fba745c5c36a1289ee54f925291`、`database_revision=local_0014_workflow_runs`、`database_ready=true`。
 - Community `/api/v1/health`：`database_revision=community_0003_account_avatars`，`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 
@@ -176,10 +176,10 @@ AgentSource 会保存：输入/输出、节点/连线、模型引用、工具引
 
 ### 5.3 Resource Catalog
 
-当前 Catalog 总计 29 个 immutable builtin descriptors，源定义位于 `resources/nodes/<family>/<id>/node.yaml`：
+当前 Catalog 总计 33 个 immutable builtin descriptors，源定义位于 `resources/nodes/<family>/<id>/node.yaml`：
 
-- 8 个 Component
-- 7 个 Tool
+- 10 个 Component
+- 9 个 Tool
 - 1 个 MCP descriptor
 - 6 个 Skill
 - 3 个 Policy
@@ -189,9 +189,9 @@ AgentSource 会保存：输入/输出、节点/连线、模型引用、工具引
 
 - `veyra.tool.filesystem.read@1.0.0`：`ready` + `supported`，现在有真实本地 adapter。
 - `veyra.tool.filesystem.write@1.0.0`：`ready` + `supported`，默认 `approval_required`，真实本地 adapter。
-- Workspace Shell、HTTP Request：`design_only` + `runtime_not_supported`。
-- GitHub Read/Write、Browser Navigate：`unavailable`，不可被 Factory 选择。
-- `veyra.mcp.call@1.0.0`：`requires_configuration` + `runtime_not_configured`，尚无 MCP 执行。
+- Workspace Shell、HTTP Request：`ready` + `supported`；Shell 和 HTTP 写入默认需要 HumanApproval。
+- GitHub Read/Write：`ready` + `supported`，分别提供只读和审批后的仓库 API 调用；Browser Navigate 仍为 `unavailable`。
+- `veyra.mcp.call@1.0.0`：仍是通用占位 descriptor；配置服务器后发现的 MCP Tool 会被规范化为 `ready` + `supported`，审核后可进入 Factory/Runtime。
 - Agent Component：`requires_configuration` + `runtime_not_configured`，设计可以继续，运行需要模型。
 - Skills 是非执行指令资产；Policies 是解析和 Runtime 授权的 overlay；Templates 是可 Fork 的完整 Agent 定义。
 - `node.yaml` 由本地 Resource Catalog 校验并计算 content hash；`spec.ui` 只给 Studio 调色板，不进入 Factory snapshot，也不进入 lock hash。Factory 只能组装 `factory_selectable` 节点。特殊节点只作为隔离的声明式缺失能力提案，不会自动生成或执行任意代码。
@@ -240,12 +240,14 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - Runtime profile 位于 `runtime/config.py`，与 Factory provider 分离。
 - 开发环境可使用 host process `MOONSHOT_API_KEY`；production/release 会拒绝共享 host key，要求用户提供自己的 Runtime API/profile。
 - Agent node 支持 `model.primary`，会向配置的 OpenAI-compatible provider 发起请求。
+- Knowledge binding 会按版本和内容 hash 校验，将明确绑定的 Project 文档注入模型上下文，并在 Run 事件中记录 receipt；侧边栏索引本身不等于 Runtime 上下文。
+- Desktop Settings 支持把 `model.primary` 和 `github.main` 保存到 macOS Keychain；`MOONSHOT_API_KEY` / `GITHUB_TOKEN` 仍可用于 headless 环境。
 - 已验证 string、object、array、number、boolean 的声明输出映射；不接受未声明字段。
 - 无 Runtime key 时，Run 以明确的 `runtime_not_configured` 失败，不伪造输出。
 
 ### 5.6 Tool Runtime
 
-当前真实 Tool adapter：`veyra.tool.filesystem.read@1.0.0` 和 `veyra.tool.filesystem.write@1.0.0`。
+当前真实 Tool adapter：Filesystem Read/List/Search/Write、Workspace Shell、HTTP Request、GitHub Read/Write，以及审核后的 discovered MCP Tool。
 
 - 执行前先做 authorization：Catalog availability、runtime status、完整 content hash lock、source permission subset、adapter 是否安装。拒绝会记录 `tool.requested`（`permission=denied`）并失败，不会动手。
 - Read：Project 内相对 UTF-8 文件路径；输出 `content` 字符串。
@@ -253,7 +255,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - 两者都拒绝绝对路径、`..` traversal、软链接、`.env`/credentials/密钥类后缀、非普通文件和超过 1 MiB 的内容。
 - Run 事件记录 `tool.requested`、`tool.started`、`tool.completed`；receipt 只包含 adapter、相对路径、字节数和输入/输出 digest，不记录文件全文。Write 的 `content` 只进 digest。
 - HumanApproval 会把同一 run 置为 `waiting`，持久化 approval request 和 checkpoint。`approve`/`reject` 从下一节点继续同一 run；`stop` → `cancelled`；`retry` → 新 run；`resume` 对审批等待返回 `command_not_applicable`。
-- Shell、HTTP、GitHub、Browser、MCP 仍明确不可执行。
+- Shell、HTTP、GitHub Read/Write 和 discovered MCP Tool 已可运行；Browser Navigate 仍明确不可执行。MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。
 
 ### 5.7 Project child-Agent 与 Runtime profile
 
@@ -351,8 +353,8 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 
 当前不能宣称“完整 V1”。未完成项：
 
-1. Tool Runtime 其余适配器：Shell、HTTP、GitHub、Browser、MCP。filesystem.read/write 已落地。
-2. POST `/run` 仍同步；完整 Studio 图 Run Canvas 和 token 流尚未做。可回放 SSE 与 Test Run 节点状态条已落地。审批控制面（waiting、approve/reject/stop/retry、checkpoint）已落地；`resume` 对审批等待明确不适用。
+1. Tool Runtime 仍缺 Browser Navigate；Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 已接入真实 adapter boundary。
+2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的持久化多轮交互、context、run history 和可恢复会话。
 4. Orchestrator：WorkItem、依赖、lease、worktree、retry、stall/reconcile。
 5. Monitor/Runs 从静态页面切换到真实 API。
@@ -370,36 +372,32 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 1. Tool call 已提升为 authorization/receipt 边界。
 2. `filesystem.write` 已落地，默认要求 HumanApproval，限制在 Project workspace。
 3. durable `run_commands`、approval request、checkpoint、stop/retry 已落地；审批等待用 approve/reject 继续同一 run。
-4. 可回放 SSE 与 Test Run 节点状态条已落地；POST `/run` 仍同步。
-5. Resource Catalog 以 `resources/nodes/<family>/<id>/node.yaml` 为唯一事实源；手写 `catalog.v1.json` 和 in-code fallback 已移除。AgentSource 的 8 个图组件类型没有改。
+4. 可回放 SSE、Test Run 节点状态条和异步 POST `/run` 已落地。
+5. Resource Catalog 以 `resources/nodes/<family>/<id>/node.yaml` 为唯一事实源；手写 `catalog.v1.json` 和 in-code fallback 已移除。AgentSource 的 Flow 图组件类型没有改。
 
-### 下一波 A：Catalog 驱动 Studio 调色板
+### 已完成：Catalog 驱动 Studio 调色板
 
 Studio 从 Catalog（含 `spec.ui`）投影节点卡片。Tool 在画布上可以显示成 Read File / Write File，源文件仍是 `component_type: Tool` + `uses`。
 
-### 下一波 B：异步 Run + Studio Run Canvas
+### 已完成：Tool Runtime 首批外部能力
 
-让 POST `/run` 立即返回 `running`，用 SSE 在第一次执行过程中推节点事件；再把节点状态画回 Studio Canvas，而不是新做装饰性大屏。
+Filesystem、Shell、HTTP、GitHub 和 MCP discovered tools 已有 Runtime adapter、权限校验、审批/receipt 或 secret binding；MCP 使用 newline-delimited JSON-RPC，发现结果需审核后才能进入 Factory/Runtime。
 
-### 下一波 C：MCP adapter
-
-在包格式、授权和画布稳定后，把 MCP server 配置、tool 发现和规范化 Tool 描述符做成第一个新适配器。
-
-### 下一波 D：Agent conversation
+### 下一波 B：Agent conversation
 
 1. Factory conversation 与 Agent conversation 继续分开。
 2. Agent conversation 只服务已有 Agent 的输入、Run、历史和证据，不重新生成 Agent source。
 3. 复用 Runtime provider boundary；没有用户 API 时只允许设计/查看，明确禁止运行。
 
-### 下一波 E：真实 Monitor/Runs
+### 下一波 C：真实 Monitor/Runs
 
 把静态 `monitor.tsx`、`runs.tsx` 替换为真实 Local API 数据，显示运行状态、等待审批、失败、验证和 receipt；不要先做装饰性大屏。
 
-### 下一波 F：Community registry
+### 下一波 D：Community registry
 
 先实现 Agent/template 不可变版本的 quarantine、hash/secret/path/symlink 扫描、下载、目标 Project 导入和 Fork lineage，再做 Star/Review/Report/审核。
 
-### 下一波 G：发行与部署
+### 下一波 E：发行与部署
 
 只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。
 
@@ -441,10 +439,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- Backend `make check`：168 tests passed。
-- Desktop：54 Vitest tests passed，typecheck/build passed。
-- Community：8 Vitest tests passed，typecheck/build passed。
-- GitHub Actions backend/frontend：通过，精确功能基线 `61f44989e9992eee94a8034ae4cfb9bda71c5fdf`；交接文档提交不改代码。
+- GitHub Actions Push 和 Pull Request：`4bbfaee` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=4bbfaee...`、`local_0014_workflow_runs`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status` 可用，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则
