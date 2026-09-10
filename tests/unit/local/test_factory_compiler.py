@@ -158,7 +158,7 @@ def test_compile_accepts_supported_github_tool() -> None:
         AgentBlueprint.from_dict(payload), ResourceCatalog()
     )
 
-    assert availability == "requires_configuration"
+    assert availability == "ready"
     assert source.permissions.tools == ("veyra.tool.github.read",)
     assert source.permissions.network_hosts == ("api.github.com",)
     assert source.secret_refs == ("github.main",)
