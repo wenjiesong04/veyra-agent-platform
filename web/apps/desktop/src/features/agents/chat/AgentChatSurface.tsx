@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Bot } from "lucide-react";
-import { type AgentRunResponse, type AgentSource, type JsonValue, type ResourceDescriptor } from "@veyra/api-contracts";
+import { type AgentConversationMessage, type AgentConversationSummary, type AgentRunResponse, type AgentSource, type JsonValue, type ResourceDescriptor } from "@veyra/api-contracts";
 import { ErrorState, LoadingState, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../../api/local-client";
 import { MiniRunCanvas } from "../../studio/MiniRunCanvas";
@@ -95,6 +95,8 @@ export function AgentChatSurface({
   const [submitted, setSubmitted] = React.useState<InputValues | null>(null);
   const [history, setHistory] = React.useState<AgentRunResponse[]>([]);
   const [conversationId, setConversationId] = React.useState<string | null>(null);
+  const [conversations, setConversations] = React.useState<AgentConversationSummary[]>([]);
+  const [conversationMessages, setConversationMessages] = React.useState<AgentConversationMessage[]>([]);
   const [error, setError] = React.useState("");
   const [canvasOpen, setCanvasOpen] = React.useState(false);
   const [canvasDismissed, setCanvasDismissed] = React.useState(false);
@@ -137,22 +139,44 @@ export function AgentChatSurface({
     if (!api.listAgentConversations) return;
     let active = true;
     void api.listAgentConversations(projectId, agentId).then((response) => {
-      if (active) setConversationId(response.conversations[0]?.conversation_id ?? null);
+      if (active) {
+        setConversations(response.conversations);
+        setConversationId((current) => current ?? response.conversations[0]?.conversation_id ?? null);
+      }
     }).catch(() => {
       if (active) setConversationId(null);
     });
     return () => { active = false; };
   }, [api, projectId, agentId]);
   React.useEffect(() => {
+    if (!conversationId || !api.getAgentConversation) {
+      setConversationMessages([]);
+      return;
+    }
+    let active = true;
+    void api.getAgentConversation(projectId, agentId, conversationId).then((conversation) => {
+      if (active) setConversationMessages(conversation.messages);
+    }).catch(() => {
+      if (active) setConversationMessages([]);
+    });
+    return () => { active = false; };
+  }, [api, projectId, agentId, conversationId, live.run?.status]);
+  React.useEffect(() => {
     if (!live.run || live.run.status === "running" || live.run.status === "waiting") return;
-    if (live.run.conversation_id) setConversationId(live.run.conversation_id);
+    if (live.run.conversation_id) {
+      setConversationId(live.run.conversation_id);
+      if (api.listAgentConversations) {
+        void api.listAgentConversations(projectId, agentId).then((response) => setConversations(response.conversations)).catch(() => undefined);
+      }
+    }
     setHistory((current) => [live.run!, ...current.filter((item) => item.run_id !== live.run!.run_id)].slice(0, 20));
-  }, [live.run]);
+  }, [agentId, api, live.run, projectId]);
 
   const reset = () => {
     if (source) setValues(valuesFor(source));
     setSubmitted(null);
     setConversationId(null);
+    setConversationMessages([]);
     live.clear();
     setError("");
     setCanvasOpen(false);
@@ -197,7 +221,9 @@ export function AgentChatSurface({
   const canSubmit = canStart && (!singleString || composerValue.trim().length > 0);
   const displayError = error || live.error;
   const visibleHistory = history.filter((item) => item.run_id !== live.run?.run_id);
-  const empty = !submitted && !displayError && !live.run && visibleHistory.length === 0;
+  const visibleMessages = conversationMessages.filter((item) => item.run_id !== live.run?.run_id);
+  const hasConversationApi = Boolean(api.listAgentConversations && api.getAgentConversation);
+  const empty = !submitted && !displayError && !live.run && visibleHistory.length === 0 && visibleMessages.length === 0;
   const user = submitted ? submittedDisplay(source, submitted) : null;
   const preview = assistantPreview(live.run?.result ?? null, spec, locale);
   const resultText = scalarResultText(live.run?.result);
@@ -208,6 +234,15 @@ export function AgentChatSurface({
       canvasOpen={canvasOpen && Boolean(spec)}
       data-project-id={projectId}
       data-agent-id={agentId}
+      contextBar={hasConversationApi ? (
+        <div className="agent-convo-context agent-convo-context-history">
+          <select aria-label={locale === "zh" ? "选择会话" : "Choose conversation"} value={conversationId ?? ""} onChange={(event) => { setConversationId(event.target.value || null); setSubmitted(null); live.clear(); }}>
+            <option value="">{locale === "zh" ? "新会话" : "New conversation"}</option>
+            {conversations.map((conversation) => <option key={conversation.conversation_id} value={conversation.conversation_id}>{conversation.title} · {conversation.message_count}</option>)}
+          </select>
+          <button type="button" onClick={reset}>{locale === "zh" ? "新建会话" : "New conversation"}</button>
+        </div>
+      ) : undefined}
       greetingTitle={text.greeting}
       greetingDetail={source.description || text.empty}
       suggestions={!api.runAgent ? <ErrorState message={text.runtimeUnavailable} /> : undefined}
@@ -250,12 +285,18 @@ export function AgentChatSurface({
         />
       ) : undefined}
     >
-      {visibleHistory.map((item) => (
+      {visibleMessages.map((message) => (
+        <article className={`agent-chat-bubble ${message.role} agent-convo-enter`} key={message.message_id}>
+          <span>{message.role === "user" ? text.you : text.result}</span>
+          <p>{message.content}</p>
+        </article>
+      ))}
+      {!visibleMessages.length ? visibleHistory.map((item) => (
         <article className="agent-chat-bubble result agent-convo-enter" key={item.run_id}>
           <span className="agent-convo-result-head">{text.history}<StatusBadge label={text[item.status]} tone={statusTone(item.status)} /></span>
           {item.result ? <pre><code>{JSON.stringify(item.result, null, 2)}</code></pre> : item.error ? <p>{item.error.message}</p> : <p>{item.status}</p>}
         </article>
-      ))}
+      )) : null}
       {submitted && user ? (
         <article className="agent-chat-bubble user agent-convo-enter">
           <span>{text.you}</span>

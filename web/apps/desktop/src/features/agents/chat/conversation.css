@@ -442,6 +442,21 @@
   font-weight: 550;
 }
 
+.agent-convo-context-history select,
+.agent-convo-context-history button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.agent-convo-context-history button {
+  cursor: pointer;
+}
+
 .agent-convo-scope {
   position: relative;
   display: flex;
