@@ -318,12 +318,13 @@ class OrchestratorService:
         if mapped:
             now = _now()
             finished = mapped in _DONE
+            lease_token = row["lease_token"]
             with self.store.transaction() as connection:
                 self.store.update(
                     connection,
                     payload["work_item_id"],
                     status=mapped,
-                    lease_token=None if finished else payload["lease_token"],
+                    lease_token=None if finished else lease_token,
                     lease_expires_at=None if finished else _lease_expiry(),
                     failure_class=(
                         _failure_class(run["error_code"] or mapped)
