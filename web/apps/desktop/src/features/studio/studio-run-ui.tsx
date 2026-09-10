@@ -90,8 +90,11 @@ export function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: 
     return () => { current = false; };
   }, [api]);
   if (configured === null) return null;
-  if (userProvidedOnly) {
+  if (userProvidedOnly && !configured) {
     return <Alert type="warning" title={zh ? "上线模式不会使用本机共享密钥。请提供你自己的 Runtime API 后再运行。" : "Release mode will not use the host shared key. Provide your own Runtime API before running."} />;
+  }
+  if (userProvidedOnly) {
+    return <Alert type="info" title={zh ? "上线模式正使用你在设置中绑定的 Runtime API Key。" : "Release mode is using the Runtime API key configured in Settings."} closable duration={8000} />;
   }
   if (!configured) {
     return <Alert type="warning" title={zh ? "尚未配置 Runtime 模型。可在设置中保存模型 API Key，或在无界面运行时设置 MOONSHOT_API_KEY。" : "The Runtime model is not configured. Save a model API key in Settings, or set MOONSHOT_API_KEY for headless runs."} />;
