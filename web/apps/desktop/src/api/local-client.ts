@@ -194,6 +194,7 @@ export type LocalProjectApi = {
   listWorkItems?(projectId: string): Promise<ListWorkItemsResponse>;
   createWorkItem?(projectId: string, input: { title: string; agent_id: string; description?: string; depends_on?: string[]; inputs?: JsonObject }): Promise<WorkItem>;
   dispatchWorkItem?(workItemId: string): Promise<WorkItem>;
+  retryWorkItem?(workItemId: string): Promise<WorkItem>;
   cancelWorkItem?(workItemId: string): Promise<WorkItem>;
   runWorkflow?(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse>;
   getWorkflowRun?(projectId: string, workflowId: string, runId: string): Promise<WorkflowRunResponse>;
@@ -1074,6 +1075,9 @@ function workItem(value: unknown, status = 502): WorkItem {
     inputs: asRecord(record.inputs, status) as JsonObject,
     status: itemStatus as WorkItem["status"],
     run_id: record.run_id === null ? null : asString(record.run_id, "work_item.run_id", status),
+    ...(record.attempt_number === undefined ? {} : { attempt_number: asNumber(record.attempt_number, "work_item.attempt_number", status) }),
+    ...(record.lease_expires_at === undefined ? {} : { lease_expires_at: record.lease_expires_at === null ? null : asString(record.lease_expires_at, "work_item.lease_expires_at", status) }),
+    ...(record.failure_class === undefined ? {} : { failure_class: record.failure_class === null ? null : asString(record.failure_class, "work_item.failure_class", status) }),
     created_at: asString(record.created_at, "work_item.created_at", status),
     updated_at: asString(record.updated_at, "work_item.updated_at", status),
   };
@@ -1953,6 +1957,10 @@ export class LocalApiClient {
 
   dispatchWorkItem(workItemId: string): Promise<WorkItem> {
     return this.request(`work-items/${encodeURIComponent(workItemId)}/dispatch`, workItem, { method: "POST" });
+  }
+
+  retryWorkItem(workItemId: string): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}/retry`, workItem, { method: "POST" });
   }
 
   cancelWorkItem(workItemId: string): Promise<WorkItem> {

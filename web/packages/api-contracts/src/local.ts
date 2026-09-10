@@ -932,6 +932,9 @@ export type WorkItem = {
   inputs: JsonObject;
   status: WorkItemStatus;
   run_id: string | null;
+  attempt_number?: number;
+  lease_expires_at?: string | null;
+  failure_class?: string | null;
   created_at: string;
   updated_at: string;
 };

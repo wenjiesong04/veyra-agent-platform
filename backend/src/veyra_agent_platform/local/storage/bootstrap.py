@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0015_agent_conversations"
+HEAD_REVISION = "local_0016_orchestrator_leases"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

@@ -106,6 +106,10 @@ class OrchestratorStore:
             "agent_id": "agent_id",
             "status": "status",
             "run_id": "run_id",
+            "attempt_number": "attempt_number",
+            "lease_token": "lease_token",
+            "lease_expires_at": "lease_expires_at",
+            "failure_class": "failure_class",
             "updated_at": "updated_at",
         }
         for key, column in mapping.items():
@@ -128,6 +132,138 @@ class OrchestratorStore:
             values,
         )
 
+    def create_attempt(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        attempt_id: str,
+        work_item_id: str,
+        attempt_number: int,
+        lease_token: str,
+        claimed_at: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO work_item_attempts("
+            "attempt_id, work_item_id, attempt_number, run_id, status, "
+            "lease_token, failure_class, claimed_at, started_at, finished_at, "
+            "created_at"
+            ") VALUES (?, ?, ?, NULL, 'dispatching', ?, NULL, ?, NULL, NULL, ?)",
+            (
+                attempt_id,
+                work_item_id,
+                attempt_number,
+                lease_token,
+                claimed_at,
+                created_at,
+            ),
+        )
+
+    def claim(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        work_item_id: str,
+        attempt_number: int,
+        lease_token: str,
+        lease_expires_at: str,
+        updated_at: str,
+    ) -> bool:
+        cursor = connection.execute(
+            "UPDATE work_items SET status = 'running', run_id = NULL, "
+            "attempt_number = ?, lease_token = ?, lease_expires_at = ?, "
+            "failure_class = NULL, updated_at = ? "
+            "WHERE work_item_id = ? AND status IN ('backlog', 'ready') "
+            "AND lease_token IS NULL",
+            (
+                attempt_number,
+                lease_token,
+                lease_expires_at,
+                updated_at,
+                work_item_id,
+            ),
+        )
+        return cursor.rowcount == 1
+
+    def bind_run(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        work_item_id: str,
+        lease_token: str,
+        run_id: str,
+        updated_at: str,
+    ) -> bool:
+        cursor = connection.execute(
+            "UPDATE work_items SET run_id = ?, updated_at = ? "
+            "WHERE work_item_id = ? AND status = 'running' "
+            "AND lease_token = ? AND run_id IS NULL",
+            (run_id, updated_at, work_item_id, lease_token),
+        )
+        return cursor.rowcount == 1
+
+    def attempt(self, attempt_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM work_item_attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone(),
+            )
+
+    def latest_attempt(self, work_item_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM work_item_attempts WHERE work_item_id = ? "
+                    "ORDER BY attempt_number DESC LIMIT 1",
+                    (work_item_id,),
+                ).fetchone(),
+            )
+
+    @staticmethod
+    def latest_attempt_in_connection(
+        connection: sqlite3.Connection, work_item_id: str
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT * FROM work_item_attempts WHERE work_item_id = ? "
+                "ORDER BY attempt_number DESC LIMIT 1",
+                (work_item_id,),
+            ).fetchone(),
+        )
+
+    def update_attempt(
+        self,
+        connection: sqlite3.Connection,
+        attempt_id: str,
+        **fields: Any,
+    ) -> None:
+        mapping = {
+            "run_id": "run_id",
+            "status": "status",
+            "failure_class": "failure_class",
+            "started_at": "started_at",
+            "finished_at": "finished_at",
+        }
+        assignments = []
+        values: list[Any] = []
+        for key, column in mapping.items():
+            if key in fields:
+                assignments.append(f"{column} = ?")
+                values.append(fields[key])
+        if not assignments:
+            return
+        values.append(attempt_id)
+        connection.execute(
+            f"UPDATE work_item_attempts SET {', '.join(assignments)} "
+            "WHERE attempt_id = ?",
+            values,
+        )
+
     @staticmethod
     def payload(row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -141,6 +277,9 @@ class OrchestratorStore:
             "inputs": json.loads(row["inputs_json"]),
             "status": row["status"],
             "run_id": row["run_id"],
+            "attempt_number": int(row["attempt_number"]),
+            "lease_expires_at": row["lease_expires_at"],
+            "failure_class": row["failure_class"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }

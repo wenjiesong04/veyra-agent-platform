@@ -1,4 +1,4 @@
-import { CircleStop, Clock3, Gauge, Play } from "lucide-react";
+import { CircleStop, Clock3, Gauge, Play, RotateCcw } from "lucide-react";
 import { Button, EmptyState, ErrorState, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useCallback, useEffect, useState } from "react";
 import type { OrchestratorStatus, WorkItem } from "@veyra/api-contracts";
@@ -59,6 +59,19 @@ export function MonitorPage() {
     }
   };
 
+  const retry = async (workItemId: string) => {
+    if (!api.retryWorkItem) return;
+    setBusyId(workItemId);
+    try {
+      await api.retryWorkItem(workItemId);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "重试失败。" : "Retry failed."));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const copy = zh
     ? {
       eyebrow: "本机编排",
@@ -69,6 +82,7 @@ export function MonitorPage() {
       emptyDetail: "在当前项目里创建 WorkItem 后，可以派发到已提交的 Agent。",
       dispatch: "派发",
       cancel: "取消",
+      retry: "重试",
       counts: "工作项",
     }
     : {
@@ -80,6 +94,7 @@ export function MonitorPage() {
       emptyDetail: "Create a WorkItem in the current project, then dispatch it to a committed Agent.",
       dispatch: "Dispatch",
       cancel: "Cancel",
+      retry: "Retry",
       counts: "Work items",
     };
 
@@ -105,7 +120,7 @@ export function MonitorPage() {
                   <span className="run-state-icon"><Gauge size={17} /></span>
                   <span className="row-copy">
                     <strong>{item.title}</strong>
-                    <small>{item.agent_id} · {item.status}</small>
+                    <small>{item.agent_id} · {item.status}{item.attempt_number ? ` · attempt ${item.attempt_number}` : ""}{item.failure_class ? ` · ${item.failure_class}` : ""}</small>
                   </span>
                   <Tag>{item.status}</Tag>
                   {item.status === "ready" || item.status === "backlog" ? (
@@ -113,6 +128,9 @@ export function MonitorPage() {
                   ) : null}
                   {item.status === "running" || item.status === "waiting" || item.status === "ready" || item.status === "backlog" ? (
                     <Button size="sm" icon={CircleStop} variant="danger" disabled={busyId === item.work_item_id} onClick={() => void cancel(item.work_item_id)}>{copy.cancel}</Button>
+                  ) : null}
+                  {item.status === "failed" ? (
+                    <Button size="sm" icon={RotateCcw} disabled={busyId === item.work_item_id || !api.retryWorkItem} onClick={() => void retry(item.work_item_id)}>{copy.retry}</Button>
                   ) : null}
                 </div>
               ))}

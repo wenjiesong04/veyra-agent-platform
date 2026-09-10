@@ -90,6 +90,10 @@ def build_router() -> APIRouter:
     def dispatch(work_item_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _orchestrator(request).dispatch(work_item_id))
 
+    @router.post("/api/v1/work-items/{work_item_id}/retry")
+    def retry(work_item_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _orchestrator(request).retry(work_item_id))
+
     @router.post("/api/v1/work-items/{work_item_id}/cancel")
     def cancel(work_item_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _orchestrator(request).cancel(work_item_id))
