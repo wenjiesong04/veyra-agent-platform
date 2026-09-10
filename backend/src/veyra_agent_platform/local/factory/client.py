@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
+
+from veyra_agent_platform.local.secrets import (
+    MODEL_SECRET_REF,
+    SecretStore,
+    resolve_secret,
+)
 
 from .config import FactorySettings
 
@@ -57,9 +62,11 @@ class HttpKimiTransport:
         settings: FactorySettings,
         *,
         http_client: httpx.Client | None = None,
+        secret_store: SecretStore | None = None,
+        secret_ref: str = MODEL_SECRET_REF,
     ) -> None:
         self.settings = settings
-        api_key = os.environ.get(settings.model_api_key_env, "").strip()
+        api_key = resolve_secret(secret_store, secret_ref, settings.model_api_key_env)
         if http_client is None and not api_key:
             raise FactoryProviderNotConfigured()
         self._client = http_client or httpx.Client(
@@ -154,23 +161,38 @@ class KimiClient:
     """Discover a configured model before each generation chain."""
 
     def __init__(
-        self, settings: FactorySettings, transport: KimiTransport | None = None
+        self,
+        settings: FactorySettings,
+        transport: KimiTransport | None = None,
+        *,
+        secret_store: SecretStore | None = None,
+        secret_ref: str = MODEL_SECRET_REF,
     ) -> None:
         self.settings = settings
         self.transport = transport
+        self._secret_store = secret_store
+        self._secret_ref = secret_ref
         self._http: HttpKimiTransport | None = None
 
     @property
     def configured(self) -> bool:
         return self.transport is not None or bool(
-            os.environ.get(self.settings.model_api_key_env, "").strip()
+            resolve_secret(
+                self._secret_store,
+                self._secret_ref,
+                self.settings.model_api_key_env,
+            )
         )
 
     def _transport(self) -> KimiTransport:
         if self.transport is not None:
             return self.transport
         if self._http is None:
-            self._http = HttpKimiTransport(self.settings)
+            self._http = HttpKimiTransport(
+                self.settings,
+                secret_store=self._secret_store,
+                secret_ref=self._secret_ref,
+            )
         return self._http
 
     def ensure_model(self) -> None:

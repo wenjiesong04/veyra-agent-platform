@@ -13,8 +13,11 @@ from collections.abc import Mapping
 from typing import Protocol
 
 SERVICE_NAME = "Veyra Agent Platform"
-_SECRET_REF = "github.main"
-_SECRET_ENV = "GITHUB_TOKEN"
+MODEL_SECRET_REF = "model.primary"
+_SECRET_ENV_NAMES = {
+    "github.main": "GITHUB_TOKEN",
+    MODEL_SECRET_REF: "MOONSHOT_API_KEY",
+}
 
 
 class SecretStoreError(RuntimeError):
@@ -27,6 +30,24 @@ class SecretStore(Protocol):
     def set(self, secret_ref: str, value: str) -> None: ...
 
     def delete(self, secret_ref: str) -> None: ...
+
+
+def resolve_secret(
+    store: SecretStore | None,
+    secret_ref: str,
+    env_name: str,
+    *,
+    allow_environment: bool = True,
+) -> str:
+    """Resolve a host secret without persisting its value in Project data."""
+    if store is not None:
+        try:
+            value = store.get(secret_ref)
+        except SecretStoreError:
+            value = None
+        if value:
+            return value.strip()
+    return os.environ.get(env_name, "").strip() if allow_environment else ""
 
 
 class MacOSKeychainSecretStore:
@@ -119,10 +140,10 @@ class MacOSKeychainSecretStore:
 
 
 def secret_environment_name(secret_ref: str) -> str:
-    if secret_ref == _SECRET_REF:
-        return _SECRET_ENV
-    return secret_ref.upper().replace(".", "_").replace("-", "_")
+    return _SECRET_ENV_NAMES.get(
+        secret_ref, secret_ref.upper().replace(".", "_").replace("-", "_")
+    )
 
 
 def known_secret_refs() -> tuple[str, ...]:
-    return (_SECRET_REF,)
+    return tuple(_SECRET_ENV_NAMES)

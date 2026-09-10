@@ -19,7 +19,7 @@ from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.local.mcp.service import McpError, McpService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
-from veyra_agent_platform.local.secrets import SecretStore
+from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
 
 _MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
@@ -613,14 +613,11 @@ class ToolRuntime:
         )
 
     def _secret_value(self, secret_ref: Any, env_name: str) -> str:
-        if isinstance(secret_ref, str) and self._secret_store is not None:
-            try:
-                value = self._secret_store.get(secret_ref)
-            except Exception:
-                value = None
-            if value:
-                return value.strip()
-        return os.environ.get(env_name, "").strip()
+        return resolve_secret(
+            self._secret_store,
+            secret_ref if isinstance(secret_ref, str) else "",
+            env_name,
+        )
 
     @staticmethod
     def _receipt_execution(

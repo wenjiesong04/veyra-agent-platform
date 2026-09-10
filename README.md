@@ -44,7 +44,8 @@ sidecar uses the system `security` Keychain command for host credentials, with
 process environment variables retained as a development fallback.
 `make linux-lock-check` validates the dev lock with Linux wheel resolution.
 
-To configure the GitHub adapters, open Desktop Settings and save the token in
-the Credentials panel. The Project and Agent sources store only the opaque
-`github.main` reference; the token is never written to Project files or local
-SQLite. `GITHUB_TOKEN` remains supported for headless development and CI.
+To configure the model Runtime/Factory and GitHub adapters, open Desktop
+Settings and save the API key or token in the Credentials panels. Project and
+Agent sources store only opaque references; values are never written to Project
+files or local SQLite. `MOONSHOT_API_KEY` and `GITHUB_TOKEN` remain supported
+for headless development and CI.

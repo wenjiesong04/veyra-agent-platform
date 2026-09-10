@@ -92,7 +92,12 @@ def create_app(
     database_path = _sqlite_database_path(resolved_settings.database_url)
     overlay_root = database_path.parent / "overlays"
     catalog = ResourceCatalog(overlay_root=overlay_root)
-    runtime_client = RuntimeModelClient(resolved_runtime_settings, runtime_transport)
+    resolved_secret_store = secret_store or MacOSKeychainSecretStore()
+    runtime_client = RuntimeModelClient(
+        resolved_runtime_settings,
+        runtime_transport,
+        secret_store=resolved_secret_store,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -114,7 +119,11 @@ def create_app(
             FactorySessionRepository(database_path),
             projects,
             catalog,
-            KimiClient(resolved_factory_settings, factory_transport),
+            KimiClient(
+                resolved_factory_settings,
+                factory_transport,
+                secret_store=resolved_secret_store,
+            ),
         )
         mcp = McpService(
             McpServerStore(database_path),
@@ -162,7 +171,7 @@ def create_app(
     application.state.database_ready = False
     application.state.database_revision = None
     application.state.resource_catalog = catalog
-    application.state.secrets = secret_store or MacOSKeychainSecretStore()
+    application.state.secrets = resolved_secret_store
     application.add_exception_handler(TypedApiError, typed_error_response)
 
     application.include_router(

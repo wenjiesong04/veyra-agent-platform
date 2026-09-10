@@ -790,7 +790,9 @@ VEYRA_FACTORY_REASONING_EFFORT=high
 VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 ```
 
-The key belongs in Keychain/environment, never SQLite, Agent source, browser storage, logs, or packages.
+The key belongs in the host Keychain/environment, never SQLite, Agent source,
+browser storage, logs, or packages. Desktop Settings can bind the model key to
+`model.primary`; headless development may continue using `MOONSHOT_API_KEY`.
 
 Blueprint generation uses `response_format.type=json_schema` with the committed
 AgentBlueprint JSON Schema. Thinking-model `reasoning_content` may be retained

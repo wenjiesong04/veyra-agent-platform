@@ -16,7 +16,7 @@ import yaml  # type: ignore[import-untyped]
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.resources.registry import NodePackageError
-from veyra_agent_platform.local.secrets import SecretStore, SecretStoreError
+from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
 
 from .store import McpServerStore
 from .transport import (
@@ -220,19 +220,12 @@ class McpService:
         env_names = dict(json.loads(row["env_names_json"]))
         env: dict[str, str] = {}
         for mcp_key, binding in env_names.items():
-            value = os.environ.get(binding)
-            if (
-                not value
-                and self._secret_store is not None
-                and _SECRET_REF.fullmatch(binding)
-            ):
-                try:
-                    value = self._secret_store.get(binding)
-                except SecretStoreError as exc:
-                    raise McpError(
-                        "mcp_secret_unavailable",
-                        f"MCP secret binding {binding} could not be read",
-                    ) from exc
+            secret_ref = binding if _SECRET_REF.fullmatch(binding) else ""
+            value = resolve_secret(
+                self._secret_store if secret_ref else None,
+                secret_ref,
+                binding,
+            )
             if not value:
                 raise McpError(
                     "mcp_env_missing",

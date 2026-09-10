@@ -94,9 +94,9 @@ export function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: 
     return <Alert type="warning" title={zh ? "上线模式不会使用本机共享密钥。请提供你自己的 Runtime API 后再运行。" : "Release mode will not use the host shared key. Provide your own Runtime API before running."} />;
   }
   if (!configured) {
-    return <Alert type="warning" title={zh ? "尚未配置 Runtime 模型。在进程环境中设置 MOONSHOT_API_KEY 后即可试跑。" : "The Runtime model is not configured. Set MOONSHOT_API_KEY in the process environment to test-run."} />;
+    return <Alert type="warning" title={zh ? "尚未配置 Runtime 模型。可在设置中保存模型 API Key，或在无界面运行时设置 MOONSHOT_API_KEY。" : "The Runtime model is not configured. Save a model API key in Settings, or set MOONSHOT_API_KEY for headless runs."} />;
   }
-  return <Alert type="info" title={zh ? "开发环境正使用本机 Runtime 密钥试跑。上线后用户必须使用他们自己的 API。" : "Local development is using the host Runtime key. Production runs will require the user's own API."} closable duration={8000} />;
+  return <Alert type="info" title={zh ? "Runtime 正使用本机凭据试跑；上线后请在设置中绑定你自己的 API Key。" : "Runtime is using a host credential for this run. Bind your own API key in Settings before release."} closable duration={8000} />;
 }
 
 export function RunInputFields({

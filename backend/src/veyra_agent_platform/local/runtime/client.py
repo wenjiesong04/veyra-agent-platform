@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
+
+from veyra_agent_platform.local.secrets import (
+    MODEL_SECRET_REF,
+    SecretStore,
+    resolve_secret,
+)
 
 from .config import RuntimeSettings
 
@@ -49,9 +54,16 @@ class HttpRuntimeTransport:
         settings: RuntimeSettings,
         *,
         http_client: httpx.Client | None = None,
+        secret_store: SecretStore | None = None,
+        secret_ref: str = MODEL_SECRET_REF,
     ) -> None:
         self.settings = settings
-        api_key = os.environ.get(settings.model_api_key_env, "").strip()
+        api_key = resolve_secret(
+            secret_store,
+            secret_ref,
+            settings.model_api_key_env,
+            allow_environment=settings.allow_process_environment_key,
+        )
         if http_client is None and not api_key:
             raise RuntimeProviderNotConfigured()
         self._client = http_client or httpx.Client(
@@ -137,9 +149,14 @@ class RuntimeModelClient:
         self,
         settings: RuntimeSettings,
         transport: RuntimeModelTransport | None = None,
+        *,
+        secret_store: SecretStore | None = None,
+        secret_ref: str = MODEL_SECRET_REF,
     ) -> None:
         self.settings = settings
         self.transport = transport
+        self._secret_store = secret_store
+        self._secret_ref = secret_ref
         self._http: HttpRuntimeTransport | None = None
         self._model_checked = False
 
@@ -147,9 +164,18 @@ class RuntimeModelClient:
     def configured(self) -> bool:
         if self.transport is not None:
             return True
-        if not self.settings.allow_process_environment_key:
-            return False
-        return bool(os.environ.get(self.settings.model_api_key_env, "").strip())
+        return bool(
+            resolve_secret(
+                self._secret_store,
+                self._secret_ref,
+                self.settings.model_api_key_env,
+                allow_environment=self.settings.allow_process_environment_key,
+            )
+        )
+
+    @property
+    def secret_store(self) -> SecretStore | None:
+        return self._secret_store
 
     def status(self) -> dict[str, Any]:
         return {
@@ -184,7 +210,11 @@ class RuntimeModelClient:
         if self.transport is not None:
             return self.transport
         if self._http is None:
-            self._http = HttpRuntimeTransport(self.settings)
+            self._http = HttpRuntimeTransport(
+                self.settings,
+                secret_store=self._secret_store,
+                secret_ref=self._secret_ref,
+            )
         return self._http
 
 
