@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`15ee6f52d4b7d25fd7580704e642616216b3ef86`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry 和 Community Agent registry。
+- 最新功能代码基线：`9ce006a3f83989d00fd582bdab252186e4d63642`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry 和目标 Project 导入 lineage。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -29,7 +29,7 @@
 
 ### 当前可见服务
 
-这些服务在最后一次验证时都应使用同一个功能提交（node.yaml Catalog）；重启无 `--reload` 的 8771 sidecar 后才会载入本提交：
+这些服务必须分别通过 `/api/v1/health` 核对精确 SHA；Local 和 Community 可以因独立发布而运行不同提交。重启无 `--reload` 的 sidecar 后才会载入对应提交：
 
 - Desktop Vite：`http://127.0.0.1:5173/`，唯一的日常主要界面。
 - Local API：`http://127.0.0.1:8771/`，本机 Project、Factory、Studio 和 Runtime sidecar。
@@ -38,7 +38,7 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：`build_sha=40097117c5b02ede5ac6eb340893e99b18fcf504`、`database_revision=local_0016_orchestrator_leases`、`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=9ce006a3f83989d00fd582bdab252186e4d63642`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
 - Community `/api/v1/health`：`build_sha=15ee6f52d4b7d25fd7580704e642616216b3ef86`、`database_revision=community_0004_agent_registry`，`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 - Community `GET /api/v1/registry/agents` 已经是真实 API；当前本机返回 `community.registry.v1` 空目录。
@@ -282,7 +282,7 @@ Community 已有真实账号基础：
 - 头像上传、读取和删除
 - Argon2id、HMAC/hash OTP、限流、HttpOnly/Secure/SameSite Cookie、CSRF 边界、邮件 outbox/QQ SMTP provider
 
-Community 已有最小可用 Agent registry：已认证用户可以上传经过 AgentSource schema、UTF-8、大小和明显凭据标记检查的 YAML；服务保存内容寻址包和不可变版本元数据，匿名用户可以浏览公开版本并下载。当前仍没有 quarantine/管理员审核队列、目标 Project Import/Fork、Star、Review 和 Report。
+Community 已有最小可用 Agent registry：已认证用户可以上传经过 AgentSource schema、UTF-8、大小和明显凭据标记检查的 YAML；服务保存内容寻址包和不可变版本元数据，匿名用户可以浏览公开版本并下载。Desktop 详情页可以选择目标 Project，一键下载并交给本地导入器重新校验；本地会生成新 Agent 身份并记录远端 lineage。当前仍没有 quarantine/管理员审核队列、Fork 图关系、Star、Review 和 Report。
 
 ## 6. 当前 API 入口
 
@@ -348,7 +348,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
 - Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
 - `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，仍可继续增强实时聚合和 reconcile 视图。
-- Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情和 YAML 下载均已接入。发布入口暂时保留 API 级能力，下一步再补作者工作流 UI。
+- Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、YAML 下载和目标 Project 导入均已接入。发布入口暂时保留 API 级能力，下一步再补作者工作流 UI。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
 
@@ -361,7 +361,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
 4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry 和基础 reconcile；worktree/concurrency/stall 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 还需要展示 attempt 详情并补齐更丰富 reconcile。
-6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、内容寻址存储、公开版本查询和下载；仍需 quarantine/更完整的路径与依赖扫描、目标 Project import/Fork lineage、Star/Review/Report/moderation。
+6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、内容寻址存储、公开版本查询、下载、目标 Project 导入和本地 lineage；仍需 quarantine/更完整的路径与依赖扫描、Fork 图关系、Star/Review/Report/moderation。
 7. Tauri/PyInstaller/macOS arm64 包。
 8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
 9. 完整双账号联网 E2E、真实 SMTP/Kimi live lane 和跨服务同 SHA 发布证据。
@@ -400,7 +400,7 @@ WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；�
 
 ### 下一波 B：Community registry
 
-当前已经有可运行的 Agent YAML publish/browse/download 最小闭环。下一步实现 quarantine、完整 hash/secret/path/symlink 扫描、目标 Project 导入和 Fork lineage，再做 Star/Review/Report/审核；Community 仍不执行远端 Agent。
+当前已经有可运行的 Agent YAML publish/browse/download/import 最小闭环。下一步实现 quarantine、完整 hash/secret/path/symlink 扫描和 Fork lineage，再做 Star/Review/Report/审核；Community 仍不执行远端 Agent。
 
 ### 下一波 C：发行与部署
 
@@ -444,8 +444,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34446313967` 和 Pull Request `34446316912`：`15ee6f5` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=4009711...`、`local_0016_orchestrator_leases`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation 和 WorkItem retry routes 可用，未输出任何密钥值。
+- GitHub Actions Push `34447638020` 和 Pull Request `34447642481`：`9ce006a` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=9ce006a...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry 和 Community-origin import boundary 可用，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=15ee6f5...`、`community_0004_agent_registry`、`database_ready=true`；`GET /api/v1/registry/agents` 返回空目录，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 

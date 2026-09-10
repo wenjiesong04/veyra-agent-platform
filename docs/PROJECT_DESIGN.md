@@ -1533,7 +1533,8 @@ Star does not mean safe or effective.
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}`
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download`
 - `POST /api/v1/registry/agents` (authenticated multipart YAML publish)
-- Future: target Project import/Fork, stars, version-bound reviews, reports, and moderation.
+- Existing local import: `POST /api/v1/projects/{project_id}/agents/import` accepts optional Community owner/slug/version/source-hash fields; the local service revalidates the source, creates a new local Agent identity, and stores the origin separately.
+- Future: Community quarantine, Fork graph edges, stars, version-bound reviews, reports, and moderation.
 
 ---
 
