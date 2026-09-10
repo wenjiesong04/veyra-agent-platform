@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`4bbfaee372057fba745c5c36a1289ee54f925291`，已接入 Host Keychain 凭据、MCP 环境绑定和模型凭据解析。
+- 最新功能代码基线：`7ac8f7e8c36b313894e59cf13e5a9f9da91bb96a`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析和 Tool 参数映射。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -256,6 +256,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - Run 事件记录 `tool.requested`、`tool.started`、`tool.completed`；receipt 只包含 adapter、相对路径、字节数和输入/输出 digest，不记录文件全文。Write 的 `content` 只进 digest。
 - HumanApproval 会把同一 run 置为 `waiting`，持久化 approval request 和 checkpoint。`approve`/`reject` 从下一节点继续同一 run；`stop` → `cancelled`；`retry` → 新 run；`resume` 对审批等待返回 `command_not_applicable`。
 - Shell、HTTP、GitHub Read/Write 和 discovered MCP Tool 已可运行；Browser Navigate 仍明确不可执行。MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。
+- Tool 节点支持 `input_mapping` / `output_mapping`，Runtime 先映射后授权，执行后按映射回写，避免外部 MCP/GitHub 字段名绑死 Agent 输入。
 
 ### 5.7 Project child-Agent 与 Runtime profile
 
@@ -355,7 +356,7 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 
 1. Tool Runtime 仍缺 Browser Navigate；Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 已接入真实 adapter boundary。
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
-3. Agent conversation 的持久化多轮交互、context、run history 和可恢复会话。
+3. Agent conversation 的持久化多轮交互、model context 和可恢复会话；Agent Chat 已能回放最近 20 次持久化 Run。
 4. Orchestrator：WorkItem、依赖、lease、worktree、retry、stall/reconcile。
 5. Monitor/Runs 从静态页面切换到真实 API。
 6. Community registry：publish/quarantine/hash scan/download/import/Fork/Star/Review/Report/moderation。
@@ -439,8 +440,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push 和 Pull Request：`4bbfaee` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=4bbfaee...`、`local_0014_workflow_runs`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status` 可用，未输出任何密钥值。
+- GitHub Actions Push 和 Pull Request：`7ac8f7e` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=7ac8f7e...`、`local_0014_workflow_runs`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers` 可用，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则
