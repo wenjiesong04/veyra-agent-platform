@@ -604,7 +604,7 @@ Initial tools:
 - filesystem.list — current Runtime adapter, bounded Project directory listing
 - filesystem.search — current Runtime adapter, bounded UTF-8 Project search
 - filesystem.write — current Runtime adapter, HumanApproval by default, Project workspace only
-- shell.exec, approval and workspace scope by default
+- shell.exec — current Runtime adapter, workspace working directory and HumanApproval by default
 - http.request — current Runtime adapter, explicit per-node host allowlist and HumanApproval
 - github.read — current Runtime adapter, host `GITHUB_TOKEN` secret and read-only API paths
 - github.write — current Runtime adapter, host `GITHUB_TOKEN` secret and HumanApproval by default

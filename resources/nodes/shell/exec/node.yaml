@@ -1,6 +1,6 @@
 # veyra.tool.shell.exec@1.0.0
-availability: design_only
-description: Run a workspace-scoped command after approval.
+availability: ready
+description: Run a workspace command after explicit HumanApproval.
 factory_selectable: true
 kind: tool
 name: Workspace Shell
@@ -12,12 +12,15 @@ required_permissions:
   tools:
   - veyra.tool.shell.exec
 resource_id: veyra.tool.shell.exec
-runtime_status: runtime_not_supported
+runtime_status: supported
 spec:
+  adapter: veyra.runtime.shell.exec
   approval_required: true
   input_schema:
     command: string
   output_schema:
+    exit_code: integer
+    stderr: string
     stdout: string
   tool_name: shell.exec
   ui:

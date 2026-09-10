@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
@@ -25,11 +28,15 @@ _READ_ADAPTER = "veyra.runtime.filesystem.read"
 _LIST_ADAPTER = "veyra.runtime.filesystem.list"
 _SEARCH_ADAPTER = "veyra.runtime.filesystem.search"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
+_SHELL_ADAPTER = "veyra.runtime.shell.exec"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
 _GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
 _GITHUB_WRITE_ADAPTER = "veyra.runtime.github.write"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+_MAX_SHELL_COMMAND_BYTES = 16_384
+_MAX_SHELL_OUTPUT_BYTES = 1_000_000
+_SHELL_TIMEOUT_SECONDS = 30
 
 
 class ToolRuntimeError(RuntimeError):
@@ -97,6 +104,7 @@ class ToolRuntime:
             _LIST_ADAPTER: self._execute_list,
             _SEARCH_ADAPTER: self._execute_search,
             _WRITE_ADAPTER: self._execute_write,
+            _SHELL_ADAPTER: self._execute_shell,
             _MCP_ADAPTER: self._execute_mcp,
             _HTTP_ADAPTER: self._execute_http,
             _GITHUB_READ_ADAPTER: self._execute_github_read,
@@ -287,6 +295,75 @@ class ToolRuntime:
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
         )
+
+    def _execute_shell(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del source, node, approved
+        command = values.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Workspace Shell requires a command"
+            )
+        if "\x00" in command or len(command.encode("utf-8")) > _MAX_SHELL_COMMAND_BYTES:
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Workspace Shell command is invalid or too large"
+            )
+        if not project_root.is_dir():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Workspace Shell project root is unavailable"
+            )
+        shell = "cmd.exe" if os.name == "nt" else "/bin/sh"
+        shell_args = (
+            [shell, "/d", "/s", "/c", command]
+            if os.name == "nt"
+            else [shell, "-c", command]
+        )
+        try:
+            process = subprocess.Popen(
+                shell_args,
+                cwd=project_root,
+                env=_shell_environment(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=os.name != "nt",
+            )
+        except OSError as exc:
+            raise ToolRuntimeError(
+                "tool_failed", "Workspace Shell could not start"
+            ) from exc
+        try:
+            stdout, stderr = process.communicate(timeout=_SHELL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            if os.name == "nt":
+                process.kill()
+            else:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise ToolRuntimeError(
+                "tool_timeout", "Workspace Shell exceeded the 30 second limit"
+            ) from exc
+        output_bytes = stdout + stderr
+        if len(output_bytes) > _MAX_SHELL_OUTPUT_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large",
+                "Workspace Shell output exceeds the 1 MiB limit",
+            )
+        output = {
+            "stdout": stdout.decode("utf-8", errors="replace"),
+            "stderr": stderr.decode("utf-8", errors="replace"),
+            "exit_code": process.returncode,
+        }
+        return self._receipt_execution(authorization, output, len(output_bytes), ".")
 
     def _execute_list(
         self,
@@ -911,3 +988,13 @@ def _input_digest(resource: dict[str, Any] | None, values: dict[str, Any]) -> st
         else:
             material[name] = value
     return sha256_digest(material)
+
+
+def _shell_environment() -> dict[str, str]:
+    """Give workspace commands the host toolchain without host credentials."""
+    environment = os.environ.copy()
+    sensitive_markers = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "PRIVATE_KEY")
+    for name in tuple(environment):
+        if any(marker in name.upper() for marker in sensitive_markers):
+            environment.pop(name, None)
+    return environment
