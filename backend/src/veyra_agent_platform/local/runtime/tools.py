@@ -27,6 +27,7 @@ _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
 _GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
+_GITHUB_WRITE_ADAPTER = "veyra.runtime.github.write"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
 
 
@@ -96,6 +97,7 @@ class ToolRuntime:
             _MCP_ADAPTER: self._execute_mcp,
             _HTTP_ADAPTER: self._execute_http,
             _GITHUB_READ_ADAPTER: self._execute_github_read,
+            _GITHUB_WRITE_ADAPTER: self._execute_github_write,
         }
         if adapters:
             self._adapters.update(adapters)
@@ -435,6 +437,82 @@ class ToolRuntime:
                 headers={
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            content = response.content
+        except httpx.TimeoutException as exc:
+            raise ToolRuntimeError("tool_timeout", "GitHub request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ToolRuntimeError("tool_failed", "GitHub request failed") from exc
+        if len(content) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "GitHub response exceeds the 1 MiB limit"
+            )
+        output = {
+            "status": response.status_code,
+            "body": content.decode("utf-8", errors="replace"),
+        }
+        return self._receipt_execution(
+            authorization, output, len(content), "api.github.com"
+        )
+
+    def _execute_github_write(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        resource = authorization.resource or {}
+        spec = resource.get("spec") or {}
+        path = values.get("path")
+        method = values.get("method", "POST")
+        body = values.get("body")
+        secret_env = spec.get("secret_env")
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/repos/")
+            or ".." in path
+            or "//" in path
+        ):
+            raise ToolRuntimeError(
+                "tool_input_invalid", "GitHub path must be a repository API path"
+            )
+        if not isinstance(method, str) or method.upper() not in {
+            "POST",
+            "PATCH",
+            "PUT",
+        }:
+            raise ToolRuntimeError(
+                "tool_input_invalid", "GitHub write method is not supported"
+            )
+        if not isinstance(body, str) or not body.strip():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "GitHub write body is required"
+            )
+        if not isinstance(secret_env, str):
+            raise ToolRuntimeError(
+                "secret_not_configured", "GitHub secret environment is missing"
+            )
+        token = os.environ.get(secret_env, "").strip()
+        if not token:
+            raise ToolRuntimeError(
+                "secret_not_configured", "GitHub token is not configured"
+            )
+        try:
+            response = self._http_client.request(
+                method.upper(),
+                f"https://api.github.com{path}",
+                content=body,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
             )

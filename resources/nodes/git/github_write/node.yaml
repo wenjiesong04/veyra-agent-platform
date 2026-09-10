@@ -1,7 +1,7 @@
 # veyra.tool.github.write@1.0.0
-availability: unavailable
-description: Write GitHub comments or issues after a GitHub adapter exists.
-factory_selectable: false
+availability: ready
+description: Write GitHub repository resources using a host-configured token and approval.
+factory_selectable: true
 kind: tool
 name: GitHub Write
 required_permissions:
@@ -13,10 +13,19 @@ required_permissions:
   tools:
   - veyra.tool.github.write
 resource_id: veyra.tool.github.write
-runtime_status: runtime_not_supported
+runtime_status: supported
 spec:
-  adapter: missing
+  adapter: veyra.runtime.github.write
   approval_required: true
+  input_schema:
+    body: string
+    method: string
+    path: string
+  output_schema:
+    body: string
+    status: integer
+  secret_env: GITHUB_TOKEN
+  secret_ref: github.main
   tool_name: github.write
   ui:
     category: git
