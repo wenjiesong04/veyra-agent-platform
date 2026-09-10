@@ -39,6 +39,12 @@ environments use `make install-runtime`. The runtime and dev lock files are the
 only committed dependency locks. Refresh both generated locks deterministically
 with `make lock-refresh`; the lock files pin versions and artifact hashes.
 
-The common locks intentionally exclude `keyring`; it is a macOS-only
-`desktop-macos` optional extra until the desktop boundary is implemented.
+The common locks intentionally exclude `keyring`; the local macOS desktop
+sidecar uses the system `security` Keychain command for host credentials, with
+process environment variables retained as a development fallback.
 `make linux-lock-check` validates the dev lock with Linux wheel resolution.
+
+To configure the GitHub adapters, open Desktop Settings and save the token in
+the Credentials panel. The Project and Agent sources store only the opaque
+`github.main` reference; the token is never written to Project files or local
+SQLite. `GITHUB_TOKEN` remains supported for headless development and CI.

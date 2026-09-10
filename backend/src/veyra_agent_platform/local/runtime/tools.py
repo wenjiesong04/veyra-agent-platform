@@ -16,6 +16,7 @@ from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.local.mcp.service import McpError, McpService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
+from veyra_agent_platform.local.secrets import SecretStore
 
 _MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
@@ -83,12 +84,14 @@ class ToolRuntime:
         mcp: McpService | None = None,
         adapters: Mapping[str, ToolAdapter] | None = None,
         http_client: httpx.Client | None = None,
+        secret_store: SecretStore | None = None,
     ) -> None:
         self.catalog = catalog
         self.mcp = mcp
         self._http_client = http_client or httpx.Client(
             timeout=30.0, follow_redirects=False
         )
+        self._secret_store = secret_store
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
             _LIST_ADAPTER: self._execute_list,
@@ -187,9 +190,8 @@ class ToolRuntime:
                     values,
                     resource,
                 )
-            if (
-                not isinstance(secret_env, str)
-                or not os.environ.get(secret_env, "").strip()
+            if not isinstance(secret_env, str) or not self._secret_value(
+                secret_ref, secret_env
             ):
                 return self._denied(
                     node.uses,
@@ -426,7 +428,7 @@ class ToolRuntime:
             raise ToolRuntimeError(
                 "secret_not_configured", "GitHub secret environment is missing"
             )
-        token = os.environ.get(secret_env, "").strip()
+        token = self._secret_value(spec.get("secret_ref"), secret_env)
         if not token:
             raise ToolRuntimeError(
                 "secret_not_configured", "GitHub token is not configured"
@@ -499,7 +501,7 @@ class ToolRuntime:
             raise ToolRuntimeError(
                 "secret_not_configured", "GitHub secret environment is missing"
             )
-        token = os.environ.get(secret_env, "").strip()
+        token = self._secret_value(spec.get("secret_ref"), secret_env)
         if not token:
             raise ToolRuntimeError(
                 "secret_not_configured", "GitHub token is not configured"
@@ -532,6 +534,16 @@ class ToolRuntime:
         return self._receipt_execution(
             authorization, output, len(content), "api.github.com"
         )
+
+    def _secret_value(self, secret_ref: Any, env_name: str) -> str:
+        if isinstance(secret_ref, str) and self._secret_store is not None:
+            try:
+                value = self._secret_store.get(secret_ref)
+            except Exception:
+                value = None
+            if value:
+                return value.strip()
+        return os.environ.get(env_name, "").strip()
 
     @staticmethod
     def _receipt_execution(

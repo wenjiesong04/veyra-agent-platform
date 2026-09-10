@@ -6,6 +6,8 @@
 *.key
 *.p12
 secrets/
+!backend/src/veyra_agent_platform/local/api/secrets/
+!backend/src/veyra_agent_platform/local/api/secrets/**
 
 # Python
 __pycache__/

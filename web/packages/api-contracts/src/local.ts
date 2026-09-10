@@ -753,6 +753,14 @@ export type RuntimeStatus = {
   user_provided_only: boolean;
 };
 
+export type SecretStatus = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  secret_ref: string;
+  env_name: string;
+  configured: boolean;
+  source: "keychain" | "environment" | "missing";
+};
+
 export type ApplyFactoryDraftResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   session: FactorySession;

@@ -25,6 +25,7 @@ import {
   type FactorySessionState,
   type FactoryStatus,
   type RuntimeStatus,
+  type SecretStatus,
   type RuntimeApiProfileInput,
   type RuntimeApiProfileSummary,
   type RuntimeProfileResponse,
@@ -166,6 +167,9 @@ export type LocalProjectApi = {
   getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
   factoryStatus?(): Promise<FactoryStatus>;
   runtimeStatus?(): Promise<RuntimeStatus>;
+  getSecretStatus?(secretRef: string): Promise<SecretStatus>;
+  setSecret?(secretRef: string, value: string): Promise<SecretStatus>;
+  deleteSecret?(secretRef: string): Promise<SecretStatus>;
   getProjectRuntimeProfile?(projectId: string): Promise<RuntimeProfileResponse>;
   setProjectRuntimeProfile?(projectId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
   getAgentRuntimeProfile?(projectId: string, agentId: string): Promise<RuntimeProfileResponse>;
@@ -211,7 +215,7 @@ export type LocalProjectApi = {
 };
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: object;
   formData?: FormData;
   ifMatch?: string;
@@ -1203,6 +1207,21 @@ function runtimeStatus(value: unknown, status = 502): RuntimeStatus {
   };
 }
 
+function secretStatus(value: unknown, status = 502): SecretStatus {
+  const record = schemaRecord(value, status);
+  const source = asString(record.source, "secret.source", status);
+  if (source !== "keychain" && source !== "environment" && source !== "missing") {
+    throw new LocalApiClientError("The local service returned an invalid Secret status.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    secret_ref: asString(record.secret_ref, "secret.secret_ref", status),
+    env_name: asString(record.env_name, "secret.env_name", status),
+    configured: asBoolean(record.configured, "secret.configured", status),
+    source,
+  };
+}
+
 function appliedFactoryDraft(value: unknown, status = 502): ApplyFactoryDraftResponse {
   const record = schemaRecord(value, status);
   return {
@@ -1714,6 +1733,21 @@ export class LocalApiClient {
 
   runtimeStatus(): Promise<RuntimeStatus> {
     return this.request("runtime/status", runtimeStatus);
+  }
+
+  getSecretStatus(secretRef: string): Promise<SecretStatus> {
+    return this.request(`secrets/${encodeURIComponent(secretRef)}`, secretStatus);
+  }
+
+  setSecret(secretRef: string, value: string): Promise<SecretStatus> {
+    return this.request(`secrets/${encodeURIComponent(secretRef)}`, secretStatus, {
+      method: "PUT",
+      body: { value },
+    });
+  }
+
+  deleteSecret(secretRef: string): Promise<SecretStatus> {
+    return this.request(`secrets/${encodeURIComponent(secretRef)}`, secretStatus, { method: "DELETE" });
   }
 
   getProjectRuntimeProfile(projectId: string): Promise<RuntimeProfileResponse> {

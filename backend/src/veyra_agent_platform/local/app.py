@@ -18,6 +18,7 @@ from .api.projects import TypedApiError, typed_error_response
 from .api.projects import build_router as build_projects_router
 from .api.resources import build_router as build_resources_router
 from .api.runtime import build_router as build_runtime_router
+from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
 from .api.workflows import build_router as build_workflow_router
 from .config import LocalSettings
@@ -42,6 +43,7 @@ from .runtime import (
 )
 from .runtime.client import RuntimeModelTransport
 from .runtime.workflow_service import WorkflowRuntimeService
+from .secrets import MacOSKeychainSecretStore, SecretStore
 from .storage import LocalRepository, migrate_local_database
 from .storage.bootstrap import HEAD_REVISION
 from .system import DirectoryPicker, MacOSDirectoryPicker
@@ -72,6 +74,7 @@ def create_app(
     runtime_settings: RuntimeSettings | None = None,
     mcp_transport_factory: TransportFactory | None = None,
     tool_adapters: Mapping[str, ToolAdapter] | None = None,
+    secret_store: SecretStore | None = None,
 ) -> FastAPI:
     """Create the local service application without starting a server."""
 
@@ -126,7 +129,12 @@ def create_app(
             projects,
             application.state.library,
             runtime_client,
-            ToolRuntime(catalog, mcp=mcp, adapters=tool_adapters),
+            ToolRuntime(
+                catalog,
+                mcp=mcp,
+                adapters=tool_adapters,
+                secret_store=application.state.secrets,
+            ),
             runtime_profiles,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
@@ -153,6 +161,7 @@ def create_app(
     application.state.database_ready = False
     application.state.database_revision = None
     application.state.resource_catalog = catalog
+    application.state.secrets = secret_store or MacOSKeychainSecretStore()
     application.add_exception_handler(TypedApiError, typed_error_response)
 
     application.include_router(
@@ -168,6 +177,7 @@ def create_app(
     application.include_router(build_workflow_router())
     application.include_router(build_factory_router())
     application.include_router(build_resources_router())
+    application.include_router(build_secrets_router())
     application.include_router(build_mcp_router())
     application.include_router(build_orchestrator_router())
 
