@@ -917,8 +917,9 @@ class RuntimeService:
                     project = self.repository.project(project_id)
                     if project is None:
                         raise RuntimeError("project_invalid", "Project is unavailable")
+                    tool_values = self._tool_input_values(node, values)
                     authorization = self.tools.authorize(
-                        source=source, node=node, values=values
+                        source=source, node=node, values=tool_values
                     )
                     emit(
                         node.id,
@@ -946,7 +947,7 @@ class RuntimeService:
                         project_root=self.projects._existing_root(project["root_path"]),
                         source=source,
                         node=node,
-                        values=values,
+                        values=tool_values,
                         authorization=authorization,
                         approved=approved,
                     )
@@ -965,7 +966,7 @@ class RuntimeService:
                         input_digest=record.input_digest,
                         receipt=execution.receipt,
                     )
-                    values.update(execution.output)
+                    values.update(self._tool_output_values(node, execution.output))
                     port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
@@ -1095,6 +1096,35 @@ class RuntimeService:
                 )
             result[name] = values[name]
         return result
+
+    @staticmethod
+    def _tool_input_values(node: Any, values: dict[str, Any]) -> dict[str, Any]:
+        if not node.input_mapping:
+            return values
+        mapped: dict[str, Any] = {}
+        for tool_name, source_name in node.input_mapping.items():
+            if source_name not in values:
+                raise RuntimeError(
+                    "tool_input_missing",
+                    f"Tool input mapping source {source_name} is unavailable",
+                )
+            mapped[tool_name] = values[source_name]
+        return mapped
+
+    @staticmethod
+    def _tool_output_values(node: Any, output: dict[str, Any]) -> dict[str, Any]:
+        if not node.output_mapping:
+            return output
+        mapped: dict[str, Any] = {}
+        for tool_name, value in output.items():
+            target_name = node.output_mapping.get(tool_name, tool_name)
+            if target_name in mapped:
+                raise RuntimeError(
+                    "tool_output_mapping_invalid",
+                    f"Tool outputs map to the same field {target_name}",
+                )
+            mapped[target_name] = value
+        return mapped
 
     def _run_agent(
         self,

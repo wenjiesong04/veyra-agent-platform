@@ -86,8 +86,8 @@ export function repairInvalidNodeIds(source: StudioSource): StudioSource {
     nodes: source.nodes.map((node) => ({
       ...node,
       id: rewriteNodeRef(node.id, rename),
-      input_mapping: rewriteMap(node.input_mapping),
-      output_mapping: rewriteMap(node.output_mapping),
+      input_mapping: node.component_type === "AgentCall" ? rewriteMap(node.input_mapping) : node.input_mapping,
+      output_mapping: node.component_type === "AgentCall" ? rewriteMap(node.output_mapping) : node.output_mapping,
     })),
     transitions: source.transitions.map((item) => ({ ...item, from: rewriteNodeRef(item.from, rename), to: rewriteNodeRef(item.to, rename) })),
     ui: {

@@ -254,7 +254,12 @@ class FlowNode:
             ComponentType.START: set(),
             ComponentType.AGENT: {"model_ref", "system_prompt"},
             ComponentType.MODEL: {"model_ref", "system_prompt"},
-            ComponentType.TOOL: {"uses", "network_hosts"},
+            ComponentType.TOOL: {
+                "uses",
+                "network_hosts",
+                "input_mapping",
+                "output_mapping",
+            },
             ComponentType.CONDITION: {"expression"},
             ComponentType.TRANSFORM: {"mapping"},
             ComponentType.HUMAN_APPROVAL: {"prompt"},

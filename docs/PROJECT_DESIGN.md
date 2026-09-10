@@ -611,6 +611,10 @@ Initial tools:
 - mcp.call
 - browser read/navigation after the core Runtime is stable
 
+Tool nodes may map external input/output field names to the Agent value space;
+the Runtime applies these mappings before authorization and after the adapter
+receipt is produced.
+
 Browser, GitHub, OCR, Email, and databases are tools or providers, not separate control-flow component types.
 
 ### 5.5.1 Resource Catalog V1
