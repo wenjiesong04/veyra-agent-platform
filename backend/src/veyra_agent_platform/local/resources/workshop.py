@@ -80,7 +80,7 @@ class ResourceWorkshop:
                 "workshop_instruction_invalid", "Skill instruction is too large"
             )
         package_id = draft_id.replace("-", "")
-        payload = {
+        payload: dict[str, Any] = {
             "resource_id": resource_id,
             "kind": kind,
             "name": title[:120],
