@@ -1,7 +1,7 @@
 # veyra.tool.github.read@1.0.0
-availability: unavailable
-description: Read GitHub issues or repositories after a GitHub adapter exists.
-factory_selectable: false
+availability: ready
+description: Read a GitHub API repository path using a host-configured token.
+factory_selectable: true
 kind: tool
 name: GitHub Read
 required_permissions:
@@ -13,9 +13,17 @@ required_permissions:
   tools:
   - veyra.tool.github.read
 resource_id: veyra.tool.github.read
-runtime_status: runtime_not_supported
+runtime_status: supported
 spec:
-  adapter: missing
+  adapter: veyra.runtime.github.read
+  approval_required: false
+  input_schema:
+    path: string
+  output_schema:
+    body: string
+    status: integer
+  secret_env: GITHUB_TOKEN
+  secret_ref: github.main
   tool_name: github.read
   ui:
     category: git

@@ -606,7 +606,7 @@ Initial tools:
 - filesystem.write — current Runtime adapter, HumanApproval by default, Project workspace only
 - shell.exec, approval and workspace scope by default
 - http.request — current Runtime adapter, explicit per-node host allowlist and HumanApproval
-- github.read
+- github.read — current Runtime adapter, host `GITHUB_TOKEN` secret and read-only API paths
 - github.write, approval by default
 - mcp.call
 - browser read/navigation after the core Runtime is stable

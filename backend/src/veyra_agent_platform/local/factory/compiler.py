@@ -72,7 +72,13 @@ def compile_blueprint(
         name=(name or "Generated Agent").strip() or "Generated Agent",
         description=(description or blueprint.goal).strip() or blueprint.goal,
         runtime_profile=_RUNTIME_PROFILE,
-        secret_refs=[],
+        secret_refs=sorted(
+            {
+                resource["spec"]["secret_ref"]
+                for resource in selected
+                if resource["spec"].get("secret_ref")
+            }
+        ),
         lock=lock,
     )
     plan = resource_plan(compiled, catalog)

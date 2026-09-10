@@ -26,6 +26,7 @@ _SEARCH_ADAPTER = "veyra.runtime.filesystem.search"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
+_GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
 
 
@@ -94,6 +95,7 @@ class ToolRuntime:
             _WRITE_ADAPTER: self._execute_write,
             _MCP_ADAPTER: self._execute_mcp,
             _HTTP_ADAPTER: self._execute_http,
+            _GITHUB_READ_ADAPTER: self._execute_github_read,
         }
         if adapters:
             self._adapters.update(adapters)
@@ -171,6 +173,29 @@ class ToolRuntime:
                 values,
                 resource,
             )
+        spec = resource.get("spec", {})
+        secret_ref = spec.get("secret_ref")
+        secret_env = spec.get("secret_env")
+        if secret_ref:
+            if not isinstance(secret_ref, str) or secret_ref not in source.secret_refs:
+                return self._denied(
+                    node.uses,
+                    "secret_ref_missing",
+                    "Agent does not declare the Tool secret reference",
+                    values,
+                    resource,
+                )
+            if (
+                not isinstance(secret_env, str)
+                or not os.environ.get(secret_env, "").strip()
+            ):
+                return self._denied(
+                    node.uses,
+                    "secret_not_configured",
+                    "Tool secret is not configured on the host",
+                    values,
+                    resource,
+                )
         return ToolAuthorization(
             tool_reference=node.uses,
             adapter=str(adapter),
@@ -369,6 +394,65 @@ class ToolRuntime:
         }
         return self._receipt_execution(
             authorization, output, len(content), host.lower()
+        )
+
+    def _execute_github_read(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        resource = authorization.resource or {}
+        spec = resource.get("spec") or {}
+        path = values.get("path")
+        secret_env = spec.get("secret_env")
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/repos/")
+            or ".." in path
+            or "//" in path
+        ):
+            raise ToolRuntimeError(
+                "tool_input_invalid", "GitHub path must be a repository API path"
+            )
+        if not isinstance(secret_env, str):
+            raise ToolRuntimeError(
+                "secret_not_configured", "GitHub secret environment is missing"
+            )
+        token = os.environ.get(secret_env, "").strip()
+        if not token:
+            raise ToolRuntimeError(
+                "secret_not_configured", "GitHub token is not configured"
+            )
+        try:
+            response = self._http_client.get(
+                f"https://api.github.com{path}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            content = response.content
+        except httpx.TimeoutException as exc:
+            raise ToolRuntimeError("tool_timeout", "GitHub request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ToolRuntimeError("tool_failed", "GitHub request failed") from exc
+        if len(content) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "GitHub response exceeds the 1 MiB limit"
+            )
+        output = {
+            "status": response.status_code,
+            "body": content.decode("utf-8", errors="replace"),
+        }
+        return self._receipt_execution(
+            authorization, output, len(content), "api.github.com"
         )
 
     @staticmethod

@@ -309,6 +309,10 @@ export function attachCatalogBinding(
         ...veyra,
         skill_refs: skillRefs,
         policy_refs: policyRefs,
+        secret_refs: unique([
+          ...(veyra.secret_refs ?? []),
+          ...(typeof resource.spec.secret_ref === "string" ? [resource.spec.secret_ref] : []),
+        ]),
       },
     },
     lock: { ...source.lock, [resource.reference]: resource.content_hash },
