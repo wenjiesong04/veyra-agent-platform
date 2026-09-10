@@ -12,7 +12,6 @@ import subprocess
 from collections.abc import Mapping
 from typing import Protocol
 
-
 SERVICE_NAME = "Veyra Agent Platform"
 _SECRET_REF = "github.main"
 _SECRET_ENV = "GITHUB_TOKEN"

@@ -190,6 +190,13 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
     return resources.filter((item) => currentKinds.includes(item.kind) && matchesQuery(item, needle));
   }, [currentKinds, query, resources]);
 
+  const selectedResource = selected;
+  useEffect(() => {
+    const spec = (selectedResource?.spec ?? {}) as Record<string, unknown>;
+    setWorkshopInstruction(typeof spec.instruction === "string" ? spec.instruction : "");
+    setWorkshopState("idle");
+  }, [selectedResource?.reference]);
+
   if (resourceId && detailMissing) {
     return (
       <div className="page-stack resource-library-page">
@@ -202,12 +209,6 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
     return <div className="page-stack resource-library-page"><Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel></div>;
   }
 
-  const selectedResource = selected;
-  useEffect(() => {
-    const spec = (selectedResource?.spec ?? {}) as Record<string, unknown>;
-    setWorkshopInstruction(typeof spec.instruction === "string" ? spec.instruction : "");
-    setWorkshopState("idle");
-  }, [selectedResource?.reference]);
   const DetailIcon = selectedResource ? iconForKind[selectedResource.kind] : LayoutGrid;
   const inProjectCatalog = catalogHref.startsWith("#/projects/");
   const closeDetail = (event?: { preventDefault: () => void }) => {
