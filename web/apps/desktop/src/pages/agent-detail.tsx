@@ -1,13 +1,11 @@
 import * as React from "react";
 import { ErrorState, LoadingState, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
-import { useChatScopeNavigation } from "../features/agents/chat/chat-scope";
-import { FactoryConversation } from "../features/factory/factory-conversation";
+import { AgentChatSurface } from "../features/agents/chat/AgentChatSurface";
 
 export function AgentDetailPage({ projectId, agentId }: { projectId: string; agentId: string }) {
   const { locale } = useLocale();
   const { api, projects, upsertProject } = useProjectWorkspace();
-  const { select, createProject } = useChatScopeNavigation();
   const cached = projects.find((project) => project.project_id === projectId) ?? null;
   const [loading, setLoading] = React.useState(!cached);
   const [error, setError] = React.useState("");
@@ -41,25 +39,5 @@ export function AgentDetailPage({ projectId, agentId }: { projectId: string; age
   if (error || !project || !agent) {
     return <ErrorState message={error || (locale === "zh" ? "找不到这个 Agent。" : "This Agent was not found.")} />;
   }
-  return (
-    <FactoryConversation
-      api={api}
-      projectId={projectId}
-      locale={locale}
-      projectName={project.name}
-      focusAgent={{ agentId: agent.agent_id, name: agent.name || agent.slug, description: agent.description }}
-      scope={{
-        current: {
-          kind: "agent",
-          projectId,
-          agentId: agent.agent_id,
-          name: agent.name || agent.slug,
-          projectName: project.name,
-        },
-        projects,
-        onSelect: select,
-        onCreateProject: createProject,
-      }}
-    />
-  );
+  return <AgentChatSurface api={api} projectId={projectId} agentId={agent.agent_id} locale={locale} />;
 }
