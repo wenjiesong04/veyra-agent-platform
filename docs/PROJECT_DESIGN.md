@@ -1375,6 +1375,10 @@ Community is a separate FastAPI deployment. Never expose the local desktop servi
 The public V1 beta uses PostgreSQL plus S3-compatible object storage. SQLite is
 permitted only for isolated development and tests.
 
+The local development Community service currently uses SQLite plus a local
+content-addressed package directory. This is the runnable registry slice; the
+production PostgreSQL/object-storage deployment remains a release milestone.
+
 Community data:
 
 - users/profiles/email challenges/sessions/devices
@@ -1388,6 +1392,13 @@ Community data:
 - compatibility and verification claims
 
 ### 12.4 Upload pipeline
+
+The current local Community registry implements the first runnable slice:
+authenticated multipart YAML upload, AgentSource validation, size/UTF-8 checks,
+obvious credential-marker rejection, content-addressed storage, immutable
+version metadata, public listing/detail, and version download. It publishes
+directly after these checks, so it must not be described as the final
+quarantine/moderation pipeline.
 
 ```text
 explicit upload
@@ -1517,11 +1528,12 @@ Star does not mean safe or effective.
 - `POST /api/v1/auth/password-reset/confirm`
 - `GET/PATCH /api/v1/account/me`
 - `GET/DELETE /api/v1/account/sessions/{id}`
-- `GET /api/v1/community/catalog`
-- `POST /api/v1/community/publish`
-- `POST /api/v1/community/forks`
-- `POST /api/v1/community/stars`
-- `POST /api/v1/community/reviews`
+- `GET /api/v1/registry/agents`
+- `GET /api/v1/registry/agents/{owner_handle}/{slug}`
+- `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}`
+- `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download`
+- `POST /api/v1/registry/agents` (authenticated multipart YAML publish)
+- Future: target Project import/Fork, stars, version-bound reviews, reports, and moderation.
 
 ---
 
