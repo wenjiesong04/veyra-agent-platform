@@ -970,7 +970,7 @@ describe("desktop Project workspace", () => {
     await user.click(await screen.findByRole("button", { name: "Choose project" }));
     await user.click(await screen.findByRole("option", { name: /Reviewer/ }));
     expect(window.location.hash).toBe("#/projects/p-one/agents/agent-1");
-    expect(await screen.findByRole("heading", { name: "What do you want to achieve in Reviewer?", level: 2 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What can I help with?", level: 2 })).toBeInTheDocument();
     const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
     expect(within(sidebar).getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "#/projects");
     expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.projectChat("p-one"));
