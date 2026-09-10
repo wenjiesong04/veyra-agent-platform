@@ -25,6 +25,7 @@ const copy = {
     reset: "清除并重置",
     empty: "发送真实输入以启动本地运行。结果和验证状态将直接来自 Runtime。",
     result: "Runtime 结果",
+    history: "历史运行",
     governedError: "受治理的 Runtime 错误",
     noInputs: "此 Agent 不需要输入。",
     running: "运行中", waiting: "等待审批", verified: "已验证", unverified: "未验证",
@@ -42,6 +43,7 @@ const copy = {
     reset: "Clear & reset",
     empty: "Send real inputs to start a local run. Results and verification status come directly from Runtime.",
     result: "Runtime result",
+    history: "Run history",
     governedError: "Governed Runtime error",
     noInputs: "This Agent has no inputs.",
     running: "Running", waiting: "Waiting", verified: "Verified", unverified: "Unverified",
@@ -91,6 +93,7 @@ export function AgentChatSurface({
   const [loadState, setLoadState] = React.useState<"loading" | "ready" | "error">("loading");
   const [values, setValues] = React.useState<InputValues>({});
   const [submitted, setSubmitted] = React.useState<InputValues | null>(null);
+  const [history, setHistory] = React.useState<AgentRunResponse[]>([]);
   const [error, setError] = React.useState("");
   const [canvasOpen, setCanvasOpen] = React.useState(false);
   const [canvasDismissed, setCanvasDismissed] = React.useState(false);
@@ -119,6 +122,20 @@ export function AgentChatSurface({
       api.listResources({ kind: "tool" }),
     ]).then(([components, tools]) => setCatalog([...components.resources, ...tools.resources])).catch(() => setCatalog([]));
   }, [api]);
+  React.useEffect(() => {
+    if (!api.listAgentRuns) return;
+    let active = true;
+    void api.listAgentRuns(projectId, agentId).then((response) => {
+      if (active) setHistory((current) => [...current, ...response.runs].filter((item, index, all) => all.findIndex((candidate) => candidate.run_id === item.run_id) === index).slice(0, 20));
+    }).catch(() => {
+      if (active) setHistory([]);
+    });
+    return () => { active = false; };
+  }, [api, projectId, agentId]);
+  React.useEffect(() => {
+    if (!live.run || live.run.status === "running" || live.run.status === "waiting") return;
+    setHistory((current) => [live.run!, ...current.filter((item) => item.run_id !== live.run!.run_id)].slice(0, 20));
+  }, [live.run]);
 
   const reset = () => {
     if (source) setValues(valuesFor(source));
@@ -166,7 +183,8 @@ export function AgentChatSurface({
   const composerValue = singleString ? String(values[inputEntries[0][0]] ?? "") : "";
   const canSubmit = canStart && (!singleString || composerValue.trim().length > 0);
   const displayError = error || live.error;
-  const empty = !submitted && !displayError && !live.run;
+  const visibleHistory = history.filter((item) => item.run_id !== live.run?.run_id);
+  const empty = !submitted && !displayError && !live.run && visibleHistory.length === 0;
   const user = submitted ? submittedDisplay(source, submitted) : null;
   const preview = assistantPreview(live.run?.result ?? null, spec, locale);
   const resultText = scalarResultText(live.run?.result);
@@ -219,6 +237,12 @@ export function AgentChatSurface({
         />
       ) : undefined}
     >
+      {visibleHistory.map((item) => (
+        <article className="agent-chat-bubble result agent-convo-enter" key={item.run_id}>
+          <span className="agent-convo-result-head">{text.history}<StatusBadge label={text[item.status]} tone={statusTone(item.status)} /></span>
+          {item.result ? <pre><code>{JSON.stringify(item.result, null, 2)}</code></pre> : item.error ? <p>{item.error.message}</p> : <p>{item.status}</p>}
+        </article>
+      ))}
       {submitted && user ? (
         <article className="agent-chat-bubble user agent-convo-enter">
           <span>{text.you}</span>
