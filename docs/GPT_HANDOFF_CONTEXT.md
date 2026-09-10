@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`8019f41cf4ab8782dd892837ba83d622a7523ee7`；后端 live 基线为 `a65386be506f3c70f0af799decf55134db8c5de1`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射和 Agent conversation。
+- 最新功能代码基线：`40097117c5b02ede5ac6eb340893e99b18fcf504`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation 和 WorkItem lease/attempt/retry。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -38,7 +38,7 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：`build_sha=a65386be506f3c70f0af799decf55134db8c5de1`、`database_revision=local_0015_agent_conversations`、`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=40097117c5b02ede5ac6eb340893e99b18fcf504`、`database_revision=local_0016_orchestrator_leases`、`database_ready=true`。
 - Community `/api/v1/health`：`database_revision=community_0003_account_avatars`，`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 
@@ -358,8 +358,8 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 1. Tool Runtime 仍缺 Browser Navigate；Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 已接入真实 adapter boundary。
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
-4. Orchestrator：WorkItem、依赖、lease、worktree、retry、stall/reconcile。
-5. Monitor/Runs 已切换到真实 API；Orchestrator 的 lease、attempt、worktree、retry 和更丰富 reconcile 仍未完成。
+4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry 和基础 reconcile；worktree/concurrency/stall 仍未完成。
+5. Monitor/Runs 已切换到真实 API；Monitor 还需要展示 attempt 详情并补齐更丰富 reconcile。
 6. Community registry：publish/quarantine/hash scan/download/import/Fork/Star/Review/Report/moderation。
 7. Tauri/PyInstaller/macOS arm64 包。
 8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
@@ -393,15 +393,15 @@ Filesystem、Shell、HTTP、GitHub 和 MCP discovered tools 已有 Runtime adapt
 
 Agent Chat 现在从 Agent 详情入口直接进入，支持最近 Run 回放、conversation 列表/切换、新建会话和持久化消息上下文。
 
-### 下一波 B：Orchestrator completion
+### 已完成：Orchestrator lease/attempt/retry
 
-补齐 WorkItem lease、attempt、retry、stall/reconcile 和更清晰的 Monitor 状态；保持数据来自真实 Local API，不做装饰性大屏。
+WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；终态会回收 lease，失败会保存 failure class，Monitor 可 Retry。下一步只补 worktree/concurrency/stall 等高阶调度。
 
-### 下一波 C：Community registry
+### 下一波 B：Community registry
 
 先实现 Agent/template 不可变版本的 quarantine、hash/secret/path/symlink 扫描、下载、目标 Project 导入和 Fork lineage，再做 Star/Review/Report/审核。
 
-### 下一波 D：发行与部署
+### 下一波 C：发行与部署
 
 只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。
 
@@ -443,8 +443,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push 和 Pull Request：`8019f41` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=a65386b...`、`local_0015_agent_conversations`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation routes 可用，未输出任何密钥值。
+- GitHub Actions Push 和 Pull Request：`4009711` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=4009711...`、`local_0016_orchestrator_leases`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation 和 WorkItem retry routes 可用，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则

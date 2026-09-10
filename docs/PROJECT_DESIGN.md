@@ -1279,6 +1279,8 @@ Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or
 
 ### 11.3 Runtime
 
+- `work_items`
+- `work_item_attempts` (CAS lease and classified local attempts)
 - `runs`
 - `run_tasks`
 - `task_dependencies`
