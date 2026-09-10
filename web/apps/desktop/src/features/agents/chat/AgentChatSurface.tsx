@@ -94,6 +94,7 @@ export function AgentChatSurface({
   const [values, setValues] = React.useState<InputValues>({});
   const [submitted, setSubmitted] = React.useState<InputValues | null>(null);
   const [history, setHistory] = React.useState<AgentRunResponse[]>([]);
+  const [conversationId, setConversationId] = React.useState<string | null>(null);
   const [error, setError] = React.useState("");
   const [canvasOpen, setCanvasOpen] = React.useState(false);
   const [canvasDismissed, setCanvasDismissed] = React.useState(false);
@@ -133,13 +134,25 @@ export function AgentChatSurface({
     return () => { active = false; };
   }, [api, projectId, agentId]);
   React.useEffect(() => {
+    if (!api.listAgentConversations) return;
+    let active = true;
+    void api.listAgentConversations(projectId, agentId).then((response) => {
+      if (active) setConversationId(response.conversations[0]?.conversation_id ?? null);
+    }).catch(() => {
+      if (active) setConversationId(null);
+    });
+    return () => { active = false; };
+  }, [api, projectId, agentId]);
+  React.useEffect(() => {
     if (!live.run || live.run.status === "running" || live.run.status === "waiting") return;
+    if (live.run.conversation_id) setConversationId(live.run.conversation_id);
     setHistory((current) => [live.run!, ...current.filter((item) => item.run_id !== live.run!.run_id)].slice(0, 20));
   }, [live.run]);
 
   const reset = () => {
     if (source) setValues(valuesFor(source));
     setSubmitted(null);
+    setConversationId(null);
     live.clear();
     setError("");
     setCanvasOpen(false);
@@ -151,8 +164,8 @@ export function AgentChatSurface({
     setError("");
     setSubmitted(inputs);
     setCanvasDismissed(false);
-    await live.start(inputs);
-  }, [source, api.runAgent, live]);
+    await live.start(inputs, conversationId ?? undefined);
+  }, [source, api.runAgent, conversationId, live]);
 
   const spec = conversationCanvas({ locale, source, run: live.run });
   React.useEffect(() => {

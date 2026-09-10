@@ -27,6 +27,7 @@ from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 from .client import RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
+from .conversations import AgentConversationService
 from .profiles import RuntimeProfileStore
 from .tools import ToolRuntime, ToolRuntimeError
 
@@ -88,11 +89,13 @@ class RuntimeService:
         model: RuntimeModelClient | None = None,
         tools: ToolRuntime | None = None,
         profiles: RuntimeProfileStore | None = None,
+        conversations: AgentConversationService | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
         self.tools = tools or ToolRuntime(ResourceCatalog())
         self.profiles = profiles or RuntimeProfileStore(repository)
+        self.conversations = conversations
         self.repository.interrupt_orphan_runs()
 
     def status(self) -> dict[str, Any]:
@@ -109,6 +112,8 @@ class RuntimeService:
         agent_id: str,
         inputs: dict[str, Any],
         idempotency_key: str,
+        conversation_id: str | None = None,
+        append_user: bool = True,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         agent = self.library._agent_in_project(project_id, agent_id)
@@ -125,7 +130,13 @@ class RuntimeService:
         self._validate_inputs(source, inputs)
         fingerprint = file_hash(source_text)
         scope = f"run:{project_id}:{agent_id}"
-        digest = sha256_digest({"file_hash": fingerprint, "inputs": inputs})
+        digest = sha256_digest(
+            {
+                "file_hash": fingerprint,
+                "inputs": inputs,
+                "conversation_id": conversation_id,
+            }
+        )
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, digest
@@ -169,6 +180,25 @@ class RuntimeService:
             else:
                 version_id = version["version_id"]
             run_id = new_uuid7()
+            conversation_context = ""
+            resolved_conversation_id = conversation_id
+            if self.conversations is not None and (conversation_id or append_user):
+                resolved_conversation_id, conversation_context = (
+                    self.conversations.prepare_turn(
+                        connection,
+                        project_id=project_id,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        inputs=inputs,
+                        run_id=run_id,
+                        append_user=append_user,
+                    )
+                )
+            elif conversation_id:
+                raise RuntimeError(
+                    "conversation_unavailable",
+                    "Agent conversation service is unavailable",
+                )
             self.repository.create_run(
                 connection,
                 run_id=run_id,
@@ -177,6 +207,7 @@ class RuntimeService:
                 version_id=version_id,
                 created_at=_now(),
                 inputs=inputs,
+                conversation_id=resolved_conversation_id,
             )
             self.repository.add_run_events(
                 connection,
@@ -200,6 +231,8 @@ class RuntimeService:
                 inputs,
                 start_node=None,
                 approved=False,
+                conversation_id=resolved_conversation_id,
+                conversation_context=conversation_context,
                 scope=scope,
                 idempotency_key=idempotency_key,
                 digest=digest,
@@ -383,6 +416,7 @@ class RuntimeService:
         scope: str | None,
         idempotency_key: str | None,
         digest: str | None,
+        conversation_id: str | None = None,
         extra_events: list[tuple[str | None, str, dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         if not self._is_running(run_id) and outcome.pause is None:
@@ -419,6 +453,13 @@ class RuntimeService:
                 message=None,
                 finished_at=_now(),
             )
+            if conversation_id and outcome.result is not None and self.conversations:
+                self.conversations.append_assistant(
+                    connection,
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    result=outcome.result,
+                )
             return self._stored_run_response(
                 connection,
                 run_id,
@@ -571,7 +612,14 @@ class RuntimeService:
                 status="accepted",
                 created_at=now,
             )
-        child = self.run(row["project_id"], row["agent_id"], inputs, new_uuid7())
+        child = self.run(
+            row["project_id"],
+            row["agent_id"],
+            inputs,
+            new_uuid7(),
+            conversation_id=row["conversation_id"],
+            append_user=False,
+        )
         with self.repository.transaction() as connection:
             self.repository.mark_command_applied(
                 connection, command_id, applied_at=_now()
@@ -732,6 +780,12 @@ class RuntimeService:
             self.repository.replace_run_idempotent_payload(
                 connection, row["run_id"], resumed
             )
+        conversation_id = row["conversation_id"]
+        conversation_context = (
+            self.conversations.prompt_context(conversation_id)
+            if self.conversations is not None and conversation_id
+            else ""
+        )
         self._schedule_execution(
             row["run_id"],
             lambda: self._complete_execution(
@@ -741,6 +795,8 @@ class RuntimeService:
                 values,
                 start_node=next_node,
                 approved=decision == "approved",
+                conversation_id=conversation_id,
+                conversation_context=conversation_context,
                 scope=scope,
                 idempotency_key=idempotency_key,
                 digest=digest,
@@ -765,6 +821,8 @@ class RuntimeService:
         scope: str | None,
         idempotency_key: str | None,
         digest: str | None,
+        conversation_id: str | None = None,
+        conversation_context: str = "",
     ) -> None:
         try:
             outcome = self._execute(
@@ -775,6 +833,7 @@ class RuntimeService:
                 self._model_for(project_id, source.agent_id),
                 start_node=start_node,
                 approved=approved,
+                conversation_context=conversation_context,
             )
             if not self._is_running(run_id):
                 return
@@ -784,6 +843,7 @@ class RuntimeService:
                 scope=scope,
                 idempotency_key=idempotency_key,
                 digest=digest,
+                conversation_id=conversation_id,
             )
         except _RunAbandoned:
             return
@@ -814,6 +874,7 @@ class RuntimeService:
             "project_id": row["project_id"],
             "agent_id": row["agent_id"],
             "version_id": row["version_id"],
+            "conversation_id": row["conversation_id"],
             "status": row["status"],
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
             "error": (
@@ -860,6 +921,7 @@ class RuntimeService:
         *,
         start_node: str | None = None,
         approved: bool = False,
+        conversation_context: str = "",
     ) -> _ExecutionOutcome:
         nodes = {node.id: node for node in source.nodes}
         edges = {
@@ -1009,7 +1071,14 @@ class RuntimeService:
                             },
                         )
                     values.update(
-                        self._run_agent(node, source, values, model, context_text)
+                        self._run_agent(
+                            node,
+                            source,
+                            values,
+                            model,
+                            context_text,
+                            conversation_context,
+                        )
                     )
                     port = "next"
                 elif node.component_type is ComponentType.HUMAN_APPROVAL:
@@ -1133,6 +1202,7 @@ class RuntimeService:
         values: dict[str, Any],
         model: RuntimeModelClient,
         knowledge_context: str = "",
+        conversation_context: str = "",
     ) -> dict[str, Any]:
         if not model.configured:
             raise RuntimeError(
@@ -1147,13 +1217,13 @@ class RuntimeService:
         prompt = self._agent_system_prompt(node, source)
         if "{{" in prompt:
             prompt = _interpolate(prompt, values)
+        user_content = _agent_user_message(source, values) + knowledge_context
+        if conversation_context:
+            user_content += conversation_context
         completion = model.complete(
             [
                 {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": _agent_user_message(source, values) + knowledge_context,
-                },
+                {"role": "user", "content": user_content},
             ]
         )
         return _model_output_values(completion.content.strip(), source.outputs, values)

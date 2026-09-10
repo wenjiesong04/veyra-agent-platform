@@ -42,6 +42,7 @@ from .runtime import (
     ToolRuntime,
 )
 from .runtime.client import RuntimeModelTransport
+from .runtime.conversations import AgentConversationService
 from .runtime.workflow_service import WorkflowRuntimeService
 from .secrets import MacOSKeychainSecretStore, SecretStore
 from .storage import LocalRepository, migrate_local_database
@@ -113,6 +114,9 @@ def create_app(
         application.state.projects = projects
         application.state.project_resources = ProjectResourceService(projects, catalog)
         application.state.library = LibraryService(repository, projects)
+        application.state.conversations = AgentConversationService(
+            repository, application.state.library
+        )
         runtime_profiles = RuntimeProfileStore(repository)
         application.state.runtime_profiles = runtime_profiles
         application.state.factory = FactoryService(
@@ -146,6 +150,7 @@ def create_app(
                 secret_store=application.state.secrets,
             ),
             runtime_profiles,
+            application.state.conversations,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime

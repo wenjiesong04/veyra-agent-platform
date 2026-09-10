@@ -550,6 +550,7 @@ export type CommitRequest = {
 
 export type StartAgentRunRequest = {
   inputs: Record<string, JsonValue>;
+  conversation_id?: string | null;
 };
 
 export type RunCommandRequest = {
@@ -815,12 +816,48 @@ export type AgentRunResponse = {
   project_id: string;
   agent_id: string;
   version_id: string;
+  conversation_id?: string | null;
   status: RuntimeRunStatus;
   result: JsonObject | null;
   error: { code: string; message: string } | null;
   created_at: string;
   finished_at: string | null;
   events?: RuntimeEvent[];
+};
+
+export type AgentConversationMessage = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  message_id: string;
+  conversation_id: string;
+  sequence: number;
+  role: "user" | "assistant";
+  content: string;
+  run_id: string | null;
+  created_at: string;
+};
+
+export type AgentConversationSummary = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  conversation_id: string;
+  project_id: string;
+  agent_id: string;
+  title: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentConversation = Omit<AgentConversationSummary, "message_count"> & {
+  messages: AgentConversationMessage[];
+};
+
+export type ListAgentConversationsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  conversations: AgentConversationSummary[];
+};
+
+export type CreateAgentConversationRequest = {
+  title?: string;
 };
 
 export type ListAgentRunsResponse = {

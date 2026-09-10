@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -23,6 +23,12 @@ _ProfileResult = TypeVar("_ProfileResult")
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     inputs: dict[str, Any]
+    conversation_id: str | None = None
+
+
+class CreateAgentConversationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
 
 
 class RunCommandRequest(BaseModel):
@@ -126,7 +132,46 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _runtime(request).run(
-                project_id, agent_id, payload.inputs, idempotency_key
+                project_id,
+                agent_id,
+                payload.inputs,
+                idempotency_key,
+                conversation_id=payload.conversation_id,
+            )
+        )
+
+    @router.post(
+        "/projects/{project_id}/agents/{agent_id}/conversations",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_conversation(
+        project_id: str,
+        agent_id: str,
+        payload: CreateAgentConversationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _conversations(request).create(project_id, agent_id, payload.title)
+        )
+
+    @router.get("/projects/{project_id}/agents/{agent_id}/conversations")
+    def conversations(
+        project_id: str, agent_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(lambda: _conversations(request).list(project_id, agent_id))
+
+    @router.get(
+        "/projects/{project_id}/agents/{agent_id}/conversations/{conversation_id}"
+    )
+    def conversation_detail(
+        project_id: str,
+        agent_id: str,
+        conversation_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _conversations(request).detail(
+                project_id, agent_id, conversation_id
             )
         )
 
@@ -194,6 +239,12 @@ def _profiles(request: Request) -> RuntimeProfileStore:
     if not bool(getattr(request.app.state, "database_ready", False)):
         raise TypedApiError(503, "database_unavailable", "local database is starting")
     return cast(RuntimeProfileStore, request.app.state.runtime_profiles)
+
+
+def _conversations(request: Request) -> Any:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return request.app.state.conversations
 
 
 def _profile_translate(operation: Callable[[], _ProfileResult]) -> _ProfileResult:

@@ -3,6 +3,9 @@ import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
   type AgentRunResponse,
+  type AgentConversation,
+  type AgentConversationSummary,
+  type CreateAgentConversationRequest,
   type AgentTemplate,
   type ComponentDefinition,
   type CommitResponse,
@@ -35,6 +38,7 @@ import {
   type JsonValue,
   type KnowledgeDocumentResponse,
   type ListAgentRunsResponse,
+  type ListAgentConversationsResponse,
   type ListAgentsResponse,
   type ListAgentTemplatesResponse,
   type ListComponentsResponse,
@@ -199,6 +203,9 @@ export type LocalProjectApi = {
   commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
   getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
+  listAgentConversations?(projectId: string, agentId: string): Promise<ListAgentConversationsResponse>;
+  createAgentConversation?(projectId: string, agentId: string, input?: CreateAgentConversationRequest): Promise<AgentConversation>;
+  getAgentConversation?(projectId: string, agentId: string, conversationId: string): Promise<AgentConversation>;
   watchAgentRunEvents?(
     projectId: string,
     agentId: string,
@@ -1267,6 +1274,9 @@ function commonRun(value: unknown, status = 502): Omit<AgentRunResponse, "agent_
     run_id: asString(record.run_id, "run_id", status),
     project_id: asString(record.project_id, "project_id", status),
     version_id: asString(record.version_id, "version_id", status),
+    ...(record.conversation_id === undefined
+      ? {}
+      : { conversation_id: record.conversation_id === null ? null : asString(record.conversation_id, "conversation_id", status) }),
     status: runStatus,
     result,
     error,
@@ -1302,6 +1312,60 @@ function listedAgentRuns(value: unknown, status = 502): ListAgentRunsResponse {
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     runs: asArray(record.runs, "runs", status).map((item) => agentRun(item, status)),
+  };
+}
+
+function conversationMessage(value: unknown, status = 502): AgentConversation["messages"][number] {
+  const record = schemaRecord(value, status);
+  const role = asString(record.role, "conversation.message.role", status);
+  if (role !== "user" && role !== "assistant") {
+    throw new LocalApiClientError("The local service returned an invalid conversation role.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    message_id: asString(record.message_id, "conversation.message.message_id", status),
+    conversation_id: asString(record.conversation_id, "conversation.message.conversation_id", status),
+    sequence: asNumber(record.sequence, "conversation.message.sequence", status),
+    role,
+    content: asText(record.content, "conversation.message.content", status),
+    run_id: record.run_id === null ? null : asString(record.run_id, "conversation.message.run_id", status),
+    created_at: asString(record.created_at, "conversation.message.created_at", status),
+  };
+}
+
+function conversationSummary(value: unknown, status = 502): AgentConversationSummary {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    conversation_id: asString(record.conversation_id, "conversation.conversation_id", status),
+    project_id: asString(record.project_id, "conversation.project_id", status),
+    agent_id: asString(record.agent_id, "conversation.agent_id", status),
+    title: asText(record.title, "conversation.title", status),
+    message_count: asNumber(record.message_count, "conversation.message_count", status),
+    created_at: asString(record.created_at, "conversation.created_at", status),
+    updated_at: asString(record.updated_at, "conversation.updated_at", status),
+  };
+}
+
+function listedAgentConversations(value: unknown, status = 502): ListAgentConversationsResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    conversations: asArray(record.conversations, "conversations", status).map((item) => conversationSummary(item, status)),
+  };
+}
+
+function agentConversation(value: unknown, status = 502): AgentConversation {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    conversation_id: asString(record.conversation_id, "conversation.conversation_id", status),
+    project_id: asString(record.project_id, "conversation.project_id", status),
+    agent_id: asString(record.agent_id, "conversation.agent_id", status),
+    title: asText(record.title, "conversation.title", status),
+    created_at: asString(record.created_at, "conversation.created_at", status),
+    updated_at: asString(record.updated_at, "conversation.updated_at", status),
+    messages: asArray(record.messages, "conversation.messages", status).map((item) => conversationMessage(item, status)),
   };
 }
 
@@ -1930,6 +1994,28 @@ export class LocalApiClient {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs`,
       listedAgentRuns,
+    );
+  }
+
+  listAgentConversations(projectId: string, agentId: string): Promise<ListAgentConversationsResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/conversations`,
+      listedAgentConversations,
+    );
+  }
+
+  createAgentConversation(projectId: string, agentId: string, input: CreateAgentConversationRequest = {}): Promise<AgentConversation> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/conversations`,
+      agentConversation,
+      { method: "POST", body: input },
+    );
+  }
+
+  getAgentConversation(projectId: string, agentId: string, conversationId: string): Promise<AgentConversation> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}`,
+      agentConversation,
     );
   }
 

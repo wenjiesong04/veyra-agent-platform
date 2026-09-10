@@ -8,7 +8,7 @@ export type LiveRunSession = {
   run: AgentRunResponse | null;
   error: string;
   busy: boolean;
-  start: (inputs: Record<string, JsonValue>) => Promise<void>;
+  start: (inputs: Record<string, JsonValue>, conversationId?: string) => Promise<void>;
   sendCommand: (command: "approve" | "reject" | "stop") => Promise<void>;
   clear: () => void;
 };
@@ -85,12 +85,15 @@ function useLiveRunSession({
     events: next.events ?? previous?.events ?? [],
   }), []);
 
-  const start = React.useCallback(async (inputs: Record<string, JsonValue>) => {
+  const start = React.useCallback(async (inputs: Record<string, JsonValue>, conversationId?: string) => {
     if (inactive || !api.runAgent || busy) return;
     setBusy(true);
     setError("");
     try {
-      const started = await api.runAgent(projectId, agentId, { inputs });
+      const started = await api.runAgent(projectId, agentId, {
+        inputs,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      });
       const detailed = api.getAgentRun
         ? await api.getAgentRun(projectId, agentId, started.run_id)
         : started;

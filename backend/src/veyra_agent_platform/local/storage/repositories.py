@@ -784,17 +784,20 @@ class LocalRepository:
         version_id: str,
         created_at: str,
         inputs: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
     ) -> None:
         connection.execute(
             "INSERT INTO runtime_runs("
-            "run_id, project_id, agent_id, version_id, status, inputs_json, created_at"
-            ") VALUES (?, ?, ?, ?, 'running', ?, ?)",
+            "run_id, project_id, agent_id, version_id, status, inputs_json, "
+            "conversation_id, created_at"
+            ") VALUES (?, ?, ?, ?, 'running', ?, ?, ?)",
             (
                 run_id,
                 project_id,
                 agent_id,
                 version_id,
                 json.dumps(inputs or {}, sort_keys=True, separators=(",", ":")),
+                conversation_id,
                 created_at,
             ),
         )
@@ -1090,6 +1093,101 @@ class LocalRepository:
                 "ORDER BY created_at DESC, run_id DESC",
                 (agent_id,),
             ).fetchall()
+
+    def agent_conversation(
+        self,
+        conversation_id: str,
+        *,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> sqlite3.Row | None:
+        clauses = ["conversation_id = ?"]
+        params: list[str] = [conversation_id]
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            params.append(project_id)
+        if agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        query = "SELECT * FROM agent_conversations WHERE " + " AND ".join(clauses)
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(query, tuple(params)).fetchone(),
+            )
+
+    def agent_conversations(self, project_id: str, agent_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT c.*, COUNT(m.message_id) AS message_count "
+                "FROM agent_conversations c "
+                "LEFT JOIN agent_conversation_messages m "
+                "ON m.conversation_id = c.conversation_id "
+                "WHERE c.project_id = ? AND c.agent_id = ? "
+                "GROUP BY c.conversation_id "
+                "ORDER BY c.updated_at DESC, c.conversation_id DESC",
+                (project_id, agent_id),
+            ).fetchall()
+
+    def agent_conversation_messages(self, conversation_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM agent_conversation_messages "
+                "WHERE conversation_id = ? ORDER BY sequence",
+                (conversation_id,),
+            ).fetchall()
+
+    def create_agent_conversation(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        conversation_id: str,
+        project_id: str,
+        agent_id: str,
+        title: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO agent_conversations("
+            "conversation_id, project_id, agent_id, title, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (conversation_id, project_id, agent_id, title, created_at, created_at),
+        )
+
+    def append_agent_conversation_message(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        message_id: str,
+        conversation_id: str,
+        sequence: int,
+        role: str,
+        content: str,
+        run_id: str | None,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO agent_conversation_messages("
+            "message_id, conversation_id, sequence, role, content, run_id, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                message_id,
+                conversation_id,
+                sequence,
+                role,
+                content,
+                run_id,
+                created_at,
+            ),
+        )
+
+    def touch_agent_conversation(
+        self, connection: sqlite3.Connection, conversation_id: str, updated_at: str
+    ) -> None:
+        connection.execute(
+            "UPDATE agent_conversations SET updated_at = ? WHERE conversation_id = ?",
+            (updated_at, conversation_id),
+        )
 
     def run_events(self, run_id: str) -> list[dict[str, Any]]:
         return self.run_events_after(run_id, 0)

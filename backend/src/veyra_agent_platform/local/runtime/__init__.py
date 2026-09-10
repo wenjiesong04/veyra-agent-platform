@@ -8,6 +8,7 @@ from .client import (
     RuntimeProviderNotConfigured,
 )
 from .config import RuntimeSettings
+from .conversations import AgentConversationService
 from .profiles import (
     RuntimeApiProfile,
     RuntimeApiProfileInput,
@@ -31,6 +32,7 @@ __all__ = [
     "RuntimeProviderNotConfigured",
     "RuntimeService",
     "RuntimeSettings",
+    "AgentConversationService",
     "RuntimeApiProfile",
     "RuntimeApiProfileInput",
     "RuntimeProfileError",
