@@ -271,3 +271,4 @@ export type AccountSummary = {
 
 export * from "./local";
 export * from "./community-auth";
+export * from "./community-registry";

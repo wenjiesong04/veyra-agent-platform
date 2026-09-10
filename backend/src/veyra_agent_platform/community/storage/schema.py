@@ -111,6 +111,43 @@ class CommunityAvatar(CommunityBase):
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
 
 
+class CommunityAgent(CommunityBase):
+    """Public author-owned Agent identity in the Community registry."""
+
+    __tablename__ = "community_agents"
+    __table_args__ = (UniqueConstraint("owner_id", "slug"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_users.id", ondelete="CASCADE"), index=True
+    )
+    slug: Mapped[str] = mapped_column(String(63))
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class CommunityAgentVersion(CommunityBase):
+    """Immutable validated Agent package metadata and object-store pointer."""
+
+    __tablename__ = "community_agent_versions"
+    __table_args__ = (UniqueConstraint("agent_id", "version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_agents.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[str] = mapped_column(String(32))
+    source_storage_id: Mapped[str] = mapped_column(String(64), unique=True)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    behavior_hash: Mapped[str] = mapped_column(String(64))
+    lock_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="published")
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    published_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+
+
 class CommunityMailOutbox(CommunityBase):
     """Durable authorization and delivery record for transactional email."""
 

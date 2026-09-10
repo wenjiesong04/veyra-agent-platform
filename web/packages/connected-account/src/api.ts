@@ -11,6 +11,8 @@ import type {
   CommunityRegistrationRequest,
   CommunitySessionListResponse,
   CommunityVerificationCodeRequest,
+  CommunityRegistryEntry,
+  CommunityRegistryListResponse,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -48,6 +50,10 @@ export type CommunityApi = {
   uploadAvatar: (file: File) => Promise<CommunityAccount>;
   replaceAvatar: (file: File) => Promise<CommunityAccount>;
   deleteAvatar: () => Promise<void>;
+  listRegistryAgents: (query?: string) => Promise<CommunityRegistryEntry[]>;
+  getRegistryAgent: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityRegistryEntry>;
+  downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
+  publishRegistryAgent: (file: File) => Promise<CommunityRegistryEntry>;
 };
 
 type ErrorBody = {
@@ -146,6 +152,21 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
     return await response.json() as T;
   }
 
+  async function requestBlob(path: string): Promise<Blob> {
+    let response: Response;
+    try {
+      response = await fetcher(`${apiBaseUrl}${path}`, {
+        method: "GET",
+        headers: { Accept: "application/yaml, text/yaml" },
+        credentials: "include",
+      });
+    } catch (error) {
+      throw new CommunityApiError(error instanceof Error ? error.message : "network_unavailable", { code: "network_unavailable" });
+    }
+    if (!response.ok) throw await apiError(response);
+    return response.blob();
+  }
+
   const api: CommunityApi = {
     hasRefreshEvidence: () => readCommunityCsrfToken() !== null,
 
@@ -209,6 +230,29 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
 
     async deleteAvatar() {
       await request<void>(communityAccountApiPaths.avatar, { method: "DELETE" });
+    },
+
+    async listRegistryAgents(query) {
+      const suffix = query?.trim() ? `?query=${encodeURIComponent(query.trim())}` : "";
+      const response = await request<CommunityRegistryListResponse>(`/registry/agents${suffix}`);
+      return response.entries;
+    },
+
+    async getRegistryAgent(ownerHandle, slug, version) {
+      const path = version
+        ? `/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`
+        : `/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}`;
+      return request<CommunityRegistryEntry>(path);
+    },
+
+    async downloadRegistryAgent(ownerHandle, slug, version) {
+      return requestBlob(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
+    },
+
+    async publishRegistryAgent(file) {
+      const body = new FormData();
+      body.append("package", file, file.name);
+      return request<CommunityRegistryEntry>("/registry/agents", { method: "POST", body });
     },
   };
 

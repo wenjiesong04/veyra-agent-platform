@@ -32,6 +32,15 @@ def _default_avatar_storage_root() -> Path:
     )
 
 
+def _default_registry_storage_root() -> Path:
+    return (
+        Path(user_data_dir("Veyra Agent Platform", appauthor=False))
+        / "v1"
+        / "community"
+        / "registry"
+    )
+
+
 class CommunitySettings(BaseSettings):
     """Environment-backed settings for the Community service."""
 
@@ -50,6 +59,7 @@ class CommunitySettings(BaseSettings):
     )
     database_url: str = Field(default_factory=_default_database_url)
     avatar_storage_root: Path = Field(default_factory=_default_avatar_storage_root)
+    registry_storage_root: Path = Field(default_factory=_default_registry_storage_root)
     mode: EnvironmentMode = Field(
         default="development",
         validation_alias=AliasChoices(

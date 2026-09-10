@@ -131,6 +131,10 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/account/sessions",
         "/api/v1/account/sessions/{session_id}",
         "/api/v1/avatars/{user_id}",
+        "/api/v1/registry/agents",
+        "/api/v1/registry/agents/{owner_handle}/{slug}",
+        "/api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}",
+        "/api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download",
     }
 
 

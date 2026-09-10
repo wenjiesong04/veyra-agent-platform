@@ -12,6 +12,7 @@ export type AuthStatus = "booting" | "anonymous" | "authenticated";
 export type VerificationPurpose = "registration" | "password_reset";
 
 type AuthContextValue = {
+  api: CommunityApi;
   status: AuthStatus;
   account: CommunityAccount | null;
   bootstrapError: CommunityApiError | null;
@@ -198,6 +199,7 @@ export function AuthProvider({ children, api = defaultApi }: PropsWithChildren<{
   }, [api]);
 
   const value = useMemo<AuthContextValue>(() => ({
+    api,
     status,
     account,
     bootstrapError,
@@ -213,7 +215,7 @@ export function AuthProvider({ children, api = defaultApi }: PropsWithChildren<{
     uploadAvatar,
     replaceAvatar,
     deleteAvatar,
-  }), [account, bootstrapError, deleteAvatar, ensureSession, listSessions, login, logout, register, requestCode, replaceAvatar, resetPassword, revokeSession, status, updateProfile, uploadAvatar]);
+  }), [account, api, bootstrapError, deleteAvatar, ensureSession, listSessions, login, logout, register, requestCode, replaceAvatar, resetPassword, revokeSession, status, updateProfile, uploadAvatar]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

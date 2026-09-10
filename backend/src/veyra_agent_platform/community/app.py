@@ -20,16 +20,19 @@ from .api.account.routes import (
 )
 from .api.auth.routes import build_router as build_auth_router
 from .api.health import build_router
+from .api.registry import build_router as build_registry_router
 from .auth.workflows import CommunityAuthWorkflows
 from .config import CommunitySettings
 from .mail.config import MailSettings
 from .mail.outbox import MailOutboxDispatcher
 from .mail.provider import MailProvider
 from .mail.smtp import QQSmtpMailProvider
+from .registry import CommunityRegistryService
 from .storage.avatar_storage import LocalAvatarStorage
 from .storage.database import CommunityDatabase
+from .storage.package_storage import LocalPackageStorage
 
-COMMUNITY_DATABASE_HEAD = "community_0003_account_avatars"
+COMMUNITY_DATABASE_HEAD = "community_0004_agent_registry"
 
 
 def _database_revision(database: CommunityDatabase) -> str | None:
@@ -94,6 +97,11 @@ def create_app(
     application.state.account_avatars = AccountAvatarService(
         resolved_database, LocalAvatarStorage(resolved_settings.avatar_storage_root)
     )
+    application.state.community_registry = CommunityRegistryService(
+        resolved_database,
+        LocalPackageStorage(resolved_settings.registry_storage_root),
+        application.state.account_profiles,
+    )
     application.state.database_revision = None
     application.state.database_ready = False
 
@@ -107,6 +115,7 @@ def create_app(
     application.include_router(build_auth_router())
     application.include_router(build_account_router())
     application.include_router(build_avatar_router())
+    application.include_router(build_registry_router())
 
     return application
 
