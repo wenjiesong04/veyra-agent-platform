@@ -243,7 +243,7 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
         {
             "id": "read_github",
             "component_type": "Tool",
-            "uses": "veyra.tool.github.read@1.0.0",
+            "uses": "veyra.tool.github.issues@1.0.0",
         },
     )
     blueprint["transitions"] = [
@@ -257,7 +257,7 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
         "Agent",
         "Output",
     ]
-    blueprint["required_capabilities"]["tool_refs"] = ["veyra.tool.github.read@1.0.0"]
+    blueprint["required_capabilities"]["tool_refs"] = ["veyra.tool.github.issues@1.0.0"]
     transport = ScriptedKimiTransport(
         [_completion("Need more detail?"), _completion(json.dumps(blueprint))]
     )
@@ -275,7 +275,7 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
         session = generated.json()
         assert session["state"] == "missing_capability"
         assert session["missing_capabilities"][0]["reference"] == (
-            "veyra.tool.github.read@1.0.0"
+            "veyra.tool.github.issues@1.0.0"
         )
         assert session["missing_capabilities"][0]["proposal"]["executable"] is False
         applied = client.post(
@@ -290,7 +290,7 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
             json={
                 "confirm": True,
                 "kind": "tool",
-                "requested_reference": "veyra.tool.github.read@1.0.0",
+                "requested_reference": "veyra.tool.github.issues@1.0.0",
                 "name": "GitHub Read proposal",
             },
         )

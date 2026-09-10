@@ -97,12 +97,16 @@ def test_catalog_exposes_honest_tools_and_unconfigured_mcp() -> None:
     assert by_name["Filesystem Write"]["availability"] == "ready"
     assert by_name["Filesystem Write"]["runtime_status"] == "supported"
     assert by_name["Filesystem Write"]["factory_selectable"] is True
-    assert by_name["GitHub Read"]["availability"] == "unavailable"
-    assert by_name["GitHub Read"]["factory_selectable"] is False
+    assert by_name["GitHub Read"]["availability"] == "ready"
+    assert by_name["GitHub Read"]["runtime_status"] == "supported"
+    assert by_name["GitHub Read"]["factory_selectable"] is True
+    assert by_name["GitHub Write"]["availability"] == "ready"
+    assert by_name["GitHub Write"]["runtime_status"] == "supported"
     assert mcp[0]["availability"] == "requires_configuration"
     assert mcp[0]["factory_selectable"] is False
     snapshot = {item["reference"] for item in catalog.factory_snapshot()}
     assert "veyra.tool.filesystem.read@1.0.0" in snapshot
     assert "veyra.tool.filesystem.write@1.0.0" in snapshot
-    assert "veyra.tool.github.read@1.0.0" not in snapshot
+    assert "veyra.tool.github.read@1.0.0" in snapshot
+    assert "veyra.tool.github.write@1.0.0" in snapshot
     assert catalog.by_reference("veyra.skill.research-brief@1.0.0")["kind"] == "skill"

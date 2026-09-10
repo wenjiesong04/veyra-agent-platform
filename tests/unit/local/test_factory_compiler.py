@@ -133,7 +133,7 @@ def test_compile_rejects_writes_without_approval() -> None:
         compile_blueprint(AgentBlueprint.from_dict(payload), ResourceCatalog())
 
 
-def test_compile_rejects_unselectable_github_tool() -> None:
+def test_compile_accepts_supported_github_tool() -> None:
     payload = _blueprint()
     payload["nodes"] = [
         {"id": "start", "component_type": "Start"},
@@ -154,5 +154,13 @@ def test_compile_rejects_unselectable_github_tool() -> None:
         "skill_refs": [],
         "policy_refs": [],
     }
-    with pytest.raises(BlueprintCompileError, match="not selectable"):
-        compile_blueprint(AgentBlueprint.from_dict(payload), ResourceCatalog())
+    source, plan, availability = compile_blueprint(
+        AgentBlueprint.from_dict(payload), ResourceCatalog()
+    )
+
+    assert availability == "requires_configuration"
+    assert source.permissions.tools == ("veyra.tool.github.read",)
+    assert source.permissions.network_hosts == ("api.github.com",)
+    assert source.secret_refs == ("github.main",)
+    assert "veyra.tool.github.read@1.0.0" in source.lock
+    assert any(item["reference"] == "veyra.tool.github.read@1.0.0" for item in plan)
