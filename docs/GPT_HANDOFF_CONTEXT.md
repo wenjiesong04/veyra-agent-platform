@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`779fb3415497f1db93381b4478b3a9dbe6608761`；后端 live 基线为 `a65386be506f3c70f0af799decf55134db8c5de1`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射和 Agent conversation。
+- 最新功能代码基线：`8019f41cf4ab8782dd892837ba83d622a7523ee7`；后端 live 基线为 `a65386be506f3c70f0af799decf55134db8c5de1`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射和 Agent conversation。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -357,7 +357,7 @@ Local Run 的 POST `/run` 仍同步返回。节点事件会在执行过程中落
 
 1. Tool Runtime 仍缺 Browser Navigate；Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 已接入真实 adapter boundary。
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
-3. Agent conversation 的持久化多轮交互、model context 和可恢复会话；Agent Chat 已能回放最近 20 次持久化 Run。
+3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
 4. Orchestrator：WorkItem、依赖、lease、worktree、retry、stall/reconcile。
 5. Monitor/Runs 从静态页面切换到真实 API。
 6. Community registry：publish/quarantine/hash scan/download/import/Fork/Star/Review/Report/moderation。
@@ -441,7 +441,7 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push 和 Pull Request：`779fb34` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
+- GitHub Actions Push 和 Pull Request：`8019f41` 均通过；Backend Ruff/mypy、242 个后端用例和迁移门禁通过，Frontend typecheck/tests/build 通过。
 - Local live：`8771 /api/v1/health` 返回 `build_sha=a65386b...`、`local_0015_agent_conversations`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation routes 可用，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
