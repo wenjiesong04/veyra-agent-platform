@@ -40,6 +40,7 @@ from veyra_agent_platform.local.projects.layout import (
     resource_yaml_path,
     workflow_resource_manifest,
 )
+from veyra_agent_platform.local.projects.origins import CommunityAgentOrigin
 from veyra_agent_platform.local.projects.packaging import (
     MAX_PROJECT_ARCHIVE_BYTES,
     ProjectArchive,
@@ -708,6 +709,7 @@ class ProjectService:
         name: str | None = None,
         description: str | None = None,
         parent_agent_id: str | None = None,
+        community_origin: CommunityAgentOrigin | None = None,
     ) -> dict[str, Any]:
         """Safely validate and install one portable Agent source file."""
         if not isinstance(filename, str) or not filename.lower().endswith(
@@ -721,6 +723,15 @@ class ProjectService:
         except UnicodeDecodeError as exc:
             raise ProjectError("Agent import must be UTF-8") from exc
         source = AgentSource.from_dict(self._parse_yaml(source_text, "Agent import"))
+        if community_origin is not None and (
+            community_origin.slug != source.slug
+            or community_origin.version != source.version
+            or community_origin.source_hash != source.source_hash
+        ):
+            raise ProjectError(
+                "Community Agent origin does not match the imported source",
+                "community_origin_mismatch",
+            )
         with self._writer_lock:
             return self._install_prepared_source(
                 project_id=project_id,
@@ -728,6 +739,7 @@ class ProjectService:
                 name=name,
                 description=description,
                 parent_agent_id=parent_agent_id,
+                community_origin=community_origin,
             )
 
     def add_agent(
@@ -748,6 +760,7 @@ class ProjectService:
         slug: str | None = None,
         default_name: str | None = None,
         parent_agent_id: str | None = None,
+        community_origin: CommunityAgentOrigin | None = None,
     ) -> dict[str, Any]:
         """Allocate project-local identity before atomically installing one source."""
         project = self.repository.project(project_id)
@@ -775,7 +788,7 @@ class ProjectService:
             slug=slug,
             default_name=default_name,
         )
-        return self._install_source(
+        result = self._install_source(
             project_id=project_id,
             root=root,
             manifest_path=manifest_path,
@@ -784,6 +797,19 @@ class ProjectService:
             source=source,
             parent_agent_id=parent_agent_id,
         )
+        if community_origin is None:
+            return result
+        with self.repository.transaction() as connection:
+            self.repository.upsert_agent_origin(
+                connection,
+                local_agent_id=source.agent_id,
+                owner_handle=community_origin.owner_handle,
+                remote_slug=community_origin.slug,
+                remote_version=community_origin.version,
+                remote_source_hash=community_origin.source_hash,
+                imported_at=_utc_now(),
+            )
+        return self.agent_summary(project_id, source.agent_id)
 
     def _install_source(
         self,
@@ -1121,19 +1147,27 @@ class ProjectService:
             source = AgentSource.from_dict(self._parse_yaml(source_text, entry.slug))
             if source.agent_id != entry.agent_id or source.slug != entry.slug:
                 raise ProjectError("Project Agent identity does not match source")
-            agents.append(
-                {
-                    "agent_id": source.agent_id,
-                    "slug": source.slug,
-                    "name": source.name,
-                    "description": source.description,
-                    "version": source.version,
-                    "pinned": source.agent_id == manifest.default_agent_id,
-                    "parent_agent_id": entry.parent_agent_id,
-                    "source_path": row["source_path"],
-                    "source_file_hash": file_hash(source_text),
+            agent_record: dict[str, Any] = {
+                "agent_id": source.agent_id,
+                "slug": source.slug,
+                "name": source.name,
+                "description": source.description,
+                "version": source.version,
+                "pinned": source.agent_id == manifest.default_agent_id,
+                "parent_agent_id": entry.parent_agent_id,
+                "source_path": row["source_path"],
+                "source_file_hash": file_hash(source_text),
+            }
+            origin = self.repository.agent_origin(source.agent_id)
+            if origin is not None:
+                agent_record["community_origin"] = {
+                    "owner_handle": origin["owner_handle"],
+                    "slug": origin["remote_slug"],
+                    "version": origin["remote_version"],
+                    "source_hash": origin["remote_source_hash"],
+                    "imported_at": origin["imported_at"],
                 }
-            )
+            agents.append(agent_record)
         workflows: list[dict[str, Any]] = []
         for workflow_entry in sorted(manifest.workflows, key=lambda item: item.slug):
             row = self.repository.workflow(workflow_entry.resource_id)
@@ -2051,7 +2085,7 @@ class ProjectService:
         source = AgentSource.from_dict(self._parse_yaml(source_text, agent["slug"]))
         if source.agent_id != agent_id or source.slug != agent["slug"]:
             raise ProjectError("Project Agent identity does not match source")
-        return {
+        result = {
             "schema_version": "1.0",
             "project_id": project_id,
             "agent_id": source.agent_id,
@@ -2067,6 +2101,16 @@ class ProjectService:
                 {node.component_type.value for node in source.nodes}
             ),
         }
+        origin = self.repository.agent_origin(agent_id)
+        if origin is not None:
+            result["community_origin"] = {
+                "owner_handle": origin["owner_handle"],
+                "slug": origin["remote_slug"],
+                "version": origin["remote_version"],
+                "source_hash": origin["remote_source_hash"],
+                "imported_at": origin["imported_at"],
+            }
+        return result
 
     def template_metadata(self) -> list[dict[str, str]]:
         return self.templates.metadata()

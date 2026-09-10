@@ -1,13 +1,15 @@
 import { ArrowLeft, Download, GitFork, Globe2, RefreshCw, ShieldCheck } from "lucide-react";
-import { communityRoutePaths, desktopRoutePaths, type CommunityRegistryEntry } from "@veyra/api-contracts";
+import { communityRoutePaths, desktopRoutePaths, projectRoutePaths, type CommunityRegistryEntry } from "@veyra/api-contracts";
 import { Button, EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useAuth } from "@veyra/connected-account";
+import { useProjectWorkspace } from "../api/project-workspace";
 import { useCallback, useEffect, useState } from "react";
 import { NotFoundPage } from "./not-found";
 
 export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug?: string; versionId?: string }) {
   const { locale } = useLocale();
   const { api } = useAuth();
+  const { api: localApi, projects, refresh: refreshProjects } = useProjectWorkspace();
   const zh = locale === "zh";
   const copy = zh ? {
     backCommunity: "返回社区",
@@ -37,6 +39,8 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [targetProjectId, setTargetProjectId] = useState("");
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -54,6 +58,10 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
     }
   }, [api, owner, slug, versionId, zh]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (projects.some((project) => project.project_id === targetProjectId)) return;
+    setTargetProjectId(projects[0]?.project_id ?? "");
+  }, [projects, targetProjectId]);
 
   const download = async () => {
     if (!selected) return;
@@ -72,10 +80,35 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
       setDownloading(false);
     }
   };
+  const importToProject = async () => {
+    if (!selected || !targetProjectId) return;
+    setImporting(true);
+    setError("");
+    try {
+      const blob = await api.downloadRegistryAgent(selected.owner_handle, selected.slug, selected.version);
+      const file = new File([blob], `${selected.slug}-${selected.version}.vagent.yaml`, { type: "application/yaml" });
+      const imported = await localApi.importAgent(targetProjectId, {
+        file,
+        community_origin: {
+          owner_handle: selected.owner_handle,
+          slug: selected.slug,
+          version: selected.version,
+          source_hash: selected.source_hash,
+          imported_at: selected.published_at || selected.created_at,
+        },
+      });
+      void refreshProjects().catch(() => undefined);
+      window.location.hash = projectRoutePaths.agentDesign(targetProjectId, imported.agent_id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "导入本地 Project 失败。" : "Local Project import failed."));
+    } finally {
+      setImporting(false);
+    }
+  };
   if (owner || slug || versionId) {
     if (loading) return <LoadingState label={zh ? "正在读取社区 Agent…" : "Loading Community Agent…"} />;
     if (error || !selected) return <NotFoundPage backHref={communityRoutePaths.catalog} backLabel={copy.backCommunity} />;
-    return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><LinkButton href={communityRoutePaths.catalog} icon={ArrowLeft} variant="ghost">{copy.backCommunity}</LinkButton></div><Panel><div className="community-entry-header"><div><strong>{selected.owner_display_name || selected.owner_handle}</strong><small>@{selected.owner_handle} / {selected.slug}</small></div><Tag>v{selected.version}</Tag><StatusBadge label={selected.status} tone="good" /></div><SectionHeading eyebrow={zh ? "版本证据" : "Version evidence"} title={zh ? "发布哈希" : "Published hashes"} detail={zh ? "下载前先核对不可变来源；导入时本机还会再次校验。" : "Check the immutable provenance before download; local import validates it again."} /><div className="settings-facts"><div><span>Source SHA-256</span><strong>{selected.source_hash}</strong></div><div><span>Behavior SHA-256</span><strong>{selected.behavior_hash}</strong></div><div><span>Lock SHA-256</span><strong>{selected.lock_hash}</strong></div><div><span>{zh ? "发布时间" : "Published"}</span><strong>{selected.published_at || selected.created_at}</strong></div></div><div className="button-row"><Button icon={Download} variant="primary" disabled={downloading} onClick={() => void download()}>{downloading ? "…" : (zh ? "下载 Agent" : "Download Agent")}</Button></div>{error ? <ErrorState message={error} onRetry={() => void load()} /> : null}</Panel></div>;
+    return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><LinkButton href={communityRoutePaths.catalog} icon={ArrowLeft} variant="ghost">{copy.backCommunity}</LinkButton></div><Panel><div className="community-entry-header"><div><strong>{selected.owner_display_name || selected.owner_handle}</strong><small>@{selected.owner_handle} / {selected.slug}</small></div><Tag>v{selected.version}</Tag><StatusBadge label={selected.status} tone="good" /></div><SectionHeading eyebrow={zh ? "版本证据" : "Version evidence"} title={zh ? "发布哈希" : "Published hashes"} detail={zh ? "下载前先核对不可变来源；导入时本机还会再次校验。" : "Check the immutable provenance before download; local import validates it again."} /><div className="settings-facts"><div><span>Source SHA-256</span><strong>{selected.source_hash}</strong></div><div><span>Behavior SHA-256</span><strong>{selected.behavior_hash}</strong></div><div><span>Lock SHA-256</span><strong>{selected.lock_hash}</strong></div><div><span>{zh ? "发布时间" : "Published"}</span><strong>{selected.published_at || selected.created_at}</strong></div></div><div className="button-row"><Button icon={Download} variant="primary" disabled={downloading || importing} onClick={() => void download()}>{downloading ? "…" : (zh ? "下载 Agent" : "Download Agent")}</Button><select aria-label={zh ? "目标 Project" : "Target Project"} value={targetProjectId} onChange={(event) => setTargetProjectId(event.target.value)} disabled={importing || !projects.length}><option value="">{projects.length ? (zh ? "选择目标 Project" : "Choose a Project") : (zh ? "暂无本地 Project" : "No local Project")}</option>{projects.map((project) => <option value={project.project_id} key={project.project_id}>{project.name}</option>)}</select><Button variant="secondary" disabled={importing || !targetProjectId} onClick={() => void importToProject()}>{importing ? "…" : (zh ? "导入到 Project" : "Import to Project")}</Button></div>{error ? <ErrorState message={error} onRetry={() => void load()} /> : null}</Panel></div>;
   }
   return (
     <div className="page-stack">

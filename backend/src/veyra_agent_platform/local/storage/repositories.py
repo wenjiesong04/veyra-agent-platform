@@ -236,6 +236,50 @@ class LocalRepository:
             )
             return cursor.rowcount == 1
 
+    def agent_origin(self, agent_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM community_agent_origins WHERE local_agent_id = ?",
+                    (agent_id,),
+                ).fetchone(),
+            )
+
+    def upsert_agent_origin(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        local_agent_id: str,
+        owner_handle: str,
+        remote_slug: str,
+        remote_version: str,
+        remote_source_hash: str,
+        imported_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO community_agent_origins(
+              local_agent_id, owner_handle, remote_slug, remote_version,
+              remote_source_hash, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(local_agent_id) DO UPDATE SET
+              owner_handle = excluded.owner_handle,
+              remote_slug = excluded.remote_slug,
+              remote_version = excluded.remote_version,
+              remote_source_hash = excluded.remote_source_hash,
+              imported_at = excluded.imported_at
+            """,
+            (
+                local_agent_id,
+                owner_handle,
+                remote_slug,
+                remote_version,
+                remote_source_hash,
+                imported_at,
+            ),
+        )
+
     def delete_agents(
         self, connection: sqlite3.Connection, agent_ids: set[str]
     ) -> None:

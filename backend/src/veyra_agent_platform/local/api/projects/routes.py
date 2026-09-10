@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
+from veyra_agent_platform.local.projects.origins import CommunityAgentOrigin
 from veyra_agent_platform.local.projects.packaging import MAX_PROJECT_ARCHIVE_BYTES
 from veyra_agent_platform.local.projects.service import (
     MAX_AGENT_IMPORT_BYTES,
@@ -375,17 +376,26 @@ def build_router() -> APIRouter:
         name: Annotated[str | None, Form()] = None,
         description: Annotated[str | None, Form()] = None,
         parent_agent_id: Annotated[str | None, Form()] = None,
+        community_owner_handle: Annotated[str | None, Form()] = None,
+        community_slug: Annotated[str | None, Form()] = None,
+        community_version: Annotated[str | None, Form()] = None,
+        community_source_hash: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         projects, _ = _services(request)
         contents = file.file.read(MAX_AGENT_IMPORT_BYTES + 1)
         return _translate(
-            lambda: projects.import_agent(
+            lambda: _import_agent(
+                projects,
                 project_id=project_id,
                 filename=file.filename,
                 contents=contents,
                 name=name,
                 description=description,
                 parent_agent_id=parent_agent_id,
+                community_owner_handle=community_owner_handle,
+                community_slug=community_slug,
+                community_version=community_version,
+                community_source_hash=community_source_hash,
             )
         )
 
@@ -704,6 +714,40 @@ def _services(request: Request) -> tuple[ProjectService, LibraryService]:
     if not bool(getattr(request.app.state, "database_ready", False)):
         raise TypedApiError(503, "database_unavailable", "local database is starting")
     return request.app.state.projects, request.app.state.library
+
+
+def _import_agent(
+    projects: ProjectService,
+    *,
+    project_id: str,
+    filename: str | None,
+    contents: bytes,
+    name: str | None,
+    description: str | None,
+    parent_agent_id: str | None,
+    community_owner_handle: str | None,
+    community_slug: str | None,
+    community_version: str | None,
+    community_source_hash: str | None,
+) -> dict[str, Any]:
+    try:
+        community_origin = CommunityAgentOrigin.from_optional_fields(
+            owner_handle=community_owner_handle,
+            slug=community_slug,
+            version=community_version,
+            source_hash=community_source_hash,
+        )
+    except ValueError as exc:
+        raise ProjectError(str(exc), "community_origin_invalid") from exc
+    return projects.import_agent(
+        project_id=project_id,
+        filename=filename,
+        contents=contents,
+        name=name,
+        description=description,
+        parent_agent_id=parent_agent_id,
+        community_origin=community_origin,
+    )
 
 
 def _profiles(request: Request) -> RuntimeProfileStore:

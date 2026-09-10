@@ -8,6 +8,7 @@ import {
   type CreateAgentConversationRequest,
   type AgentTemplate,
   type ComponentDefinition,
+  type CommunityAgentOrigin,
   type CommitResponse,
   type CreateAgentRequest,
   type CreatedAgentResponse,
@@ -142,7 +143,7 @@ export type LocalProjectApi = {
   getKnowledge?(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse>;
   updateKnowledge?(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
   deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
-  importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; }): Promise<CreatedAgentResponse>;
+  importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; community_origin?: CommunityAgentOrigin }): Promise<CreatedAgentResponse>;
   importProject?(file: File): Promise<ProjectSummaryResponse>;
   importProjectFromPath?(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse>;
   listProjectResources?(projectId: string): Promise<ProjectResourcesResponse>;
@@ -407,6 +408,20 @@ function projectAgent(value: unknown, status = 502): ProjectAgentRecord {
         ? null
         : runtimeProfile(record.runtime_profile, status),
     }),
+    ...(record.community_origin === undefined ? {} : {
+      community_origin: communityAgentOrigin(record.community_origin, status),
+    }),
+  };
+}
+
+function communityAgentOrigin(value: unknown, status = 502): CommunityAgentOrigin {
+  const record = asRecord(value, status);
+  return {
+    owner_handle: asString(record.owner_handle, "community_origin.owner_handle", status),
+    slug: asString(record.slug, "community_origin.slug", status),
+    version: asString(record.version, "community_origin.version", status),
+    source_hash: asString(record.source_hash, "community_origin.source_hash", status),
+    imported_at: asString(record.imported_at, "community_origin.imported_at", status),
   };
 }
 
@@ -602,6 +617,9 @@ function createdAgent(value: unknown, status = 502): CreatedAgentResponse {
       runtime_profile: record.runtime_profile === null
         ? null
         : runtimeProfile(record.runtime_profile, status),
+    }),
+    ...(record.community_origin === undefined ? {} : {
+      community_origin: communityAgentOrigin(record.community_origin, status),
     }),
   };
 }
@@ -1591,12 +1609,18 @@ export class LocalApiClient {
     );
   }
 
-  importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string }): Promise<CreatedAgentResponse> {
+  importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; community_origin?: CommunityAgentOrigin }): Promise<CreatedAgentResponse> {
     const formData = new FormData();
     formData.append("file", input.file);
     if (input.name) formData.append("name", input.name);
     if (input.description) formData.append("description", input.description);
     if (input.parent_agent_id) formData.append("parent_agent_id", input.parent_agent_id);
+    if (input.community_origin) {
+      formData.append("community_owner_handle", input.community_origin.owner_handle);
+      formData.append("community_slug", input.community_origin.slug);
+      formData.append("community_version", input.community_origin.version);
+      formData.append("community_source_hash", input.community_origin.source_hash);
+    }
     return this.request(`projects/${encodeURIComponent(projectId)}/agents/import`, createdAgent, {
       method: "POST",
       formData,

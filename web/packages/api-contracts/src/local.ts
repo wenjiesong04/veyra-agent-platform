@@ -169,6 +169,14 @@ export type RuntimeApiProfileSummary = RuntimeApiProfileInput & {
   configured: boolean;
 };
 
+export type CommunityAgentOrigin = {
+  owner_handle: string;
+  slug: string;
+  version: string;
+  source_hash: string;
+  imported_at: string;
+};
+
 export type ProjectAgentRecord = {
   agent_id: string;
   slug: string;
@@ -180,6 +188,7 @@ export type ProjectAgentRecord = {
   source_file_hash: string;
   parent_agent_id?: string | null;
   runtime_profile?: RuntimeApiProfileSummary | null;
+  community_origin?: CommunityAgentOrigin;
 };
 
 export type ProjectWorkflowRecord = {
@@ -332,6 +341,7 @@ export type CreatedAgentResponse = {
   source_file_hash: string;
   parent_agent_id?: string | null;
   runtime_profile?: RuntimeApiProfileSummary | null;
+  community_origin?: CommunityAgentOrigin;
 };
 
 export type RuntimeProfileResponse = {
