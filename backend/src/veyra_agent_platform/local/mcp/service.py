@@ -16,6 +16,7 @@ import yaml  # type: ignore[import-untyped]
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.resources.registry import NodePackageError
+from veyra_agent_platform.local.secrets import SecretStore, SecretStoreError
 
 from .store import McpServerStore
 from .transport import (
@@ -27,6 +28,7 @@ from .transport import (
 
 _COMMAND = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_SECRET_REF = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _TOOL_SLUG = re.compile(r"[^a-z0-9]+")
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 
@@ -46,11 +48,13 @@ class McpService:
         overlay_root: Path,
         catalog: ResourceCatalog,
         transport_factory: TransportFactory | None = None,
+        secret_store: SecretStore | None = None,
     ) -> None:
         self.store = store
         self.overlay_root = overlay_root
         self.catalog = catalog
         self._transport_factory = transport_factory or _stdio_factory
+        self._secret_store = secret_store
 
     def list_servers(self) -> dict[str, Any]:
         return {
@@ -215,12 +219,24 @@ class McpService:
     def _transport(self, row: Any) -> McpTransport:
         env_names = dict(json.loads(row["env_names_json"]))
         env: dict[str, str] = {}
-        for mcp_key, host_name in env_names.items():
-            value = os.environ.get(host_name)
+        for mcp_key, binding in env_names.items():
+            value = os.environ.get(binding)
+            if (
+                not value
+                and self._secret_store is not None
+                and _SECRET_REF.fullmatch(binding)
+            ):
+                try:
+                    value = self._secret_store.get(binding)
+                except SecretStoreError as exc:
+                    raise McpError(
+                        "mcp_secret_unavailable",
+                        f"MCP secret binding {binding} could not be read",
+                    ) from exc
             if not value:
                 raise McpError(
                     "mcp_env_missing",
-                    f"host environment variable {host_name} is not set",
+                    f"MCP binding {binding} is not configured",
                 )
             env[mcp_key] = value
         args = list(json.loads(row["args_json"]))
@@ -333,10 +349,14 @@ def _args(values: list[str]) -> list[str]:
 def _env_names(values: dict[str, str]) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for key, host_name in values.items():
-        if _ENV_NAME.fullmatch(key) is None or _ENV_NAME.fullmatch(host_name) is None:
+        if _ENV_NAME.fullmatch(key) is None or (
+            _ENV_NAME.fullmatch(host_name) is None
+            and _SECRET_REF.fullmatch(host_name) is None
+        ):
             raise McpError(
                 "mcp_env_invalid",
-                "MCP env maps server keys to host environment variable names only",
+                "MCP env maps server keys to host environment names or secret "
+                "references",
             )
         parsed[key] = host_name
     return parsed

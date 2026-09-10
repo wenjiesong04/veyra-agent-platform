@@ -364,12 +364,25 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   );
 }
 
+function parseMcpEnvNames(value: string): Record<string, string> {
+  const bindings: Record<string, string> = {};
+  for (const entry of value.split(/[\r\n,]+/)) {
+    const separator = entry.indexOf("=");
+    if (separator < 1) continue;
+    const key = entry.slice(0, separator).trim();
+    const binding = entry.slice(separator + 1).trim();
+    if (key && binding) bindings[key] = binding;
+  }
+  return bindings;
+}
+
 function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: boolean; onChanged: () => void }) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [tools, setTools] = useState<ResourceDescriptor[]>([]);
   const [name, setName] = useState("demo");
   const [command, setCommand] = useState("npx");
   const [args, setArgs] = useState("");
+  const [envNames, setEnvNames] = useState("");
   const [error, setError] = useState("");
   const loadServers = useCallback(async () => {
     if (!api.listMcpServers) return;
@@ -388,6 +401,7 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
         name,
         command,
         args: args.split(" ").map((item) => item.trim()).filter(Boolean),
+        env_names: parseMcpEnvNames(envNames),
       });
       await loadServers();
     } catch (cause) {
@@ -421,17 +435,18 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
   };
   return (
     <Panel>
-      <SectionHeading eyebrow="MCP" title={zh ? "本机 MCP 服务器" : "Local MCP servers"} detail={zh ? "命令和参数保存在应用数据里，不会写入 Project 目录。" : "Commands stay in application data, not in Project directories."} />
+      <SectionHeading eyebrow="MCP" title={zh ? "本机 MCP 服务器" : "Local MCP servers"} detail={zh ? "命令和参数保存在应用数据里，不会写入 Project 目录。环境映射只保存变量名或 Keychain 引用。" : "Commands stay in application data, not in Project directories. Environment mappings store names or Keychain references only."} />
       {error ? <p className="resource-detail-muted">{error}</p> : null}
       <div className="inspector-fields">
         <label>{zh ? "名称" : "Name"}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label>{zh ? "命令" : "Command"}<input value={command} onChange={(event) => setCommand(event.target.value)} /></label>
         <label>{zh ? "参数" : "Args"}<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-everything" /></label>
+        <label>{zh ? "环境映射" : "Environment bindings"}<textarea value={envNames} onChange={(event) => setEnvNames(event.target.value)} placeholder={zh ? "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY" : "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY"} rows={3} /></label>
         <Button onClick={() => void create()} disabled={!api.createMcpServer}>{zh ? "保存服务器" : "Save server"}</Button>
       </div>
       {servers.map((server) => (
         <div className="resource-row" key={server.server_id}>
-          <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}</small></span>
+          <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}{Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}</small></span>
           <Button size="sm" onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
         </div>
       ))}

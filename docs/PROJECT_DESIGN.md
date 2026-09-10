@@ -630,7 +630,9 @@ from model output. It exposes immutable, versioned descriptors for:
   product layer beside Agent, Workflow, Component, or Knowledge. An MCP
   tool must be normalized into a Tool descriptor and lands on the Canvas as
   a Tool node (`uses: resource_id@version`). Connection configuration and
-  credentials remain outside Agent source. Discovered descriptors are
+  credentials remain outside Agent source. Server environment bindings may
+  point to host environment names or opaque host Keychain references; values
+  never enter Project or SQLite. Discovered descriptors are
   review-required, are not Factory-selectable by default, and require approval
   before a Runtime call. Stdio uses newline-delimited JSON-RPC with bounded
   message/timeout/process cleanup. Architecture diagrams must not draw MCP as

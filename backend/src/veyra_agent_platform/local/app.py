@@ -121,6 +121,7 @@ def create_app(
             overlay_root,
             catalog,
             mcp_transport_factory,
+            secret_store=application.state.secrets,
         )
         application.state.mcp = mcp
         application.state.workshop = ResourceWorkshop(overlay_root, catalog)
