@@ -307,6 +307,7 @@ class McpService:
         if not isinstance(description, str) or not description.strip():
             description = f"Discovered MCP tool {name}"
         input_schema = _input_schema(tool.get("inputSchema"))
+        input_required = _input_required(tool.get("inputSchema"), input_schema)
         payload = {
             "resource_id": resource_id,
             "kind": "tool",
@@ -330,6 +331,7 @@ class McpService:
                 "mcp_server_id": server_id,
                 "mcp_tool_name": name,
                 "input_schema": input_schema,
+                "input_required": input_required,
                 "tool_name": f"mcp.{name}",
                 "ui": {
                     "category": "mcp",
@@ -442,10 +444,20 @@ def _input_schema(value: object) -> dict[str, str]:
             declared = spec["type"]
         schema[name] = (
             declared
-            if declared in {"string", "boolean", "integer", "number"}
+            if declared
+            in {"string", "boolean", "integer", "number", "object", "array", "null"}
             else "string"
         )
     return schema
+
+
+def _input_required(value: object, schema: dict[str, str]) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    required = value.get("required")
+    if not isinstance(required, list):
+        return []
+    return [name for name in required if isinstance(name, str) and name in schema]
 
 
 def _package_prefix(server_id: str) -> str:

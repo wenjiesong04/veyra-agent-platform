@@ -171,11 +171,23 @@ class ToolRuntime:
                 values,
                 resource,
             )
+        spec = resource.get("spec", {})
+        if resource.get("origin") == "discovered" and (
+            resource.get("factory_selectable") is not True
+            or spec.get("review_required") is True
+        ):
+            return self._denied(
+                node.uses,
+                "mcp_tool_review_required",
+                "Discovered MCP tools must be reviewed before execution",
+                values,
+                resource,
+            )
         try:
             self._authorize(source, resource)
         except ToolRuntimeError as exc:
             return self._denied(node.uses, exc.code, str(exc), values, resource)
-        adapter = resource.get("spec", {}).get("adapter")
+        adapter = spec.get("adapter")
         if not isinstance(adapter, str) or adapter not in self._adapters:
             return self._denied(
                 node.uses,
@@ -192,7 +204,6 @@ class ToolRuntime:
                 values,
                 resource,
             )
-        spec = resource.get("spec", {})
         secret_ref = spec.get("secret_ref")
         secret_env = spec.get("secret_env")
         if secret_ref:
@@ -1007,11 +1018,29 @@ class ToolRuntime:
             raise ToolRuntimeError(
                 "tool_runtime_unavailable", "MCP tool descriptor is incomplete"
             )
-        arguments = {
-            name: values.get(name)
-            for name in (spec.get("input_schema") or {})
-            if name in values
-        }
+        schema = spec.get("input_schema") or {}
+        if not isinstance(schema, dict):
+            raise ToolRuntimeError(
+                "tool_runtime_unavailable", "MCP tool input schema is invalid"
+            )
+        required = spec.get("input_required") or []
+        if not isinstance(required, list) or not all(
+            isinstance(name, str) and name for name in required
+        ):
+            raise ToolRuntimeError(
+                "tool_runtime_unavailable", "MCP tool required input schema is invalid"
+            )
+        for name in required:
+            if name not in schema or name not in values:
+                raise ToolRuntimeError(
+                    "tool_input_missing", f"MCP input {name} is required"
+                )
+        for name, expected in schema.items():
+            if name in values and not _mcp_value_matches(values[name], expected):
+                raise ToolRuntimeError(
+                    "tool_input_invalid", f"MCP input {name} is not a {expected}"
+                )
+        arguments = {name: values[name] for name in schema if name in values}
         try:
             result = self.mcp.call(server_id, tool_name, arguments)
         except McpError as exc:
@@ -1220,6 +1249,26 @@ def _input_digest(resource: dict[str, Any] | None, values: dict[str, Any]) -> st
         else:
             material[name] = value
     return sha256_digest(material)
+
+
+def _mcp_value_matches(value: Any, expected: Any) -> bool:
+    if not isinstance(expected, str):
+        return True
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "null":
+        return value is None
+    return True
 
 
 def _shell_environment() -> dict[str, str]:

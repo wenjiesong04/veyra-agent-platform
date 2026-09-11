@@ -147,7 +147,7 @@ def test_discovered_mcp_tool_executes_through_runtime_adapter(tmp_path: Path) ->
                 "name": "echo",
                 "description": "Echo text through MCP",
                 "availability": "ready",
-                "factory_selectable": False,
+                "factory_selectable": True,
                 "runtime_status": "supported",
                 "required_permissions": {
                     "network_hosts": [],
@@ -163,6 +163,7 @@ def test_discovered_mcp_tool_executes_through_runtime_adapter(tmp_path: Path) ->
                     "mcp_server_id": "server-1",
                     "mcp_tool_name": "echo",
                     "input_schema": {"text": "string"},
+                    "input_required": ["text"],
                     "tool_name": "mcp.echo",
                     "ui": {"category": "mcp", "icon": "plug", "title": "echo"},
                 },
