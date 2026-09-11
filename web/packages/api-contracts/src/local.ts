@@ -952,8 +952,21 @@ export type WorkItem = {
   failure_class?: string | null;
   stale?: boolean;
   stale_for_seconds?: number;
+  attempts?: WorkItemAttempt[];
   created_at: string;
   updated_at: string;
+};
+
+export type WorkItemAttempt = {
+  attempt_id: string;
+  attempt_number: number;
+  run_id: string | null;
+  status: string;
+  failure_class: string | null;
+  claimed_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
 };
 
 export type ListWorkItemsResponse = {

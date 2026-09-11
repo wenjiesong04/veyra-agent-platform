@@ -237,6 +237,14 @@ class OrchestratorStore:
                 ).fetchone(),
             )
 
+    def attempts(self, work_item_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM work_item_attempts WHERE work_item_id = ? "
+                "ORDER BY attempt_number DESC LIMIT 20",
+                (work_item_id,),
+            ).fetchall()
+
     @staticmethod
     def latest_attempt_in_connection(
         connection: sqlite3.Connection, work_item_id: str
@@ -296,4 +304,18 @@ class OrchestratorStore:
             "failure_class": row["failure_class"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def attempt_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "attempt_id": row["attempt_id"],
+            "attempt_number": int(row["attempt_number"]),
+            "run_id": row["run_id"],
+            "status": row["status"],
+            "failure_class": row["failure_class"],
+            "claimed_at": row["claimed_at"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "created_at": row["created_at"],
         }

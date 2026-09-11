@@ -48,7 +48,9 @@ class OrchestratorService:
         self.runtime = runtime
 
     def status(self) -> dict[str, Any]:
-        items = [self._reconcile(row) for row in self.store.list_all()]
+        items = [
+            self._with_attempts(self._reconcile(row)) for row in self.store.list_all()
+        ]
         counts = {name: 0 for name in _STATUSES}
         for item in items:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
@@ -71,7 +73,10 @@ class OrchestratorService:
 
     def list_work_items(self, project_id: str) -> dict[str, Any]:
         self._require_project(project_id)
-        items = [self._reconcile(row) for row in self.store.list_project(project_id)]
+        items = [
+            self._with_attempts(self._reconcile(row))
+            for row in self.store.list_project(project_id)
+        ]
         return {
             "schema_version": SCHEMA_VERSION,
             "project_id": project_id,
@@ -120,7 +125,14 @@ class OrchestratorService:
         row = self.store.get(work_item_id)
         if row is None:
             raise OrchestratorError("work_item_not_found", "Work item was not found")
-        return self._reconcile(row)
+        return self._with_attempts(self._reconcile(row))
+
+    def _with_attempts(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload["attempts"] = [
+            OrchestratorStore.attempt_payload(row)
+            for row in self.store.attempts(payload["work_item_id"])
+        ]
+        return payload
 
     def update_work_item(
         self,

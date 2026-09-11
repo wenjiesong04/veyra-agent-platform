@@ -88,6 +88,7 @@ import {
   type WorkflowSource,
   type OrchestratorStatus,
   type WorkItem,
+  type WorkItemAttempt,
 } from "@veyra/api-contracts";
 import { newUuidV7 } from "./uuid";
 
@@ -1100,8 +1101,24 @@ function workItem(value: unknown, status = 502): WorkItem {
     ...(record.failure_class === undefined ? {} : { failure_class: record.failure_class === null ? null : asString(record.failure_class, "work_item.failure_class", status) }),
     ...(record.stale === undefined ? {} : { stale: asBoolean(record.stale, "work_item.stale", status) }),
     ...(record.stale_for_seconds === undefined ? {} : { stale_for_seconds: asNumber(record.stale_for_seconds, "work_item.stale_for_seconds", status) }),
+    ...(record.attempts === undefined ? {} : { attempts: asArray(record.attempts, "work_item.attempts", status).map((item) => workItemAttempt(item, status)) }),
     created_at: asString(record.created_at, "work_item.created_at", status),
     updated_at: asString(record.updated_at, "work_item.updated_at", status),
+  };
+}
+
+function workItemAttempt(value: unknown, status = 502): WorkItemAttempt {
+  const record = asRecord(value, status);
+  return {
+    attempt_id: asString(record.attempt_id, "work_item.attempt_id", status),
+    attempt_number: asNumber(record.attempt_number, "work_item.attempt_number", status),
+    run_id: record.run_id === null ? null : asString(record.run_id, "work_item.run_id", status),
+    status: asString(record.status, "work_item.attempt_status", status),
+    failure_class: record.failure_class === null ? null : asString(record.failure_class, "work_item.attempt_failure_class", status),
+    claimed_at: asString(record.claimed_at, "work_item.claimed_at", status),
+    started_at: record.started_at === null ? null : asString(record.started_at, "work_item.started_at", status),
+    finished_at: record.finished_at === null ? null : asString(record.finished_at, "work_item.finished_at", status),
+    created_at: asString(record.created_at, "work_item.attempt_created_at", status),
   };
 }
 

@@ -179,6 +179,7 @@ export function MonitorPage() {
                     <small>{item.agent_id} · {item.status}{item.attempt_number ? ` · attempt ${item.attempt_number}` : ""}{item.failure_class ? ` · ${item.failure_class}` : ""}</small>
                   </span>
                   <Tag>{item.stale ? (zh ? "疑似停滞" : "Stale") : item.status}</Tag>
+                  {item.attempts?.length ? <details className="work-item-attempts"><summary>{item.attempts.length} {zh ? "次尝试" : "attempts"}</summary>{item.attempts.map((attempt) => <span key={attempt.attempt_id}>#{attempt.attempt_number} · {attempt.status}{attempt.failure_class ? ` · ${attempt.failure_class}` : ""}{attempt.run_id ? ` · ${attempt.run_id}` : ""}</span>)}</details> : null}
                   {item.status === "ready" || item.status === "backlog" ? (
                     <Button size="sm" icon={Play} disabled={busyId === item.work_item_id} onClick={() => void dispatch(item.work_item_id)}>{copy.dispatch}</Button>
                   ) : null}
