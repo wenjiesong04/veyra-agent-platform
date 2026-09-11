@@ -12,6 +12,8 @@ The first Runtime slice supports these real execution paths:
   root after an approved `HumanApproval` node on the current path.
 - `veyra.tool.http.request@1.0.0` calls an HTTP(S) host explicitly listed on
   the Tool node and requires an approved `HumanApproval` node.
+- `veyra.tool.web.search@1.0.0` searches a fixed web provider and returns bounded
+  titles, links, and snippets after an approved `HumanApproval` node.
 
 Tool execution records an authorization decision before any adapter effect.
 Write, Shell, and similar high-authority tools remain approval-gated. A run
