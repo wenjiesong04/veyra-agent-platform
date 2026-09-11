@@ -4,6 +4,7 @@ description: Search the web and return bounded titles, links, and snippets.
 factory_selectable: true
 kind: tool
 name: Web Search
+resource_id: veyra.tool.web.search
 required_permissions:
   filesystem_read_roots: []
   filesystem_write_roots: []
