@@ -1540,7 +1540,7 @@ Star does not mean safe or effective.
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download`
 - `POST /api/v1/registry/agents` (authenticated multipart YAML publish)
 - Existing local import: `POST /api/v1/projects/{project_id}/agents/import` accepts optional Community owner/slug/version/source-hash fields; the local service revalidates the source, creates a new local Agent identity, and stores the origin separately.
-- Future: Community quarantine and moderation; version-bound stars, reviews, and reports are now part of the runnable local Community slice.
+- Future: Community quarantine and moderation; version-bound stars, reviews, and reports are now part of the runnable local Community slice, including persisted current-user Star state.
 
 ---
 
