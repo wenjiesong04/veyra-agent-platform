@@ -1,4 +1,4 @@
-import { ArrowLeft, Download, GitFork, Globe2, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Download, GitFork, Globe2, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { communityRoutePaths, desktopRoutePaths, projectRoutePaths, type CommunityRegistryEntry } from "@veyra/api-contracts";
 import { Button, EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useAuth } from "@veyra/connected-account";
@@ -44,6 +44,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
   const [downloading, setDownloading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [targetProjectId, setTargetProjectId] = useState("");
+  const [query, setQuery] = useState("");
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -58,15 +59,18 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
       } else {
         setSelected(null);
         setVersions([]);
-        setEntries(await api.listRegistryAgents());
+        setEntries(await api.listRegistryAgents(query));
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "Community 注册表暂时不可用。" : "The Community registry is unavailable."));
     } finally {
       setLoading(false);
     }
-  }, [api, owner, slug, versionId, zh]);
-  useEffect(() => { void load(); }, [load]);
+  }, [api, owner, query, slug, versionId, zh]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, query.trim() ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [load, query]);
   useEffect(() => {
     if (projects.some((project) => project.project_id === targetProjectId)) return;
     setTargetProjectId(projects[0]?.project_id ?? "");
@@ -131,7 +135,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
           <h2>{error ? copy.unavailableTitle : copy.title}</h2>
           <p>{copy.description}</p>
         </div>
-        <div className="intro-actions"><Button icon={RefreshCw} variant="ghost" onClick={() => void load()} disabled={loading}>{zh ? "刷新" : "Refresh"}</Button><LinkButton href={desktopRoutePaths.account} icon={Globe2} variant="ghost">{copy.openAccount}</LinkButton></div>
+        <div className="intro-actions"><label className="resource-library-search"><Search size={15} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索 Agent" : "Search Agents"} aria-label={zh ? "搜索 Agent" : "Search Agents"} /></label><Button icon={RefreshCw} variant="ghost" onClick={() => void load()} disabled={loading}>{zh ? "刷新" : "Refresh"}</Button><LinkButton href={desktopRoutePaths.account} icon={Globe2} variant="ghost">{copy.openAccount}</LinkButton></div>
       </div>
       {loading ? <Panel><LoadingState label={zh ? "正在读取社区目录…" : "Loading Community registry…"} /></Panel> : error ? <><ErrorState message={error} onRetry={() => void load()} /><Panel><EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} /></Panel></> : entries.length ? <Panel><SectionHeading eyebrow={zh ? "已发布" : "Published"} title={`${entries.length} ${zh ? "个版本" : "versions"}`} /><div className="run-list">{entries.map((entry) => <a className="run-row" href={communityRoutePaths.entry(entry.owner_handle, entry.slug)} key={`${entry.owner_handle}/${entry.slug}/${entry.version}`}><span className="run-state-icon"><Globe2 size={17} /></span><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle} · {entry.slug} · v{entry.version}</small><em>{entry.description}</em></span><StatusBadge label={entry.status} tone="good" /></a>)}</div></Panel> : <EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} />}
       {!loading && !error ? <CommunityPublishPanel projects={projects} localApi={localApi} communityApi={api} onPublished={onPublished} /> : null}
