@@ -922,6 +922,10 @@ export type CreateMcpServerRequest = {
   enabled?: boolean;
 };
 
+export type UpdateMcpServerRequest = {
+  enabled: boolean;
+};
+
 export type WorkItemStatus =
   | "backlog"
   | "ready"

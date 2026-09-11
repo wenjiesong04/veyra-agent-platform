@@ -88,6 +88,24 @@ class McpServerStore:
             )
             return cursor.rowcount > 0
 
+    def set_enabled(
+        self, server_id: str, *, enabled: bool, updated_at: str
+    ) -> sqlite3.Row | None:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET enabled = ?, updated_at = ? "
+                "WHERE server_id = ?",
+                (int(enabled), updated_at, server_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            return cast(
+                sqlite3.Row,
+                connection.execute(
+                    "SELECT * FROM mcp_servers WHERE server_id = ?", (server_id,)
+                ).fetchone(),
+            )
+
     @staticmethod
     def payload(row: sqlite3.Row) -> dict[str, Any]:
         return {

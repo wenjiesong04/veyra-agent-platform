@@ -384,6 +384,7 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
   const [args, setArgs] = useState("");
   const [envNames, setEnvNames] = useState("");
   const [error, setError] = useState("");
+  const [busyServerId, setBusyServerId] = useState<string | null>(null);
   const loadServers = useCallback(async () => {
     if (!api.listMcpServers) return;
     try {
@@ -422,6 +423,19 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
       setError(cause instanceof Error ? cause.message : (zh ? "MCP 发现失败。" : "MCP discovery failed."));
     }
   };
+  const toggle = async (server: McpServer) => {
+    if (!api.updateMcpServer) return;
+    setBusyServerId(server.server_id);
+    setError("");
+    try {
+      const result = await api.updateMcpServer(server.server_id, { enabled: !server.enabled });
+      setServers((current) => current.map((item) => item.server_id === result.server.server_id ? result.server : item));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "无法更新 MCP 服务器状态。" : "Could not update MCP server state."));
+    } finally {
+      setBusyServerId(null);
+    }
+  };
   const approve = async (serverId: string, tool: ResourceDescriptor) => {
     if (!api.approveMcpTool) return;
     setError("");
@@ -447,6 +461,8 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
       {servers.map((server) => (
         <div className="resource-row" key={server.server_id}>
           <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}{Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}</small></span>
+          <StatusBadge label={server.enabled ? (zh ? "已启用" : "Enabled") : (zh ? "已停用" : "Disabled")} tone={server.enabled ? "good" : "neutral"} />
+          <Button size="sm" variant="ghost" disabled={busyServerId === server.server_id || !api.updateMcpServer} onClick={() => void toggle(server)}>{server.enabled ? (zh ? "停用" : "Disable") : (zh ? "启用" : "Enable")}</Button>
           <Button size="sm" onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
         </div>
       ))}

@@ -26,6 +26,10 @@ class CreateMcpServerRequest(_ClosedModel):
     enabled: bool = True
 
 
+class UpdateMcpServerRequest(_ClosedModel):
+    enabled: bool
+
+
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/mcp", tags=["mcp"])
 
@@ -50,6 +54,14 @@ def build_router() -> APIRouter:
     @router.post("/servers/{server_id}/discover")
     def discover(server_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _mcp(request).discover(server_id))
+
+    @router.patch("/servers/{server_id}")
+    def update_server(
+        server_id: str, payload: UpdateMcpServerRequest, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _mcp(request).update_server(server_id, enabled=payload.enabled)
+        )
 
     @router.post("/servers/{server_id}/tools/{resource_id}/versions/{version}/approve")
     def approve_tool(

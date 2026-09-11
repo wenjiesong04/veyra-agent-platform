@@ -117,6 +117,17 @@ class McpService:
             "deleted": True,
         }
 
+    def update_server(self, server_id: str, *, enabled: bool) -> dict[str, Any]:
+        """Enable or pause one configured MCP server without deleting its tools."""
+        self._require(server_id)
+        row = self.store.set_enabled(server_id, enabled=enabled, updated_at=_now())
+        if row is None:
+            raise McpError("mcp_server_not_found", "MCP server was not found")
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "server": McpServerStore.payload(row),
+        }
+
     def approve_tool(
         self, server_id: str, resource_id: str, version: str
     ) -> dict[str, Any]:
