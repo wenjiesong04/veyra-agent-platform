@@ -120,6 +120,7 @@ class CommunityRegistryService:
                         session, target_version_id=row[1].id
                     ),
                     feedback=self.repository.feedback(session, version_id=row[1].id),
+                    capabilities=self._stored_capabilities(row[1]),
                 )
                 for row in rows
             ]
@@ -156,7 +157,12 @@ class CommunityRegistryService:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
             )
-        return _entry_payload(*row, fork_source=fork_source, feedback=feedback)
+        return _entry_payload(
+            *row,
+            fork_source=fork_source,
+            feedback=feedback,
+            capabilities=self._stored_capabilities(row[1]),
+        )
 
     def versions(self, *, owner_handle: str, slug: str) -> dict[str, Any]:
         with self.database.transaction() as session:
@@ -170,6 +176,7 @@ class CommunityRegistryService:
                         session, target_version_id=row[1].id
                     ),
                     feedback=self.repository.feedback(session, version_id=row[1].id),
+                    capabilities=self._stored_capabilities(row[1]),
                 )
                 for row in rows
             ]
@@ -216,7 +223,12 @@ class CommunityRegistryService:
             )
         return (
             _entry_payload(
-                agent, record, user, fork_source=fork_source, feedback=feedback
+                agent,
+                record,
+                user,
+                fork_source=fork_source,
+                feedback=feedback,
+                capabilities=_capabilities_from_content(content, record.source_hash),
             ),
             content,
         )
@@ -340,6 +352,14 @@ class CommunityRegistryService:
             profile,
             fork_source=source_fork,
             feedback=feedback,
+            capabilities=_capability_payload(source),
+        )
+
+    def _stored_capabilities(
+        self, record: CommunityAgentVersion
+    ) -> dict[str, Any] | None:
+        return _capabilities_from_content(
+            self.storage.get(record.source_storage_id), record.source_hash
         )
 
     def star(
@@ -533,6 +553,59 @@ def _scan_source(source_text: str) -> None:
             )
 
 
+def _capabilities_from_content(
+    content: bytes | None, expected_source_hash: str
+) -> dict[str, Any] | None:
+    if content is None:
+        return None
+    try:
+        source = AgentSource.from_dict(yaml.safe_load(content.decode("utf-8")))
+    except (UnicodeDecodeError, yaml.YAMLError, TypeError, ValueError):
+        return None
+    if source.source_hash != expected_source_hash:
+        return None
+    return _capability_payload(source)
+
+
+def _capability_payload(source: AgentSource) -> dict[str, Any]:
+    permissions = source.permissions.to_dict()
+    tool_refs = sorted({node.uses for node in source.nodes if node.uses is not None})
+    risk_reasons: list[str] = []
+    if permissions["network_hosts"]:
+        risk_reasons.append("network_access")
+    if permissions["filesystem_write_roots"]:
+        risk_reasons.append("filesystem_write")
+    if permissions["shell_workspace_only"]:
+        risk_reasons.append("workspace_shell")
+    if source.secret_refs:
+        risk_reasons.append("host_secrets")
+    if tool_refs and "tool_access" not in risk_reasons:
+        risk_reasons.append("tool_access")
+    risk_level = (
+        "high"
+        if any(
+            reason in risk_reasons
+            for reason in {"filesystem_write", "workspace_shell", "host_secrets"}
+        )
+        else "medium"
+        if risk_reasons
+        else "low"
+    )
+    return {
+        "tools": tool_refs,
+        "skills": list(source.skill_refs),
+        "policies": list(source.policy_refs),
+        "knowledge": list(source.knowledge_refs),
+        "secret_refs": list(source.secret_refs),
+        "permissions": permissions,
+        "verification_required": source.verification.required,
+        "verification_checks": list(source.verification.checks),
+        "node_count": len(source.nodes),
+        "risk_level": risk_level,
+        "risk_reasons": risk_reasons,
+    }
+
+
 def _entry_payload(
     agent: CommunityAgent,
     record: CommunityAgentVersion,
@@ -540,6 +613,7 @@ def _entry_payload(
     *,
     fork_source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None = None,
     feedback: dict[str, Any] | None = None,
+    capabilities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = feedback or {
         "star_count": 0,
@@ -563,6 +637,7 @@ def _entry_payload(
         if record.published_at
         else None,
         "fork_of": _fork_payload(fork_source),
+        "capabilities": capabilities,
         "star_count": int(summary["star_count"]),
         "review_count": int(summary["review_count"]),
         "average_rating": float(summary["average_rating"]),

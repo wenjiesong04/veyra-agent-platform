@@ -7,6 +7,26 @@ export type CommunityForkOrigin = {
   source_hash: string;
 };
 
+export type CommunityAgentCapabilities = {
+  tools: string[];
+  skills: string[];
+  policies: string[];
+  knowledge: string[];
+  secret_refs: string[];
+  permissions: {
+    network_hosts: string[];
+    tools: string[];
+    filesystem_read_roots: string[];
+    filesystem_write_roots: string[];
+    shell_workspace_only: boolean;
+  };
+  verification_required: boolean;
+  verification_checks: string[];
+  node_count: number;
+  risk_level: "low" | "medium" | "high";
+  risk_reasons: string[];
+};
+
 export type CommunityRegistryEntry = {
   schema_version: "community.registry.v1";
   owner_handle: string;
@@ -22,6 +42,7 @@ export type CommunityRegistryEntry = {
   created_at: string;
   published_at: string | null;
   fork_of: CommunityForkOrigin | null;
+  capabilities: CommunityAgentCapabilities | null;
   star_count: number;
   review_count: number;
   average_rating: number;
