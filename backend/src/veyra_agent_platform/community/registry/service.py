@@ -158,6 +158,32 @@ class CommunityRegistryService:
             )
         return _entry_payload(*row, fork_source=fork_source, feedback=feedback)
 
+    def versions(self, *, owner_handle: str, slug: str) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            rows = self.repository.list_public_versions(
+                session, owner_handle=owner_handle, slug=slug
+            )
+            entries = [
+                _entry_payload(
+                    *row,
+                    fork_source=self.repository.fork_source(
+                        session, target_version_id=row[1].id
+                    ),
+                    feedback=self.repository.feedback(session, version_id=row[1].id),
+                )
+                for row in rows
+            ]
+        if not entries:
+            raise CommunityRegistryError(
+                "registry_entry_not_found", "Published Agent was not found"
+            )
+        return {
+            "schema_version": "community.registry.v1",
+            "owner_handle": owner_handle,
+            "slug": slug,
+            "versions": entries,
+        }
+
     def download(
         self, *, owner_handle: str, slug: str, version: str | None = None
     ) -> tuple[dict[str, Any], bytes]:

@@ -90,6 +90,32 @@ class CommunityRegistryRepository:
             )
         return list(session.execute(query).tuples().all())
 
+    def list_public_versions(
+        self,
+        session: Session,
+        *,
+        owner_handle: str,
+        slug: str,
+    ) -> list[tuple[CommunityAgent, CommunityAgentVersion, CommunityUser]]:
+        query = (
+            select(CommunityAgent, CommunityAgentVersion, CommunityUser)
+            .join(
+                CommunityAgentVersion,
+                CommunityAgentVersion.agent_id == CommunityAgent.id,
+            )
+            .join(CommunityUser, CommunityUser.id == CommunityAgent.owner_id)
+            .where(
+                CommunityUser.handle == owner_handle,
+                CommunityAgent.slug == slug,
+                CommunityAgentVersion.status == "published",
+            )
+            .order_by(
+                desc(CommunityAgentVersion.published_at),
+                desc(CommunityAgentVersion.created_at),
+            )
+        )
+        return list(session.execute(query).tuples().all())
+
     def create_agent(
         self,
         session: Session,

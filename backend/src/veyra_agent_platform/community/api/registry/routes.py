@@ -72,6 +72,14 @@ def build_router() -> APIRouter:
             )
         )
 
+    @router.get("/agents/{owner_handle}/{slug}/versions")
+    def agent_versions(
+        owner_handle: str, slug: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _registry(request).versions(owner_handle=owner_handle, slug=slug)
+        )
+
     @router.get("/agents/{owner_handle}/{slug}/versions/{version}/download")
     def download_agent(
         owner_handle: str, slug: str, version: str, request: Request

@@ -70,3 +70,10 @@ export type CommunityRegistryListResponse = {
   schema_version: "community.registry.v1";
   entries: CommunityRegistryEntry[];
 };
+
+export type CommunityRegistryVersionsResponse = {
+  schema_version: "community.registry.v1";
+  owner_handle: string;
+  slug: string;
+  versions: CommunityRegistryEntry[];
+};

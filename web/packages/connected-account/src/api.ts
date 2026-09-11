@@ -19,6 +19,7 @@ import type {
   CommunityRegistryReportResponse,
   CommunityRegistryReviewRequest,
   CommunityRegistryReviewsResponse,
+  CommunityRegistryVersionsResponse,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -58,6 +59,7 @@ export type CommunityApi = {
   deleteAvatar: () => Promise<void>;
   listRegistryAgents: (query?: string) => Promise<CommunityRegistryEntry[]>;
   getRegistryAgent: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityRegistryEntry>;
+  listRegistryAgentVersions: (ownerHandle: string, slug: string) => Promise<CommunityRegistryEntry[]>;
   downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
   publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin) => Promise<CommunityRegistryEntry>;
   starRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
@@ -254,6 +256,11 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
         ? `/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`
         : `/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}`;
       return request<CommunityRegistryEntry>(path);
+    },
+
+    async listRegistryAgentVersions(ownerHandle, slug) {
+      const response = await request<CommunityRegistryVersionsResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions`);
+      return response.versions;
     },
 
     async downloadRegistryAgent(ownerHandle, slug, version) {

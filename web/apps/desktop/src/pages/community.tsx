@@ -38,6 +38,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
   };
   const [entries, setEntries] = useState<CommunityRegistryEntry[]>([]);
   const [selected, setSelected] = useState<CommunityRegistryEntry | null>(null);
+  const [versions, setVersions] = useState<CommunityRegistryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState(false);
@@ -48,9 +49,15 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
     setError("");
     try {
       if (owner && slug) {
-        setSelected(await api.getRegistryAgent(owner, slug, versionId));
+        const [entry, history] = await Promise.all([
+          api.getRegistryAgent(owner, slug, versionId),
+          api.listRegistryAgentVersions(owner, slug),
+        ]);
+        setSelected(entry);
+        setVersions(history);
       } else {
         setSelected(null);
+        setVersions([]);
         setEntries(await api.listRegistryAgents());
       }
     } catch (cause) {
@@ -114,7 +121,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
   if (owner || slug || versionId) {
     if (loading) return <LoadingState label={zh ? "正在读取社区 Agent…" : "Loading Community Agent…"} />;
     if (error || !selected) return <NotFoundPage backHref={communityRoutePaths.catalog} backLabel={copy.backCommunity} />;
-    return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><LinkButton href={communityRoutePaths.catalog} icon={ArrowLeft} variant="ghost">{copy.backCommunity}</LinkButton></div><Panel><div className="community-entry-header"><div><strong>{selected.owner_display_name || selected.owner_handle}</strong><small>@{selected.owner_handle} / {selected.slug}</small></div><Tag>v{selected.version}</Tag><StatusBadge label={selected.status} tone="good" /></div>{selected.fork_of ? <p className="resource-detail-muted">{zh ? "Fork 自" : "Forked from"} @{selected.fork_of.owner_handle}/{selected.fork_of.slug} v{selected.fork_of.version}</p> : null}<SectionHeading eyebrow={zh ? "版本证据" : "Version evidence"} title={zh ? "发布哈希" : "Published hashes"} detail={zh ? "下载前先核对不可变来源；导入时本机还会再次校验。" : "Check the immutable provenance before download; local import validates it again."} /><div className="settings-facts"><div><span>Source SHA-256</span><strong>{selected.source_hash}</strong></div><div><span>Behavior SHA-256</span><strong>{selected.behavior_hash}</strong></div><div><span>Lock SHA-256</span><strong>{selected.lock_hash}</strong></div><div><span>{zh ? "发布时间" : "Published"}</span><strong>{selected.published_at || selected.created_at}</strong></div></div><div className="button-row"><Button icon={Download} variant="primary" disabled={downloading || importing} onClick={() => void download()}>{downloading ? "…" : (zh ? "下载 Agent" : "Download Agent")}</Button><select aria-label={zh ? "目标 Project" : "Target Project"} value={targetProjectId} onChange={(event) => setTargetProjectId(event.target.value)} disabled={importing || !projects.length}><option value="">{projects.length ? (zh ? "选择目标 Project" : "Choose a Project") : (zh ? "暂无本地 Project" : "No local Project")}</option>{projects.map((project) => <option value={project.project_id} key={project.project_id}>{project.name}</option>)}</select><Button variant="secondary" disabled={importing || !targetProjectId} onClick={() => void importToProject()}>{importing ? "…" : (zh ? "导入到 Project" : "Import to Project")}</Button></div>{error ? <ErrorState message={error} onRetry={() => void load()} /> : null}</Panel><CommunityFeedbackPanel entry={selected} communityApi={api} /></div>;
+    return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><LinkButton href={communityRoutePaths.catalog} icon={ArrowLeft} variant="ghost">{copy.backCommunity}</LinkButton></div><Panel><div className="community-entry-header"><div><strong>{selected.owner_display_name || selected.owner_handle}</strong><small>@{selected.owner_handle} / {selected.slug}</small></div><Tag>v{selected.version}</Tag><StatusBadge label={selected.status} tone="good" /></div>{selected.fork_of ? <p className="resource-detail-muted">{zh ? "Fork 自" : "Forked from"} @{selected.fork_of.owner_handle}/{selected.fork_of.slug} v{selected.fork_of.version}</p> : null}<SectionHeading eyebrow={zh ? "版本证据" : "Version evidence"} title={zh ? "发布哈希" : "Published hashes"} detail={zh ? "下载前先核对不可变来源；导入时本机还会再次校验。" : "Check the immutable provenance before download; local import validates it again."} /><div className="settings-facts"><div><span>Source SHA-256</span><strong>{selected.source_hash}</strong></div><div><span>Behavior SHA-256</span><strong>{selected.behavior_hash}</strong></div><div><span>Lock SHA-256</span><strong>{selected.lock_hash}</strong></div><div><span>{zh ? "发布时间" : "Published"}</span><strong>{selected.published_at || selected.created_at}</strong></div></div><div className="button-row"><Button icon={Download} variant="primary" disabled={downloading || importing} onClick={() => void download()}>{downloading ? "…" : (zh ? "下载 Agent" : "Download Agent")}</Button><select aria-label={zh ? "目标 Project" : "Target Project"} value={targetProjectId} onChange={(event) => setTargetProjectId(event.target.value)} disabled={importing || !projects.length}><option value="">{projects.length ? (zh ? "选择目标 Project" : "Choose a Project") : (zh ? "暂无本地 Project" : "No local Project")}</option>{projects.map((project) => <option value={project.project_id} key={project.project_id}>{project.name}</option>)}</select><Button variant="secondary" disabled={importing || !targetProjectId} onClick={() => void importToProject()}>{importing ? "…" : (zh ? "导入到 Project" : "Import to Project")}</Button></div>{versions.length > 1 ? <div className="community-version-list"><strong>{zh ? "版本列表" : "Versions"}</strong>{versions.map((item) => <a key={item.version} href={communityRoutePaths.version(item.owner_handle, item.slug, item.version)} className={item.version === selected.version ? "is-current" : ""}>v{item.version} · {item.source_hash.slice(0, 12)}</a>)}</div> : null}{error ? <ErrorState message={error} onRetry={() => void load()} /> : null}</Panel><CommunityFeedbackPanel entry={selected} communityApi={api} /></div>;
   }
   return (
     <div className="page-stack">
