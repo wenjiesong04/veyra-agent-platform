@@ -53,6 +53,7 @@ const ZH_TITLE: Record<string, string> = {
   "Write File": "写入文件",
   "Workspace Shell": "工作区 Shell",
   "HTTP Request": "HTTP 请求",
+  "Web Search": "网页搜索",
   "GitHub Read": "GitHub 读取",
   "GitHub Write": "GitHub 写入",
   "LLM Agent": "LLM Agent",

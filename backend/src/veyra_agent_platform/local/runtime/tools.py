@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlsplit
 
 import httpx
 
@@ -27,12 +27,13 @@ _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
 _FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".token")
 _READ_ADAPTER = "veyra.runtime.filesystem.read"
 _LIST_ADAPTER = "veyra.runtime.filesystem.list"
-_SEARCH_ADAPTER = "veyra.runtime.filesystem.search"
+_FILESYSTEM_SEARCH_ADAPTER = "veyra.runtime.filesystem.search"
 _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _SHELL_ADAPTER = "veyra.runtime.shell.exec"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
 _BROWSER_ADAPTER = "veyra.runtime.browser.navigate"
+_SEARCH_ADAPTER = "veyra.runtime.web.search"
 _GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
 _GITHUB_WRITE_ADAPTER = "veyra.runtime.github.write"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
@@ -42,6 +43,8 @@ _SHELL_TIMEOUT_SECONDS = 30
 _BROWSER_MAX_REDIRECTS = 5
 _BROWSER_MAX_TEXT_CHARS = 200_000
 _BROWSER_USER_AGENT = "Veyra-Agent-Platform/0.1"
+_SEARCH_MAX_QUERY_BYTES = 2_000
+_SEARCH_MAX_RESULTS = 10
 
 
 class ToolRuntimeError(RuntimeError):
@@ -107,12 +110,13 @@ class ToolRuntime:
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
             _LIST_ADAPTER: self._execute_list,
-            _SEARCH_ADAPTER: self._execute_search,
+            _FILESYSTEM_SEARCH_ADAPTER: self._execute_search,
             _WRITE_ADAPTER: self._execute_write,
             _SHELL_ADAPTER: self._execute_shell,
             _MCP_ADAPTER: self._execute_mcp,
             _HTTP_ADAPTER: self._execute_http,
             _BROWSER_ADAPTER: self._execute_browser_navigate,
+            _SEARCH_ADAPTER: self._execute_web_search,
             _GITHUB_READ_ADAPTER: self._execute_github_read,
             _GITHUB_WRITE_ADAPTER: self._execute_github_write,
         }
@@ -577,6 +581,81 @@ class ToolRuntime:
         host = response.url.host or ""
         return self._receipt_execution(
             authorization, output, len(content), host.lower()
+        )
+
+    def _execute_web_search(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        raw_query = values.get("query")
+        if (
+            not isinstance(raw_query, str)
+            or not raw_query.strip()
+            or len(raw_query.encode("utf-8")) > _SEARCH_MAX_QUERY_BYTES
+        ):
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Web Search query is required and must be short"
+            )
+        raw_count = values.get("count", 5)
+        if (
+            isinstance(raw_count, bool)
+            or not isinstance(raw_count, int)
+            or not 1 <= raw_count <= _SEARCH_MAX_RESULTS
+        ):
+            raise ToolRuntimeError(
+                "tool_input_invalid",
+                f"Web Search count must be between 1 and {_SEARCH_MAX_RESULTS}",
+            )
+        query = raw_query.strip()
+        search_url = "https://html.duckduckgo.com/html/?" + urlencode({"q": query})
+        try:
+            response = self._http_client.get(
+                search_url,
+                headers={
+                    "Accept": "text/html",
+                    "User-Agent": _BROWSER_USER_AGENT,
+                },
+                follow_redirects=False,
+            )
+            content = response.content
+        except httpx.TimeoutException as exc:
+            raise ToolRuntimeError(
+                "tool_timeout", "Web Search request timed out"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ToolRuntimeError("tool_failed", "Web Search request failed") from exc
+        if len(content) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Web Search response exceeds the 1 MiB limit"
+            )
+        if response.status_code >= 400:
+            raise ToolRuntimeError(
+                "tool_failed", "Web Search provider returned an error"
+            )
+        parser = _SearchResultParser()
+        parser.feed(content.decode(response.encoding or "utf-8", errors="replace"))
+        parser.close()
+        results = parser.results[:raw_count]
+        output = {
+            "provider": "duckduckgo",
+            "query": query,
+            "results": results,
+            "status": response.status_code,
+        }
+        encoded = json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        if len(encoded) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Web Search results exceed the 1 MiB limit"
+            )
+        return self._receipt_execution(
+            authorization, output, len(content), "html.duckduckgo.com"
         )
 
     @staticmethod
@@ -1205,6 +1284,69 @@ class _BrowserDocumentParser(HTMLParser):
         if any(link["href"] == href for link in self.links):
             return
         self.links.append({"text": label[:200], "href": href})
+
+
+class _SearchResultParser(HTMLParser):
+    """Extract result cards from the provider's bounded HTML response."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._current: dict[str, str] | None = None
+        self._field: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if "result__a" in classes:
+            self._finish()
+            self._current = {
+                "title": "",
+                "url": _search_result_url(attributes.get("href") or ""),
+                "snippet": "",
+            }
+            self._field = "title"
+        elif "result__snippet" in classes and self._current is not None:
+            self._field = "snippet"
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._field = None
+
+    def handle_data(self, data: str) -> None:
+        if self._current is not None and self._field is not None:
+            self._current[self._field] += data
+
+    def close(self) -> None:
+        super().close()
+        self._finish()
+
+    def _finish(self) -> None:
+        if self._current is None:
+            return
+        title = " ".join(self._current["title"].split())
+        url = self._current["url"]
+        snippet = " ".join(self._current["snippet"].split())
+        if title and url.startswith(("http://", "https://")):
+            self.results.append(
+                {"title": title[:500], "url": url[:2_000], "snippet": snippet[:2_000]}
+            )
+        self._current = None
+        self._field = None
+
+
+def _search_result_url(raw_url: str) -> str:
+    value = raw_url.strip()
+    if value.startswith("//"):
+        value = f"https:{value}"
+    parsed = urlsplit(value)
+    if parsed.hostname == "duckduckgo.com":
+        encoded = parse_qs(parsed.query).get("uddg", [""])[0]
+        if encoded:
+            value = unquote(encoded)
+    return value
 
 
 def _browser_document(
