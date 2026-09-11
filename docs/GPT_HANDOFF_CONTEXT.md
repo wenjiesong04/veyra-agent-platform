@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`bcb927faefc5374a27788f215f69422feecf7203`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Orchestrator 并发/停滞信号、Monitor WorkItem 创建、Community Fork lineage、版本反馈和持久化 Star 状态。
+- 最新功能代码基线：`531cfa81862e5c0edc4a334cda8dacfb27924cc7`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Orchestrator 并发/停滞信号、Monitor WorkItem 创建、Community Fork lineage、版本反馈、持久化 Star 状态和 `SKILL.md` 导入。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -336,7 +336,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 
 - Desktop Project sidebar/tree、Project detail、Agent context、Studio。
 - Project/Agent 创建和编辑表单支持可选 Runtime API profile；Agent 旁的加号可直接创建 child-Agent。
-- Resource Library：组件、Tool/MCP、Skills、Policies、Templates；显示 availability、Runtime 状态、权限和 hash。
+- Resource Library：组件、Tool/MCP、Skills、Policies、Templates；显示 availability、Runtime 状态、权限和 hash。Skills 页可以读取 Markdown/纯文本 `SKILL.md`，填入隔离草稿，审核后才可进入 Factory/Runtime prompt。
 - Factory Conversation：需求输入、对话、生成 Blueprint、Resource Plan、missing capability、确认创建 Draft、打开 Studio。
 - Studio Test Run：输入表单、真实 Run、结果、节点状态条、事件列表、Runtime key 提示；`waiting` 时显示审批文案和批准/拒绝/停止；可订阅 run event stream。
 - Account/auth 页面和 Connected Account package。
@@ -444,7 +444,7 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34596400667` 和 Pull Request `34596404863`：`bcb927f` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- GitHub Actions Push `34597185437` 和 Pull Request `34597190348`：`531cfa8` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
 - Local live：`8771 /api/v1/health` 返回 `build_sha=40d3f64...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry、MCP 启停和 Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限与 `stale_count`，Monitor 提供 WorkItem 创建，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=17b117e...`、`community_0006_agent_feedback`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
