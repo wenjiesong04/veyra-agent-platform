@@ -50,7 +50,7 @@ export function CommunityPublishPanel({
         `${exported.source.slug}.vagent.yaml`,
         { type: "application/yaml" },
       );
-      const entry = await communityApi.publishRegistryAgent(file);
+      const entry = await communityApi.publishRegistryAgent(file, exported.community_origin);
       onPublished(entry);
     } catch (cause) {
       setError(cause instanceof Error

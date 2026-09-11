@@ -1,5 +1,13 @@
 """Community Agent registry services."""
 
-from .service import CommunityRegistryError, CommunityRegistryService
+from .service import (
+    CommunityForkOrigin,
+    CommunityRegistryError,
+    CommunityRegistryService,
+)
 
-__all__ = ["CommunityRegistryError", "CommunityRegistryService"]
+__all__ = [
+    "CommunityForkOrigin",
+    "CommunityRegistryError",
+    "CommunityRegistryService",
+]

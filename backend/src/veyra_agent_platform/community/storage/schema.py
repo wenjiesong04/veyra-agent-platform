@@ -148,6 +148,29 @@ class CommunityAgentVersion(CommunityBase):
     published_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
 
 
+class CommunityAgentFork(CommunityBase):
+    """Immutable edge from a published source version to a forked version."""
+
+    __tablename__ = "community_agent_forks"
+    __table_args__ = (UniqueConstraint("target_version_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_agent_versions.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    target_version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_agent_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    forked_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_users.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
 class CommunityMailOutbox(CommunityBase):
     """Durable authorization and delivery record for transactional email."""
 

@@ -32,7 +32,7 @@ from .storage.avatar_storage import LocalAvatarStorage
 from .storage.database import CommunityDatabase
 from .storage.package_storage import LocalPackageStorage
 
-COMMUNITY_DATABASE_HEAD = "community_0004_agent_registry"
+COMMUNITY_DATABASE_HEAD = "community_0005_agent_forks"
 
 
 def _database_revision(database: CommunityDatabase) -> str | None:

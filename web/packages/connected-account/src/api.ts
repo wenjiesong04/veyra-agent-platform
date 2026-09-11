@@ -13,6 +13,7 @@ import type {
   CommunityVerificationCodeRequest,
   CommunityRegistryEntry,
   CommunityRegistryListResponse,
+  CommunityForkOrigin,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -53,7 +54,7 @@ export type CommunityApi = {
   listRegistryAgents: (query?: string) => Promise<CommunityRegistryEntry[]>;
   getRegistryAgent: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityRegistryEntry>;
   downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
-  publishRegistryAgent: (file: File) => Promise<CommunityRegistryEntry>;
+  publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin) => Promise<CommunityRegistryEntry>;
 };
 
 type ErrorBody = {
@@ -249,9 +250,15 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
       return requestBlob(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
     },
 
-    async publishRegistryAgent(file) {
+    async publishRegistryAgent(file, forkOf) {
       const body = new FormData();
       body.append("package", file, file.name);
+      if (forkOf) {
+        body.append("fork_owner_handle", forkOf.owner_handle);
+        body.append("fork_slug", forkOf.slug);
+        body.append("fork_version", forkOf.version);
+        body.append("fork_source_hash", forkOf.source_hash);
+      }
       return request<CommunityRegistryEntry>("/registry/agents", { method: "POST", body });
     },
   };

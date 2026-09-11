@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]
@@ -26,12 +27,67 @@ _FORBIDDEN_MARKERS = (
     "github_pat_",
     "AKIA",
 )
+_SEMVER = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class CommunityRegistryError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class CommunityForkOrigin:
+    """The published version that a new Community version was forked from."""
+
+    owner_handle: str
+    slug: str
+    version: str
+    source_hash: str
+
+    @classmethod
+    def from_optional_fields(
+        cls,
+        *,
+        owner_handle: str | None,
+        slug: str | None,
+        version: str | None,
+        source_hash: str | None,
+    ) -> CommunityForkOrigin | None:
+        fields = (owner_handle, slug, version, source_hash)
+        if all(value is None for value in fields):
+            return None
+        if any(value is None or not value.strip() for value in fields):
+            raise CommunityRegistryError(
+                "registry_fork_invalid",
+                "Fork origin fields must be provided together",
+            )
+        assert owner_handle is not None
+        assert slug is not None
+        assert version is not None
+        assert source_hash is not None
+        origin = cls(
+            owner_handle=owner_handle.strip(),
+            slug=slug.strip(),
+            version=version.strip(),
+            source_hash=source_hash.strip(),
+        )
+        if len(origin.owner_handle) > 32 or len(origin.slug) > 63:
+            raise CommunityRegistryError(
+                "registry_fork_invalid", "Fork origin identity is too long"
+            )
+        if not _SEMVER.fullmatch(origin.version) or len(origin.version) > 32:
+            raise CommunityRegistryError(
+                "registry_fork_invalid", "Fork origin version is invalid"
+            )
+        if not _SHA256.fullmatch(origin.source_hash):
+            raise CommunityRegistryError(
+                "registry_fork_invalid", "Fork origin source hash is invalid"
+            )
+        return origin
 
 
 class CommunityRegistryService:
@@ -57,9 +113,18 @@ class CommunityRegistryService:
             rows = self.repository.list_public(
                 session, query_text=clean_query, limit=clean_limit
             )
+            entries = [
+                _entry_payload(
+                    *row,
+                    fork_source=self.repository.fork_source(
+                        session, target_version_id=row[1].id
+                    ),
+                )
+                for row in rows
+            ]
         return {
             "schema_version": "community.registry.v1",
-            "entries": [_entry_payload(*row) for row in rows],
+            "entries": entries,
         }
 
     def entry(
@@ -76,11 +141,16 @@ class CommunityRegistryService:
                 slug=slug,
                 version=version,
             )
+            fork_source = (
+                self.repository.fork_source(session, target_version_id=row[1].id)
+                if row is not None
+                else None
+            )
         if row is None:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
             )
-        return _entry_payload(*row)
+        return _entry_payload(*row, fork_source=fork_source)
 
     def download(
         self, *, owner_handle: str, slug: str, version: str | None = None
@@ -92,6 +162,11 @@ class CommunityRegistryService:
                 slug=slug,
                 version=version,
             )
+            fork_source = (
+                self.repository.fork_source(session, target_version_id=row[1].id)
+                if row is not None
+                else None
+            )
         if row is None:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
@@ -102,10 +177,15 @@ class CommunityRegistryService:
             raise CommunityRegistryError(
                 "registry_package_missing", "Published Agent package is unavailable"
             )
-        return _entry_payload(agent, record, user), content
+        return _entry_payload(agent, record, user, fork_source=fork_source), content
 
     def publish(
-        self, *, user_id: str, filename: str | None, content: bytes
+        self,
+        *,
+        user_id: str,
+        filename: str | None,
+        content: bytes,
+        fork_origin: CommunityForkOrigin | None = None,
     ) -> dict[str, Any]:
         if len(content) > MAX_PACKAGE_BYTES:
             raise CommunityRegistryError(
@@ -173,6 +253,22 @@ class CommunityRegistryService:
                         "registry_version_exists",
                         "This Agent version is already published",
                     )
+                source_fork = None
+                if fork_origin is not None:
+                    source_fork = self.repository.find_fork_source(
+                        session,
+                        owner_handle=fork_origin.owner_handle,
+                        slug=fork_origin.slug,
+                        version=fork_origin.version,
+                    )
+                    if (
+                        source_fork is None
+                        or source_fork[1].source_hash != fork_origin.source_hash
+                    ):
+                        raise CommunityRegistryError(
+                            "registry_fork_source_not_found",
+                            "Fork source version was not found or changed",
+                        )
                 record = self.repository.create_version(
                     session,
                     agent_id=agent.id,
@@ -183,11 +279,19 @@ class CommunityRegistryService:
                     lock_hash=source.lock_hash,
                     now=now,
                 )
+                if source_fork is not None:
+                    self.repository.create_fork(
+                        session,
+                        source_version_id=source_fork[1].id,
+                        target_version_id=record.id,
+                        forked_by=user_id,
+                        now=now,
+                    )
         except IntegrityError as exc:
             raise CommunityRegistryError(
                 "registry_version_exists", "This Agent version is already published"
             ) from exc
-        return _entry_payload(agent, record, profile)
+        return _entry_payload(agent, record, profile, fork_source=source_fork)
 
 
 def _scan_source(source_text: str) -> None:
@@ -202,6 +306,8 @@ def _entry_payload(
     agent: CommunityAgent,
     record: CommunityAgentVersion,
     user: Any,
+    *,
+    fork_source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": "community.registry.v1",
@@ -219,4 +325,19 @@ def _entry_payload(
         "published_at": record.published_at.isoformat()
         if record.published_at
         else None,
+        "fork_of": _fork_payload(fork_source),
+    }
+
+
+def _fork_payload(
+    source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None,
+) -> dict[str, str] | None:
+    if source is None:
+        return None
+    agent, record, user = source
+    return {
+        "owner_handle": user.handle,
+        "slug": agent.slug,
+        "version": record.version,
+        "source_hash": record.source_hash,
     }

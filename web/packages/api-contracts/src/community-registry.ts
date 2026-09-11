@@ -1,5 +1,12 @@
 /** Public and authenticated Community Agent registry wire contracts. */
 
+export type CommunityForkOrigin = {
+  owner_handle: string;
+  slug: string;
+  version: string;
+  source_hash: string;
+};
+
 export type CommunityRegistryEntry = {
   schema_version: "community.registry.v1";
   owner_handle: string;
@@ -14,6 +21,7 @@ export type CommunityRegistryEntry = {
   status: "published";
   created_at: string;
   published_at: string | null;
+  fork_of: CommunityForkOrigin | null;
 };
 
 export type CommunityRegistryListResponse = {

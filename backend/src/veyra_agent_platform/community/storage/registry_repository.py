@@ -7,7 +7,12 @@ from datetime import datetime
 from sqlalchemy import desc, or_, select
 from sqlalchemy.orm import Session
 
-from .schema import CommunityAgent, CommunityAgentVersion, CommunityUser
+from .schema import (
+    CommunityAgent,
+    CommunityAgentFork,
+    CommunityAgentVersion,
+    CommunityUser,
+)
 
 
 class CommunityRegistryRepository:
@@ -141,6 +146,60 @@ class CommunityRegistryRepository:
         session.add(record)
         session.flush()
         return record
+
+    def find_fork_source(
+        self,
+        session: Session,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+    ) -> tuple[CommunityAgent, CommunityAgentVersion, CommunityUser] | None:
+        return self.find_public_version(
+            session,
+            owner_handle=owner_handle,
+            slug=slug,
+            version=version,
+        )
+
+    def create_fork(
+        self,
+        session: Session,
+        *,
+        source_version_id: str,
+        target_version_id: str,
+        forked_by: str,
+        now: datetime,
+    ) -> CommunityAgentFork:
+        fork = CommunityAgentFork(
+            id=_uuid(),
+            source_version_id=source_version_id,
+            target_version_id=target_version_id,
+            forked_by=forked_by,
+            created_at=now,
+        )
+        session.add(fork)
+        session.flush()
+        return fork
+
+    def fork_source(
+        self, session: Session, *, target_version_id: str
+    ) -> tuple[CommunityAgent, CommunityAgentVersion, CommunityUser] | None:
+        query = (
+            select(CommunityAgent, CommunityAgentVersion, CommunityUser)
+            .select_from(CommunityAgentFork)
+            .join(
+                CommunityAgentVersion,
+                CommunityAgentVersion.id == CommunityAgentFork.source_version_id,
+            )
+            .join(
+                CommunityAgent,
+                CommunityAgent.id == CommunityAgentVersion.agent_id,
+            )
+            .join(CommunityUser, CommunityUser.id == CommunityAgent.owner_id)
+            .where(CommunityAgentFork.target_version_id == target_version_id)
+        )
+        return session.execute(query.limit(1)).tuples().first()
 
 
 def _uuid() -> str:

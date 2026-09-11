@@ -5,10 +5,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any, TypeVar, cast
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import Response
 
-from ...registry import CommunityRegistryError, CommunityRegistryService
+from ...registry import (
+    CommunityForkOrigin,
+    CommunityRegistryError,
+    CommunityRegistryService,
+)
 from ..auth.security import authenticate_request, get_settings, require_csrf
 
 _Result = TypeVar("_Result")
@@ -66,7 +79,12 @@ def build_router() -> APIRouter:
 
     @router.post("/agents", status_code=status.HTTP_201_CREATED)
     async def publish_agent(
-        request: Request, package: Annotated[UploadFile, File()]
+        request: Request,
+        package: Annotated[UploadFile, File()],
+        fork_owner_handle: Annotated[str | None, Form()] = None,
+        fork_slug: Annotated[str | None, Form()] = None,
+        fork_version: Annotated[str | None, Form()] = None,
+        fork_source_hash: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         authenticated = authenticate_request(request)
         require_csrf(request, authenticated, get_settings(request))
@@ -77,6 +95,12 @@ def build_router() -> APIRouter:
                 user_id=authenticated.user_id,
                 filename=package.filename,
                 content=content,
+                fork_origin=CommunityForkOrigin.from_optional_fields(
+                    owner_handle=fork_owner_handle,
+                    slug=fork_slug,
+                    version=fork_version,
+                    source_hash=fork_source_hash,
+                ),
             )
         )
 

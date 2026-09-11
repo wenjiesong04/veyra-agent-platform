@@ -1409,6 +1409,9 @@ function exported(value: unknown, status = 502): ExportResponse {
     source: source(record.source, status),
     source_text: asString(record.source_text, "source_text", status),
     file_hash: asString(record.file_hash, "file_hash", status),
+    ...(record.community_origin === undefined ? {} : {
+      community_origin: communityAgentOrigin(record.community_origin, status),
+    }),
   };
 }
 

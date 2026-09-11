@@ -611,7 +611,7 @@ class LibraryService:
         source = AgentSource.from_dict(
             self.projects._parse_yaml(source_text, agent["slug"])
         )
-        return {
+        result = {
             "schema_version": SCHEMA_VERSION,
             "kind": "agent",
             "agent_id": agent_id,
@@ -622,6 +622,16 @@ class LibraryService:
             "source_text": source_text,
             "file_hash": file_hash(source_text),
         }
+        origin = self.repository.agent_origin(agent_id)
+        if origin is not None:
+            result["community_origin"] = {
+                "owner_handle": origin["owner_handle"],
+                "slug": origin["remote_slug"],
+                "version": origin["remote_version"],
+                "source_hash": origin["remote_source_hash"],
+                "imported_at": origin["imported_at"],
+            }
+        return result
 
     def _workflow_in_project(self, project_id: str, workflow_id: str) -> Any:
         workflow = self.repository.workflow(workflow_id)

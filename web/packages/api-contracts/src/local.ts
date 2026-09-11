@@ -881,6 +881,7 @@ export type ExportResponse = {
   source: AgentSource;
   source_text: string;
   file_hash: string;
+  community_origin?: CommunityAgentOrigin;
 };
 
 export type LocalErrorEnvelope = {
