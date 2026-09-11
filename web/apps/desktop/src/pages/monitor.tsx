@@ -1,6 +1,6 @@
 import { CircleStop, Clock3, Gauge, Play, RotateCcw } from "lucide-react";
 import { Button, EmptyState, ErrorState, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OrchestratorStatus, WorkItem } from "@veyra/api-contracts";
 import { useProjectWorkspace } from "../api/project-workspace";
 
@@ -12,7 +12,24 @@ export function MonitorPage() {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
-  const project = projects[0];
+  const [projectId, setProjectId] = useState(projects[0]?.project_id ?? "");
+  const [agentId, setAgentId] = useState(projects[0]?.agents[0]?.agent_id ?? "");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const project = useMemo(
+    () => projects.find((item) => item.project_id === projectId) ?? projects[0],
+    [projectId, projects],
+  );
+
+  useEffect(() => {
+    if (!project || project.project_id === projectId) return;
+    setProjectId(project.project_id);
+  }, [project, projectId]);
+
+  useEffect(() => {
+    if (project?.agents.some((item) => item.agent_id === agentId)) return;
+    setAgentId(project?.agents[0]?.agent_id ?? "");
+  }, [agentId, project]);
 
   const load = useCallback(async () => {
     setError("");
@@ -72,6 +89,26 @@ export function MonitorPage() {
     }
   };
 
+  const create = async () => {
+    if (!api.createWorkItem || !project || !agentId || !title.trim()) return;
+    setBusyId("create");
+    setError("");
+    try {
+      await api.createWorkItem(project.project_id, {
+        title: title.trim(),
+        agent_id: agentId,
+        description: description.trim(),
+      });
+      setTitle("");
+      setDescription("");
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "创建 WorkItem 失败。" : "Could not create WorkItem."));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const copy = zh
     ? {
       eyebrow: "本机编排",
@@ -109,6 +146,18 @@ export function MonitorPage() {
         <StatusBadge label={copy.local} tone="good" />
       </div>
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
+      {project ? (
+        <Panel>
+          <SectionHeading eyebrow={zh ? "创建工作" : "Create work"} title={zh ? "新增 WorkItem" : "New WorkItem"} detail={zh ? "创建后会进入本机 Orchestrator；只会派发到你选中的本地 Agent。" : "The item enters the local Orchestrator and can only dispatch to the selected local Agent."} />
+          <div className="inspector-fields">
+            <label><span>{zh ? "Project" : "Project"}</span><select value={project.project_id} onChange={(event) => setProjectId(event.target.value)} disabled={busyId === "create"}>{projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.name}</option>)}</select></label>
+            <label><span>{zh ? "Agent" : "Agent"}</span><select value={agentId} onChange={(event) => setAgentId(event.target.value)} disabled={busyId === "create" || !project.agents.length}>{project.agents.length ? project.agents.map((item) => <option key={item.agent_id} value={item.agent_id}>{item.name || item.slug}</option>) : <option value="">{zh ? "暂无 Agent" : "No Agent"}</option>}</select></label>
+            <label><span>{zh ? "标题" : "Title"}</span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} placeholder={zh ? "例如：运行研究 Agent" : "For example: Run research Agent"} disabled={busyId === "create"} /></label>
+            <label><span>{zh ? "描述" : "Description"}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={4_000} rows={3} disabled={busyId === "create"} /></label>
+            <Button variant="primary" disabled={busyId !== null || !api.createWorkItem || !agentId || !title.trim()} onClick={() => void create()}>{busyId === "create" ? "…" : (zh ? "创建 WorkItem" : "Create WorkItem")}</Button>
+          </div>
+        </Panel>
+      ) : null}
       {workspaceStatus === "loading" || (!plane && !error) ? <Panel><LoadingState label={zh ? "正在加载编排状态…" : "Loading orchestrator…"} /></Panel> : null}
       {plane ? (
         <Panel>
