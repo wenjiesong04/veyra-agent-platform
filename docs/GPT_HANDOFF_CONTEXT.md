@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`1cfe9ee8c50838617b6c62c16e01cc92f6980f25`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage 和 Desktop 发布面板。
+- 最新功能代码基线：`7f35d9ceb2f053350516585cea1987186ad252af`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate 和 Orchestrator 并发/停滞信号。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -191,7 +191,7 @@ AgentSource 会保存：输入/输出、节点/连线、模型引用、工具引
 - `veyra.tool.filesystem.read@1.0.0`：`ready` + `supported`，现在有真实本地 adapter。
 - `veyra.tool.filesystem.write@1.0.0`：`ready` + `supported`，默认 `approval_required`，真实本地 adapter。
 - Workspace Shell、HTTP Request：`ready` + `supported`；Shell 和 HTTP 写入默认需要 HumanApproval。
-- GitHub Read/Write：`ready` + `supported`，分别提供只读和审批后的仓库 API 调用；Browser Navigate 仍为 `unavailable`。
+- GitHub Read/Write：`ready` + `supported`，分别提供只读和审批后的仓库 API 调用；Browser Navigate 已为 `ready` + `supported`，提供 allowlist 内的页面读取、标题/正文/链接提取。
 - `veyra.mcp.call@1.0.0`：仍是通用占位 descriptor；配置服务器后发现的 MCP Tool 会被规范化为 `ready` + `supported`，审核后可进入 Factory/Runtime。
 - Agent Component：`requires_configuration` + `runtime_not_configured`，设计可以继续，运行需要模型。
 - Skills 是非执行指令资产；Policies 是解析和 Runtime 授权的 overlay；Templates 是可 Fork 的完整 Agent 定义。
@@ -248,7 +248,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 
 ### 5.6 Tool Runtime
 
-当前真实 Tool adapter：Filesystem Read/List/Search/Write、Workspace Shell、HTTP Request、GitHub Read/Write，以及审核后的 discovered MCP Tool。
+当前真实 Tool adapter：Filesystem Read/List/Search/Write、Workspace Shell、HTTP Request、Browser Navigate、GitHub Read/Write，以及审核后的 discovered MCP Tool。
 
 - 执行前先做 authorization：Catalog availability、runtime status、完整 content hash lock、source permission subset、adapter 是否安装。拒绝会记录 `tool.requested`（`permission=denied`）并失败，不会动手。
 - Read：Project 内相对 UTF-8 文件路径；输出 `content` 字符串。
@@ -256,7 +256,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - 两者都拒绝绝对路径、`..` traversal、软链接、`.env`/credentials/密钥类后缀、非普通文件和超过 1 MiB 的内容。
 - Run 事件记录 `tool.requested`、`tool.started`、`tool.completed`；receipt 只包含 adapter、相对路径、字节数和输入/输出 digest，不记录文件全文。Write 的 `content` 只进 digest。
 - HumanApproval 会把同一 run 置为 `waiting`，持久化 approval request 和 checkpoint。`approve`/`reject` 从下一节点继续同一 run；`stop` → `cancelled`；`retry` → 新 run；`resume` 对审批等待返回 `command_not_applicable`。
-- Shell、HTTP、GitHub Read/Write 和 discovered MCP Tool 已可运行；Browser Navigate 仍明确不可执行。MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。
+- Shell、HTTP、Browser Navigate、GitHub Read/Write 和 discovered MCP Tool 已可运行；MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。MCP 服务器还支持不删除配置的启用/停用。
 - Tool 节点支持 `input_mapping` / `output_mapping`，Runtime 先映射后授权，执行后按映射回写，避免外部 MCP/GitHub 字段名绑死 Agent 输入。
 
 ### 5.7 Project child-Agent 与 Runtime profile
@@ -356,10 +356,10 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 
 当前不能宣称“完整 V1”。未完成项：
 
-1. Tool Runtime 仍缺 Browser Navigate；Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 已接入真实 adapter boundary。
+1. Tool Runtime 的核心读取型工具已覆盖 Browser Navigate；它当前是 HTTP/HTML 读取器，不是带鼠标/JS 页面状态的交互式浏览器。Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 也已接入真实 adapter boundary。
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
-4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry 和基础 reconcile；worktree/concurrency/stall 仍未完成。
+4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限和基于 Runtime 事件的 stale 信号；独立 worktree、真正的执行 stall recovery 和更丰富 reconcile 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 还需要展示 attempt 详情并补齐更丰富 reconcile。
 6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、内容寻址存储、公开版本查询、下载、目标 Project 导入和本地 lineage；仍需 quarantine/更完整的路径与依赖扫描、Fork 图关系、Star/Review/Report/moderation。
 7. Tauri/PyInstaller/macOS arm64 包。
@@ -444,8 +444,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34448567162` 和 Pull Request `34448569868`：`1cfe9ee` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=9ce006a...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry 和 Community-origin import boundary 可用，未输出任何密钥值。
+- GitHub Actions Push `34562411101` 和 Pull Request `34562413941`：`7f35d9c` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=7f35d9c...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry、MCP 启停和 Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限与 `stale_count`，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=15ee6f5...`、`community_0004_agent_registry`、`database_ready=true`；`GET /api/v1/registry/agents` 返回空目录，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
