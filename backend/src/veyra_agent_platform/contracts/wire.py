@@ -44,6 +44,7 @@ class RunEventKind(StrEnum):
     TOOL_REQUESTED = "tool.requested"
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
+    MODEL_DELTA = "model.delta"
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_RESOLVED = "approval.resolved"
     INPUT_REQUESTED = "input.requested"
@@ -120,6 +121,7 @@ EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
     RunEventKind.TOOL_REQUESTED: True,
     RunEventKind.TOOL_STARTED: True,
     RunEventKind.TOOL_COMPLETED: True,
+    RunEventKind.MODEL_DELTA: True,
     RunEventKind.APPROVAL_REQUESTED: True,
     RunEventKind.APPROVAL_RESOLVED: True,
     RunEventKind.INPUT_REQUESTED: True,
