@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`531cfa81862e5c0edc4a334cda8dacfb27924cc7`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Orchestrator 并发/停滞信号、Monitor WorkItem 创建、Community Fork lineage、版本反馈、持久化 Star 状态和 `SKILL.md` 导入。
+- 最新功能代码基线：`a71a863f3f713d29b919b90911f8724411ac23c8`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Orchestrator 并发/停滞信号、Monitor WorkItem 创建与自动刷新、Community Fork lineage、版本反馈、持久化 Star 状态和 `SKILL.md` 导入。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -347,7 +347,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Root `#/projects` 当前兼容地显示 New Chat；真实 Project 列表主要在侧栏和 Project routes。是否恢复一个独立 Projects dashboard，要以用户后续 UX 决定。
 - `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
 - Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
-- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，并支持从界面创建 WorkItem、派发、取消、重试，显示并发上限和 stale 信号。
+- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，并支持从界面创建 WorkItem、派发、取消、重试、5 秒自动刷新，显示并发上限和 stale 信号。
 - Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、YAML 下载、目标 Project 导入和从本地 Project 发布均已接入。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
@@ -444,7 +444,7 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34597185437` 和 Pull Request `34597190348`：`531cfa8` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- GitHub Actions Push `34597712729` 和 Pull Request `34597716445`：`a71a863` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
 - Local live：`8771 /api/v1/health` 返回 `build_sha=40d3f64...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry、MCP 启停和 Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限与 `stale_count`，Monitor 提供 WorkItem 创建，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=17b117e...`、`community_0006_agent_feedback`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
