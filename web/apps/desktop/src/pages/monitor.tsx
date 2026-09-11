@@ -112,7 +112,7 @@ export function MonitorPage() {
       {workspaceStatus === "loading" || (!plane && !error) ? <Panel><LoadingState label={zh ? "正在加载编排状态…" : "Loading orchestrator…"} /></Panel> : null}
       {plane ? (
         <Panel>
-          <SectionHeading eyebrow={copy.counts} title={`${plane.active.length} active`} detail={`backlog ${plane.counts.backlog} · ready ${plane.counts.ready} · running ${plane.counts.running} · waiting ${plane.counts.waiting}`} />
+          <SectionHeading eyebrow={copy.counts} title={`${plane.active.length} active`} detail={`backlog ${plane.counts.backlog} · ready ${plane.counts.ready} · running ${plane.counts.running} · waiting ${plane.counts.waiting} · stale ${plane.stale_count} · limit ${plane.limits.global_concurrency}/${plane.limits.per_project_concurrency}`} />
           {items.length ? (
             <div className="run-list">
               {items.map((item) => (
@@ -122,7 +122,7 @@ export function MonitorPage() {
                     <strong>{item.title}</strong>
                     <small>{item.agent_id} · {item.status}{item.attempt_number ? ` · attempt ${item.attempt_number}` : ""}{item.failure_class ? ` · ${item.failure_class}` : ""}</small>
                   </span>
-                  <Tag>{item.status}</Tag>
+                  <Tag>{item.stale ? (zh ? "疑似停滞" : "Stale") : item.status}</Tag>
                   {item.status === "ready" || item.status === "backlog" ? (
                     <Button size="sm" icon={Play} disabled={busyId === item.work_item_id} onClick={() => void dispatch(item.work_item_id)}>{copy.dispatch}</Button>
                   ) : null}

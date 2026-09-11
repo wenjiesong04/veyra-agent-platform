@@ -92,6 +92,20 @@ class OrchestratorStore:
                 "SELECT * FROM work_items ORDER BY created_at DESC, work_item_id ASC"
             ).fetchall()
 
+    @staticmethod
+    def active_counts_in_connection(
+        connection: sqlite3.Connection, project_id: str
+    ) -> tuple[int, int]:
+        global_count = connection.execute(
+            "SELECT COUNT(*) FROM work_items WHERE status IN ('running', 'waiting')"
+        ).fetchone()[0]
+        project_count = connection.execute(
+            "SELECT COUNT(*) FROM work_items "
+            "WHERE project_id = ? AND status IN ('running', 'waiting')",
+            (project_id,),
+        ).fetchone()[0]
+        return int(global_count), int(project_count)
+
     def update(
         self,
         connection: sqlite3.Connection,

@@ -25,6 +25,9 @@ _DONE = {"done", "failed", "cancelled"}
 _RUN_DONE = {"verified", "unverified"}
 _RUN_FAILED = {"failed", "interrupted"}
 _LEASE_SECONDS = 900
+_MAX_GLOBAL_CONCURRENT = 4
+_MAX_PROJECT_CONCURRENT = 2
+_STALL_SECONDS = 300
 
 
 class OrchestratorError(ValueError):
@@ -52,12 +55,18 @@ class OrchestratorService:
         active = [
             item for item in items if item["status"] in {"ready", "running", "waiting"}
         ]
+        stale_count = sum(1 for item in items if item.get("stale", False))
         return {
             "schema_version": SCHEMA_VERSION,
             "execution_plane": "local",
             "cloud_execution": False,
             "counts": counts,
             "active": active[:50],
+            "stale_count": stale_count,
+            "limits": {
+                "global_concurrency": _MAX_GLOBAL_CONCURRENT,
+                "per_project_concurrency": _MAX_PROJECT_CONCURRENT,
+            },
         }
 
     def list_work_items(self, project_id: str) -> dict[str, Any]:
@@ -176,6 +185,19 @@ class OrchestratorService:
         claimed_at = _now()
         lease_expires_at = _lease_expiry()
         with self.store.transaction() as connection:
+            global_active, project_active = self.store.active_counts_in_connection(
+                connection, current["project_id"]
+            )
+            if global_active >= _MAX_GLOBAL_CONCURRENT:
+                raise OrchestratorError(
+                    "orchestrator_concurrency_limit",
+                    "Global local Runtime concurrency limit has been reached",
+                )
+            if project_active >= _MAX_PROJECT_CONCURRENT:
+                raise OrchestratorError(
+                    "project_concurrency_limit",
+                    "This Project local Runtime concurrency limit has been reached",
+                )
             if not self.store.claim(
                 connection,
                 work_item_id=work_item_id,
@@ -304,20 +326,36 @@ class OrchestratorService:
         payload = OrchestratorStore.payload(row)
         run_id = payload["run_id"]
         if payload["status"] in _DONE:
-            return payload
+            return _with_attention(payload)
         if not run_id:
             if _lease_expired(payload["lease_expires_at"]):
                 self._expire_lease(payload)
-            return payload
+            return _with_attention(payload)
         run = self.runtime.repository.run(run_id)
         if run is None:
             if _lease_expired(payload["lease_expires_at"]):
                 self._expire_lease(payload)
-            return payload
+            return _with_attention(payload)
         mapped = _map_run_status(run["status"])
-        if mapped:
-            now = _now()
+        if mapped is not None:
+            progress_at = self.runtime.repository.latest_run_event_at(run_id)
+            progressed = bool(
+                progress_at is not None and progress_at > payload["updated_at"]
+            )
+            status_changed = mapped != payload["status"]
             finished = mapped in _DONE
+            if (
+                payload["status"] == "running"
+                and mapped == "running"
+                and _lease_expired(payload["lease_expires_at"])
+                and not progressed
+            ):
+                self._expire_lease(payload)
+                return _with_attention(payload)
+            if not (status_changed or finished or progressed):
+                return _with_attention(payload)
+            now = _now()
+            activity_at = progress_at if progressed and progress_at else now
             lease_token = row["lease_token"]
             with self.store.transaction() as connection:
                 self.store.update(
@@ -331,7 +369,7 @@ class OrchestratorService:
                         if mapped == "failed"
                         else None
                     ),
-                    updated_at=now,
+                    updated_at=activity_at,
                 )
                 attempt = self.store.latest_attempt_in_connection(
                     connection, payload["work_item_id"]
@@ -359,8 +397,8 @@ class OrchestratorService:
                 if mapped == "failed"
                 else None
             )
-            payload["updated_at"] = now
-        return payload
+            payload["updated_at"] = activity_at
+        return _with_attention(payload)
 
     def _expire_lease(self, payload: dict[str, Any]) -> None:
         now = _now()
@@ -478,6 +516,23 @@ def _map_run_status(status: str) -> str | None:
     if status == "running":
         return "running"
     return None
+
+
+def _with_attention(payload: dict[str, Any]) -> dict[str, Any]:
+    stale_for_seconds = _stale_for_seconds(payload["status"], payload["updated_at"])
+    payload["stale"] = stale_for_seconds >= _STALL_SECONDS
+    payload["stale_for_seconds"] = stale_for_seconds
+    return payload
+
+
+def _stale_for_seconds(status: str, updated_at: str | None) -> int:
+    if status != "running" or not updated_at:
+        return 0
+    try:
+        updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return _STALL_SECONDS
+    return max(0, int((datetime.now(UTC) - updated).total_seconds()))
 
 
 def _lease_expiry() -> str:

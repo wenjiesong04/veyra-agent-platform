@@ -1098,6 +1098,8 @@ function workItem(value: unknown, status = 502): WorkItem {
     ...(record.attempt_number === undefined ? {} : { attempt_number: asNumber(record.attempt_number, "work_item.attempt_number", status) }),
     ...(record.lease_expires_at === undefined ? {} : { lease_expires_at: record.lease_expires_at === null ? null : asString(record.lease_expires_at, "work_item.lease_expires_at", status) }),
     ...(record.failure_class === undefined ? {} : { failure_class: record.failure_class === null ? null : asString(record.failure_class, "work_item.failure_class", status) }),
+    ...(record.stale === undefined ? {} : { stale: asBoolean(record.stale, "work_item.stale", status) }),
+    ...(record.stale_for_seconds === undefined ? {} : { stale_for_seconds: asNumber(record.stale_for_seconds, "work_item.stale_for_seconds", status) }),
     created_at: asString(record.created_at, "work_item.created_at", status),
     updated_at: asString(record.updated_at, "work_item.updated_at", status),
   };
@@ -1122,12 +1124,18 @@ function parsedOrchestratorStatus(value: unknown, status = 502): OrchestratorSta
   const counts = Object.fromEntries(
     [...workItemStatuses].map((key) => [key, asNumber(countsRecord[key] ?? 0, `orchestrator.counts.${key}`, status)]),
   ) as OrchestratorStatus["counts"];
+  const limits = asRecord(record.limits, status);
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     execution_plane: "local",
     cloud_execution: false,
     counts,
     active: asArray(record.active, "orchestrator.active", status).map((item) => workItem(item, status)),
+    stale_count: asNumber(record.stale_count, "orchestrator.stale_count", status),
+    limits: {
+      global_concurrency: asNumber(limits.global_concurrency, "orchestrator.limits.global_concurrency", status),
+      per_project_concurrency: asNumber(limits.per_project_concurrency, "orchestrator.limits.per_project_concurrency", status),
+    },
   };
 }
 

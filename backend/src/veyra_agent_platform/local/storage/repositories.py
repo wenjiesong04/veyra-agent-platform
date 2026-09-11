@@ -1259,6 +1259,15 @@ class LocalRepository:
             for row in rows
         ]
 
+    def latest_run_event_at(self, run_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT created_at FROM runtime_run_events "
+                "WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        return cast(str, row["created_at"]) if row is not None else None
+
     def replace_run_idempotent_payload(
         self,
         connection: sqlite3.Connection,

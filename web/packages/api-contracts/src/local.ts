@@ -949,6 +949,8 @@ export type WorkItem = {
   attempt_number?: number;
   lease_expires_at?: string | null;
   failure_class?: string | null;
+  stale?: boolean;
+  stale_for_seconds?: number;
   created_at: string;
   updated_at: string;
 };
@@ -966,6 +968,11 @@ export type OrchestratorStatus = {
   cloud_execution: false;
   counts: Record<WorkItemStatus, number>;
   active: WorkItem[];
+  stale_count: number;
+  limits: {
+    global_concurrency: number;
+    per_project_concurrency: number;
+  };
 };
 
 export type WorkflowRunResponse = Omit<AgentRunResponse, "agent_id"> & {
