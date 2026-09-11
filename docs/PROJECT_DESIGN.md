@@ -1401,9 +1401,10 @@ Community data:
 The current local Community registry implements the first runnable slice:
 Desktop export plus authenticated multipart YAML upload, AgentSource validation,
 size/UTF-8 checks, obvious credential-marker rejection, content-addressed
-storage, immutable version metadata, public listing/detail, and version
-download. It publishes directly after these checks, so it must not be
-described as the final quarantine/moderation pipeline.
+storage, immutable version metadata, public listing/detail, version download,
+local Project import, and Community Fork edges. It publishes directly after
+these checks, so it must not be described as the final quarantine/moderation
+pipeline.
 
 ```text
 explicit upload
@@ -1539,7 +1540,7 @@ Star does not mean safe or effective.
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download`
 - `POST /api/v1/registry/agents` (authenticated multipart YAML publish)
 - Existing local import: `POST /api/v1/projects/{project_id}/agents/import` accepts optional Community owner/slug/version/source-hash fields; the local service revalidates the source, creates a new local Agent identity, and stores the origin separately.
-- Future: Community quarantine, Fork graph edges, stars, version-bound reviews, reports, and moderation.
+- Future: Community quarantine, stars, version-bound reviews, reports, and moderation.
 
 ---
 
