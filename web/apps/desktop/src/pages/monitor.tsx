@@ -16,9 +16,14 @@ export function MonitorPage() {
   const [agentId, setAgentId] = useState(projects[0]?.agents[0]?.agent_id ?? "");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [dependsOn, setDependsOn] = useState<string[]>([]);
   const project = useMemo(
     () => projects.find((item) => item.project_id === projectId) ?? projects[0],
     [projectId, projects],
+  );
+  const itemTitles = useMemo(
+    () => new Map(items.map((item) => [item.work_item_id, item.title])),
+    [items],
   );
 
   useEffect(() => {
@@ -105,9 +110,11 @@ export function MonitorPage() {
         title: title.trim(),
         agent_id: agentId,
         description: description.trim(),
+        depends_on: dependsOn,
       });
       setTitle("");
       setDescription("");
+      setDependsOn([]);
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "创建 WorkItem 失败。" : "Could not create WorkItem."));
@@ -157,10 +164,11 @@ export function MonitorPage() {
         <Panel>
           <SectionHeading eyebrow={zh ? "创建工作" : "Create work"} title={zh ? "新增 WorkItem" : "New WorkItem"} detail={zh ? "创建后会进入本机 Orchestrator；只会派发到你选中的本地 Agent。" : "The item enters the local Orchestrator and can only dispatch to the selected local Agent."} />
           <div className="inspector-fields">
-            <label><span>{zh ? "Project" : "Project"}</span><select value={project.project_id} onChange={(event) => setProjectId(event.target.value)} disabled={busyId === "create"}>{projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.name}</option>)}</select></label>
+            <label><span>{zh ? "Project" : "Project"}</span><select value={project.project_id} onChange={(event) => { setProjectId(event.target.value); setDependsOn([]); setItems([]); }} disabled={busyId === "create"}>{projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.name}</option>)}</select></label>
             <label><span>{zh ? "Agent" : "Agent"}</span><select value={agentId} onChange={(event) => setAgentId(event.target.value)} disabled={busyId === "create" || !project.agents.length}>{project.agents.length ? project.agents.map((item) => <option key={item.agent_id} value={item.agent_id}>{item.name || item.slug}</option>) : <option value="">{zh ? "暂无 Agent" : "No Agent"}</option>}</select></label>
             <label><span>{zh ? "标题" : "Title"}</span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} placeholder={zh ? "例如：运行研究 Agent" : "For example: Run research Agent"} disabled={busyId === "create"} /></label>
             <label><span>{zh ? "描述" : "Description"}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={4_000} rows={3} disabled={busyId === "create"} /></label>
+            <label><span>{zh ? "依赖（可选）" : "Dependencies (optional)"}</span><select multiple size={Math.min(6, Math.max(3, items.length))} value={dependsOn} onChange={(event) => setDependsOn(Array.from(event.target.selectedOptions, (option) => option.value))} disabled={busyId === "create" || !items.length}>{items.length ? items.map((item) => <option key={item.work_item_id} value={item.work_item_id}>{item.title} · {item.status}</option>) : <option value="">{zh ? "当前项目暂无其他 WorkItem" : "No other WorkItems in this Project"}</option>}</select><small>{zh ? "按住 Command/Ctrl 可多选；依赖未完成时会保持 backlog。" : "Use Command/Ctrl to select multiple; unfinished dependencies keep this item in backlog."}</small></label>
             <Button variant="primary" disabled={busyId !== null || !api.createWorkItem || !agentId || !title.trim()} onClick={() => void create()}>{busyId === "create" ? "…" : (zh ? "创建 WorkItem" : "Create WorkItem")}</Button>
           </div>
         </Panel>
@@ -176,9 +184,9 @@ export function MonitorPage() {
                   <span className="run-state-icon"><Gauge size={17} /></span>
                   <span className="row-copy">
                     <strong>{item.title}</strong>
-                    <small>{item.agent_id} · {item.status}{item.attempt_number ? ` · attempt ${item.attempt_number}` : ""}{item.failure_class ? ` · ${item.failure_class}` : ""}</small>
+                    <small>{item.agent_id} · {item.status}{item.attempt_number ? ` · attempt ${item.attempt_number}` : ""}{item.failure_class ? ` · ${item.failure_class}` : ""}{item.depends_on.length ? ` · ${zh ? "依赖" : "depends on"}: ${item.depends_on.map((dependency) => itemTitles.get(dependency) ?? dependency.slice(0, 8)).join(", ")}` : ""}</small>
                   </span>
-                  <Tag>{item.stale ? (zh ? "疑似停滞" : "Stale") : item.status}</Tag>
+                  <Tag>{item.stale ? (zh ? "疑似停滞" : "Stale") : item.status === "backlog" && item.depends_on.length ? (zh ? "等待依赖" : "Blocked") : item.status}</Tag>
                   {item.attempts?.length ? <details className="work-item-attempts"><summary>{item.attempts.length} {zh ? "次尝试" : "attempts"}</summary>{item.attempts.map((attempt) => <span key={attempt.attempt_id}>#{attempt.attempt_number} · {attempt.status}{attempt.failure_class ? ` · ${attempt.failure_class}` : ""}{attempt.run_id ? ` · ${attempt.run_id}` : ""}</span>)}</details> : null}
                   {item.status === "ready" || item.status === "backlog" ? (
                     <Button size="sm" icon={Play} disabled={busyId === item.work_item_id} onClick={() => void dispatch(item.work_item_id)}>{copy.dispatch}</Button>
