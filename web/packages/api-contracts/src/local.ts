@@ -924,7 +924,11 @@ export type CreateMcpServerRequest = {
 };
 
 export type UpdateMcpServerRequest = {
-  enabled: boolean;
+  name?: string;
+  command?: string;
+  args?: string[];
+  env_names?: Record<string, string>;
+  enabled?: boolean;
 };
 
 export type WorkItemStatus =

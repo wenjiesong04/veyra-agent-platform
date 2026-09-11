@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
 from fastapi import APIRouter, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.mcp import McpError, McpService
@@ -27,7 +27,17 @@ class CreateMcpServerRequest(_ClosedModel):
 
 
 class UpdateMcpServerRequest(_ClosedModel):
-    enabled: bool
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    command: str | None = Field(default=None, min_length=1, max_length=512)
+    args: list[str] | None = None
+    env_names: dict[str, str] | None = None
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def require_update(self) -> UpdateMcpServerRequest:
+        if not self.model_fields_set:
+            raise ValueError("at least one MCP server field is required")
+        return self
 
 
 def build_router() -> APIRouter:
@@ -59,8 +69,21 @@ def build_router() -> APIRouter:
     def update_server(
         server_id: str, payload: UpdateMcpServerRequest, request: Request
     ) -> dict[str, Any]:
+        if set(payload.model_fields_set) == {"enabled"}:
+            return _translate(
+                lambda: _mcp(request).update_server(
+                    server_id, enabled=bool(payload.enabled)
+                )
+            )
         return _translate(
-            lambda: _mcp(request).update_server(server_id, enabled=payload.enabled)
+            lambda: _mcp(request).edit_server(
+                server_id,
+                name=payload.name,
+                command=payload.command,
+                args=payload.args,
+                env_names=payload.env_names,
+                enabled=payload.enabled,
+            )
         )
 
     @router.post("/servers/{server_id}/tools/{resource_id}/versions/{version}/approve")

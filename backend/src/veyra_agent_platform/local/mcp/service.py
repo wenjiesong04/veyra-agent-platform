@@ -105,11 +105,7 @@ class McpService:
         if row is None:
             raise McpError("mcp_server_not_found", "MCP server was not found")
         self.store.delete(server_id)
-        discovered = self.overlay_root / "discovered"
-        prefix = _package_prefix(server_id)
-        if discovered.is_dir():
-            for path in discovered.glob(f"{prefix}*/node.yaml"):
-                shutil.rmtree(path.parent, ignore_errors=True)
+        self._clear_discovered(server_id)
         self.catalog.reload_overlays()
         return {
             "schema_version": SCHEMA_VERSION,
@@ -123,6 +119,57 @@ class McpService:
         row = self.store.set_enabled(server_id, enabled=enabled, updated_at=_now())
         if row is None:
             raise McpError("mcp_server_not_found", "MCP server was not found")
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "server": McpServerStore.payload(row),
+        }
+
+    def edit_server(
+        self,
+        server_id: str,
+        *,
+        name: str | None = None,
+        command: str | None = None,
+        args: list[str] | None = None,
+        env_names: dict[str, str] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """Edit one MCP configuration and invalidate stale discovery metadata."""
+        current = self._require(server_id)
+        clean_name = _text(
+            name if name is not None else current["name"],
+            "mcp_name_invalid",
+            "MCP server name is required",
+        )
+        if _NAME.fullmatch(clean_name) is None:
+            raise McpError(
+                "mcp_name_invalid", "MCP server name is not a safe identifier"
+            )
+        old_args = list(json.loads(current["args_json"]))
+        old_env = dict(json.loads(current["env_names_json"]))
+        clean_command = _command(command if command is not None else current["command"])
+        clean_args = _args(args if args is not None else old_args)
+        clean_env = _env_names(env_names if env_names is not None else old_env)
+        clean_enabled = bool(current["enabled"]) if enabled is None else enabled
+        row = self.store.update(
+            server_id,
+            name=clean_name,
+            command=clean_command,
+            args=clean_args,
+            env_names=clean_env,
+            enabled=clean_enabled,
+            updated_at=_now(),
+        )
+        if row is None:
+            raise McpError("mcp_server_not_found", "MCP server was not found")
+        if (
+            clean_name != current["name"]
+            or clean_command != current["command"]
+            or clean_args != old_args
+            or clean_env != old_env
+        ):
+            self._clear_discovered(server_id)
+            self.catalog.reload_overlays()
         return {
             "schema_version": SCHEMA_VERSION,
             "server": McpServerStore.payload(row),
@@ -324,6 +371,13 @@ class McpService:
             ):
                 return target
         return None
+
+    def _clear_discovered(self, server_id: str) -> None:
+        root = self.overlay_root / "discovered"
+        prefix = _package_prefix(server_id)
+        if root.is_dir():
+            for path in root.glob(f"{prefix}*/node.yaml"):
+                shutil.rmtree(path.parent, ignore_errors=True)
 
 
 def _stdio_factory(

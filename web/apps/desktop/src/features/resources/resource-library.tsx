@@ -5,6 +5,7 @@ import {
   FileCode2,
   LayoutGrid,
   Network,
+  Pencil,
   Search,
   ShieldCheck,
   Sparkles,
@@ -411,6 +412,8 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
   const [envNames, setEnvNames] = useState("");
   const [error, setError] = useState("");
   const [busyServerId, setBusyServerId] = useState<string | null>(null);
+  const [editingServerId, setEditingServerId] = useState<string | null>(null);
+  const [savingServer, setSavingServer] = useState(false);
   const loadServers = useCallback(async () => {
     if (!api.listMcpServers) return;
     try {
@@ -421,19 +424,40 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
   }, [api, zh]);
   useEffect(() => { void loadServers(); }, [loadServers]);
   const create = async () => {
-    if (!api.createMcpServer) return;
+    if (editingServerId ? !api.updateMcpServer : !api.createMcpServer) return;
+    setSavingServer(true);
     setError("");
     try {
-      await api.createMcpServer({
+      const input = {
         name,
         command,
         args: args.split(" ").map((item) => item.trim()).filter(Boolean),
         env_names: parseMcpEnvNames(envNames),
-      });
+      };
+      if (editingServerId) await api.updateMcpServer!(editingServerId, input);
+      else await api.createMcpServer!(input);
+      setEditingServerId(null);
       await loadServers();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "无法保存 MCP 服务器。" : "Could not save the MCP server."));
+    } finally {
+      setSavingServer(false);
     }
+  };
+  const edit = (server: McpServer) => {
+    setEditingServerId(server.server_id);
+    setName(server.name);
+    setCommand(server.command);
+    setArgs(server.args.join(" "));
+    setEnvNames(Object.entries(server.env_names).map(([key, value]) => `${key}=${value}`).join("\n"));
+    setError("");
+  };
+  const cancelEdit = () => {
+    setEditingServerId(null);
+    setName("demo");
+    setCommand("npx");
+    setArgs("");
+    setEnvNames("");
   };
   const discover = async (serverId: string) => {
     if (!api.discoverMcpServer) return;
@@ -482,14 +506,15 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
         <label>{zh ? "命令" : "Command"}<input value={command} onChange={(event) => setCommand(event.target.value)} /></label>
         <label>{zh ? "参数" : "Args"}<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-everything" /></label>
         <label>{zh ? "环境映射" : "Environment bindings"}<textarea value={envNames} onChange={(event) => setEnvNames(event.target.value)} placeholder={zh ? "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY" : "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY"} rows={3} /></label>
-        <Button onClick={() => void create()} disabled={!api.createMcpServer}>{zh ? "保存服务器" : "Save server"}</Button>
+        <div className="button-row"><Button onClick={() => void create()} disabled={savingServer || (!editingServerId && !api.createMcpServer) || Boolean(editingServerId && !api.updateMcpServer)}>{savingServer ? "…" : editingServerId ? (zh ? "更新服务器" : "Update server") : (zh ? "保存服务器" : "Save server")}</Button>{editingServerId ? <Button variant="ghost" onClick={cancelEdit} disabled={savingServer}>{zh ? "取消编辑" : "Cancel edit"}</Button> : null}</div>
       </div>
       {servers.map((server) => (
         <div className="resource-row" key={server.server_id}>
           <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}{Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}</small></span>
           <StatusBadge label={server.enabled ? (zh ? "已启用" : "Enabled") : (zh ? "已停用" : "Disabled")} tone={server.enabled ? "good" : "neutral"} />
+          <Button size="sm" variant="ghost" disabled={savingServer || busyServerId === server.server_id} onClick={() => edit(server)}><Pencil size={14} aria-hidden="true" />{zh ? "编辑" : "Edit"}</Button>
           <Button size="sm" variant="ghost" disabled={busyServerId === server.server_id || !api.updateMcpServer} onClick={() => void toggle(server)}>{server.enabled ? (zh ? "停用" : "Disable") : (zh ? "启用" : "Enable")}</Button>
-          <Button size="sm" onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
+          <Button size="sm" disabled={!server.enabled} onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
         </div>
       ))}
       {tools.map((tool) => {

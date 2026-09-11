@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
@@ -44,7 +44,7 @@ class McpServerStore:
         server_id: str,
         name: str,
         command: str,
-        args: list[str],
+        args: Sequence[str],
         env_names: dict[str, str],
         enabled: bool,
         created_at: str,
@@ -96,6 +96,41 @@ class McpServerStore:
                 "UPDATE mcp_servers SET enabled = ?, updated_at = ? "
                 "WHERE server_id = ?",
                 (int(enabled), updated_at, server_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            return cast(
+                sqlite3.Row,
+                connection.execute(
+                    "SELECT * FROM mcp_servers WHERE server_id = ?", (server_id,)
+                ).fetchone(),
+            )
+
+    def update(
+        self,
+        server_id: str,
+        *,
+        name: str,
+        command: str,
+        args: Sequence[str],
+        env_names: dict[str, str],
+        enabled: bool,
+        updated_at: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET name = ?, command = ?, args_json = ?, "
+                "env_names_json = ?, enabled = ?, updated_at = ? "
+                "WHERE server_id = ?",
+                (
+                    name,
+                    command,
+                    json.dumps(args, ensure_ascii=False),
+                    json.dumps(env_names, ensure_ascii=False, sort_keys=True),
+                    int(enabled),
+                    updated_at,
+                    server_id,
+                ),
             )
             if cursor.rowcount == 0:
                 return None
