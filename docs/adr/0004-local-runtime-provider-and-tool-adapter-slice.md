@@ -19,9 +19,11 @@ that reaches `HumanApproval` becomes `waiting`, persists a checkpoint and
 approval request, and continues only through a durable `run_command`
 (`approve`, `reject`, `stop`, `retry`).
 
-Both model and Tool paths remain synchronous for the opening POST, while
-node events are persisted as they happen and replayed over SSE. A run without
-a model credential fails with `runtime_not_configured`; it is never simulated.
+The opening POST remains asynchronous for execution: node events are persisted
+as they happen and replayed over SSE. OpenAI-compatible model transports may
+stream assistant deltas; the Runtime records them as `model.delta` events and
+the UI renders the same replayable stream. A run without a model credential
+fails with `runtime_not_configured`; it is never simulated.
 
 ## Boundaries
 
@@ -36,17 +38,17 @@ a model credential fails with `runtime_not_configured`; it is never simulated.
 - Model responses are mapped only to declared Agent outputs. String outputs use
   the final response text; object, array, number and boolean outputs require
   matching JSON values.
-- Shell, arbitrary network requests outside the explicit HTTP adapter, and
-  token streaming remain explicit unsupported states. MCP is an experimental
-  Tool adapter only: stdio uses
+- Shell and arbitrary network requests outside the explicit HTTP adapter remain
+  explicit unsupported states. MCP is an experimental Tool adapter only: stdio uses
   newline-delimited JSON-RPC, discovered descriptors are not Factory-selectable
-  until reviewed, and discovered calls require approval by default. The generic
+  until reviewed, Runtime enforces that review gate, discovered input schemas
+  preserve required fields and basic types, and discovered calls require approval by default. The generic
   builtin `veyra.mcp.call` descriptor remains unconfigured until a concrete
   server/tool descriptor exists. These boundaries are not represented as fake
   successful adapters. `resume` is not used for approval waits; those waits
   continue through `approve` or `reject`.
   `GET .../runs/{run_id}/events` is a replayable SSE follow of persisted
-  events. POST `/run` is still synchronous.
+  events. POST `/run` returns the persisted `running` record immediately.
 
 ## Consequences
 
@@ -54,6 +56,5 @@ The Resource Library can now honestly mark filesystem read and write as
 runnable, and Factory can select them. Write still requires a HumanApproval
 node before compilation. A reviewed MCP Tool can use the same catalog lock,
 authorization, approval, receipt, and Runtime adapter boundary; discovery alone
-does not grant execution. The next Runtime wave can make POST `/run`
-asynchronous and paint node state onto the Studio graph without changing the
-portable Agent source format.
+does not grant execution. Model deltas now paint live output in Studio and Agent
+Chat without changing the portable Agent source format.

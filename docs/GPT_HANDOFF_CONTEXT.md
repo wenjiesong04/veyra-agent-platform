@@ -1,6 +1,6 @@
 # Veyra Agent Platform — GPT 交接上下文
 
-> 更新时间：2026-09-10
+> 更新时间：2026-09-11
 > 本文是给继续接手 Veyra Agent Platform 的 GPT/Agent 的工作上下文。它不是新的产品需求；如果它与用户的新消息冲突，以用户新消息和 `docs/PROJECT_DESIGN.md` 为准。
 
 ## 0. 交接指令
@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`0feefddaa842bc5fa05442c3572647fcceb7246a`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Orchestrator 并发/停滞信号、Monitor WorkItem 创建与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入和 MCP 配置编辑。
+- 最新功能代码基线：`5cd9add036002a66a8d5a480a75b94d20f334a9b`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/审核门禁/schema 校验和模型流式输出。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -38,7 +38,7 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：`build_sha=40d3f64c7462245c08e8698ee2cae9b1abe75f00`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=5cd9add036002a66a8d5a480a75b94d20f334a9b`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
 - Community `/api/v1/health`：`build_sha=17b117e4d6738413115b368daaebc8a3bf4bb087`、`database_revision=community_0006_agent_feedback`，`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 - Community `GET /api/v1/registry/agents` 已经是真实 API；当前本机返回 `community.registry.v1` 空目录。
@@ -256,8 +256,9 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - 两者都拒绝绝对路径、`..` traversal、软链接、`.env`/credentials/密钥类后缀、非普通文件和超过 1 MiB 的内容。
 - Run 事件记录 `tool.requested`、`tool.started`、`tool.completed`；receipt 只包含 adapter、相对路径、字节数和输入/输出 digest，不记录文件全文。Write 的 `content` 只进 digest。
 - HumanApproval 会把同一 run 置为 `waiting`，持久化 approval request 和 checkpoint。`approve`/`reject` 从下一节点继续同一 run；`stop` → `cancelled`；`retry` → 新 run；`resume` 对审批等待返回 `command_not_applicable`。
-- Shell、HTTP、Browser Navigate、GitHub Read/Write 和 discovered MCP Tool 已可运行；MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。MCP 服务器还支持不删除配置的启用/停用。
+- Shell、HTTP、Browser Navigate、GitHub Read/Write 和审核后的 discovered MCP Tool 已可运行；MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。MCP 服务器还支持不删除配置的启用/停用；发现工具会在 Runtime 再次检查审核状态，并按发现到的输入 schema 校验必填项和基础类型。
 - Tool 节点支持 `input_mapping` / `output_mapping`，Runtime 先映射后授权，执行后按映射回写，避免外部 MCP/GitHub 字段名绑死 Agent 输入。
+- 模型节点支持 OpenAI-compatible SSE 流式响应；增量通过 `model.delta` 进入可回放 Run 事件，Provider 没有 `stream()` 时自动回退到一次性 completion。
 
 ### 5.7 Project child-Agent 与 Runtime profile
 
@@ -313,7 +314,7 @@ Community 已有最小可用 Agent registry：Desktop 已能从本地 Project/Ag
 - `GET .../runs/{run_id}/events`（replayable SSE，waiting 时保持跟随直到终态）
 - `POST /api/v1/system/select-directory`
 
-Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行过程中落库，并可通过 SSE 回放/跟随。已有 idempotency、immutable version binding、Tool authorization/receipt、`waiting` 审批暂停、durable `run_command` 和本机 Agent conversation context。完整 token 流尚未实现。`resume` 对审批等待不适用。
+Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行过程中落库，并可通过 SSE 回放/跟随；模型增量以 `model.delta` 事件推送。已有 idempotency、immutable version binding、Tool authorization/receipt、`waiting` 审批暂停、durable `run_command` 和本机 Agent conversation context。`resume` 对审批等待不适用。
 
 ### Community API
 
@@ -338,7 +339,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Project/Agent 创建和编辑表单支持可选 Runtime API profile；Agent 旁的加号可直接创建 child-Agent。
 - Resource Library：组件、Tool/MCP、Skills、Policies、Templates；显示 availability、Runtime 状态、权限和 hash。Skills 页可以读取 Markdown/纯文本 `SKILL.md`，填入隔离草稿，审核后才可进入 Factory/Runtime prompt。
 - Factory Conversation：需求输入、对话、生成 Blueprint、Resource Plan、missing capability、确认创建 Draft、打开 Studio。
-- Studio Test Run：输入表单、真实 Run、结果、节点状态条、事件列表、Runtime key 提示；`waiting` 时显示审批文案和批准/拒绝/停止；可订阅 run event stream。
+- Studio Test Run：输入表单、真实 Run、结果、节点状态条、事件列表、Runtime key 提示和模型流式输出；`waiting` 时显示审批文案和批准/拒绝/停止；可订阅 run event stream。
 - Account/auth 页面和 Connected Account package。
 - Desktop/Community 共享 UI package，浅色/深色、中英文和响应式 Shell。
 
@@ -347,7 +348,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Root `#/projects` 当前兼容地显示 New Chat；真实 Project 列表主要在侧栏和 Project routes。是否恢复一个独立 Projects dashboard，要以用户后续 UX 决定。
 - `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
 - Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
-- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，并支持从界面创建 WorkItem、派发、取消、重试、5 秒自动刷新，显示并发上限和 stale 信号。
+- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，并支持从界面创建 WorkItem、选择同 Project 依赖、派发、取消、重试、5 秒自动刷新，显示并发上限、依赖阻塞和 stale 信号。
 - Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、YAML 下载、目标 Project 导入和从本地 Project 发布均已接入。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
@@ -357,10 +358,10 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 当前不能宣称“完整 V1”。未完成项：
 
 1. Tool Runtime 的核心读取型工具已覆盖 Browser Navigate；它当前是 HTTP/HTML 读取器，不是带鼠标/JS 页面状态的交互式浏览器。Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 也已接入真实 adapter boundary。
-2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件；完整 token 流尚未做。Studio/Agent 对话已有运行节点状态和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
+2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件和 `model.delta` 增量；Studio/Agent 对话已有运行节点状态、流式输出和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
 4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限和基于 Runtime 事件的 stale 信号；独立 worktree、真正的执行 stall recovery 和更丰富 reconcile 仍未完成。
-5. Monitor/Runs 已切换到真实 API；Monitor 还需要展示 attempt 详情并补齐更丰富 reconcile。
+5. Monitor/Runs 已切换到真实 API；Monitor 已展示 attempt 详情和 WorkItem 依赖，仍需更丰富 reconcile。
 6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、内容寻址存储、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边和版本级反馈；仍需 quarantine/更完整的路径与依赖扫描/moderation。
 7. Tauri/PyInstaller/macOS arm64 包。
 8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
@@ -396,7 +397,7 @@ Agent Chat 现在从 Agent 详情入口直接进入，支持最近 Run 回放、
 
 ### 已完成：Orchestrator lease/attempt/retry
 
-WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；终态会回收 lease，失败会保存 failure class，Monitor 可 Retry。下一步只补 worktree/concurrency/stall 等高阶调度。
+WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；依赖未完成时保持 backlog，终态会回收 lease，失败会保存 failure class，Monitor 可 Retry。下一步只补 worktree、真正的 stall recovery 和更丰富 reconcile 等高阶调度。
 
 ### 下一波 B：Community registry
 
@@ -444,8 +445,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34599534677` 和 Pull Request `34599539555`：`0feefdd` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=0feefdd...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry、MCP 启停和编辑、Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限、`stale_count` 和 attempt 历史，Monitor 提供 WorkItem 创建，未输出任何密钥值。
+- GitHub Actions Push `34602442498` 和 Pull Request `34602447977`：`5cd9add` 均通过；Backend Ruff/mypy、后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=5cd9add...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry/依赖、MCP 启停/编辑/审核边界、Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限、`stale_count` 和 attempt 历史，Monitor 提供 WorkItem 创建与依赖选择，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=17b117e...`、`community_0006_agent_feedback`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
