@@ -16,7 +16,7 @@ from ..storage.database import CommunityDatabase
 from ..storage.identifiers import utc_now
 from ..storage.package_storage import LocalPackageStorage
 from ..storage.registry_repository import CommunityRegistryRepository
-from ..storage.schema import CommunityAgent, CommunityAgentVersion
+from ..storage.schema import CommunityAgent, CommunityAgentVersion, CommunityUser
 
 MAX_PACKAGE_BYTES = 1_000_000
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -119,6 +119,7 @@ class CommunityRegistryService:
                     fork_source=self.repository.fork_source(
                         session, target_version_id=row[1].id
                     ),
+                    feedback=self.repository.feedback(session, version_id=row[1].id),
                 )
                 for row in rows
             ]
@@ -146,11 +147,16 @@ class CommunityRegistryService:
                 if row is not None
                 else None
             )
+            feedback = (
+                self.repository.feedback(session, version_id=row[1].id)
+                if row is not None
+                else None
+            )
         if row is None:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
             )
-        return _entry_payload(*row, fork_source=fork_source)
+        return _entry_payload(*row, fork_source=fork_source, feedback=feedback)
 
     def download(
         self, *, owner_handle: str, slug: str, version: str | None = None
@@ -167,6 +173,11 @@ class CommunityRegistryService:
                 if row is not None
                 else None
             )
+            feedback = (
+                self.repository.feedback(session, version_id=row[1].id)
+                if row is not None
+                else None
+            )
         if row is None:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
@@ -177,7 +188,12 @@ class CommunityRegistryService:
             raise CommunityRegistryError(
                 "registry_package_missing", "Published Agent package is unavailable"
             )
-        return _entry_payload(agent, record, user, fork_source=fork_source), content
+        return (
+            _entry_payload(
+                agent, record, user, fork_source=fork_source, feedback=feedback
+            ),
+            content,
+        )
 
     def publish(
         self,
@@ -287,11 +303,180 @@ class CommunityRegistryService:
                         forked_by=user_id,
                         now=now,
                     )
+                feedback = self.repository.feedback(session, version_id=record.id)
         except IntegrityError as exc:
             raise CommunityRegistryError(
                 "registry_version_exists", "This Agent version is already published"
             ) from exc
-        return _entry_payload(agent, record, profile, fork_source=source_fork)
+        return _entry_payload(
+            agent,
+            record,
+            profile,
+            fork_source=source_fork,
+            feedback=feedback,
+        )
+
+    def star(
+        self, *, owner_handle: str, slug: str, version: str, user_id: str
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            if (
+                self.repository.find_star(
+                    session, version_id=record.id, user_id=user_id
+                )
+                is None
+            ):
+                self.repository.create_star(
+                    session, version_id=record.id, user_id=user_id, now=utc_now()
+                )
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return {
+            "schema_version": "community.feedback.v1",
+            "starred": True,
+            **feedback,
+        }
+
+    def unstar(
+        self, *, owner_handle: str, slug: str, version: str, user_id: str
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            star = self.repository.find_star(
+                session, version_id=record.id, user_id=user_id
+            )
+            if star is not None:
+                self.repository.delete_star(session, star)
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return {
+            "schema_version": "community.feedback.v1",
+            "starred": False,
+            **feedback,
+        }
+
+    def reviews(self, *, owner_handle: str, slug: str, version: str) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            reviews = [
+                _review_payload(review, user)
+                for review, user in self.repository.list_reviews(
+                    session, version_id=record.id
+                )
+            ]
+        return {
+            "schema_version": "community.feedback.v1",
+            "reviews": reviews,
+        }
+
+    def review(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+        user_id: str,
+        rating: int,
+        body: str,
+    ) -> dict[str, Any]:
+        if rating < 1 or rating > 5:
+            raise CommunityRegistryError(
+                "registry_rating_invalid", "Review rating must be between 1 and 5"
+            )
+        clean_body = body.strip()
+        if not clean_body or len(clean_body) > 4_000:
+            raise CommunityRegistryError(
+                "registry_review_invalid",
+                "Review text must contain 1 to 4000 characters",
+            )
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            review = self.repository.upsert_review(
+                session,
+                version_id=record.id,
+                user_id=user_id,
+                rating=rating,
+                body=clean_body,
+                now=utc_now(),
+            )
+            feedback = self.repository.feedback(session, version_id=record.id)
+            author = session.get(CommunityUser, user_id)
+        if author is None:
+            raise CommunityRegistryError(
+                "registry_account_not_found", "Reviewer account was not found"
+            )
+        return {
+            "schema_version": "community.feedback.v1",
+            "review": _review_payload(review, author),
+            **feedback,
+        }
+
+    def report(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+        user_id: str,
+        reason: str,
+        details: str,
+    ) -> dict[str, Any]:
+        clean_reason = reason.strip()
+        clean_details = details.strip()
+        if not clean_reason or len(clean_reason) > 64:
+            raise CommunityRegistryError(
+                "registry_report_invalid", "Report reason is invalid"
+            )
+        if len(clean_details) > 4_000:
+            raise CommunityRegistryError(
+                "registry_report_invalid", "Report details are too long"
+            )
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            report = self.repository.find_report(
+                session,
+                version_id=record.id,
+                reporter_id=user_id,
+                reason=clean_reason,
+            )
+            if report is None:
+                report = self.repository.create_report(
+                    session,
+                    version_id=record.id,
+                    reporter_id=user_id,
+                    reason=clean_reason,
+                    details=clean_details,
+                    now=utc_now(),
+                )
+        return {
+            "schema_version": "community.feedback.v1",
+            "report_id": report.id,
+            "status": report.status,
+        }
+
+    def _public_record(
+        self, session: Any, *, owner_handle: str, slug: str, version: str
+    ) -> CommunityAgentVersion:
+        row = self.repository.find_public_version(
+            session,
+            owner_handle=owner_handle,
+            slug=slug,
+            version=version,
+        )
+        if row is None:
+            raise CommunityRegistryError(
+                "registry_entry_not_found", "Published Agent was not found"
+            )
+        return row[1]
 
 
 def _scan_source(source_text: str) -> None:
@@ -308,7 +493,13 @@ def _entry_payload(
     user: Any,
     *,
     fork_source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None = None,
+    feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    summary = feedback or {
+        "star_count": 0,
+        "review_count": 0,
+        "average_rating": 0.0,
+    }
     return {
         "schema_version": "community.registry.v1",
         "owner_handle": user.handle,
@@ -326,6 +517,9 @@ def _entry_payload(
         if record.published_at
         else None,
         "fork_of": _fork_payload(fork_source),
+        "star_count": int(summary["star_count"]),
+        "review_count": int(summary["review_count"]),
+        "average_rating": float(summary["average_rating"]),
     }
 
 
@@ -340,4 +534,16 @@ def _fork_payload(
         "slug": agent.slug,
         "version": record.version,
         "source_hash": record.source_hash,
+    }
+
+
+def _review_payload(review: Any, user: Any) -> dict[str, Any]:
+    return {
+        "id": review.id,
+        "author_handle": user.handle,
+        "author_display_name": user.display_name,
+        "rating": review.rating,
+        "body": review.body,
+        "created_at": review.created_at.isoformat(),
+        "updated_at": review.updated_at.isoformat(),
     }

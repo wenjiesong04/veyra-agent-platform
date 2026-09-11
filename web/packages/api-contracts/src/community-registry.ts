@@ -22,6 +22,48 @@ export type CommunityRegistryEntry = {
   created_at: string;
   published_at: string | null;
   fork_of: CommunityForkOrigin | null;
+  star_count: number;
+  review_count: number;
+  average_rating: number;
+};
+
+export type CommunityRegistryReview = {
+  id: string;
+  author_handle: string;
+  author_display_name: string | null;
+  rating: number;
+  body: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CommunityRegistryReviewsResponse = {
+  schema_version: "community.feedback.v1";
+  reviews: CommunityRegistryReview[];
+};
+
+export type CommunityRegistryFeedbackResponse = {
+  schema_version: "community.feedback.v1";
+  starred: boolean;
+  star_count: number;
+  review_count: number;
+  average_rating: number;
+};
+
+export type CommunityRegistryReviewRequest = {
+  rating: number;
+  body: string;
+};
+
+export type CommunityRegistryReportRequest = {
+  reason: string;
+  details?: string;
+};
+
+export type CommunityRegistryReportResponse = {
+  schema_version: "community.feedback.v1";
+  report_id: string;
+  status: string;
 };
 
 export type CommunityRegistryListResponse = {

@@ -14,6 +14,11 @@ import type {
   CommunityRegistryEntry,
   CommunityRegistryListResponse,
   CommunityForkOrigin,
+  CommunityRegistryFeedbackResponse,
+  CommunityRegistryReportRequest,
+  CommunityRegistryReportResponse,
+  CommunityRegistryReviewRequest,
+  CommunityRegistryReviewsResponse,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -55,6 +60,11 @@ export type CommunityApi = {
   getRegistryAgent: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityRegistryEntry>;
   downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
   publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin) => Promise<CommunityRegistryEntry>;
+  starRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
+  unstarRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
+  listRegistryReviews: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryReviewsResponse>;
+  reviewRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReviewRequest) => Promise<CommunityRegistryFeedbackResponse & { review: CommunityRegistryReviewsResponse["reviews"][number] }>;
+  reportRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReportRequest) => Promise<CommunityRegistryReportResponse>;
 };
 
 type ErrorBody = {
@@ -260,6 +270,26 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
         body.append("fork_source_hash", forkOf.source_hash);
       }
       return request<CommunityRegistryEntry>("/registry/agents", { method: "POST", body });
+    },
+
+    async starRegistryAgent(ownerHandle, slug, version) {
+      return request<CommunityRegistryFeedbackResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/star`, { method: "POST" });
+    },
+
+    async unstarRegistryAgent(ownerHandle, slug, version) {
+      return request<CommunityRegistryFeedbackResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/star`, { method: "DELETE" });
+    },
+
+    async listRegistryReviews(ownerHandle, slug, version) {
+      return request<CommunityRegistryReviewsResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/reviews`);
+    },
+
+    async reviewRegistryAgent(ownerHandle, slug, version, input) {
+      return request<CommunityRegistryFeedbackResponse & { review: CommunityRegistryReviewsResponse["reviews"][number] }>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/reviews`, { method: "POST", body: jsonBody(input) });
+    },
+
+    async reportRegistryAgent(ownerHandle, slug, version, input) {
+      return request<CommunityRegistryReportResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/report`, { method: "POST", body: jsonBody(input) });
     },
   };
 

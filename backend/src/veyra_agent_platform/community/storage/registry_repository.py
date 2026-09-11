@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from .schema import (
     CommunityAgent,
     CommunityAgentFork,
+    CommunityAgentReport,
+    CommunityAgentReview,
+    CommunityAgentStar,
     CommunityAgentVersion,
     CommunityUser,
 )
@@ -200,6 +204,148 @@ class CommunityRegistryRepository:
             .where(CommunityAgentFork.target_version_id == target_version_id)
         )
         return session.execute(query.limit(1)).tuples().first()
+
+    @staticmethod
+    def feedback(session: Session, *, version_id: str) -> dict[str, Any]:
+        star_count = session.scalar(
+            select(func.count(CommunityAgentStar.id)).where(
+                CommunityAgentStar.version_id == version_id
+            )
+        )
+        review_count = session.scalar(
+            select(func.count(CommunityAgentReview.id)).where(
+                CommunityAgentReview.version_id == version_id
+            )
+        )
+        average = session.scalar(
+            select(func.avg(CommunityAgentReview.rating)).where(
+                CommunityAgentReview.version_id == version_id
+            )
+        )
+        return {
+            "star_count": int(star_count or 0),
+            "review_count": int(review_count or 0),
+            "average_rating": round(float(average or 0), 2),
+        }
+
+    @staticmethod
+    def find_star(
+        session: Session, *, version_id: str, user_id: str
+    ) -> CommunityAgentStar | None:
+        return session.scalar(
+            select(CommunityAgentStar).where(
+                CommunityAgentStar.version_id == version_id,
+                CommunityAgentStar.user_id == user_id,
+            )
+        )
+
+    @staticmethod
+    def create_star(
+        session: Session, *, version_id: str, user_id: str, now: datetime
+    ) -> CommunityAgentStar:
+        star = CommunityAgentStar(
+            id=_uuid(), version_id=version_id, user_id=user_id, created_at=now
+        )
+        session.add(star)
+        session.flush()
+        return star
+
+    @staticmethod
+    def delete_star(session: Session, star: CommunityAgentStar) -> None:
+        session.delete(star)
+        session.flush()
+
+    @staticmethod
+    def list_reviews(
+        session: Session, *, version_id: str
+    ) -> list[tuple[CommunityAgentReview, CommunityUser]]:
+        query = (
+            select(CommunityAgentReview, CommunityUser)
+            .join(CommunityUser, CommunityUser.id == CommunityAgentReview.user_id)
+            .where(CommunityAgentReview.version_id == version_id)
+            .order_by(
+                desc(CommunityAgentReview.updated_at),
+                desc(CommunityAgentReview.id),
+            )
+        )
+        return list(session.execute(query).tuples().all())
+
+    @staticmethod
+    def find_review(
+        session: Session, *, version_id: str, user_id: str
+    ) -> CommunityAgentReview | None:
+        return session.scalar(
+            select(CommunityAgentReview).where(
+                CommunityAgentReview.version_id == version_id,
+                CommunityAgentReview.user_id == user_id,
+            )
+        )
+
+    @staticmethod
+    def upsert_review(
+        session: Session,
+        *,
+        version_id: str,
+        user_id: str,
+        rating: int,
+        body: str,
+        now: datetime,
+    ) -> CommunityAgentReview:
+        review = CommunityRegistryRepository.find_review(
+            session, version_id=version_id, user_id=user_id
+        )
+        if review is None:
+            review = CommunityAgentReview(
+                id=_uuid(),
+                version_id=version_id,
+                user_id=user_id,
+                rating=rating,
+                body=body,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(review)
+        else:
+            review.rating = rating
+            review.body = body
+            review.updated_at = now
+        session.flush()
+        return review
+
+    @staticmethod
+    def find_report(
+        session: Session, *, version_id: str, reporter_id: str, reason: str
+    ) -> CommunityAgentReport | None:
+        return session.scalar(
+            select(CommunityAgentReport).where(
+                CommunityAgentReport.version_id == version_id,
+                CommunityAgentReport.reporter_id == reporter_id,
+                CommunityAgentReport.reason == reason,
+            )
+        )
+
+    @staticmethod
+    def create_report(
+        session: Session,
+        *,
+        version_id: str,
+        reporter_id: str,
+        reason: str,
+        details: str,
+        now: datetime,
+    ) -> CommunityAgentReport:
+        report = CommunityAgentReport(
+            id=_uuid(),
+            version_id=version_id,
+            reporter_id=reporter_id,
+            reason=reason,
+            details=details,
+            status="open",
+            created_at=now,
+        )
+        session.add(report)
+        session.flush()
+        return report
 
 
 def _uuid() -> str:

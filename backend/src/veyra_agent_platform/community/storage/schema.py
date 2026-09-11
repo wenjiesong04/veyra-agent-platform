@@ -171,6 +171,66 @@ class CommunityAgentFork(CommunityBase):
     created_at: Mapped[datetime] = mapped_column(UtcDateTime())
 
 
+class CommunityAgentStar(CommunityBase):
+    """One user's version-bound Community star."""
+
+    __tablename__ = "community_agent_stars"
+    __table_args__ = (UniqueConstraint("version_id", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_agent_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class CommunityAgentReview(CommunityBase):
+    """A version-bound rating and review authored by a Community user."""
+
+    __tablename__ = "community_agent_reviews"
+    __table_args__ = (UniqueConstraint("version_id", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_agent_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_users.id", ondelete="CASCADE"), index=True
+    )
+    rating: Mapped[int] = mapped_column(Integer)
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class CommunityAgentReport(CommunityBase):
+    """A durable user report awaiting a future moderation queue."""
+
+    __tablename__ = "community_agent_reports"
+    __table_args__ = (UniqueConstraint("version_id", "reporter_id", "reason"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_agent_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    reporter_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_users.id", ondelete="CASCADE"), index=True
+    )
+    reason: Mapped[str] = mapped_column(String(64))
+    details: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
 class CommunityMailOutbox(CommunityBase):
     """Durable authorization and delivery record for transactional email."""
 

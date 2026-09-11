@@ -16,6 +16,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from ...registry import (
     CommunityForkOrigin,
@@ -26,6 +27,20 @@ from ..auth.security import authenticate_request, get_settings, require_csrf
 
 _Result = TypeVar("_Result")
 MAX_PACKAGE_BYTES = 1_000_000
+
+
+class _ClosedModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class ReviewRequest(_ClosedModel):
+    rating: int = Field(ge=1, le=5)
+    body: str = Field(min_length=1, max_length=4_000)
+
+
+class ReportRequest(_ClosedModel):
+    reason: str = Field(min_length=1, max_length=64)
+    details: str = Field(default="", max_length=4_000)
 
 
 def build_router() -> APIRouter:
@@ -75,6 +90,88 @@ def build_router() -> APIRouter:
                 ),
                 "ETag": f'"{metadata["source_hash"]}"',
             },
+        )
+
+    @router.post("/agents/{owner_handle}/{slug}/versions/{version}/star")
+    def star_agent(
+        owner_handle: str, slug: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        return _translate(
+            lambda: _registry(request).star(
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+                user_id=authenticated.user_id,
+            )
+        )
+
+    @router.delete("/agents/{owner_handle}/{slug}/versions/{version}/star")
+    def unstar_agent(
+        owner_handle: str, slug: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        return _translate(
+            lambda: _registry(request).unstar(
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+                user_id=authenticated.user_id,
+            )
+        )
+
+    @router.get("/agents/{owner_handle}/{slug}/versions/{version}/reviews")
+    def list_reviews(
+        owner_handle: str, slug: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _registry(request).reviews(
+                owner_handle=owner_handle, slug=slug, version=version
+            )
+        )
+
+    @router.post("/agents/{owner_handle}/{slug}/versions/{version}/reviews")
+    def create_review(
+        owner_handle: str,
+        slug: str,
+        version: str,
+        payload: ReviewRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        return _translate(
+            lambda: _registry(request).review(
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+                user_id=authenticated.user_id,
+                rating=payload.rating,
+                body=payload.body,
+            )
+        )
+
+    @router.post("/agents/{owner_handle}/{slug}/versions/{version}/report")
+    def report_agent(
+        owner_handle: str,
+        slug: str,
+        version: str,
+        payload: ReportRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        return _translate(
+            lambda: _registry(request).report(
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+                user_id=authenticated.user_id,
+                reason=payload.reason,
+                details=payload.details,
+            )
         )
 
     @router.post("/agents", status_code=status.HTTP_201_CREATED)
