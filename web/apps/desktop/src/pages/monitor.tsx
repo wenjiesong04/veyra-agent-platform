@@ -50,6 +50,13 @@ export function MonitorPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load();
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
   const dispatch = async (workItemId: string) => {
     if (!api.dispatchWorkItem) return;
     setBusyId(workItemId);
