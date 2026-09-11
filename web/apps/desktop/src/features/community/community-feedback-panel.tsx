@@ -43,7 +43,18 @@ export function CommunityFeedbackPanel({
     }
   }, [communityApi, entry.owner_handle, entry.slug, entry.version, zh]);
 
+  const loadStarStatus = useCallback(async () => {
+    try {
+      const result = await communityApi.getRegistryStarStatus(entry.owner_handle, entry.slug, entry.version);
+      setStarred(result.starred);
+      applyFeedback(result);
+    } catch {
+      // An expired session should not prevent public reviews from rendering.
+    }
+  }, [communityApi, entry.owner_handle, entry.slug, entry.version]);
+
   useEffect(() => { void loadReviews(); }, [loadReviews]);
+  useEffect(() => { void loadStarStatus(); }, [loadStarStatus]);
 
   const toggleStar = async () => {
     setBusy("star");

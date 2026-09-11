@@ -365,6 +365,26 @@ class CommunityRegistryService:
             **feedback,
         }
 
+    def star_status(
+        self, *, owner_handle: str, slug: str, version: str, user_id: str
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            starred = (
+                self.repository.find_star(
+                    session, version_id=record.id, user_id=user_id
+                )
+                is not None
+            )
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return {
+            "schema_version": "community.feedback.v1",
+            "starred": starred,
+            **feedback,
+        }
+
     def unstar(
         self, *, owner_handle: str, slug: str, version: str, user_id: str
     ) -> dict[str, Any]:

@@ -63,6 +63,7 @@ export type CommunityApi = {
   downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
   publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin) => Promise<CommunityRegistryEntry>;
   starRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
+  getRegistryStarStatus: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
   unstarRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
   listRegistryReviews: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryReviewsResponse>;
   reviewRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReviewRequest) => Promise<CommunityRegistryFeedbackResponse & { review: CommunityRegistryReviewsResponse["reviews"][number] }>;
@@ -281,6 +282,10 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
 
     async starRegistryAgent(ownerHandle, slug, version) {
       return request<CommunityRegistryFeedbackResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/star`, { method: "POST" });
+    },
+
+    async getRegistryStarStatus(ownerHandle, slug, version) {
+      return request<CommunityRegistryFeedbackResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/star`);
     },
 
     async unstarRegistryAgent(ownerHandle, slug, version) {

@@ -115,6 +115,20 @@ def build_router() -> APIRouter:
             )
         )
 
+    @router.get("/agents/{owner_handle}/{slug}/versions/{version}/star")
+    def star_status(
+        owner_handle: str, slug: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        return _translate(
+            lambda: _registry(request).star_status(
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+                user_id=authenticated.user_id,
+            )
+        )
+
     @router.delete("/agents/{owner_handle}/{slug}/versions/{version}/star")
     def unstar_agent(
         owner_handle: str, slug: str, version: str, request: Request
