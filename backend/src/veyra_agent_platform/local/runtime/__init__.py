@@ -3,6 +3,7 @@
 from .client import (
     RuntimeCompletion,
     RuntimeModelClient,
+    RuntimeModelStreamingTransport,
     RuntimeModelTransport,
     RuntimeProviderError,
     RuntimeProviderNotConfigured,
@@ -27,6 +28,7 @@ from .tools import (
 __all__ = [
     "RuntimeCompletion",
     "RuntimeModelClient",
+    "RuntimeModelStreamingTransport",
     "RuntimeModelTransport",
     "RuntimeProviderError",
     "RuntimeProviderNotConfigured",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -44,6 +44,10 @@ class RuntimeModelTransport(Protocol):
     def models(self) -> Sequence[str]: ...
 
     def complete(self, messages: Sequence[Mapping[str, Any]]) -> RuntimeCompletion: ...
+
+
+class RuntimeModelStreamingTransport(Protocol):
+    def stream(self, messages: Sequence[Mapping[str, Any]]) -> Iterator[str]: ...
 
 
 class HttpRuntimeTransport:
@@ -141,6 +145,62 @@ class HttpRuntimeTransport:
                 "Runtime model service returned an invalid completion",
             ) from exc
 
+    def stream(self, messages: Sequence[Mapping[str, Any]]) -> Iterator[str]:
+        """Yield assistant deltas when the provider supports streaming."""
+        body: dict[str, Any] = {
+            "model": self.settings.model_id,
+            "messages": [dict(message) for message in messages],
+            "reasoning_effort": self.settings.reasoning_effort,
+            "max_completion_tokens": self.settings.max_completion_tokens,
+            "stream": True,
+        }
+        try:
+            with self._client.stream(
+                "POST", "/chat/completions", json=body
+            ) as response:
+                _raise_for_provider(response)
+                emitted = False
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        payload = json.loads(data)
+                        choice = payload["choices"][0]
+                        delta = choice.get("delta", {})
+                        content = (
+                            delta.get("content") if isinstance(delta, dict) else None
+                        )
+                    except (
+                        KeyError,
+                        IndexError,
+                        TypeError,
+                        ValueError,
+                        json.JSONDecodeError,
+                    ) as exc:
+                        raise RuntimeProviderError(
+                            "runtime_invalid_response",
+                            "Runtime model service returned an invalid stream",
+                        ) from exc
+                    if isinstance(content, str) and content:
+                        emitted = True
+                        yield content
+                if not emitted:
+                    raise RuntimeProviderError(
+                        "runtime_invalid_response",
+                        "Runtime model service returned an empty stream",
+                    )
+        except httpx.TimeoutException as exc:
+            raise RuntimeProviderError(
+                "runtime_timeout", "Runtime model request timed out"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeProviderError(
+                "runtime_unavailable", "Runtime model service is unavailable"
+            ) from exc
+
 
 class RuntimeModelClient:
     """Host-side Runtime profile. Production must not use a shared process key."""
@@ -195,16 +255,30 @@ class RuntimeModelClient:
         if not self.configured:
             raise RuntimeProviderNotConfigured()
         transport = self._transport()
-        if not self._model_checked:
-            models = transport.models()
-            if self.settings.model_id not in models:
-                raise RuntimeProviderError(
-                    "runtime_model_unavailable",
-                    f"Configured Runtime model {self.settings.model_id} "
-                    "is not available",
-                )
-            self._model_checked = True
+        self._ensure_model(transport)
         return transport.complete(messages)
+
+    def stream(self, messages: Sequence[Mapping[str, Any]]) -> Iterator[str]:
+        if not self.configured:
+            raise RuntimeProviderNotConfigured()
+        transport = self._transport()
+        self._ensure_model(transport)
+        stream = getattr(transport, "stream", None)
+        if callable(stream):
+            yield from stream(messages)
+            return
+        yield transport.complete(messages).content
+
+    def _ensure_model(self, transport: RuntimeModelTransport) -> None:
+        if self._model_checked:
+            return
+        models = transport.models()
+        if self.settings.model_id not in models:
+            raise RuntimeProviderError(
+                "runtime_model_unavailable",
+                f"Configured Runtime model {self.settings.model_id} is not available",
+            )
+        self._model_checked = True
 
     def _transport(self) -> RuntimeModelTransport:
         if self.transport is not None:

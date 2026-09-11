@@ -86,6 +86,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
         <div className={`studio-run-result${!run && !live.error ? " is-empty" : ""}`} aria-live="polite">
           {live.error ? <Alert type="error" title={live.error} /> : null}
           {run?.error ? <Alert type="error" title={run.error.message} description={zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`} /> : null}
+          {inFlight && run?.stream_text ? <pre aria-label={zh ? "模型流式输出" : "Streaming model output"}><code>{run.stream_text}</code></pre> : null}
           {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
           {run ? (
             <ol className="studio-run-nodes" aria-label={zh ? "节点运行状态" : "Node run states"}>

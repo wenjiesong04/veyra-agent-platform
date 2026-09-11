@@ -1070,6 +1070,10 @@ class RuntimeService:
                                 "receipts": receipts,
                             },
                         )
+
+                    def emit_model_delta(token: str, node_id: str = node.id) -> None:
+                        emit(node_id, "model.delta", {"delta": token})
+
                     values.update(
                         self._run_agent(
                             node,
@@ -1078,6 +1082,7 @@ class RuntimeService:
                             model,
                             context_text,
                             conversation_context,
+                            on_token=emit_model_delta,
                         )
                     )
                     port = "next"
@@ -1203,6 +1208,7 @@ class RuntimeService:
         model: RuntimeModelClient,
         knowledge_context: str = "",
         conversation_context: str = "",
+        on_token: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         if not model.configured:
             raise RuntimeError(
@@ -1220,13 +1226,18 @@ class RuntimeService:
         user_content = _agent_user_message(source, values) + knowledge_context
         if conversation_context:
             user_content += conversation_context
-        completion = model.complete(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ]
-        )
-        return _model_output_values(completion.content.strip(), source.outputs, values)
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_content},
+        ]
+        fragments: list[str] = []
+        for token in model.stream(messages):
+            if not isinstance(token, str) or not token:
+                continue
+            fragments.append(token)
+            if on_token is not None:
+                on_token(token)
+        return _model_output_values("".join(fragments).strip(), source.outputs, values)
 
     def _model_for(self, project_id: str, agent_id: str) -> RuntimeModelClient:
         profile, _ = self.profiles.effective(project_id, agent_id)

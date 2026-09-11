@@ -305,6 +305,7 @@ export function AgentChatSurface({
       ) : null}
       {displayError ? <article className="agent-chat-bubble error agent-convo-enter" role="alert"><strong>{text.governedError}</strong><span>{displayError}</span></article> : null}
       {live.run?.error ? <article className="agent-chat-bubble error agent-convo-enter" role="alert"><strong>{text.governedError}</strong><span>{live.run.error.message}</span><small>{live.run.error.code}</small></article> : null}
+      {inFlight && live.run?.stream_text ? <article className="agent-chat-bubble result agent-convo-enter"><span>{text.result}</span><p>{live.run.stream_text}</p></article> : null}
       {inFlight ? <ConversationTyping label={workingCaption(live.run, locale)} /> : null}
       {live.run && source.nodes.length > 0 ? <MiniRunCanvas source={source} catalog={catalog} live={live} locale={locale} /> : null}
       {live.run?.result ? (

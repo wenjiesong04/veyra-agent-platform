@@ -35,13 +35,21 @@ export function inferRunStatus(current: RuntimeRunStatus, events: RuntimeEvent[]
   return status;
 }
 
+export function streamText(events: RuntimeEvent[]): string {
+  return events
+    .filter((event) => event.kind === "model.delta")
+    .map((event) => event.payload.delta)
+    .filter((value): value is string => typeof value === "string")
+    .join("");
+}
+
 export function applyRuntimeEvent(run: AgentRunResponse | null, event: RuntimeEvent): AgentRunResponse | null {
   if (!run || run.run_id !== event.run_id) return run;
   const events = [...(run.events ?? [])];
   if (events.some((item) => item.event_id === event.event_id || item.sequence === event.sequence)) return run;
   events.push(event);
   events.sort((left, right) => left.sequence - right.sequence);
-  return { ...run, events, status: inferRunStatus(run.status, events) };
+  return { ...run, events, stream_text: streamText(events), status: inferRunStatus(run.status, events) };
 }
 
 export function nodeRunStates(source: { nodes: Array<{ id: string }> }, events: RuntimeEvent[]): { id: string; state: NodeRunState }[] {
@@ -80,10 +88,14 @@ function useLiveRunSession({
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
-  const adopt = React.useCallback((next: AgentRunResponse, previous: AgentRunResponse | null = null) => ({
-    ...next,
-    events: next.events ?? previous?.events ?? [],
-  }), []);
+  const adopt = React.useCallback((next: AgentRunResponse, previous: AgentRunResponse | null = null) => {
+    const events = next.events ?? previous?.events ?? [];
+    return {
+      ...next,
+      events,
+      stream_text: streamText(events) || next.stream_text || previous?.stream_text || "",
+    };
+  }, []);
 
   const start = React.useCallback(async (inputs: Record<string, JsonValue>, conversationId?: string) => {
     if (inactive || !api.runAgent || busy) return;

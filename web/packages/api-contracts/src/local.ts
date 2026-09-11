@@ -800,6 +800,7 @@ export type RuntimeEventKind =
   | "tool.requested"
   | "tool.started"
   | "tool.completed"
+  | "model.delta"
   | "approval.requested"
   | "approval.resolved"
   | "input.requested"
@@ -832,6 +833,7 @@ export type AgentRunResponse = {
   error: { code: string; message: string } | null;
   created_at: string;
   finished_at: string | null;
+  stream_text?: string;
   events?: RuntimeEvent[];
 };
 
