@@ -9,9 +9,10 @@ import subprocess
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -31,12 +32,16 @@ _WRITE_ADAPTER = "veyra.runtime.filesystem.write"
 _SHELL_ADAPTER = "veyra.runtime.shell.exec"
 _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
+_BROWSER_ADAPTER = "veyra.runtime.browser.navigate"
 _GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
 _GITHUB_WRITE_ADAPTER = "veyra.runtime.github.write"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
 _MAX_SHELL_COMMAND_BYTES = 16_384
 _MAX_SHELL_OUTPUT_BYTES = 1_000_000
 _SHELL_TIMEOUT_SECONDS = 30
+_BROWSER_MAX_REDIRECTS = 5
+_BROWSER_MAX_TEXT_CHARS = 200_000
+_BROWSER_USER_AGENT = "Veyra-Agent-Platform/0.1"
 
 
 class ToolRuntimeError(RuntimeError):
@@ -107,6 +112,7 @@ class ToolRuntime:
             _SHELL_ADAPTER: self._execute_shell,
             _MCP_ADAPTER: self._execute_mcp,
             _HTTP_ADAPTER: self._execute_http,
+            _BROWSER_ADAPTER: self._execute_browser_navigate,
             _GITHUB_READ_ADAPTER: self._execute_github_read,
             _GITHUB_WRITE_ADAPTER: self._execute_github_write,
         }
@@ -476,6 +482,112 @@ class ToolRuntime:
         return self._receipt_execution(
             authorization, output, len(content), host.lower()
         )
+
+    def _execute_browser_navigate(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, approved
+        raw_url = values.get("url")
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Browser Navigate URL is required"
+            )
+        allowed_hosts = {item.lower() for item in (node.network_hosts or ())}
+        current_url = self._browser_url(raw_url, allowed_hosts)
+        response: httpx.Response | None = None
+        redirects = 0
+        for _ in range(_BROWSER_MAX_REDIRECTS + 1):
+            try:
+                response = self._http_client.get(
+                    current_url,
+                    headers={
+                        "Accept": (
+                            "text/html, text/plain, application/json;q=0.9, */*;q=0.1"
+                        ),
+                        "User-Agent": _BROWSER_USER_AGENT,
+                    },
+                    follow_redirects=False,
+                )
+            except httpx.TimeoutException as exc:
+                raise ToolRuntimeError(
+                    "tool_timeout", "Browser Navigate request timed out"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ToolRuntimeError(
+                    "tool_failed", "Browser Navigate request failed"
+                ) from exc
+            location = response.headers.get("location")
+            if response.status_code not in {301, 302, 303, 307, 308} or not location:
+                break
+            redirects += 1
+            if redirects > _BROWSER_MAX_REDIRECTS:
+                raise ToolRuntimeError(
+                    "tool_redirect_limit",
+                    "Browser Navigate followed too many redirects",
+                )
+            current_url = self._browser_url(
+                urljoin(current_url, location), allowed_hosts
+            )
+        if response is None:
+            raise ToolRuntimeError(
+                "tool_failed", "Browser Navigate returned no response"
+            )
+        content = response.content
+        if len(content) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large", "Browser page exceeds the 1 MiB limit"
+            )
+        page_text = content.decode(response.encoding or "utf-8", errors="replace")
+        document = _browser_document(
+            page_text, str(response.url), response.headers.get("content-type", "")
+        )
+        output = {
+            "url": str(response.url),
+            "status": response.status_code,
+            "title": document["title"],
+            "text": document["text"],
+            "links": document["links"],
+            "redirects": redirects,
+            "truncated": document["truncated"],
+        }
+        encoded = json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        if len(encoded) > _MAX_FILE_BYTES:
+            raise ToolRuntimeError(
+                "tool_output_too_large",
+                "Browser page extraction exceeds the 1 MiB limit",
+            )
+        host = response.url.host or ""
+        return self._receipt_execution(
+            authorization, output, len(content), host.lower()
+        )
+
+    @staticmethod
+    def _browser_url(raw_url: str, allowed_hosts: set[str]) -> str:
+        parsed = urlsplit(raw_url)
+        host = parsed.hostname
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not host
+            or parsed.username
+            or parsed.password
+        ):
+            raise ToolRuntimeError(
+                "tool_network_denied",
+                "Browser URL is invalid or contains credentials",
+            )
+        if host.lower() not in allowed_hosts:
+            raise ToolRuntimeError(
+                "tool_network_denied",
+                "Browser host must be explicitly listed on the Tool node",
+            )
+        return raw_url.strip()
 
     def _execute_github_read(
         self,
@@ -973,6 +1085,129 @@ class ToolRuntime:
                 "tool_path_denied", "Tool path is outside the Project directory"
             ) from exc
         return target, relative_path
+
+
+class _BrowserDocumentParser(HTMLParser):
+    """Extract bounded, model-friendly text from an HTML response."""
+
+    _SKIPPED_TAGS = frozenset({"script", "style", "noscript", "template"})
+    _BREAK_TAGS = frozenset(
+        {
+            "address",
+            "article",
+            "br",
+            "dd",
+            "div",
+            "dl",
+            "dt",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+            "main",
+            "p",
+            "pre",
+            "section",
+            "tr",
+        }
+    )
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.title_parts: list[str] = []
+        self.text_parts: list[str] = []
+        self.links: list[dict[str, str]] = []
+        self._title_depth = 0
+        self._skip_depth = 0
+        self._link_href: str | None = None
+        self._link_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.casefold()
+        if name in self._SKIPPED_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if name in self._BREAK_TAGS:
+            self.text_parts.append("\n")
+        if name == "title":
+            self._title_depth += 1
+        elif name == "a" and self._link_href is None:
+            href = dict(attrs).get("href")
+            if href:
+                self._link_href = urljoin(self.base_url, href)
+                self._link_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.casefold()
+        if name in self._SKIPPED_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth:
+            return
+        if name == "title":
+            self._title_depth = max(0, self._title_depth - 1)
+        elif name == "a" and self._link_href is not None:
+            self._append_link()
+        if name in self._BREAK_TAGS:
+            self.text_parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth or not data.strip():
+            return
+        self.text_parts.append(data)
+        if self._title_depth:
+            self.title_parts.append(data)
+        if self._link_href is not None:
+            self._link_parts.append(data)
+
+    def _append_link(self) -> None:
+        href = self._link_href
+        label = " ".join("".join(self._link_parts).split())
+        self._link_href = None
+        self._link_parts = []
+        if href is None or urlsplit(href).scheme not in {"http", "https"}:
+            return
+        if any(link["href"] == href for link in self.links):
+            return
+        self.links.append({"text": label[:200], "href": href})
+
+
+def _browser_document(
+    page_text: str, base_url: str, content_type: str
+) -> dict[str, Any]:
+    is_html = (
+        "html" in content_type.casefold() or "<html" in page_text[:4096].casefold()
+    )
+    if not is_html:
+        text = _normalize_browser_text(page_text)
+        return {
+            "title": "",
+            "text": text[:_BROWSER_MAX_TEXT_CHARS],
+            "links": [],
+            "truncated": len(text) > _BROWSER_MAX_TEXT_CHARS,
+        }
+    parser = _BrowserDocumentParser(base_url)
+    parser.feed(page_text)
+    parser.close()
+    text = _normalize_browser_text("".join(parser.text_parts))
+    return {
+        "title": " ".join("".join(parser.title_parts).split())[:500],
+        "text": text[:_BROWSER_MAX_TEXT_CHARS],
+        "links": parser.links[:100],
+        "truncated": len(text) > _BROWSER_MAX_TEXT_CHARS,
+    }
+
+
+def _normalize_browser_text(value: str) -> str:
+    return "\n".join(
+        line for line in (" ".join(item.split()) for item in value.splitlines()) if line
+    )
 
 
 def _input_digest(resource: dict[str, Any] | None, values: dict[str, Any]) -> str:

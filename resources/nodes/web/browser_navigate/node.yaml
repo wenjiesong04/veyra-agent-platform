@@ -1,7 +1,7 @@
 # veyra.tool.browser.navigate@1.0.0
-availability: unavailable
-description: Navigate and read pages after the browser Runtime is stable.
-factory_selectable: false
+availability: ready
+description: Fetch an allowlisted web page and extract its title, text, and links.
+factory_selectable: true
 kind: tool
 name: Browser Navigate
 required_permissions:
@@ -12,9 +12,19 @@ required_permissions:
   tools:
   - veyra.tool.browser.navigate
 resource_id: veyra.tool.browser.navigate
-runtime_status: runtime_not_supported
+runtime_status: supported
 spec:
-  adapter: deferred
+  adapter: veyra.runtime.browser.navigate
+  approval_required: true
+  input_schema:
+    url: string
+  output_schema:
+    links: array
+    redirects: integer
+    status: integer
+    text: string
+    title: string
+    truncated: boolean
   tool_name: browser.navigate
   ui:
     category: web
