@@ -33,6 +33,14 @@ export type CommunityAgentScan = {
   package_bytes: number;
   checks: { name: string; status: "passed" | "warning" }[];
   warnings: { code: string; details: string[] }[];
+  dependency_summary?: {
+    declared: string[];
+    locked: string[];
+    unlocked: string[];
+    external: string[];
+    knowledge: string[];
+  };
+  path_findings?: { field: string; kind: string }[];
   risk_level: "low" | "medium" | "high";
   risk_reasons: string[];
 };

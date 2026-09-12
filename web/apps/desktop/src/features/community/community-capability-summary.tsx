@@ -42,7 +42,7 @@ export function CommunityCapabilitySummary({
         <div><strong>{zh ? "Skills" : "Skills"}</strong><p>{values(capabilities.skills)}</p></div>
       </div>
       {capabilities.risk_reasons.length ? <div className="resource-card-meta">{capabilities.risk_reasons.map((reason) => <Tag key={reason}>{reason}</Tag>)}</div> : null}
-      {scan ? <div className="resource-card-meta"><StatusBadge label={scan.status} tone={scan.status === "passed" ? "good" : "warn"} />{scan.warnings.map((warning) => <Tag key={warning.code}>{warning.code}</Tag>)}</div> : null}
+      {scan ? <div className="community-scan-summary"><div className="resource-card-meta"><StatusBadge label={scan.status} tone={scan.status === "passed" ? "good" : "warn"} />{scan.warnings.map((warning) => <Tag key={warning.code}>{warning.code}</Tag>)}</div>{scan.warnings.map((warning) => warning.details.length ? <small key={`${warning.code}-details`} className="community-scan-detail">{warning.code}: {warning.details.join(" · ")}</small> : null)}</div> : null}
     </div>
   );
 }

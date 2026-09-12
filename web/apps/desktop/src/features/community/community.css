@@ -122,6 +122,18 @@
   line-height: 1.45;
 }
 
+.community-scan-summary {
+  display: grid;
+  gap: 5px;
+}
+
+.community-scan-detail {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 @media (max-width: 540px) {
   .resource-capability-grid {
     grid-template-columns: 1fr;

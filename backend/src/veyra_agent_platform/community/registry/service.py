@@ -11,6 +11,7 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy.exc import IntegrityError
 
 from veyra_agent_platform.contracts.agent import AgentSource
+from veyra_agent_platform.contracts.resource import ResourceRef
 
 from ..accounts.profiles import AccountProfileService
 from ..storage.database import CommunityDatabase
@@ -32,6 +33,14 @@ _SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_PROFILE_REFERENCE = "veyra.runtime.profile@1.0.0"
+_ABSOLUTE_PATH = re.compile(
+    r"^(?:[A-Za-z]:[\\/]|\\\\|/(?:Users|home|private|tmp|var|etc|opt|root|Volumes|mnt)(?:[\\/]|$))"
+)
+_PATH_TRAVERSAL = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
+_SENSITIVE_PATH = re.compile(
+    r"(?i)(?:^|[\\/])(?:\.env|credentials(?:\.json)?|id_rsa|[^\\/]+\.(?:key|pem|p12|token))(?:[\\/]|$)"
+)
 
 
 class CommunityRegistryError(ValueError):
@@ -661,23 +670,35 @@ def _capabilities_from_content(
 def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
     capabilities = _capability_payload(source)
     warnings: list[dict[str, Any]] = []
-    declared = (
-        {node.uses for node in source.nodes if node.uses is not None}
-        | set(source.skill_refs)
-        | set(source.policy_refs)
-        | set(source.knowledge_refs)
-        | {
-            str(binding["reference"])
-            for binding in (source.ui.get("bindings") or {}).values()
-        }
-        | {"veyra.runtime.profile@1.0.0"}
-    )
+    dependency_summary = _dependency_summary(source)
+    declared = set(dependency_summary["declared"])
     unbound_locks = sorted(set(source.lock) - declared)
     if unbound_locks:
         warnings.append(
             {
                 "code": "unbound_lock_entries",
                 "details": unbound_locks,
+            }
+        )
+    if dependency_summary["unlocked"]:
+        warnings.append(
+            {
+                "code": "unlocked_dependency",
+                "details": dependency_summary["unlocked"],
+            }
+        )
+    if dependency_summary["external"]:
+        warnings.append(
+            {
+                "code": "external_dependency_review",
+                "details": dependency_summary["external"],
+            }
+        )
+    if dependency_summary["knowledge"]:
+        warnings.append(
+            {
+                "code": "knowledge_dependency_not_portable",
+                "details": dependency_summary["knowledge"],
             }
         )
     non_project_roots = sorted(
@@ -697,6 +718,16 @@ def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
                 "details": non_project_roots,
             }
         )
+    path_findings = _path_findings(source)
+    if path_findings:
+        warnings.append(
+            {
+                "code": "path_reference_review",
+                "details": [
+                    f"{finding['field']}:{finding['kind']}" for finding in path_findings
+                ],
+            }
+        )
     if not source.verification.required:
         warnings.append({"code": "verification_not_required", "details": []})
     return {
@@ -710,7 +741,23 @@ def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
             {"name": "source_hash", "status": "passed"},
             {
                 "name": "dependency_lock",
-                "status": "warning" if unbound_locks else "passed",
+                "status": (
+                    "warning"
+                    if unbound_locks or dependency_summary["unlocked"]
+                    else "passed"
+                ),
+            },
+            {
+                "name": "dependency_portability",
+                "status": (
+                    "warning"
+                    if dependency_summary["external"] or dependency_summary["knowledge"]
+                    else "passed"
+                ),
+            },
+            {
+                "name": "path_safety",
+                "status": "warning" if path_findings else "passed",
             },
             {
                 "name": "filesystem_scope",
@@ -722,9 +769,79 @@ def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
             },
         ],
         "warnings": warnings,
+        "dependency_summary": dependency_summary,
+        "path_findings": path_findings,
         "risk_level": capabilities["risk_level"],
         "risk_reasons": capabilities["risk_reasons"],
     }
+
+
+def _dependency_summary(source: AgentSource) -> dict[str, list[str]]:
+    declared = (
+        {node.uses for node in source.nodes if node.uses is not None}
+        | set(source.skill_refs)
+        | set(source.policy_refs)
+        | set(source.knowledge_refs)
+        | {
+            str(binding["reference"])
+            for binding in (source.ui.get("bindings") or {}).values()
+        }
+        | {_RUNTIME_PROFILE_REFERENCE}
+    )
+    locked = set(source.lock)
+    knowledge = sorted(source.knowledge_refs)
+    external = sorted(
+        reference
+        for reference in declared
+        if not reference.startswith("veyra.") and not _is_resource_reference(reference)
+    )
+    required = declared - {_RUNTIME_PROFILE_REFERENCE}
+    return {
+        "declared": sorted(declared),
+        "locked": sorted(locked),
+        "unlocked": sorted(required - locked),
+        "external": external,
+        "knowledge": knowledge,
+    }
+
+
+def _is_resource_reference(value: str) -> bool:
+    try:
+        ResourceRef.from_string(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _path_findings(source: AgentSource) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(field: str, kind: str) -> None:
+        key = (field, kind)
+        if key not in seen:
+            seen.add(key)
+            findings.append({"field": field, "kind": kind})
+
+    def visit(value: Any, field: str) -> None:
+        if isinstance(value, str):
+            if _PATH_TRAVERSAL.search(value):
+                add(field, "path_traversal")
+            if _ABSOLUTE_PATH.search(value):
+                add(field, "absolute_path")
+            if _SENSITIVE_PATH.search(value):
+                add(field, "sensitive_path")
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, f"{field}.{key}")
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{field}[{index}]")
+
+    visit(source.to_dict(), "$")
+    return findings
 
 
 def _stored_scan(record: CommunityAgentVersion) -> dict[str, Any] | None:
