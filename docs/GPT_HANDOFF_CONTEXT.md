@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`9b1a6b47621c97afc2aebd34782add4f3c709f7c`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除/配置预检、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告、模型 API 验证/Runtime 预检、Project 资源绑定漂移提示、测试运行文件路径建议、Agent Chat Runtime 状态和 Keychain profile 状态修复。
+- 最新功能代码基线：`3b0e62d6cc3a87896f20c9711aa3bc627776a071`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除/配置预检、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告、模型 API 验证/Runtime 预检、Project 资源绑定漂移提示、测试运行文件路径建议、Agent Chat Runtime 状态和 Keychain profile 状态修复、Workflow 锁定 Agent 的 Runtime 预检与权限包含检查。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -38,8 +38,8 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：`build_sha=007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
-- Community `/api/v1/health`：`build_sha=007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`、`database_revision=community_0007_agent_moderation`，`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=3b0e62d6cc3a87896f20c9711aa3bc627776a071`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
+- Community `/api/v1/health`：`build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`database_revision=community_0007_agent_moderation`、`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 - Community `GET /api/v1/registry/agents` 已经是真实 API；当前本机返回 `community.registry.v1` 空目录。
 
@@ -244,6 +244,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - Knowledge binding 会按版本和内容 hash 校验，将明确绑定的 Project 文档注入模型上下文，并在 Run 事件中记录 receipt；侧边栏索引本身不等于 Runtime 上下文。
 - Agent `POST .../validate` 现在会额外返回 Tool/MCP、Skill、Policy、Knowledge 的依赖检查：目录缺失、锁哈希变化、权限不足、MCP 审核、Knowledge 版本/内容变化都会显示为 attention；`runtime_ready` 只表示依赖解析范围，模型 API Key 和主机密钥仍由真正 Run 再检查。
 - Project/Agent 创建与编辑对话框的“可调用 API”区块可填写 Provider、模型、API Base URL、API Key；“保存并验证 API”只把 Key 放入本机 Keychain，并请求兼容 Provider 的 `/models` 验证目标模型，不把 Key 写入 Project 或发送对话内容。`GET .../runtime-readiness` 会按当前 Agent 生效的 profile 检查模型凭据、依赖和 Tool/MCP 配置。
+- Workflow 也有 `GET .../workflows/{workflow_id}/runtime-readiness`：它解析锁定的 Agent 版本，聚合子 Agent 的模型/依赖/Tool/MCP 预检，检查父 Workflow 权限是否覆盖子 Agent（包括 workspace Shell），并检查节点上限；它不提交版本、不请求 Provider、不启动子 Run。
 - Desktop Settings 支持把 `model.primary` 和 `github.main` 保存到 macOS Keychain；`MOONSHOT_API_KEY` / `GITHUB_TOKEN` 仍可用于 headless 环境。
 - 已验证 string、object、array、number、boolean 的声明输出映射；不接受未声明字段。
 - 无 Runtime key 时，Run 以明确的 `runtime_not_configured` 失败，不伪造输出。
@@ -362,6 +363,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - MCP 页面会在服务器列表显示配置 readiness，并提供不启动进程的“检查配置”；“发现工具”仍是显式动作，完成后工具还要经过审核才能进入 Agent Runtime。
 - Agent 测试运行中，名称包含 `path/file/document` 的字符串输入会得到当前 Project 文件索引的相对路径建议；实际读取仍必须通过已授权的 Filesystem Tool。
 - Agent Chat 顶部也会显示当前 Agent 的 Runtime 预检，并为相同类型的文件输入提供 Project 文件路径建议；聊天仍只提交用户选择的输入，不会自动读取整棵文件树。
+- Workflow 测试运行面板现在显示锁定子 Agent 的 Runtime 预检；预检失败会指出 Agent 配置、依赖、权限或节点上限问题，但不会阻止用户查看真实 Run 返回的具体错误。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
 
@@ -372,7 +374,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 1. Tool Runtime 的核心读取型工具已覆盖 Browser Navigate 和 Web Search；Browser Navigate 当前是 HTTP/HTML 读取器，不是带鼠标/JS 页面状态的交互式浏览器。Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 也已接入真实 adapter boundary。
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件和 `model.delta` 增量；Studio/Agent 对话已有运行节点状态、流式输出和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
-4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限、基于 Runtime 事件的 stale 信号和显式 stall recovery；独立 worktree 和更丰富 reconcile 仍未完成。
+4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限、基于 Runtime 事件的 stale 信号和显式 stall recovery；Workflow 也已有锁定 Agent 的 Runtime 预检；独立 worktree 和更丰富 reconcile 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 已展示 attempt 详情、WorkItem 依赖和 stale 恢复，仍需更丰富 reconcile。
 6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、路径/依赖/Knowledge 可携带性扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需许可证扫描及长期 moderation 运营工具。
 7. Tauri/PyInstaller/macOS arm64 包。
@@ -406,6 +408,12 @@ Filesystem、Shell、HTTP、GitHub 和 MCP discovered tools 已有 Runtime adapt
 3. 复用 Runtime provider boundary；没有用户 API 时只允许设计/查看，明确禁止运行。
 
 Agent Chat 现在从 Agent 详情入口直接进入，支持最近 Run 回放、conversation 列表/切换、新建会话和持久化消息上下文。
+
+### 已完成：Workflow Runtime preflight
+
+Workflow 运行面板会在真正提交 Run 前读取锁定的 Agent 版本并展示聚合预检。父 Workflow
+必须显式覆盖子 Agent 的工具、网络、文件和 workspace Shell 权限；预检不调用模型，真实
+执行仍由子 Agent Runtime 完成并保留独立 Run 证据。
 
 ### 已完成：Orchestrator lease/attempt/retry
 
@@ -457,9 +465,10 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34681690842` 和 Pull Request `34681692763`：`9b1a6b4` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=9b1a6b47621c97afc2aebd34782add4f3c709f7c`、`local_0017_community_agent_origins`、`database_ready=true`；MCP readiness API、有效 profile 读取和 Agent Runtime 预检已加载，未输出任何密钥值。
+- GitHub Actions Push `34682939598` 和 Pull Request `34682941573`：`3b0e62d` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=3b0e62d6cc3a87896f20c9711aa3bc627776a071`、`local_0017_community_agent_origins`、`database_ready=true`；Agent/Workflow Runtime 预检和 Keychain-backed profile 已加载，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，扫描逻辑已加载，未输出任何密钥值。
+- 真实模型验证：经用户授权，Runtime profile 的一次 `/models` 校验返回 `valid=true`、`configured=true`、目标 `kimi-k3` 可用；另做一次短 Agent Run，收到 `model.delta` 并以 `unverified`/`run.completed` 结束。没有发送批量请求，也没有把 Key 写入输出或仓库。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则

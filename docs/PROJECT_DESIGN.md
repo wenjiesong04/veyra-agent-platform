@@ -859,6 +859,15 @@ status/code pair; it never sends a prompt or returns the key. The effective
 Agent preflight also checks the model credential, locked dependencies, Tool
 authorization, and configured MCP server without starting an MCP process.
 
+Workflow has a matching no-effect preflight at
+`GET /api/v1/projects/{project_id}/workflows/{workflow_id}/runtime-readiness`.
+It resolves the immutable AgentCall targets, checks each pinned Agent's model
+and dependency readiness, verifies that Workflow permissions cover child
+permissions, and checks the Project node limit. It never commits a Workflow
+version, contacts the model provider, or starts a child Run. Workflow execution
+applies the same permission containment check, including
+`shell_workspace_only`.
+
 Local development may use the host process Runtime profile
 (`VEYRA_RUNTIME_*` / `MOONSHOT_API_KEY`) so Agent nodes can run for testing.
 Production and release modes do not use that shared host key for user-created
@@ -1547,6 +1556,7 @@ Star does not mean safe or effective.
 
 - `POST /api/v1/runtime/profile/validate`
 - `GET /api/v1/projects/{project_id}/agents/{agent_id}/runtime-readiness`
+- `GET /api/v1/projects/{project_id}/workflows/{workflow_id}/runtime-readiness`
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/run`
 - `GET /api/v1/runs`
 - `GET /api/v1/runs/{id}`
