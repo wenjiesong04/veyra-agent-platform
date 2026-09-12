@@ -1061,7 +1061,8 @@ Bottom    local Agent / Workflow run, immutable version, events, approval and st
 The Resource Library's MCP tab shows a non-invasive server readiness check for
 enabled state and host environment bindings. Discovery is an explicit action
 that may start the configured MCP process; discovered tools remain review-gated
-before they can be selected or run. Agent Test Run inputs named like `path`,
+before they can be selected or run. The panel reloads discovered Tool descriptors
+from the local Catalog so a page refresh does not discard the review queue. Agent Test Run inputs named like `path`,
 `file`, or `document` may offer the current Project's indexed relative files as
 suggestions, but the Runtime still reads them only through an authorized
 Filesystem Tool.
