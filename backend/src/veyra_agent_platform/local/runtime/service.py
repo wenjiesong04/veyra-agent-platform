@@ -1428,7 +1428,7 @@ class RuntimeService:
 
     def _model_for(self, project_id: str, agent_id: str) -> RuntimeModelClient:
         profile, _ = self.profiles.effective(project_id, agent_id)
-        if profile is None or self.model.transport is not None:
+        if profile is None:
             return self.model
         settings = self.model.settings.model_copy(
             update={
@@ -1437,7 +1437,11 @@ class RuntimeService:
                 "model_api_key_env": profile.api_key_env,
             }
         )
-        return RuntimeModelClient(settings, secret_store=self.model.secret_store)
+        return RuntimeModelClient(
+            settings,
+            transport=self.model.transport,
+            secret_store=self.model.secret_store,
+        )
 
     def _agent_system_prompt(self, node: Any, source: AgentSource) -> str:
         prompt = node.system_prompt or ""

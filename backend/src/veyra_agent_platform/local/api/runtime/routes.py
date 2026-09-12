@@ -80,6 +80,7 @@ def build_router() -> APIRouter:
             profile,
             source="project",
             allow_process_environment_key=settings.allow_process_environment_key,
+            secret_store=_runtime(request).model.secret_store,
         )
 
     @router.patch("/projects/{project_id}/runtime-profile")
@@ -98,6 +99,7 @@ def build_router() -> APIRouter:
             saved,
             source="project",
             allow_process_environment_key=settings.allow_process_environment_key,
+            secret_store=_runtime(request).model.secret_store,
         )
 
     @router.get("/projects/{project_id}/agents/{agent_id}/runtime-profile")
@@ -113,6 +115,7 @@ def build_router() -> APIRouter:
             profile,
             source="agent",
             allow_process_environment_key=settings.allow_process_environment_key,
+            secret_store=_runtime(request).model.secret_store,
         )
 
     @router.patch("/projects/{project_id}/agents/{agent_id}/runtime-profile")
@@ -136,6 +139,7 @@ def build_router() -> APIRouter:
             saved,
             source="agent",
             allow_process_environment_key=settings.allow_process_environment_key,
+            secret_store=_runtime(request).model.secret_store,
         )
 
     @router.get("/components")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
@@ -167,11 +167,16 @@ class RuntimeProfileStore:
         *,
         source: str,
         allow_process_environment_key: bool,
+        secret_store: SecretStore | None = None,
     ) -> dict[str, Any]:
         configured = bool(
             profile
-            and allow_process_environment_key
-            and os.environ.get(profile.api_key_env, "").strip()
+            and resolve_secret(
+                secret_store,
+                "model.primary",
+                profile.api_key_env,
+                allow_environment=allow_process_environment_key,
+            )
         )
         return {
             "schema_version": "1.0",

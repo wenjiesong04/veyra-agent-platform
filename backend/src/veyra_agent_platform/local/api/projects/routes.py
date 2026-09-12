@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, TypeVar, cast
 
@@ -39,6 +38,7 @@ from veyra_agent_platform.local.runtime.profiles import (
     RuntimeProfileError,
     RuntimeProfileStore,
 )
+from veyra_agent_platform.local.secrets import resolve_secret
 from veyra_agent_platform.local.storage import IdempotencyConflict
 
 _Result = TypeVar("_Result")
@@ -770,8 +770,12 @@ def _profile_summary(
     settings = request.app.state.runtime.model.settings
     return profile.to_dict(
         configured=bool(
-            settings.allow_process_environment_key
-            and os.environ.get(profile.api_key_env, "").strip()
+            resolve_secret(
+                request.app.state.secrets,
+                "model.primary",
+                profile.api_key_env,
+                allow_environment=settings.allow_process_environment_key,
+            )
         )
     )
 
