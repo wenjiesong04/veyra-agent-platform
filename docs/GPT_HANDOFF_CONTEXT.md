@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`be8294b11b6d2c924b21e5fbfb0c908cae2fcc35`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、扫描 warning、可配置发布审核队列、Run 证据查看器和 Agent 依赖可运行性报告。
+- 最新功能代码基线：`21dc9945af1b348a835bac60ac2a238a8d8c0b74`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告和模型 API 验证/Runtime 预检。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -243,6 +243,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - Agent node 支持 `model.primary`，会向配置的 OpenAI-compatible provider 发起请求。
 - Knowledge binding 会按版本和内容 hash 校验，将明确绑定的 Project 文档注入模型上下文，并在 Run 事件中记录 receipt；侧边栏索引本身不等于 Runtime 上下文。
 - Agent `POST .../validate` 现在会额外返回 Tool/MCP、Skill、Policy、Knowledge 的依赖检查：目录缺失、锁哈希变化、权限不足、MCP 审核、Knowledge 版本/内容变化都会显示为 attention；`runtime_ready` 只表示依赖解析范围，模型 API Key 和主机密钥仍由真正 Run 再检查。
+- Project/Agent 创建与编辑对话框的“可调用 API”区块可填写 Provider、模型、API Base URL、API Key；“保存并验证 API”只把 Key 放入本机 Keychain，并请求兼容 Provider 的 `/models` 验证目标模型，不把 Key 写入 Project 或发送对话内容。`GET .../runtime-readiness` 会按当前 Agent 生效的 profile 检查模型凭据、依赖和 Tool/MCP 配置。
 - Desktop Settings 支持把 `model.primary` 和 `github.main` 保存到 macOS Keychain；`MOONSHOT_API_KEY` / `GITHUB_TOKEN` 仍可用于 headless 环境。
 - 已验证 string、object、array、number、boolean 的声明输出映射；不接受未声明字段。
 - 无 Runtime key 时，Run 以明确的 `runtime_not_configured` 失败，不伪造输出。
@@ -268,6 +269,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - `GET/PATCH /api/v1/projects/{project_id}/runtime-profile` 与
   `GET/PATCH /api/v1/projects/{project_id}/agents/{agent_id}/runtime-profile`
   只保存 provider、base URL、model ID、API-key 环境变量名，不保存原始 key。
+- `POST /api/v1/runtime/profile/validate` 接收未保存的 profile，只做 `/models` 验证并返回不含密钥的安全错误码；`GET /api/v1/projects/{project_id}/agents/{agent_id}/runtime-readiness` 返回当前 Agent 的本地启动预检。
 - Project 创建/编辑和 Agent 创建/编辑表单均有“可调用 API（选填）”；未配置时保持本地设计能力，运行时返回明确的 `runtime_not_configured`。
 - Agent 侧栏每个 Agent 的 More 旁边有加号，直接打开创建子 Agent 对话框，不跳转页面。
 
@@ -450,10 +452,9 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34676061703` 和 Pull Request `34676064083`：`be8294b` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=be8294b11b6d2c924b21e5fbfb0c908cae2fcc35`、`local_0017_community_agent_origins`、`database_ready=true`；真实 Agent `/validate` 已返回 `dependency_summary`、`runtime_ready` 和 `runtime_ready_scope=agent_dependencies`，未输出任何密钥值。
+- GitHub Actions Push `34677166035` 和 Pull Request `34677167591`：`21dc994` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=21dc9945af1b348a835bac60ac2a238a8d8c0b74`、`local_0017_community_agent_origins`、`database_ready=true`；真实 Agent `/runtime-readiness` 返回 `ready=true`、`profile_source=default`、模型 `required=true/configured=true` 和空依赖清单，未输出任何密钥值。由于本机已有模型环境凭据，本次没有擅自执行真实 Provider `/models` 外部调用；验证成功/模型不存在由集成用例覆盖。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，未输出任何密钥值。
-- Community live：`8772 /api/v1/health` 返回 `build_sha=17b117e...`、`community_0006_agent_feedback`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则

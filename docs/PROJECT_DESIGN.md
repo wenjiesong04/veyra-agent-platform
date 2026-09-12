@@ -840,6 +840,14 @@ profile overrides the default Runtime profile. The API-key value itself remains
 in the host Keychain/environment and is never written to a Project manifest,
 Agent source, SQLite profile JSON, browser storage, or logs.
 
+The Desktop Project and Agent dialogs expose a password field for the host
+Runtime API key. A user action stores it under the opaque `model.primary`
+Keychain reference and can immediately verify the selected profile. Verification
+performs only the OpenAI-compatible `GET /models` request and returns a safe
+status/code pair; it never sends a prompt or returns the key. The effective
+Agent preflight also checks the model credential, locked dependencies, Tool
+authorization, and configured MCP server without starting an MCP process.
+
 Local development may use the host process Runtime profile
 (`VEYRA_RUNTIME_*` / `MOONSHOT_API_KEY`) so Agent nodes can run for testing.
 Production and release modes do not use that shared host key for user-created
@@ -1516,6 +1524,8 @@ Star does not mean safe or effective.
 
 ### Runtime
 
+- `POST /api/v1/runtime/profile/validate`
+- `GET /api/v1/projects/{project_id}/agents/{agent_id}/runtime-readiness`
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/run`
 - `GET /api/v1/runs`
 - `GET /api/v1/runs/{id}`
