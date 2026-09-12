@@ -426,6 +426,12 @@ built-in primitives. Composite packages expand to locked
 primitive nodes when dropped on a Canvas. Components are not a flowchart
 and are not renamed into a ninth Flow type.
 
+The Project Resource Library reports `current`, `stale`, `unbound`, or `builtin`
+for each projected resource. A `stale` binding means the same catalog reference
+now has different content than the Project hash; Studio and Agent Runtime
+preflight surface that drift for explicit re-binding rather than silently
+accepting a changed capability.
+
 The manifest contains a stable UUIDv7 `project_id`, Project name, listed Agent
 UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
 Run state, account tokens, secrets, caches, and event history never enter the
