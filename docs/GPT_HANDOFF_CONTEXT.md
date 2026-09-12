@@ -370,7 +370,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
 4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限、基于 Runtime 事件的 stale 信号和显式 stall recovery；独立 worktree 和更丰富 reconcile 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 已展示 attempt 详情、WorkItem 依赖和 stale 恢复，仍需更丰富 reconcile。
-6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需更完整的路径与依赖扫描及长期 moderation 运营工具。
+6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、路径/依赖/Knowledge 可携带性扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需许可证扫描及长期 moderation 运营工具。
 7. Tauri/PyInstaller/macOS arm64 包。
 8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
 9. 完整双账号联网 E2E、真实 SMTP/Kimi live lane 和跨服务同 SHA 发布证据。
@@ -407,9 +407,9 @@ Agent Chat 现在从 Agent 详情入口直接进入，支持最近 Run 回放、
 
 WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；依赖未完成时保持 backlog，stale WorkItem 可以先停止 Runtime、CAS 回收 lease 并记录 `stall_recovered`，随后 Monitor 可 Retry。下一步只补独立 worktree 和更丰富 reconcile 等高阶调度。
 
-### 下一波 B：Community registry
+### 已完成：Community registry 扫描边界
 
-当前已经有可运行的 Agent YAML publish/browse/download/import/feedback 最小闭环；生产模式还可以把上传置于 quarantine，由 moderator 队列审核后发布或拒绝。下一步补完整 hash/secret/path/symlink/依赖扫描和长期 moderation 运营工具；Community 仍不执行远端 Agent。
+当前已经有可运行的 Agent YAML publish/browse/download/import/feedback 最小闭环；生产模式还可以把上传置于 quarantine，由 moderator 队列审核后发布或拒绝。发布扫描会保留明显凭据、可疑路径、外部依赖、锁项和不可携带 Knowledge warning；许可证扫描和长期 moderation 运营工具仍未完成。Community 仍不执行远端 Agent。
 
 ### 下一波 C：发行与部署
 
@@ -453,8 +453,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34678023338` 和 Pull Request `34678024637`：`eeac987` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=21dc9945af1b348a835bac60ac2a238a8d8c0b74`、`local_0017_community_agent_origins`、`database_ready=true`；真实 Agent `/runtime-readiness` 返回 `ready=true`、模型 `required=true/configured=true` 和空依赖清单，未输出任何密钥值。
+- GitHub Actions Push `34678716264` 和 Pull Request `34678717334`：`3a26dc1` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=3a26dc10669ac06842472d52ff40a5757ed9199e`、`local_0017_community_agent_origins`、`database_ready=true`；Skill 运行证据改动已加载，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，扫描逻辑已加载，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
