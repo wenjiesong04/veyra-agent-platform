@@ -9,6 +9,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import {
   desktopRoutePaths,
@@ -486,6 +487,22 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
       setBusyServerId(null);
     }
   };
+  const remove = async (server: McpServer) => {
+    if (!api.deleteMcpServer || !window.confirm(zh ? `删除 MCP 服务器「${server.name}」及其已发现工具？` : `Delete MCP server "${server.name}" and its discovered tools?`)) return;
+    setBusyServerId(server.server_id);
+    setError("");
+    try {
+      await api.deleteMcpServer(server.server_id);
+      setServers((current) => current.filter((item) => item.server_id !== server.server_id));
+      setTools((current) => current.filter((item) => (item.spec as Record<string, unknown>).mcp_server_id !== server.server_id));
+      if (editingServerId === server.server_id) cancelEdit();
+      onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "无法删除 MCP 服务器。" : "Could not delete the MCP server."));
+    } finally {
+      setBusyServerId(null);
+    }
+  };
   const approve = async (serverId: string, tool: ResourceDescriptor) => {
     if (!api.approveMcpTool) return;
     setError("");
@@ -515,6 +532,7 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
           <Button size="sm" variant="ghost" disabled={savingServer || busyServerId === server.server_id} onClick={() => edit(server)}><Pencil size={14} aria-hidden="true" />{zh ? "编辑" : "Edit"}</Button>
           <Button size="sm" variant="ghost" disabled={busyServerId === server.server_id || !api.updateMcpServer} onClick={() => void toggle(server)}>{server.enabled ? (zh ? "停用" : "Disable") : (zh ? "启用" : "Enable")}</Button>
           <Button size="sm" disabled={!server.enabled} onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
+          <Button size="sm" variant="danger" icon={Trash2} disabled={busyServerId === server.server_id || !api.deleteMcpServer} onClick={() => void remove(server)}>{zh ? "删除" : "Delete"}</Button>
         </div>
       ))}
       {tools.map((tool) => {
