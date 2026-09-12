@@ -40,6 +40,10 @@ def test_mcp_configure_and_discover_writes_overlay_catalog(tmp_path: Path) -> No
         )
         assert created.status_code == 201
         server_id = created.json()["server"]["server_id"]
+        readiness = client.get(f"/api/v1/mcp/servers/{server_id}/readiness")
+        assert readiness.status_code == 200
+        assert readiness.json()["server_id"] == server_id
+        assert readiness.json()["ready"] is True
         discovered = client.post(f"/api/v1/mcp/servers/{server_id}/discover")
         assert discovered.status_code == 200
         tools = discovered.json()["tools"]

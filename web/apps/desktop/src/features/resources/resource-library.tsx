@@ -15,6 +15,7 @@ import {
   desktopRoutePaths,
   libraryRoutePaths,
   type McpServer,
+  type McpServerReadiness,
   type ResourceDescriptor,
   type ResourceKind,
   type ResourceRuntimeStatus,
@@ -406,6 +407,7 @@ function parseMcpEnvNames(value: string): Record<string, string> {
 
 function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: boolean; onChanged: () => void }) {
   const [servers, setServers] = useState<McpServer[]>([]);
+  const [serverReadiness, setServerReadiness] = useState<Record<string, McpServerReadiness>>({});
   const [tools, setTools] = useState<ResourceDescriptor[]>([]);
   const [name, setName] = useState("demo");
   const [command, setCommand] = useState("npx");
@@ -418,12 +420,39 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
   const loadServers = useCallback(async () => {
     if (!api.listMcpServers) return;
     try {
-      setServers((await api.listMcpServers()).servers);
+      const response = await api.listMcpServers();
+      setServers(response.servers);
+      if (!api.mcpServerReadiness) {
+        setServerReadiness({});
+      } else {
+        const next: Record<string, McpServerReadiness> = {};
+        for (const server of response.servers) {
+          try {
+            next[server.server_id] = await api.mcpServerReadiness(server.server_id);
+          } catch {
+            // A readiness read must not hide a server that can still be edited.
+          }
+        }
+        setServerReadiness(next);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "无法加载 MCP 服务器。" : "Could not load MCP servers."));
     }
   }, [api, zh]);
   useEffect(() => { void loadServers(); }, [loadServers]);
+  const checkReadiness = async (serverId: string) => {
+    if (!api.mcpServerReadiness) return;
+    setBusyServerId(serverId);
+    setError("");
+    try {
+      const result = await api.mcpServerReadiness(serverId);
+      setServerReadiness((current) => ({ ...current, [serverId]: result }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "无法检查 MCP 配置。" : "Could not check MCP configuration."));
+    } finally {
+      setBusyServerId(null);
+    }
+  };
   const create = async () => {
     if (editingServerId ? !api.updateMcpServer : !api.createMcpServer) return;
     setSavingServer(true);
@@ -481,6 +510,7 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
     try {
       const result = await api.updateMcpServer(server.server_id, { enabled: !server.enabled });
       setServers((current) => current.map((item) => item.server_id === result.server.server_id ? result.server : item));
+      await loadServers();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "无法更新 MCP 服务器状态。" : "Could not update MCP server state."));
     } finally {
@@ -529,8 +559,10 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
         <div className="resource-row" key={server.server_id}>
           <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}{Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}</small></span>
           <StatusBadge label={server.enabled ? (zh ? "已启用" : "Enabled") : (zh ? "已停用" : "Disabled")} tone={server.enabled ? "good" : "neutral"} />
+          {serverReadiness[server.server_id] ? <StatusBadge label={serverReadiness[server.server_id].ready ? (zh ? "配置可用" : "Config ready") : (zh ? "配置问题" : "Config issue")} tone={serverReadiness[server.server_id].ready ? "good" : "warn"} /> : null}
           <Button size="sm" variant="ghost" disabled={savingServer || busyServerId === server.server_id} onClick={() => edit(server)}><Pencil size={14} aria-hidden="true" />{zh ? "编辑" : "Edit"}</Button>
           <Button size="sm" variant="ghost" disabled={busyServerId === server.server_id || !api.updateMcpServer} onClick={() => void toggle(server)}>{server.enabled ? (zh ? "停用" : "Disable") : (zh ? "启用" : "Enable")}</Button>
+          {api.mcpServerReadiness ? <Button size="sm" variant="ghost" disabled={busyServerId === server.server_id} onClick={() => void checkReadiness(server.server_id)}>{zh ? "检查配置" : "Check config"}</Button> : null}
           <Button size="sm" disabled={!server.enabled} onClick={() => void discover(server.server_id)}>{zh ? "发现工具" : "Discover tools"}</Button>
           <Button size="sm" variant="danger" icon={Trash2} disabled={busyServerId === server.server_id || !api.deleteMcpServer} onClick={() => void remove(server)}>{zh ? "删除" : "Delete"}</Button>
         </div>

@@ -55,6 +55,7 @@ import {
   type CreateMcpServerRequest,
   type UpdateMcpServerRequest,
   type McpServer,
+  type McpServerReadiness,
   type AgentDependencyCheck,
   type AgentDependencyStatus,
   type AgentDependencySummary,
@@ -202,6 +203,7 @@ export type LocalProjectApi = {
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   updateMcpServer?(serverId: string, input: UpdateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   discoverMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }>;
+  mcpServerReadiness?(serverId: string): Promise<McpServerReadiness>;
   approveMcpTool?(serverId: string, resourceId: string, version: string): Promise<{ schema_version: "1.0"; server_id: string; resource: ResourceDescriptor }>;
   deleteMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; deleted: boolean }>;
   orchestratorStatus?(): Promise<OrchestratorStatus>;
@@ -1121,6 +1123,17 @@ function mcpServer(value: unknown, status = 502): McpServer {
     enabled: asBoolean(record.enabled, "mcp.enabled", status),
     created_at: asString(record.created_at, "mcp.created_at", status),
     updated_at: asString(record.updated_at, "mcp.updated_at", status),
+  };
+}
+
+function mcpServerReadiness(value: unknown, status = 502): McpServerReadiness {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    server_id: asString(record.server_id, "mcp readiness.server_id", status),
+    ready: asBoolean(record.ready, "mcp readiness.ready", status),
+    code: asString(record.code, "mcp readiness.code", status),
+    detail: asText(record.detail, "mcp readiness.detail", status),
   };
 }
 
@@ -2154,6 +2167,10 @@ export class LocalApiClient {
 
   discoverMcpServer(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }> {
     return this.request(`mcp/servers/${encodeURIComponent(serverId)}/discover`, discoveredMcpTools, { method: "POST" });
+  }
+
+  mcpServerReadiness(serverId: string): Promise<McpServerReadiness> {
+    return this.request(`mcp/servers/${encodeURIComponent(serverId)}/readiness`, mcpServerReadiness);
   }
 
   approveMcpTool(serverId: string, resourceId: string, version: string): Promise<{ schema_version: "1.0"; server_id: string; resource: ResourceDescriptor }> {

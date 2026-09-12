@@ -8,6 +8,7 @@ from typing import Any, TypeVar, cast
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from veyra_agent_platform.contracts.common import SCHEMA_VERSION
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.mcp import McpError, McpService
 
@@ -64,6 +65,14 @@ def build_router() -> APIRouter:
     @router.post("/servers/{server_id}/discover")
     def discover(server_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _mcp(request).discover(server_id))
+
+    @router.get("/servers/{server_id}/readiness")
+    def readiness(server_id: str, request: Request) -> dict[str, Any]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "server_id": server_id,
+            **_translate(lambda: _mcp(request).readiness(server_id)),
+        }
 
     @router.patch("/servers/{server_id}")
     def update_server(

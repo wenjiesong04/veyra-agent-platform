@@ -1006,6 +1006,14 @@ export type McpServer = {
   updated_at: string;
 };
 
+export type McpServerReadiness = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  server_id: string;
+  ready: boolean;
+  code: string;
+  detail: string;
+};
+
 export type ListMcpServersResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   servers: McpServer[];
