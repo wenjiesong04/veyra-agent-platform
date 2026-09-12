@@ -109,6 +109,34 @@ def test_plugin_pack_import_is_quarantined_then_activates_skill_and_disabled_mcp
         assert servers[0]["enabled"] is False
         assert servers[0]["env_names"] == {"TOKEN": "DOCS_TOKEN"}
 
+        disabled = client.post(
+            f"/api/v1/plugins/{plugin['plugin_id']}/versions/{plugin['version']}/disable",
+            json={"confirm": True},
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["plugin"]["state"] == "disabled"
+        disabled_skill = client.get(
+            f"/api/v1/resources/{installed['resource_id']}/versions/{installed['version']}"
+        ).json()
+        assert disabled_skill["availability"] == "disabled"
+        assert disabled_skill["factory_selectable"] is False
+        assert (
+            client.get("/api/v1/mcp/servers").json()["servers"][0]["enabled"] is False
+        )
+
+        reactivated = client.post(
+            f"/api/v1/plugins/{plugin['plugin_id']}/versions/{plugin['version']}/activate",
+            json={"confirm": True},
+        )
+        assert reactivated.status_code == 200, reactivated.text
+        assert reactivated.json()["plugin"]["state"] == "active"
+        reactivated_skill = client.get(
+            f"/api/v1/resources/{installed['resource_id']}/versions/{installed['version']}"
+        ).json()
+        assert reactivated_skill["availability"] == "ready"
+        assert reactivated_skill["factory_selectable"] is True
+        assert client.get("/api/v1/mcp/servers").json()["servers"][0]["enabled"] is True
+
         replay = client.post(
             f"/api/v1/plugins/{plugin['plugin_id']}/versions/{plugin['version']}/activate",
             json={"confirm": True},

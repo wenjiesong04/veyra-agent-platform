@@ -197,6 +197,61 @@ class ResourceWorkshop:
             "resource": self.catalog.detail(resource_id, version),
         }
 
+    def set_skill_enabled(
+        self, resource_id: str, version: str, *, enabled: bool
+    ) -> dict[str, Any]:
+        """Toggle an approved workshop Skill without changing its instruction."""
+        try:
+            resource = self.catalog.detail(resource_id, version)
+        except ResourceCatalogError as exc:
+            raise ResourceWorkshopError("workshop_draft_not_found", str(exc)) from exc
+        if resource.get("origin") != "workshop" or resource.get("kind") != "skill":
+            raise ResourceWorkshopError(
+                "workshop_skill_invalid",
+                "Only workshop Skills can be enabled or disabled",
+            )
+        target = self._workshop_package(resource_id, version)
+        if target is None:
+            raise ResourceWorkshopError(
+                "workshop_draft_not_found", "Skill draft package was not found"
+            )
+        try:
+            payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill draft could not be read"
+            ) from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("spec"), dict):
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill draft is invalid"
+            )
+        payload["availability"] = "ready" if enabled else "disabled"
+        payload["factory_selectable"] = enabled
+        payload["runtime_status"] = "runtime_not_configured"
+        payload["tags"] = (
+            ["workshop", "approved", "instruction"]
+            if enabled
+            else ["workshop", "disabled", "instruction"]
+        )
+        payload["spec"]["review_required"] = not enabled
+        temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
+        try:
+            temporary.write_text(
+                yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+            self.catalog.reload_overlays()
+        except (OSError, NodePackageError) as exc:
+            temporary.unlink(missing_ok=True)
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Skill state could not be updated"
+            ) from exc
+        return {
+            "schema_version": "1.0",
+            "resource": self.catalog.detail(resource_id, version),
+        }
+
     def _workshop_package(self, resource_id: str, version: str) -> Path | None:
         root = self.overlay_root / "workshop"
         if not root.is_dir():

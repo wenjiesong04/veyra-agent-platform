@@ -212,6 +212,7 @@ export type LocalProjectApi = {
   listPluginPacks?(): Promise<ListPluginPacksResponse>;
   importPluginPack?(file: File): Promise<PluginPackResponse>;
   activatePluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackResponse>;
+  disablePluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackResponse>;
   downloadPluginPack?(pluginId: string, version: string): Promise<Blob>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   importMcpServers?(input: ImportMcpServersRequest): Promise<ImportMcpServersResponse>;
@@ -1124,7 +1125,7 @@ function approvedResourceDraft(value: unknown, status = 502): { schema_version: 
   return { schema_version: LOCAL_API_SCHEMA_VERSION, resource: resource(record.resource, status) };
 }
 
-const pluginPackStates = new Set<PluginPackState>(["quarantined", "active", "activation_failed"]);
+const pluginPackStates = new Set<PluginPackState>(["quarantined", "active", "disabled", "activation_failed"]);
 
 function pluginPackSkill(value: unknown, status = 502): PluginPack["skills"][number] {
   const record = asRecord(value, status);
@@ -2181,6 +2182,14 @@ export class LocalApiClient {
   activatePluginPack(pluginId: string, version: string, confirm = true): Promise<PluginPackResponse> {
     return this.request(
       `plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/activate`,
+      pluginPackResponse,
+      { method: "POST", body: { confirm } },
+    );
+  }
+
+  disablePluginPack(pluginId: string, version: string, confirm = true): Promise<PluginPackResponse> {
+    return this.request(
+      `plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/disable`,
       pluginPackResponse,
       { method: "POST", body: { confirm } },
     );

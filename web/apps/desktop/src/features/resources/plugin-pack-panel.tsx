@@ -6,12 +6,12 @@ import type { LocalProjectApi } from "../../api/local-client";
 
 function stateLabel(state: PluginPackState, zh: boolean): string {
   return zh
-    ? { quarantined: "待审核", active: "已激活", activation_failed: "激活失败" }[state]
-    : { quarantined: "Quarantined", active: "Active", activation_failed: "Activation failed" }[state];
+    ? { quarantined: "待审核", active: "已激活", disabled: "已停用", activation_failed: "激活失败" }[state]
+    : { quarantined: "Quarantined", active: "Active", disabled: "Disabled", activation_failed: "Activation failed" }[state];
 }
 
-function stateTone(state: PluginPackState): "good" | "warn" | "bad" {
-  return state === "active" ? "good" : state === "activation_failed" ? "bad" : "warn";
+function stateTone(state: PluginPackState): "good" | "warn" | "bad" | "neutral" {
+  return state === "active" ? "good" : state === "activation_failed" ? "bad" : state === "disabled" ? "neutral" : "warn";
 }
 
 export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; projects: Array<{ project_id: string; name: string }>; zh: boolean }) {
@@ -66,6 +66,23 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "插件包激活失败。" : "Plugin Pack activation failed."));
       await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disable = async (plugin: PluginPack) => {
+    if (!api.disablePluginPack) return;
+    const key = `disable:${plugin.plugin_id}@${plugin.version}`;
+    setBusy(key);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.disablePluginPack(plugin.plugin_id, plugin.version, true);
+      setMessage(zh ? "插件包已停用：Skill 不再进入 Factory，MCP 服务器也已停用。" : "Plugin Pack disabled: its Skills are no longer selectable by Factory and its MCP servers are disabled.");
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "插件包停用失败。" : "Plugin Pack disable failed."));
     } finally {
       setBusy(null);
     }
@@ -148,7 +165,7 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
                   {plugin.mcp_servers.map((server) => <div key={server.name}><RefreshCw size={14} aria-hidden="true" /><span><strong>{server.name}</strong><small>{server.transport === "stdio" ? `${server.command} ${server.args.join(" ")}` : server.url}</small><small>{zh ? "激活后默认停用" : "Disabled by default after activation"}</small></span></div>)}
                 </div>
               </details>
-              <div className="button-row"><Button size="sm" variant="ghost" disabled={busy !== null || !api.downloadPluginPack} onClick={() => void downloadPack(plugin)}><Download size={14} aria-hidden="true" />{busy === `download:${key}` ? "…" : (zh ? "下载包" : "Download")}</Button>{plugin.state === "active" ? <>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : (zh ? "审核并激活" : "Review and activate"))}</Button>}</div>
+              <div className="button-row"><Button size="sm" variant="ghost" disabled={busy !== null || !api.downloadPluginPack} onClick={() => void downloadPack(plugin)}><Download size={14} aria-hidden="true" />{busy === `download:${key}` ? "…" : (zh ? "下载包" : "Download")}</Button>{plugin.state === "active" ? <><Button size="sm" variant="ghost" disabled={busy !== null || !api.disablePluginPack} onClick={() => void disable(plugin)}>{busy === `disable:${key}` ? "…" : (zh ? "停用" : "Disable")}</Button>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : plugin.state === "disabled" ? (zh ? "重新启用" : "Re-enable") : (zh ? "审核并激活" : "Review and activate"))}</Button>}</div>
               {plugin.state === "active" ? <small className="plugin-pack-active-note">{zh ? `已注册 ${plugin.skill_resources.length} 个 Skill、${plugin.mcp_server_ids.length} 个 MCP 服务器。` : `${plugin.skill_resources.length} Skill(s) and ${plugin.mcp_server_ids.length} MCP server(s) registered.`}</small> : null}
               {plugin.activation_error ? <small className="resource-detail-error">{plugin.activation_error}</small> : null}
             </article>

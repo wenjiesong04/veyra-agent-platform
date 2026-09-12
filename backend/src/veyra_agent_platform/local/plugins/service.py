@@ -23,7 +23,7 @@ from .packaging import (
 
 _PLUGIN_ID = re.compile(r"^veyra\.plugin\.[a-z][a-z0-9_.-]{1,63}$")
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-_STATES = {"quarantined", "active", "activation_failed"}
+_STATES = {"quarantined", "active", "disabled", "activation_failed"}
 
 
 class PluginError(ValueError):
@@ -137,6 +137,12 @@ class PluginService:
             skill_resources = list(state["skill_resources"])
             for index, skill in enumerate(metadata["skills"]):
                 if index < len(skill_resources):
+                    resource_id, resource_version = _split_reference(
+                        skill_resources[index]
+                    )
+                    self.workshop.set_skill_enabled(
+                        resource_id, resource_version, enabled=True
+                    )
                     continue
                 draft = self.workshop.create_draft(
                     confirm=True,
@@ -154,14 +160,20 @@ class PluginService:
                 state["skill_resources"] = skill_resources
                 self._write_state(target, state)
 
-            if not state["mcp_server_ids"] and metadata["mcp_servers"]:
-                configs = [
-                    dict(server, enabled=False) for server in metadata["mcp_servers"]
-                ]
-                imported = self.mcp.import_servers(configs)
-                state["mcp_server_ids"] = [
-                    server["server_id"] for server in imported["servers"]
-                ]
+            if metadata["mcp_servers"]:
+                if not state["mcp_server_ids"]:
+                    configs = [
+                        dict(server, enabled=False)
+                        for server in metadata["mcp_servers"]
+                    ]
+                    imported = self.mcp.import_servers(configs)
+                    state["mcp_server_ids"] = [
+                        server["server_id"] for server in imported["servers"]
+                    ]
+                else:
+                    state["mcp_server_ids"] = self._enable_mcp_servers(
+                        metadata["mcp_servers"], state["mcp_server_ids"]
+                    )
                 self._write_state(target, state)
             state["state"] = "active"
             state["activation_error"] = None
@@ -178,6 +190,59 @@ class PluginService:
             "schema_version": SCHEMA_VERSION,
             "plugin": self._summary(metadata, state),
         }
+
+    def disable(self, plugin_id: str, version: str, *, confirm: bool) -> dict[str, Any]:
+        if not confirm:
+            raise PluginError(
+                "plugin_confirmation_required",
+                "Explicit confirmation is required to disable a Plugin Pack",
+            )
+        target = self._target(plugin_id, version)
+        metadata, state = self._read_record(target)
+        try:
+            for reference in state["skill_resources"]:
+                resource_id, resource_version = _split_reference(reference)
+                self.workshop.set_skill_enabled(
+                    resource_id, resource_version, enabled=False
+                )
+            for server_id in state["mcp_server_ids"]:
+                try:
+                    self.mcp.update_server(server_id, enabled=False)
+                except McpError as exc:
+                    if exc.code != "mcp_server_not_found":
+                        raise
+            state["state"] = "disabled"
+            state["activation_error"] = None
+            self._write_state(target, state)
+        except (McpError, ResourceWorkshopError, OSError, KeyError, TypeError) as exc:
+            state["state"] = "activation_failed"
+            state["activation_error"] = str(exc)[:500]
+            with suppress(OSError):
+                self._write_state(target, state)
+            raise PluginError(
+                "plugin_disable_failed", "Plugin Pack could not be disabled"
+            ) from exc
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "plugin": self._summary(metadata, state),
+        }
+
+    def _enable_mcp_servers(
+        self, configs: list[dict[str, Any]], server_ids: list[str]
+    ) -> list[str]:
+        existing = {
+            server["server_id"] for server in self.mcp.list_servers()["servers"]
+        }
+        enabled_ids: list[str] = []
+        for index, config in enumerate(configs):
+            server_id = server_ids[index] if index < len(server_ids) else None
+            if isinstance(server_id, str) and server_id in existing:
+                self.mcp.update_server(server_id, enabled=True)
+                enabled_ids.append(server_id)
+                continue
+            imported = self.mcp.import_servers([dict(config, enabled=True)])
+            enabled_ids.append(imported["servers"][0]["server_id"])
+        return enabled_ids
 
     def archive(self, plugin_id: str, version: str) -> bytes:
         """Return an installed archive after checking its stored content hash."""
@@ -282,3 +347,16 @@ class PluginService:
             }
         )
         return result
+
+
+def _split_reference(reference: Any) -> tuple[str, str]:
+    if not isinstance(reference, str) or reference.count("@") != 1:
+        raise PluginError(
+            "plugin_storage_invalid", "Installed Skill reference is invalid"
+        )
+    resource_id, version = reference.rsplit("@", 1)
+    if not resource_id or not version:
+        raise PluginError(
+            "plugin_storage_invalid", "Installed Skill reference is invalid"
+        )
+    return resource_id, version

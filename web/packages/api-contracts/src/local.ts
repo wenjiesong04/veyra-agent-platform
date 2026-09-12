@@ -1030,7 +1030,7 @@ export type ResourceDraftResponse = {
   resource: ResourceDescriptor;
 };
 
-export type PluginPackState = "quarantined" | "active" | "activation_failed";
+export type PluginPackState = "quarantined" | "active" | "disabled" | "activation_failed";
 
 export type PluginPackSkill = {
   path: string;

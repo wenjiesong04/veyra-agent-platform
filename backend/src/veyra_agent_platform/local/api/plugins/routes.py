@@ -60,6 +60,19 @@ def build_router() -> APIRouter:
             )
         )
 
+    @router.post("/{plugin_id}/versions/{version}/disable")
+    def disable_plugin(
+        plugin_id: str,
+        version: str,
+        payload: ActivatePluginRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _plugins(request).disable(
+                plugin_id, version, confirm=payload.confirm
+            )
+        )
+
     @router.get("/{plugin_id}/versions/{version}/download")
     def download_plugin(plugin_id: str, version: str, request: Request) -> Response:
         contents = _translate(lambda: _plugins(request).archive(plugin_id, version))
