@@ -151,6 +151,42 @@ describe("LocalApiClient Project requests", () => {
     expect(body.get("description")).toBe("Imported");
   });
 
+  it("analyzes and applies an external Agent through the typed import contract", async () => {
+    const created = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", slug: "research-helper", name: "Research Helper", description: "Imported", source_path: "agents/research-helper/agent.vagent.yaml", source_file_hash: "file-hash" };
+    const source = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "generated-agent", slug: "research-helper", name: "Research Helper", description: "Imported", inputs: { request: "string" }, outputs: { result: "string" }, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "veyra-runtime-profile/1", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } }, ui: { positions: {} }, lock: { "veyra.runtime.profile@1.0.0": "0".repeat(64) } };
+    const capability = { kind: "instructions", original: "instructions", status: "supported", reason: "Mapped to the model prompt", included: true };
+    const warning = { code: "workflow_requires_review", message: "External workflow was preserved for review" };
+    const base = {
+      schema_version: "agent.import.v1",
+      import_id: "01900000-0000-7000-8000-000000000001",
+      state: "analyzed",
+      source_kind: "yaml",
+      source_name: "agent.yaml",
+      source_path: "agent.yaml",
+      detected_format: "generic_yaml",
+      compatibility: 0.75,
+      preview: { name: "Research Helper", description: "Imported", instructions: "Summarize.", model: { model_id: "gpt-5" }, inputs: { request: "string" }, outputs: { result: "string" }, tools: [], skills: [], knowledge_files: [], workflow_present: true },
+      ir: { schema_version: "agent.import.ir.v1", detected_format: "generic_yaml", source_path: "agent.yaml", name: "Research Helper", description: "Imported", instructions: "Summarize.", model: { model_id: "gpt-5" }, inputs: { request: "string" }, outputs: { result: "string" }, tools: [], skills: [], knowledge_files: [], workflow_present: true },
+      capabilities: [capability],
+      warnings: [warning],
+      compatibility_report: { schema_version: "agent.import.compatibility.v1", score: 0.75, capabilities: [capability], warnings: [warning] },
+      generated_source: source,
+      manifest: { schema_version: "agent.import.manifest.v1", import_id: "01900000-0000-7000-8000-000000000001", source_kind: "yaml", source_name: "agent.yaml", source_path: "agent.yaml", source_files: ["agent.yaml"], compatibility: 0.75 },
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(base, 201))
+      .mockResolvedValueOnce(response({ schema_version: "agent.import.v1", import: { ...base, state: "applied", applied_agent: created }, agent: created }, 200));
+    const client = new LocalApiClient({ fetcher });
+    const file = new File(["name: Research Helper"], "agent.yaml", { type: "application/yaml" });
+
+    await expect(client.analyzeAgentImportFile(file)).resolves.toMatchObject({ import_id: base.import_id, compatibility_report: { score: 0.75 } });
+    await expect(client.applyAgentImport(base.import_id, { project_id: "project-1", confirm: true })).resolves.toMatchObject({ agent: created });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/agent-imports/file");
+    expect(fetcher.mock.calls[0]?.[1]?.body).toBeInstanceOf(FormData);
+    expect(fetcher.mock.calls[1]?.[0]).toBe(`/api/v1/agent-imports/${base.import_id}/apply`);
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ project_id: "project-1", confirm: true });
+  });
+
   it("downloads a Project zip through the existing export route", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response("PK", { status: 200, headers: { "Content-Type": "application/zip" } }))

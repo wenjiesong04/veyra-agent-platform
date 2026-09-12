@@ -344,6 +344,99 @@ export type CreatedAgentResponse = {
   community_origin?: CommunityAgentOrigin;
 };
 
+export type AgentImportSourceKind = "yaml" | "folder" | "zip";
+export type AgentImportCapabilityStatus = "supported" | "partial" | "unsupported";
+
+export type AgentImportCapability = {
+  kind: string;
+  original: string;
+  status: AgentImportCapabilityStatus;
+  reason: string;
+  included?: boolean;
+  reference?: string;
+};
+
+export type AgentImportWarning = {
+  code: string;
+  message: string;
+  path?: string;
+};
+
+export type AgentImportPreview = {
+  name: string;
+  description: string;
+  instructions: string;
+  model: JsonObject;
+  inputs: Record<string, string>;
+  outputs: Record<string, string>;
+  tools: string[];
+  skills: string[];
+  knowledge_files: string[];
+  workflow_present: boolean;
+  source_path?: string;
+  unsupported_fields?: string[];
+};
+
+export type AgentImportIR = AgentImportPreview & {
+  schema_version: "agent.import.ir.v1";
+  detected_format: string;
+  source_path: string;
+};
+
+export type AgentImportCompatibilityReport = {
+  schema_version: "agent.import.compatibility.v1";
+  score: number;
+  capabilities: AgentImportCapability[];
+  warnings: AgentImportWarning[];
+};
+
+export type AgentImportManifest = JsonObject & {
+  schema_version: "agent.import.manifest.v1";
+  import_id: string;
+  source_kind: AgentImportSourceKind;
+  source_name: string;
+  source_path: string;
+  source_files: string[];
+  compatibility: number;
+};
+
+export type AgentImportRecord = {
+  schema_version: "agent.import.v1";
+  import_id: string;
+  state: "analyzed" | "applied";
+  source_kind: AgentImportSourceKind;
+  source_name: string;
+  source_path: string;
+  detected_format: string;
+  compatibility: number;
+  preview: AgentImportPreview;
+  ir: AgentImportIR;
+  capabilities: AgentImportCapability[];
+  warnings: AgentImportWarning[];
+  compatibility_report: AgentImportCompatibilityReport;
+  generated_source: AgentSource;
+  manifest: AgentImportManifest;
+  applied_agent?: CreatedAgentResponse;
+};
+
+export type AnalyzeAgentImportFolderRequest = {
+  path: string;
+};
+
+export type ApplyAgentImportRequest = {
+  project_id: string;
+  confirm: boolean;
+  name?: string;
+  description?: string;
+  parent_agent_id?: string;
+};
+
+export type AppliedAgentImportResponse = {
+  schema_version: "agent.import.v1";
+  import: AgentImportRecord;
+  agent: CreatedAgentResponse;
+};
+
 export type RuntimeProfileResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   project_id: string;

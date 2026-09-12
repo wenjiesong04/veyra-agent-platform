@@ -1,10 +1,11 @@
-import { ArrowLeft, Bot, FolderOpen, RefreshCw } from "lucide-react";
+import { ArrowLeft, Bot, FileUp, FolderOpen, RefreshCw } from "lucide-react";
 import { projectRoutePaths, type ProjectAgentRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import { Button, EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, useLocale } from "@veyra/ui";
 import { useCallback, useEffect, useState } from "react";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { AgentRelationGraph } from "../features/projects/AgentRelationGraph";
+import { AgentImportPanel } from "../features/projects/agent-import-panel";
 import { agentTree, type AgentTreeNode } from "../features/projects/agent-tree";
 
 export function ProjectDetailPage({ projectId }: { projectId: string }) {
@@ -14,10 +15,11 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<ProjectSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
   const copy = zh ? {
-    eyebrow: "项目", back: "返回项目", refresh: "刷新", reveal: "查看项目位置", revealFailed: "无法在访达中显示项目文件夹。请允许本机访问磁盘后重试。", agents: "Agent", graph: "协作关系", noAgents: "还没有 Agent", noAgentsDetail: "当 Agent 加入这个项目后，它们会显示在这里。", noGraph: "没有可显示的协作关系。协作边来自 parent_agent_id。", serviceError: "无法读取这个项目。", notFound: "请求的项目不存在，或 Desktop sidecar 无法访问它。", descriptionFallback: "这个项目尚未添加描述。",
+    eyebrow: "项目", back: "返回项目", refresh: "刷新", reveal: "查看项目位置", importAgent: "导入外部 Agent", revealFailed: "无法在访达中显示项目文件夹。请允许本机访问磁盘后重试。", agents: "Agent", graph: "协作关系", noAgents: "还没有 Agent", noAgentsDetail: "当 Agent 加入这个项目后，它们会显示在这里。", noGraph: "没有可显示的协作关系。协作边来自 parent_agent_id。", serviceError: "无法读取这个项目。", notFound: "请求的项目不存在，或 Desktop sidecar 无法访问它。", descriptionFallback: "这个项目尚未添加描述。",
   } : {
-    eyebrow: "Project", back: "Back to Projects", refresh: "Refresh", reveal: "Show Project Location", revealFailed: "The Project folder could not be shown in Finder. Allow disk access and try again.", agents: "Agents", graph: "Collaboration", noAgents: "No Agents yet", noAgentsDetail: "Agents will appear here when they are added to this Project.", noGraph: "No collaboration edges to show. Edges come from parent_agent_id.", serviceError: "This Project could not be read.", notFound: "The requested Project does not exist or the Desktop sidecar cannot access it.", descriptionFallback: "This Project has no description yet.",
+    eyebrow: "Project", back: "Back to Projects", refresh: "Refresh", reveal: "Show Project Location", importAgent: "Import external Agent", revealFailed: "The Project folder could not be shown in Finder. Allow disk access and try again.", agents: "Agents", graph: "Collaboration", noAgents: "No Agents yet", noAgentsDetail: "Agents will appear here when they are added to this Project.", noGraph: "No collaboration edges to show. Edges come from parent_agent_id.", serviceError: "This Project could not be read.", notFound: "The requested Project does not exist or the Desktop sidecar cannot access it.", descriptionFallback: "This Project has no description yet.",
   };
   const loadProject = useCallback(async () => {
     setLoading(true);
@@ -47,8 +49,9 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   if (error && !project) return <div className="project-missing"><ErrorState message={error || copy.notFound} onRetry={() => void loadProject()} /><p>{copy.notFound}</p><div className="intro-actions"><LinkButton href="#/projects" icon={ArrowLeft} variant="primary">{copy.back}</LinkButton><Button icon={RefreshCw} onClick={() => void loadProject()}>{copy.refresh}</Button></div></div>;
   if (!project) return null;
   const tree = agentTree(project.agents);
-  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{project.name}</h2><p>{project.description || copy.descriptionFallback}</p></div><div className="intro-actions"><Button icon={FolderOpen} onClick={revealProject} disabled={!api.revealProject}>{copy.reveal}</Button><Button icon={RefreshCw} onClick={() => void loadProject()} disabled={loading}>{copy.refresh}</Button></div></div>
+  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{project.name}</h2><p>{project.description || copy.descriptionFallback}</p></div><div className="intro-actions"><Button icon={FileUp} variant="primary" onClick={() => setShowImport((value) => !value)}>{copy.importAgent}</Button><Button icon={FolderOpen} onClick={revealProject} disabled={!api.revealProject}>{copy.reveal}</Button><Button icon={RefreshCw} onClick={() => void loadProject()} disabled={loading}>{copy.refresh}</Button></div></div>
     {error ? <ErrorState message={error} onRetry={() => void loadProject()} /> : null}
+    {showImport ? <AgentImportPanel api={api} projectId={project.project_id} zh={zh} onApplied={(agentId) => { setShowImport(false); void loadProject(); window.location.hash = projectRoutePaths.agentDesign(project.project_id, agentId); }} /> : null}
     <Panel><SectionHeading eyebrow={copy.agents} title={`${project.agents.length} ${copy.agents}`} />{tree.length === 0 ? <EmptyState icon={Bot} title={copy.noAgents} detail={copy.noAgentsDetail} /> : <div className="project-agent-tree">{tree.map((node) => <AgentTreeRows key={node.agent_id} projectId={project.project_id} node={node} />)}</div>}</Panel>
     <Panel><SectionHeading eyebrow={copy.graph} title={copy.graph} /><AgentRelationGraph projectId={project.project_id} agents={project.agents} emptyLabel={copy.noGraph} /></Panel>
   </div>;

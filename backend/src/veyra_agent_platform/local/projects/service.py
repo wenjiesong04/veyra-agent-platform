@@ -690,14 +690,20 @@ class ProjectService:
         *,
         project_id: str,
         source: AgentSource,
+        name: str | None = None,
+        description: str | None = None,
         parent_agent_id: str | None = None,
+        extra_files: dict[str, bytes] | None = None,
     ) -> dict[str, Any]:
         """Install a previously validated Factory source as a new Agent Draft."""
         with self._writer_lock:
             return self._install_prepared_source(
                 project_id=project_id,
                 source=source,
+                name=name,
+                description=description,
                 parent_agent_id=parent_agent_id,
+                extra_files=extra_files,
             )
 
     def import_agent(
@@ -761,6 +767,7 @@ class ProjectService:
         default_name: str | None = None,
         parent_agent_id: str | None = None,
         community_origin: CommunityAgentOrigin | None = None,
+        extra_files: dict[str, bytes] | None = None,
     ) -> dict[str, Any]:
         """Allocate project-local identity before atomically installing one source."""
         project = self.repository.project(project_id)
@@ -796,6 +803,7 @@ class ProjectService:
             manifest=manifest,
             source=source,
             parent_agent_id=parent_agent_id,
+            extra_files=extra_files,
         )
         if community_origin is None:
             return result
@@ -821,6 +829,7 @@ class ProjectService:
         manifest: ProjectManifest,
         source: AgentSource,
         parent_agent_id: str | None = None,
+        extra_files: dict[str, bytes] | None = None,
     ) -> dict[str, Any]:
         """Install source, manifest, and SQLite index with filesystem rollback."""
         existing_ids = {entry.agent_id for entry in manifest.agents}
@@ -867,6 +876,7 @@ class ProjectService:
                 self._canonical_source(agent_resource_manifest(source)),
             )
             self.atomic_write(staging / "README.md", f"# {source.name}\n")
+            self._write_extra_files(staging, extra_files or {})
             self._fsync_tree(staging)
             if target.exists():
                 raise ProjectError("Project Agent path already exists")

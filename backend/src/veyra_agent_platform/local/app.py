@@ -11,6 +11,8 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 
+from .agent_imports import AgentImportService
+from .api.agent_imports import build_router as build_agent_import_router
 from .api.factory import build_router as build_factory_router
 from .api.health import build_router
 from .api.mcp import build_router as build_mcp_router
@@ -116,6 +118,9 @@ def create_app(
         )
         application.state.repository = repository
         application.state.projects = projects
+        application.state.agent_imports = AgentImportService(
+            database_path.parent / "agent-imports", projects, catalog
+        )
         application.state.project_resources = ProjectResourceService(projects, catalog)
         application.state.library = LibraryService(repository, projects, catalog)
         application.state.conversations = AgentConversationService(
@@ -196,6 +201,7 @@ def create_app(
         )
     )
     application.include_router(build_projects_router())
+    application.include_router(build_agent_import_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())
     application.include_router(build_workflow_router())

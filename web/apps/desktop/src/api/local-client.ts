@@ -40,6 +40,16 @@ import {
   type WorkflowRuntimeReadiness,
   type WorkflowRuntimeReadinessCheck,
   type ApplyFactoryDraftResponse,
+  type AppliedAgentImportResponse,
+  type AgentImportCapability,
+  type AgentImportCompatibilityReport,
+  type AgentImportIR,
+  type AgentImportManifest,
+  type AgentImportPreview,
+  type AgentImportRecord,
+  type AgentImportWarning,
+  type ApplyAgentImportRequest,
+  type AnalyzeAgentImportFolderRequest,
   type FactoryMessage,
   type JsonObject,
   type JsonValue,
@@ -166,6 +176,10 @@ export type LocalProjectApi = {
   updateKnowledge?(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
   deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; community_origin?: CommunityAgentOrigin }): Promise<CreatedAgentResponse>;
+  analyzeAgentImportFile?(file: File): Promise<AgentImportRecord>;
+  analyzeAgentImportFolder?(input: AnalyzeAgentImportFolderRequest): Promise<AgentImportRecord>;
+  getAgentImport?(importId: string): Promise<AgentImportRecord>;
+  applyAgentImport?(importId: string, input: ApplyAgentImportRequest): Promise<AppliedAgentImportResponse>;
   importProject?(file: File): Promise<ProjectSummaryResponse>;
   importProjectFromPath?(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse>;
   listProjectResources?(projectId: string): Promise<ProjectResourcesResponse>;
@@ -332,6 +346,16 @@ function asNumber(value: unknown, field: string, status = 502): number {
   return value;
 }
 
+function asFiniteNumber(value: unknown, field: string, status = 502): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new LocalApiClientError(`The local service returned an invalid ${field}.`, {
+      status,
+      code: "invalid_response",
+    });
+  }
+  return value;
+}
+
 function asJsonValue(value: unknown, field: string, status = 502): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -345,6 +369,17 @@ function asJsonValue(value: unknown, field: string, status = 502): JsonValue {
     status,
     code: "invalid_response",
   });
+}
+
+function asJsonObject(value: unknown, field: string, status = 502): JsonObject {
+  const parsed = asJsonValue(value, field, status);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new LocalApiClientError(`The local service returned an invalid ${field}.`, {
+      status,
+      code: "invalid_response",
+    });
+  }
+  return parsed;
 }
 
 function asBoolean(value: unknown, field: string, status = 502): boolean {
@@ -658,6 +693,156 @@ function createdAgent(value: unknown, status = 502): CreatedAgentResponse {
     ...(record.community_origin === undefined ? {} : {
       community_origin: communityAgentOrigin(record.community_origin, status),
     }),
+  };
+}
+
+function stringArray(value: unknown, field: string, status = 502): string[] {
+  return asArray(value, field, status).map((item) => asString(item, field, status));
+}
+
+function stringMap(value: unknown, field: string, status = 502): Record<string, string> {
+  const record = asRecord(value, status);
+  return Object.fromEntries(
+    Object.entries(record).map(([key, item]) => [key, asString(item, `${field}.${key}`, status)]),
+  );
+}
+
+function agentImportCapability(value: unknown, status = 502): AgentImportCapability {
+  const record = asRecord(value, status);
+  const capabilityStatus = record.status;
+  if (capabilityStatus !== "supported" && capabilityStatus !== "partial" && capabilityStatus !== "unsupported") {
+    throw new LocalApiClientError("The local service returned an invalid import capability status.", { status, code: "invalid_response" });
+  }
+  return {
+    kind: asString(record.kind, "import capability kind", status),
+    original: asString(record.original, "import capability original", status),
+    status: capabilityStatus,
+    reason: asText(record.reason, "import capability reason", status),
+    ...(record.included === undefined ? {} : { included: asBoolean(record.included, "import capability included", status) }),
+    ...(record.reference === undefined ? {} : { reference: asString(record.reference, "import capability reference", status) }),
+  };
+}
+
+function agentImportWarning(value: unknown, status = 502): AgentImportWarning {
+  const record = asRecord(value, status);
+  return {
+    code: asString(record.code, "import warning code", status),
+    message: asText(record.message, "import warning message", status),
+    ...(record.path === undefined ? {} : { path: asString(record.path, "import warning path", status) }),
+  };
+}
+
+function agentImportPreview(value: unknown, status = 502): AgentImportPreview {
+  const record = asRecord(value, status);
+  return {
+    name: asString(record.name, "import preview name", status),
+    description: asText(record.description, "import preview description", status),
+    instructions: asText(record.instructions, "import preview instructions", status),
+    model: record.model === undefined || record.model === null ? {} : asJsonObject(record.model, "import preview model", status),
+    inputs: stringMap(record.inputs, "import preview inputs", status),
+    outputs: stringMap(record.outputs, "import preview outputs", status),
+    tools: stringArray(record.tools, "import preview tools", status),
+    skills: stringArray(record.skills, "import preview skills", status),
+    knowledge_files: stringArray(record.knowledge_files, "import preview knowledge_files", status),
+    workflow_present: asBoolean(record.workflow_present, "import preview workflow_present", status),
+    ...(record.source_path === undefined ? {} : { source_path: asString(record.source_path, "import preview source_path", status) }),
+    ...(record.unsupported_fields === undefined ? {} : { unsupported_fields: stringArray(record.unsupported_fields, "import preview unsupported_fields", status) }),
+  };
+}
+
+function agentImportIR(value: unknown, status = 502): AgentImportIR {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.ir.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible Agent Import IR.", { status, code: "schema_mismatch" });
+  }
+  return {
+    schema_version: "agent.import.ir.v1",
+    detected_format: asString(record.detected_format, "import IR detected_format", status),
+    source_path: asString(record.source_path, "import IR source_path", status),
+    ...agentImportPreview(record, status),
+  };
+}
+
+function agentImportCompatibilityReport(value: unknown, status = 502): AgentImportCompatibilityReport {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.compatibility.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible Agent Import report.", { status, code: "schema_mismatch" });
+  }
+  const score = asFiniteNumber(record.score, "import compatibility score", status);
+  if (score < 0 || score > 1) {
+    throw new LocalApiClientError("The local service returned an invalid import compatibility score.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: "agent.import.compatibility.v1",
+    score,
+    capabilities: asArray(record.capabilities, "import compatibility capabilities", status).map((item) => agentImportCapability(item, status)),
+    warnings: asArray(record.warnings, "import compatibility warnings", status).map((item) => agentImportWarning(item, status)),
+  };
+}
+
+function agentImportManifest(value: unknown, status = 502): AgentImportManifest {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.manifest.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible Agent Import manifest.", { status, code: "schema_mismatch" });
+  }
+  const sourceKind = record.source_kind;
+  if (sourceKind !== "yaml" && sourceKind !== "folder" && sourceKind !== "zip") {
+    throw new LocalApiClientError("The local service returned an invalid Agent Import source kind.", { status, code: "invalid_response" });
+  }
+  return {
+    ...record,
+    schema_version: "agent.import.manifest.v1",
+    import_id: asString(record.import_id, "import manifest import_id", status),
+    source_kind: sourceKind,
+    source_name: asString(record.source_name, "import manifest source_name", status),
+    source_path: asString(record.source_path, "import manifest source_path", status),
+    source_files: stringArray(record.source_files, "import manifest source_files", status),
+    compatibility: asFiniteNumber(record.compatibility, "import manifest compatibility", status),
+  };
+}
+
+function agentImport(value: unknown, status = 502): AgentImportRecord {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible Agent Import record.", { status, code: "schema_mismatch" });
+  }
+  const state = record.state;
+  if (state !== "analyzed" && state !== "applied") {
+    throw new LocalApiClientError("The local service returned an invalid Agent Import state.", { status, code: "invalid_response" });
+  }
+  const sourceKind = record.source_kind;
+  if (sourceKind !== "yaml" && sourceKind !== "folder" && sourceKind !== "zip") {
+    throw new LocalApiClientError("The local service returned an invalid Agent Import source kind.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: "agent.import.v1",
+    import_id: asString(record.import_id, "import_id", status),
+    state,
+    source_kind: sourceKind,
+    source_name: asString(record.source_name, "source_name", status),
+    source_path: asString(record.source_path, "source_path", status),
+    detected_format: asString(record.detected_format, "detected_format", status),
+    compatibility: asFiniteNumber(record.compatibility, "compatibility", status),
+    preview: agentImportPreview(record.preview, status),
+    ir: agentImportIR(record.ir, status),
+    capabilities: asArray(record.capabilities, "capabilities", status).map((item) => agentImportCapability(item, status)),
+    warnings: asArray(record.warnings, "warnings", status).map((item) => agentImportWarning(item, status)),
+    compatibility_report: agentImportCompatibilityReport(record.compatibility_report, status),
+    generated_source: source(record.generated_source, status),
+    manifest: agentImportManifest(record.manifest, status),
+    ...(record.applied_agent === undefined ? {} : { applied_agent: createdAgent(record.applied_agent, status) }),
+  };
+}
+
+function appliedAgentImport(value: unknown, status = 502): AppliedAgentImportResponse {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible applied Agent Import.", { status, code: "schema_mismatch" });
+  }
+  return {
+    schema_version: "agent.import.v1",
+    import: agentImport(record.import, status),
+    agent: createdAgent(record.agent, status),
   };
 }
 
@@ -2005,6 +2190,33 @@ export class LocalApiClient {
     return this.request(`projects/${encodeURIComponent(projectId)}/agents/import`, createdAgent, {
       method: "POST",
       formData,
+    });
+  }
+
+  analyzeAgentImportFile(file: File): Promise<AgentImportRecord> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request("agent-imports/file", agentImport, {
+      method: "POST",
+      formData,
+    });
+  }
+
+  analyzeAgentImportFolder(input: AnalyzeAgentImportFolderRequest): Promise<AgentImportRecord> {
+    return this.request("agent-imports/folder", agentImport, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  getAgentImport(importId: string): Promise<AgentImportRecord> {
+    return this.request(`agent-imports/${encodeURIComponent(importId)}`, agentImport);
+  }
+
+  applyAgentImport(importId: string, input: ApplyAgentImportRequest): Promise<AppliedAgentImportResponse> {
+    return this.request(`agent-imports/${encodeURIComponent(importId)}/apply`, appliedAgentImport, {
+      method: "POST",
+      body: input,
     });
   }
 
