@@ -155,6 +155,13 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/star",
         "/api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/reviews",
         "/api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/report",
+        "/api/v1/registry/plugins",
+        "/api/v1/registry/plugins/moderation/queue",
+        "/api/v1/registry/plugins/{owner_handle}/{slug}",
+        "/api/v1/registry/plugins/{owner_handle}/{slug}/versions",
+        "/api/v1/registry/plugins/{owner_handle}/{slug}/versions/{version}",
+        "/api/v1/registry/plugins/{owner_handle}/{slug}/versions/{version}/download",
+        "/api/v1/registry/plugins/{owner_handle}/{slug}/versions/{version}/moderate",
     }
 
 

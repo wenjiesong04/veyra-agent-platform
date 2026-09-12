@@ -448,6 +448,10 @@ WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；�
 
 当前已经有可运行的 Agent YAML publish/browse/download/import/feedback 最小闭环；生产模式还可以把上传置于 quarantine，由 moderator 队列审核后发布或拒绝。发布扫描会保留明显凭据、可疑路径、外部依赖、锁项和不可携带 Knowledge warning；许可证扫描和长期 moderation 运营工具仍未完成。Community 仍不执行远端 Agent。
 
+### 已完成：Community Plugin Registry
+
+Community 现在单独维护 Plugin Pack 身份和不可变版本，不复用 Agent 表。Desktop 的社区页可以发布、浏览、下载 `.vplugin.zip`，并支持“下载并导入本机”；本机仍会重新进入 Plugin Pack 的 quarantine/activation 流程。Community 只保存包字节和不含 Skill 正文/凭据值的公开 manifest 摘要，不启动 MCP、不解释 Skill 指令。配置了 Community moderation 时，Plugin Pack 版本也会进入独立审核队列并留下 moderation receipt。
+
 ### 下一波 C：发行与部署
 
 只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。

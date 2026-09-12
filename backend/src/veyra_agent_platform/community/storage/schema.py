@@ -149,6 +149,65 @@ class CommunityAgentVersion(CommunityBase):
     published_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
 
 
+class CommunityPlugin(CommunityBase):
+    """Public author-owned declarative Plugin Pack identity."""
+
+    __tablename__ = "community_plugins"
+    __table_args__ = (UniqueConstraint("owner_id", "slug"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_users.id", ondelete="CASCADE"), index=True
+    )
+    slug: Mapped[str] = mapped_column(String(63))
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class CommunityPluginVersion(CommunityBase):
+    """Immutable Plugin Pack bytes and public manifest summary."""
+
+    __tablename__ = "community_plugin_versions"
+    __table_args__ = (UniqueConstraint("plugin_id", "version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    plugin_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("community_plugins.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[str] = mapped_column(String(32))
+    package_storage_id: Mapped[str] = mapped_column(String(64), unique=True)
+    package_hash: Mapped[str] = mapped_column(String(64))
+    manifest_json: Mapped[str] = mapped_column(Text)
+    skill_count: Mapped[int] = mapped_column(Integer)
+    mcp_count: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="published")
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    published_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+
+
+class CommunityPluginModeration(CommunityBase):
+    """Append-only receipt for a moderator's Plugin Pack decision."""
+
+    __tablename__ = "community_plugin_moderations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_plugin_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    moderator_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_users.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
 class CommunityAgentModeration(CommunityBase):
     """Append-only receipt for a moderator's package decision."""
 

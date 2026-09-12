@@ -1504,6 +1504,13 @@ explicit upload
 
 Downloaded content is not automatically installed or run. Import again validates locally and displays permission differences.
 
+The Community registry also has a Plugin Pack lane. Authenticated publishers
+upload a declarative `.vplugin.zip`; Community keeps an immutable content hash,
+public Skill/MCP manifest summary, version history, and optional moderation
+state. Public download returns the original bytes, but Community never starts
+an MCP process or interprets Skill instructions. Desktop downloads can be sent
+straight to the local Plugin Pack importer for quarantine and explicit activation.
+
 ### 12.5 Community UI
 
 Agent/template detail includes:
@@ -1635,6 +1642,14 @@ Star does not mean safe or effective.
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}`
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download`
 - `POST /api/v1/registry/agents` (authenticated multipart YAML publish)
+- `GET /api/v1/registry/plugins`
+- `GET /api/v1/registry/plugins/{owner_handle}/{slug}`
+- `GET /api/v1/registry/plugins/{owner_handle}/{slug}/versions`
+- `GET /api/v1/registry/plugins/{owner_handle}/{slug}/versions/{version}`
+- `GET /api/v1/registry/plugins/{owner_handle}/{slug}/versions/{version}/download`
+- `POST /api/v1/registry/plugins` (authenticated multipart Plugin Pack publish)
+- `GET /api/v1/registry/plugins/moderation/queue`
+- `POST /api/v1/registry/plugins/{owner_handle}/{slug}/versions/{version}/moderate`
 - Existing local import: `POST /api/v1/projects/{project_id}/agents/import` accepts optional Community owner/slug/version/source-hash fields; the local service revalidates the source, creates a new local Agent identity, and stores the origin separately.
 - Community quarantine and moderation are now configurable: development keeps direct publication, while production can require a moderator queue, persisted scan reports, and append-only decisions. Version-bound stars, reviews, and reports remain part of the runnable local Community slice, including persisted current-user Star state. Path/dependency warning scans are present; license scanning and long-lived moderation operations remain future work.
 
@@ -1852,6 +1867,7 @@ Historical smoke counts are not a quality goal.
 - PostgreSQL Community database and object storage
 - upload quarantine
 - Agent/template versions
+- Plugin Pack versions and local re-import
 - download/import/Fork/Star/Review/Report
 - Community UI
 

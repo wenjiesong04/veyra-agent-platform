@@ -22,6 +22,9 @@ import type {
   CommunityRegistryVersionsResponse,
   CommunityRegistryModerationQueueResponse,
   CommunityRegistryModerationRequest,
+  CommunityPluginEntry,
+  CommunityPluginListResponse,
+  CommunityPluginVersionsResponse,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -72,6 +75,11 @@ export type CommunityApi = {
   listRegistryReviews: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryReviewsResponse>;
   reviewRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReviewRequest) => Promise<CommunityRegistryFeedbackResponse & { review: CommunityRegistryReviewsResponse["reviews"][number] }>;
   reportRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReportRequest) => Promise<CommunityRegistryReportResponse>;
+  listRegistryPlugins: (query?: string) => Promise<CommunityPluginEntry[]>;
+  getRegistryPlugin: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityPluginEntry>;
+  listRegistryPluginVersions: (ownerHandle: string, slug: string) => Promise<CommunityPluginEntry[]>;
+  downloadRegistryPlugin: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
+  publishRegistryPlugin: (file: File) => Promise<CommunityPluginEntry>;
 };
 
 type ErrorBody = {
@@ -175,7 +183,7 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
     try {
       response = await fetcher(`${apiBaseUrl}${path}`, {
         method: "GET",
-        headers: { Accept: "application/yaml, text/yaml" },
+        headers: { Accept: "application/zip, application/yaml, text/yaml" },
         credentials: "include",
       });
     } catch (error) {
@@ -315,6 +323,34 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
 
     async reportRegistryAgent(ownerHandle, slug, version, input) {
       return request<CommunityRegistryReportResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/report`, { method: "POST", body: jsonBody(input) });
+    },
+
+    async listRegistryPlugins(query) {
+      const suffix = query?.trim() ? `?query=${encodeURIComponent(query.trim())}` : "";
+      const response = await request<CommunityPluginListResponse>(`/registry/plugins${suffix}`);
+      return response.entries;
+    },
+
+    async getRegistryPlugin(ownerHandle, slug, version) {
+      const path = version
+        ? `/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`
+        : `/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}`;
+      return request<CommunityPluginEntry>(path);
+    },
+
+    async listRegistryPluginVersions(ownerHandle, slug) {
+      const response = await request<CommunityPluginVersionsResponse>(`/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions`);
+      return response.versions;
+    },
+
+    async downloadRegistryPlugin(ownerHandle, slug, version) {
+      return requestBlob(`/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
+    },
+
+    async publishRegistryPlugin(file) {
+      const body = new FormData();
+      body.append("package", file, file.name);
+      return request<CommunityPluginEntry>("/registry/plugins", { method: "POST", body });
     },
   };
 

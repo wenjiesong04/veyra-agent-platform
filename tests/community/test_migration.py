@@ -33,4 +33,7 @@ def test_community_migration_creates_auth_and_outbox_tables(
         "community_sessions",
         "community_mail_outbox",
         "community_avatars",
+        "community_plugins",
+        "community_plugin_versions",
+        "community_plugin_moderations",
     } <= table_names

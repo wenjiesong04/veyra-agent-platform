@@ -134,6 +134,19 @@
   line-height: 1.4;
 }
 
+.community-plugin-panel { gap: 16px; }
+.community-plugin-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.community-plugin-heading > :first-child { min-width: 0; }
+.community-plugin-list { display: grid; gap: 10px; }
+.community-plugin-card { display: grid; gap: 9px; border: 1px solid var(--line); border-radius: 14px; padding: 14px; background: var(--surface-soft); }
+.community-plugin-card-head { display: flex; align-items: center; gap: 9px; color: var(--kind-library); }
+.community-plugin-card-head .row-copy { flex: 1; min-width: 0; }
+.community-plugin-card > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 800px) {
+  .community-plugin-heading { display: grid; }
+}
+
 @media (max-width: 540px) {
   .resource-capability-grid {
     grid-template-columns: 1fr;

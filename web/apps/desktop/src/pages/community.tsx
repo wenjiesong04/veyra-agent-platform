@@ -7,6 +7,7 @@ import { CommunityPublishPanel } from "../features/community/community-publish-p
 import { CommunityFeedbackPanel } from "../features/community/community-feedback-panel";
 import { CommunityCapabilitySummary } from "../features/community/community-capability-summary";
 import { CommunityModerationPanel } from "../features/community/community-moderation-panel";
+import { CommunityPluginPanel } from "../features/community/community-plugin-panel";
 import { useCallback, useEffect, useState } from "react";
 import { NotFoundPage } from "./not-found";
 
@@ -145,6 +146,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
       </div>
       {loading ? <Panel><LoadingState label={zh ? "正在读取社区目录…" : "Loading Community registry…"} /></Panel> : error ? <><ErrorState message={error} onRetry={() => void load()} /><Panel><EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} /></Panel></> : entries.length ? <Panel><SectionHeading eyebrow={zh ? "已发布" : "Published"} title={`${entries.length} ${zh ? "个版本" : "versions"}`} /><div className="run-list">{entries.map((entry) => <a className="run-row" href={communityRoutePaths.entry(entry.owner_handle, entry.slug)} key={`${entry.owner_handle}/${entry.slug}/${entry.version}`}><span className="run-state-icon"><Globe2 size={17} /></span><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle} · {entry.slug} · v{entry.version}</small><em>{entry.description}</em></span><StatusBadge label={entry.status} tone="good" /></a>)}</div></Panel> : <EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} />}
       {!loading && !error ? <CommunityPublishPanel projects={projects} localApi={localApi} communityApi={api} onPublished={onPublished} /> : null}
+      {!loading && !error ? <CommunityPluginPanel communityApi={api} localApi={localApi} /> : null}
       {!loading && !error ? <CommunityModerationPanel communityApi={api} /> : null}
       <Panel className="lineage-panel">
         <div className="boundary-mark"><GitFork size={17} /></div>

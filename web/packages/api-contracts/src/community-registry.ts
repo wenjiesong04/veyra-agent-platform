@@ -127,3 +127,58 @@ export type CommunityRegistryModerationQueueResponse = {
   schema_version: "community.moderation.v1";
   entries: CommunityRegistryEntry[];
 };
+
+export type CommunityPluginSkillSummary = {
+  path: string;
+  reference: string;
+  name: string;
+  description: string;
+};
+
+export type CommunityPluginMcpSummary = {
+  name: string;
+  transport: "stdio" | "streamable_http";
+  url: string | null;
+};
+
+export type CommunityPluginEntry = {
+  schema_version: "community.plugin.registry.v1";
+  owner_handle: string;
+  owner_display_name: string | null;
+  plugin_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version: string;
+  package_hash: string;
+  status: "published" | "quarantined" | "rejected";
+  skill_count: number;
+  mcp_count: number;
+  skills: CommunityPluginSkillSummary[];
+  mcp_servers: CommunityPluginMcpSummary[];
+  license: string | null;
+  created_at: string;
+  published_at: string | null;
+};
+
+export type CommunityPluginListResponse = {
+  schema_version: "community.plugin.registry.v1";
+  entries: CommunityPluginEntry[];
+};
+
+export type CommunityPluginVersionsResponse = {
+  schema_version: "community.plugin.registry.v1";
+  owner_handle: string;
+  slug: string;
+  versions: CommunityPluginEntry[];
+};
+
+export type CommunityPluginModerationQueueResponse = {
+  schema_version: "community.plugin.moderation.v1";
+  entries: CommunityPluginEntry[];
+};
+
+export type CommunityPluginModerationRequest = {
+  action: "publish" | "reject";
+  reason: string;
+};
