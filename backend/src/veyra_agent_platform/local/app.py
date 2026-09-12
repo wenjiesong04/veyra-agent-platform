@@ -113,7 +113,7 @@ def create_app(
         application.state.repository = repository
         application.state.projects = projects
         application.state.project_resources = ProjectResourceService(projects, catalog)
-        application.state.library = LibraryService(repository, projects)
+        application.state.library = LibraryService(repository, projects, catalog)
         application.state.conversations = AgentConversationService(
             repository, application.state.library
         )

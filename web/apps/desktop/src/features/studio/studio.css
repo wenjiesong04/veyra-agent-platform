@@ -54,6 +54,64 @@
   pointer-events: auto;
 }
 
+.studio-dependency-report {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--subtle);
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent) 6%);
+  box-shadow: var(--soft-shadow);
+  font-size: 11px;
+}
+
+.studio-dependency-heading,
+.studio-dependency-list li > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.studio-dependency-heading strong,
+.studio-dependency-list strong {
+  color: var(--text);
+}
+
+.studio-dependency-list {
+  display: grid;
+  gap: 6px;
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-dependency-list li {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding-top: 7px;
+}
+
+.studio-dependency-list code {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-dependency-list p,
+.studio-dependency-empty {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .studio-body {
   --studio-chrome-top: 52px;
   position: relative;

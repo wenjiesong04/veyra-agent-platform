@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Code2, LayoutPanelTop, Save, SlidersHorizontal } from "lucide-react";
-import type { ResourceDescriptor, StudioSource } from "@veyra/api-contracts";
+import type { ResourceDescriptor, StudioSource, ValidateResponse } from "@veyra/api-contracts";
 import { Button, Alert, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
@@ -12,6 +12,7 @@ import { StudioChromeProvider, studioStageStyle, useStudioChrome } from "../feat
 import { WorkflowRunPanel } from "../features/studio/WorkflowRunPanel";
 import { TestRunPanel } from "../features/studio/TestRunPanel";
 import { StudioRunDock } from "../features/studio/studio-run-dock";
+import { DependencyReport } from "../features/studio/DependencyReport";
 import { NotFoundPage } from "./not-found";
 
 type StudioView = "canvas" | "form" | "source";
@@ -43,7 +44,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const copy = studioCopy[locale];
   const isWorkflow = Boolean(workflowId) && !agentId;
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<StudioSource | null>(null);
-  const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null);
+  const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null); const [validation, setValidation] = React.useState<ValidateResponse | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
   const currentSource = React.useRef<StudioSource | null>(null); currentSource.current = source;
   const cleanSnapshot = React.useRef(""); const [dirty, setDirty] = React.useState(false);
@@ -51,7 +52,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const adoptDraft = React.useCallback((draft: { source: StudioSource; revision: number; etag: string }) => {
     const source = adoptStudioSource(draft.source);
     cleanSnapshot.current = JSON.stringify(draft.source);
-    setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setRevision(draft.revision); setEtag(draft.etag); setStatus("ready");
+    setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setRevision(draft.revision); setEtag(draft.etag); setStatus("ready"); setValidation(null);
   }, []);
   const isDraftConflict = (error: unknown) => error instanceof LocalApiClientError && error.code === "draft_conflict";
   const load = React.useCallback(async () => { setStatus("loading"); setMessage(""); try { adoptDraft(isWorkflow && workflowId && api.getWorkflowDraft ? await api.getWorkflowDraft(projectId, workflowId) : await api.getDraft(projectId, agentId ?? "")); } catch (error) { setStatus(isDraftConflict(error) ? "conflict" : "offline"); setMessage(isDraftConflict(error) ? (locale === "zh" ? "磁盘上的草稿已发生外部变化。请加载磁盘版本后继续。" : "The draft changed on disk. Load the disk version before continuing.") : error instanceof Error ? error.message : (locale === "zh" ? "本地草稿不可用。" : "The local draft is unavailable.")); } }, [api, projectId, agentId, workflowId, isWorkflow, locale, adoptDraft]);
@@ -72,7 +73,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: StudioSource) => {
     const source = adoptStudioSource(next);
-    setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setStatus("ready");
+    setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setStatus("ready"); setValidation(null);
   }, []);
   const canSaveDraft = isWorkflow ? Boolean(api.saveWorkflowDraft) : Boolean(api.saveDraft);
   const canReloadDraft = isWorkflow ? Boolean(api.reloadWorkflowDraft) : Boolean(api.reloadDraft);
@@ -126,6 +127,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
           ? await api.validate(projectId, agentId)
           : null;
       if (!result) return;
+      setValidation(result);
       setBehaviorHash(result.behavior_hash);
       const committed = isWorkflow && workflowId && api.commitWorkflow
         ? await api.commitWorkflow(projectId, workflowId, { expectedRevision: revision, etag })
@@ -148,10 +150,11 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
     <StudioChromeProvider>
       <LiveRunProvider api={api} projectId={projectId} agentId={agentId ?? ""} locale={locale} inactive={isWorkflow}>
         <div className="studio-body">
-          {message || diagnostics.length ? (
+          {message || diagnostics.length || Boolean(validation?.dependencies && validation.dependency_summary) ? (
             <StudioNotice
               message={message}
               diagnostics={diagnostics}
+              validation={validation}
               status={status}
               locale={locale}
               canReloadDraft={canReloadDraft}
@@ -173,6 +176,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
 function StudioNotice({
   message,
   diagnostics,
+  validation,
   status,
   locale,
   canReloadDraft,
@@ -180,6 +184,7 @@ function StudioNotice({
 }: {
   message: string;
   diagnostics: GraphDiagnostic[];
+  validation: ValidateResponse | null;
   status: string;
   locale: "zh" | "en";
   canReloadDraft: boolean;
@@ -208,6 +213,7 @@ function StudioNotice({
           duration={STUDIO_DIAGNOSTIC_ALERT_MS}
         />
       ))}
+      {validation ? <DependencyReport validation={validation} locale={locale} /> : null}
     </div>
   );
 }

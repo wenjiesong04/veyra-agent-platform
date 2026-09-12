@@ -51,6 +51,9 @@ import {
   type CreateMcpServerRequest,
   type UpdateMcpServerRequest,
   type McpServer,
+  type AgentDependencyCheck,
+  type AgentDependencyStatus,
+  type AgentDependencySummary,
   type ImportProjectPathRequest,
   type AddProjectResourceRequest,
   type OpenProjectRequest,
@@ -719,6 +722,18 @@ function validated(value: unknown, status = 502): ValidateResponse {
       code: "invalid_response",
     });
   }
+  const dependencies = record.dependencies === undefined
+    ? undefined
+    : asArray(record.dependencies, "validation.dependencies", status).map((item) => validationDependency(item, status));
+  const dependencySummary = record.dependency_summary === undefined
+    ? undefined
+    : validationDependencySummary(record.dependency_summary, status);
+  const runtimeReadyScope = record.runtime_ready_scope === undefined
+    ? undefined
+    : asString(record.runtime_ready_scope, "validation.runtime_ready_scope", status);
+  if (runtimeReadyScope !== undefined && runtimeReadyScope !== "agent_dependencies") {
+    throw new LocalApiClientError("The local service returned an invalid validation scope.", { status, code: "invalid_response" });
+  }
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     valid: true,
@@ -726,6 +741,59 @@ function validated(value: unknown, status = 502): ValidateResponse {
     behavior_hash: asString(record.behavior_hash, "behavior_hash", status),
     lock_hash: asString(record.lock_hash, "lock_hash", status),
     file_hash: asString(record.file_hash, "file_hash", status),
+    ...(dependencies === undefined ? {} : { dependencies }),
+    ...(dependencySummary === undefined ? {} : { dependency_summary: dependencySummary }),
+    ...(record.runtime_ready === undefined ? {} : { runtime_ready: asBoolean(record.runtime_ready, "validation.runtime_ready", status) }),
+    ...(runtimeReadyScope === undefined ? {} : { runtime_ready_scope: "agent_dependencies" as const }),
+  };
+}
+
+function validationDependency(value: unknown, status = 502): AgentDependencyCheck {
+  const record = asRecord(value, status);
+  const kind = asString(record.kind, "validation dependency kind", status);
+  const dependencyStatus = asString(record.status, "validation dependency status", status);
+  const kinds = new Set(["component", "tool", "mcp_tool", "skill", "policy", "template", "knowledge"]);
+  const statuses = new Set<AgentDependencyStatus>(["ready", "missing", "lock_missing", "lock_mismatch", "kind_mismatch", "configuration_required", "runtime_unavailable", "review_required", "permission_denied", "secret_declaration_missing", "context_not_declared", "context_too_large"]);
+  if (!kinds.has(kind) || !statuses.has(dependencyStatus as AgentDependencyStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent dependency check.", { status, code: "invalid_response" });
+  }
+  const runtimeMode = record.runtime_mode === undefined ? undefined : asString(record.runtime_mode, "validation dependency runtime_mode", status);
+  if (runtimeMode !== undefined && !new Set(["tool_adapter", "model_context", "source_policy", "design_only", "knowledge_context", "catalog"]).has(runtimeMode)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent dependency runtime mode.", { status, code: "invalid_response" });
+  }
+  const availability = record.availability === undefined ? undefined : asString(record.availability, "validation dependency availability", status) as ResourceAvailability;
+  const runtimeStatus = record.runtime_status === undefined ? undefined : asString(record.runtime_status, "validation dependency runtime_status", status) as ResourceRuntimeStatus;
+  if (availability !== undefined && !resourceAvailability.has(availability)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent dependency availability.", { status, code: "invalid_response" });
+  }
+  if (runtimeStatus !== undefined && !resourceRuntimeStatuses.has(runtimeStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent dependency runtime status.", { status, code: "invalid_response" });
+  }
+  return {
+    reference: asString(record.reference, "validation dependency reference", status),
+    kind: kind as AgentDependencyCheck["kind"],
+    name: asString(record.name, "validation dependency name", status),
+    status: dependencyStatus as AgentDependencyStatus,
+    detail: asText(record.detail, "validation dependency detail", status),
+    ...(record.locked_hash === undefined ? {} : { locked_hash: asString(record.locked_hash, "validation dependency locked_hash", status) }),
+    ...(record.content_hash === undefined ? {} : { content_hash: asString(record.content_hash, "validation dependency content_hash", status) }),
+    ...(record.version === undefined ? {} : { version: asString(record.version, "validation dependency version", status) }),
+    ...(availability === undefined ? {} : { availability }),
+    ...(runtimeStatus === undefined ? {} : { runtime_status: runtimeStatus }),
+    ...(runtimeMode === undefined ? {} : { runtime_mode: runtimeMode as AgentDependencyCheck["runtime_mode"] }),
+    ...(record.required_permissions === undefined ? {} : { required_permissions: resourcePermissions(record.required_permissions, status) }),
+    ...(record.byte_length === undefined ? {} : { byte_length: asNumber(record.byte_length, "validation dependency byte_length", status) }),
+    used_by: asArray(record.used_by, "validation dependency used_by", status).map((item) => asString(item, "validation dependency node", status)),
+    bound_by: asArray(record.bound_by, "validation dependency bound_by", status).map((item) => asString(item, "validation dependency binding", status)),
+  };
+}
+
+function validationDependencySummary(value: unknown, status = 502): AgentDependencySummary {
+  const record = asRecord(value, status);
+  return {
+    total: asNumber(record.total, "validation dependency total", status),
+    ready: asNumber(record.ready, "validation dependency ready", status),
+    attention: asNumber(record.attention, "validation dependency attention", status),
   };
 }
 

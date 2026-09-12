@@ -21,8 +21,10 @@ from veyra_agent_platform.local.projects.service import (
     _etag,
     _utc_now,
 )
+from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
+from .dependencies import inspect_agent_dependencies
 from .workflow_dependencies import resolve_workflow_calls
 
 
@@ -31,9 +33,15 @@ class DraftConflict(ProjectError):
 
 
 class LibraryService:
-    def __init__(self, repository: LocalRepository, projects: ProjectService) -> None:
+    def __init__(
+        self,
+        repository: LocalRepository,
+        projects: ProjectService,
+        catalog: ResourceCatalog | None = None,
+    ) -> None:
         self.repository = repository
         self.projects = projects
+        self.catalog = catalog
         self.recover_pending_writes()
 
     def recover_pending_writes(self) -> None:
@@ -216,7 +224,7 @@ class LibraryService:
     def validate(self, project_id: str, agent_id: str) -> dict[str, Any]:
         draft = self.draft(project_id, agent_id)
         source = AgentSource.from_dict(draft["source"])
-        return {
+        result = {
             "schema_version": SCHEMA_VERSION,
             "valid": True,
             "source_hash": source.source_hash,
@@ -224,6 +232,13 @@ class LibraryService:
             "lock_hash": source.lock_hash,
             "file_hash": draft["source_file_hash"],
         }
+        if self.catalog is not None:
+            result.update(
+                inspect_agent_dependencies(
+                    self.projects, self.catalog, project_id, source
+                )
+            )
+        return result
 
     def commit(
         self,

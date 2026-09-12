@@ -533,6 +533,44 @@ export type DeleteWorkflowResponse = {
   project: ProjectSummaryResponse;
 };
 
+export type AgentDependencyStatus =
+  | "ready"
+  | "missing"
+  | "lock_missing"
+  | "lock_mismatch"
+  | "kind_mismatch"
+  | "configuration_required"
+  | "runtime_unavailable"
+  | "review_required"
+  | "permission_denied"
+  | "secret_declaration_missing"
+  | "context_not_declared"
+  | "context_too_large";
+
+export type AgentDependencyCheck = {
+  reference: string;
+  kind: ResourceKind | "knowledge";
+  name: string;
+  status: AgentDependencyStatus;
+  detail: string;
+  locked_hash?: string;
+  content_hash?: string;
+  version?: string;
+  availability?: ResourceAvailability;
+  runtime_status?: ResourceRuntimeStatus;
+  runtime_mode?: "tool_adapter" | "model_context" | "source_policy" | "design_only" | "knowledge_context" | "catalog";
+  required_permissions?: ResourcePermissions;
+  byte_length?: number;
+  used_by: string[];
+  bound_by: string[];
+};
+
+export type AgentDependencySummary = {
+  total: number;
+  ready: number;
+  attention: number;
+};
+
 export type ValidateResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   valid: true;
@@ -540,6 +578,10 @@ export type ValidateResponse = {
   behavior_hash: string;
   lock_hash: string;
   file_hash: string;
+  dependencies?: AgentDependencyCheck[];
+  dependency_summary?: AgentDependencySummary;
+  runtime_ready?: boolean;
+  runtime_ready_scope?: "agent_dependencies";
 };
 
 export type CommitResponse = {
