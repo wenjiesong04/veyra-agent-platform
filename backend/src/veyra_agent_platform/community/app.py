@@ -32,7 +32,7 @@ from .storage.avatar_storage import LocalAvatarStorage
 from .storage.database import CommunityDatabase
 from .storage.package_storage import LocalPackageStorage
 
-COMMUNITY_DATABASE_HEAD = "community_0006_agent_feedback"
+COMMUNITY_DATABASE_HEAD = "community_0007_agent_moderation"
 
 
 def _database_revision(database: CommunityDatabase) -> str | None:
@@ -101,6 +101,7 @@ def create_app(
         resolved_database,
         LocalPackageStorage(resolved_settings.registry_storage_root),
         application.state.account_profiles,
+        require_moderation=resolved_settings.require_moderation,
     )
     application.state.database_revision = None
     application.state.database_ready = False

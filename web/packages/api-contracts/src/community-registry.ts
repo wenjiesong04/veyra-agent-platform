@@ -27,6 +27,15 @@ export type CommunityAgentCapabilities = {
   risk_reasons: string[];
 };
 
+export type CommunityAgentScan = {
+  schema_version: "community.scan.v1";
+  status: "passed";
+  package_bytes: number;
+  checks: { name: string; status: "passed" }[];
+  risk_level: "low" | "medium" | "high";
+  risk_reasons: string[];
+};
+
 export type CommunityRegistryEntry = {
   schema_version: "community.registry.v1";
   owner_handle: string;
@@ -38,11 +47,12 @@ export type CommunityRegistryEntry = {
   source_hash: string;
   behavior_hash: string;
   lock_hash: string;
-  status: "published";
+  status: "published" | "quarantined" | "rejected";
   created_at: string;
   published_at: string | null;
   fork_of: CommunityForkOrigin | null;
   capabilities: CommunityAgentCapabilities | null;
+  scan: CommunityAgentScan | null;
   star_count: number;
   review_count: number;
   average_rating: number;
@@ -97,4 +107,14 @@ export type CommunityRegistryVersionsResponse = {
   owner_handle: string;
   slug: string;
   versions: CommunityRegistryEntry[];
+};
+
+export type CommunityRegistryModerationRequest = {
+  action: "publish" | "reject";
+  reason: string;
+};
+
+export type CommunityRegistryModerationQueueResponse = {
+  schema_version: "community.moderation.v1";
+  entries: CommunityRegistryEntry[];
 };

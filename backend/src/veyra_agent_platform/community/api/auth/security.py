@@ -109,6 +109,17 @@ def authenticate_request(request: Request) -> AuthenticatedSession:
         ) from error
 
 
+def require_moderator(request: Request, authenticated: AuthenticatedSession) -> None:
+    """Require a handle explicitly configured for Community moderation."""
+
+    profile = request.app.state.account_profiles.get(authenticated.user_id)
+    settings = get_settings(request)
+    if profile is None or profile.handle.lower() not in settings.moderator_handle_set:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="moderator_required"
+        )
+
+
 def require_csrf(
     request: Request,
     authenticated: AuthenticatedSession,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -98,10 +99,13 @@ class CommunityRegistryService:
         database: CommunityDatabase,
         storage: LocalPackageStorage,
         profiles: AccountProfileService,
+        *,
+        require_moderation: bool = False,
     ) -> None:
         self.database = database
         self.storage = storage
         self.profiles = profiles
+        self.require_moderation = require_moderation
         self.repository = CommunityRegistryRepository()
 
     def list_entries(
@@ -276,8 +280,10 @@ class CommunityRegistryService:
             source.to_dict(), sort_keys=False, allow_unicode=True
         )
         canonical_bytes = canonical_text.encode("utf-8")
+        scan = _scan_payload(canonical_text, source)
         storage_id = self.storage.put(canonical_bytes)
         now = utc_now()
+        status = "quarantined" if self.require_moderation else "published"
         try:
             with self.database.transaction() as session:
                 agent = self.repository.find_agent(
@@ -331,6 +337,9 @@ class CommunityRegistryService:
                     source_hash=source.source_hash,
                     behavior_hash=source.behavior_hash,
                     lock_hash=source.lock_hash,
+                    scan_json=json.dumps(scan, ensure_ascii=False, sort_keys=True),
+                    status=status,
+                    published_at=now if status == "published" else None,
                     now=now,
                 )
                 if source_fork is not None:
@@ -353,6 +362,88 @@ class CommunityRegistryService:
             fork_source=source_fork,
             feedback=feedback,
             capabilities=_capability_payload(source),
+            scan=scan,
+        )
+
+    def moderation_queue(self, *, limit: int = 50) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_moderation_queue(session, limit=clean_limit)
+            entries = [
+                _entry_payload(
+                    *row,
+                    capabilities=self._stored_capabilities(row[1]),
+                    scan=_stored_scan(row[1]),
+                )
+                for row in rows
+            ]
+        return {
+            "schema_version": "community.moderation.v1",
+            "entries": entries,
+        }
+
+    def moderate(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+        moderator_id: str,
+        action: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        if action not in {"publish", "reject"}:
+            raise CommunityRegistryError(
+                "registry_moderation_action_invalid",
+                "Moderation action must publish or reject",
+            )
+        clean_reason = reason.strip()
+        if not clean_reason or len(clean_reason) > 4_000:
+            raise CommunityRegistryError(
+                "registry_moderation_reason_invalid",
+                "Moderation reason must contain 1 to 4000 characters",
+            )
+        with self.database.transaction() as session:
+            row = self.repository.find_version_for_moderation(
+                session,
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+            )
+            if row is None:
+                raise CommunityRegistryError(
+                    "registry_version_not_found", "Agent version was not found"
+                )
+            agent, record, user = row
+            if record.status != "quarantined":
+                raise CommunityRegistryError(
+                    "registry_moderation_not_pending",
+                    "Only quarantined Agent versions can be moderated",
+                )
+            now = utc_now()
+            next_status = "published" if action == "publish" else "rejected"
+            self.repository.set_version_status(
+                session,
+                record,
+                status=next_status,
+                published_at=now if next_status == "published" else None,
+            )
+            self.repository.create_moderation(
+                session,
+                version_id=record.id,
+                moderator_id=moderator_id,
+                action=action,
+                reason=clean_reason,
+                now=now,
+            )
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return _entry_payload(
+            agent,
+            record,
+            user,
+            feedback=feedback,
+            capabilities=self._stored_capabilities(record),
+            scan=_stored_scan(record),
         )
 
     def _stored_capabilities(
@@ -567,6 +658,31 @@ def _capabilities_from_content(
     return _capability_payload(source)
 
 
+def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
+    capabilities = _capability_payload(source)
+    return {
+        "schema_version": "community.scan.v1",
+        "status": "passed",
+        "package_bytes": len(source_text.encode("utf-8")),
+        "checks": [
+            {"name": "utf8", "status": "passed"},
+            {"name": "agent_source", "status": "passed"},
+            {"name": "secret_markers", "status": "passed"},
+            {"name": "source_hash", "status": "passed"},
+        ],
+        "risk_level": capabilities["risk_level"],
+        "risk_reasons": capabilities["risk_reasons"],
+    }
+
+
+def _stored_scan(record: CommunityAgentVersion) -> dict[str, Any] | None:
+    try:
+        value = json.loads(record.scan_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) and value else None
+
+
 def _capability_payload(source: AgentSource) -> dict[str, Any]:
     permissions = source.permissions.to_dict()
     tool_refs = sorted({node.uses for node in source.nodes if node.uses is not None})
@@ -614,6 +730,7 @@ def _entry_payload(
     fork_source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None = None,
     feedback: dict[str, Any] | None = None,
     capabilities: dict[str, Any] | None = None,
+    scan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = feedback or {
         "star_count": 0,
@@ -638,6 +755,7 @@ def _entry_payload(
         else None,
         "fork_of": _fork_payload(fork_source),
         "capabilities": capabilities,
+        "scan": scan if scan is not None else _stored_scan(record),
         "star_count": int(summary["star_count"]),
         "review_count": int(summary["review_count"]),
         "average_rating": float(summary["average_rating"]),

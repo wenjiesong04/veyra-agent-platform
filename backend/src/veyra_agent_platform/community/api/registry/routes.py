@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Any, TypeVar, cast
+from typing import Annotated, Any, Literal, TypeVar, cast
 
 from fastapi import (
     APIRouter,
@@ -23,7 +23,12 @@ from ...registry import (
     CommunityRegistryError,
     CommunityRegistryService,
 )
-from ..auth.security import authenticate_request, get_settings, require_csrf
+from ..auth.security import (
+    authenticate_request,
+    get_settings,
+    require_csrf,
+    require_moderator,
+)
 
 _Result = TypeVar("_Result")
 MAX_PACKAGE_BYTES = 1_000_000
@@ -43,6 +48,11 @@ class ReportRequest(_ClosedModel):
     details: str = Field(default="", max_length=4_000)
 
 
+class ModerateAgentRequest(_ClosedModel):
+    action: Literal["publish", "reject"]
+    reason: str = Field(min_length=1, max_length=4_000)
+
+
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/registry", tags=["registry"])
 
@@ -55,6 +65,15 @@ def build_router() -> APIRouter:
         return _translate(
             lambda: _registry(request).list_entries(query=query, limit=limit)
         )
+
+    @router.get("/moderation/queue")
+    def moderation_queue(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        require_moderator(request, authenticated)
+        return _translate(lambda: _registry(request).moderation_queue(limit=limit))
 
     @router.get("/agents/{owner_handle}/{slug}")
     def agent_detail(owner_handle: str, slug: str, request: Request) -> dict[str, Any]:
@@ -78,6 +97,28 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _registry(request).versions(owner_handle=owner_handle, slug=slug)
+        )
+
+    @router.post("/agents/{owner_handle}/{slug}/versions/{version}/moderate")
+    def moderate_agent(
+        owner_handle: str,
+        slug: str,
+        version: str,
+        payload: ModerateAgentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        require_csrf(request, authenticated, get_settings(request))
+        require_moderator(request, authenticated)
+        return _translate(
+            lambda: _registry(request).moderate(
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+                moderator_id=authenticated.user_id,
+                action=payload.action,
+                reason=payload.reason,
+            )
         )
 
     @router.get("/agents/{owner_handle}/{slug}/versions/{version}/download")
@@ -242,7 +283,12 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         code = exc.code
         status_code = (
             status.HTTP_404_NOT_FOUND
-            if code in {"registry_entry_not_found", "registry_package_missing"}
+            if code
+            in {
+                "registry_entry_not_found",
+                "registry_package_missing",
+                "registry_version_not_found",
+            }
             else status.HTTP_409_CONFLICT
             if code == "registry_version_exists"
             else status.HTTP_422_UNPROCESSABLE_ENTITY

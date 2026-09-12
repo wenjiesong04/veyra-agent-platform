@@ -310,6 +310,8 @@ def test_global_environment_selects_community_production_mode(
         "VEYRA_AUTH_HMAC_SECRET", "production-auth-hmac-secret-that-is-long-enough"
     )
     monkeypatch.setenv("VEYRA_COMMUNITY_ORIGIN", "https://community.veyra.example")
+    monkeypatch.setenv("VEYRA_COMMUNITY_REQUIRE_MODERATION", "true")
+    monkeypatch.setenv("VEYRA_COMMUNITY_MODERATOR_HANDLES", "test-moderator")
 
     settings = CommunitySettings()
 
@@ -332,6 +334,8 @@ def test_community_production_accepts_psycopg_postgresql_url(
         database_url="postgresql+psycopg://db.example/app",
         auth_hmac_secret="production-auth-hmac-secret-that-is-long-enough",
         public_origin="https://community.veyra.example",
+        require_moderation=True,
+        moderator_handles="test-moderator",
     )
 
     assert settings.mode == "production"

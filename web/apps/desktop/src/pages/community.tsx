@@ -6,6 +6,7 @@ import { useProjectWorkspace } from "../api/project-workspace";
 import { CommunityPublishPanel } from "../features/community/community-publish-panel";
 import { CommunityFeedbackPanel } from "../features/community/community-feedback-panel";
 import { CommunityCapabilitySummary } from "../features/community/community-capability-summary";
+import { CommunityModerationPanel } from "../features/community/community-moderation-panel";
 import { useCallback, useEffect, useState } from "react";
 import { NotFoundPage } from "./not-found";
 
@@ -121,8 +122,12 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
   };
   const onPublished = useCallback((entry: CommunityRegistryEntry) => {
     setEntries((current) => [entry, ...current.filter((item) => !(item.owner_handle === entry.owner_handle && item.slug === entry.slug && item.version === entry.version))]);
-    window.location.hash = communityRoutePaths.version(entry.owner_handle, entry.slug, entry.version);
-  }, []);
+    if (entry.status === "published") {
+      window.location.hash = communityRoutePaths.version(entry.owner_handle, entry.slug, entry.version);
+    } else {
+      setError(zh ? "版本已进入审核队列，审核通过后才会出现在公开目录。" : "The version is in the moderation queue and will appear publicly after approval.");
+    }
+  }, [zh]);
   if (owner || slug || versionId) {
     if (loading) return <LoadingState label={zh ? "正在读取社区 Agent…" : "Loading Community Agent…"} />;
     if (error || !selected) return <NotFoundPage backHref={communityRoutePaths.catalog} backLabel={copy.backCommunity} />;
@@ -140,6 +145,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
       </div>
       {loading ? <Panel><LoadingState label={zh ? "正在读取社区目录…" : "Loading Community registry…"} /></Panel> : error ? <><ErrorState message={error} onRetry={() => void load()} /><Panel><EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} /></Panel></> : entries.length ? <Panel><SectionHeading eyebrow={zh ? "已发布" : "Published"} title={`${entries.length} ${zh ? "个版本" : "versions"}`} /><div className="run-list">{entries.map((entry) => <a className="run-row" href={communityRoutePaths.entry(entry.owner_handle, entry.slug)} key={`${entry.owner_handle}/${entry.slug}/${entry.version}`}><span className="run-state-icon"><Globe2 size={17} /></span><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle} · {entry.slug} · v{entry.version}</small><em>{entry.description}</em></span><StatusBadge label={entry.status} tone="good" /></a>)}</div></Panel> : <EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} />}
       {!loading && !error ? <CommunityPublishPanel projects={projects} localApi={localApi} communityApi={api} onPublished={onPublished} /> : null}
+      {!loading && !error ? <CommunityModerationPanel communityApi={api} /> : null}
       <Panel className="lineage-panel">
         <div className="boundary-mark"><GitFork size={17} /></div>
         <div><strong>{copy.lineageTitle}</strong><p>{copy.lineageDetail}</p></div>

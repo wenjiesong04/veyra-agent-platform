@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .schema import (
     CommunityAgent,
     CommunityAgentFork,
+    CommunityAgentModeration,
     CommunityAgentReport,
     CommunityAgentReview,
     CommunityAgentStar,
@@ -116,6 +117,45 @@ class CommunityRegistryRepository:
         )
         return list(session.execute(query).tuples().all())
 
+    def list_moderation_queue(
+        self, session: Session, *, limit: int
+    ) -> list[tuple[CommunityAgent, CommunityAgentVersion, CommunityUser]]:
+        query = (
+            select(CommunityAgent, CommunityAgentVersion, CommunityUser)
+            .join(
+                CommunityAgentVersion,
+                CommunityAgentVersion.agent_id == CommunityAgent.id,
+            )
+            .join(CommunityUser, CommunityUser.id == CommunityAgent.owner_id)
+            .where(CommunityAgentVersion.status == "quarantined")
+            .order_by(CommunityAgentVersion.created_at.asc())
+            .limit(limit)
+        )
+        return list(session.execute(query).tuples().all())
+
+    def find_version_for_moderation(
+        self,
+        session: Session,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+    ) -> tuple[CommunityAgent, CommunityAgentVersion, CommunityUser] | None:
+        query = (
+            select(CommunityAgent, CommunityAgentVersion, CommunityUser)
+            .join(
+                CommunityAgentVersion,
+                CommunityAgentVersion.agent_id == CommunityAgent.id,
+            )
+            .join(CommunityUser, CommunityUser.id == CommunityAgent.owner_id)
+            .where(
+                CommunityUser.handle == owner_handle,
+                CommunityAgent.slug == slug,
+                CommunityAgentVersion.version == version,
+            )
+        )
+        return session.execute(query.limit(1)).tuples().first()
+
     def create_agent(
         self,
         session: Session,
@@ -159,6 +199,9 @@ class CommunityRegistryRepository:
         source_hash: str,
         behavior_hash: str,
         lock_hash: str,
+        scan_json: str,
+        status: str,
+        published_at: datetime | None,
         now: datetime,
     ) -> CommunityAgentVersion:
         record = CommunityAgentVersion(
@@ -169,9 +212,44 @@ class CommunityRegistryRepository:
             source_hash=source_hash,
             behavior_hash=behavior_hash,
             lock_hash=lock_hash,
-            status="published",
+            status=status,
+            scan_json=scan_json,
             created_at=now,
-            published_at=now,
+            published_at=published_at,
+        )
+        session.add(record)
+        session.flush()
+        return record
+
+    @staticmethod
+    def set_version_status(
+        session: Session,
+        record: CommunityAgentVersion,
+        *,
+        status: str,
+        published_at: datetime | None,
+    ) -> None:
+        record.status = status
+        record.published_at = published_at
+        session.flush()
+
+    def create_moderation(
+        self,
+        session: Session,
+        *,
+        version_id: str,
+        moderator_id: str,
+        action: str,
+        reason: str,
+        now: datetime,
+    ) -> CommunityAgentModeration:
+        record = CommunityAgentModeration(
+            id=_uuid(),
+            version_id=version_id,
+            moderator_id=moderator_id,
+            action=action,
+            reason=reason,
+            created_at=now,
         )
         session.add(record)
         session.flush()

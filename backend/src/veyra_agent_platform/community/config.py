@@ -90,6 +90,8 @@ class CommunitySettings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("VEYRA_COMMUNITY_ORIGIN", "VEYRA_PUBLIC_ORIGIN"),
     )
+    require_moderation: bool = False
+    moderator_handles: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -126,6 +128,12 @@ class CommunitySettings(BaseSettings):
                 raise ValueError(
                     "production Community mode requires VEYRA_COMMUNITY_ORIGIN"
                 )
+            if not self.require_moderation:
+                raise ValueError(
+                    "production Community mode requires package moderation"
+                )
+            if not self.moderator_handle_set:
+                raise ValueError("production Community mode requires moderator handles")
         if len(self.auth_hmac_secret.get_secret_value().encode("utf-8")) < 32:
             raise ValueError("auth HMAC secret must contain at least 32 bytes")
         return self
@@ -158,3 +166,11 @@ class CommunitySettings(BaseSettings):
         """Use Secure cookies outside local development and test environments."""
 
         return self.mode == "production"
+
+    @property
+    def moderator_handle_set(self) -> frozenset[str]:
+        return frozenset(
+            item.strip().lower()
+            for item in self.moderator_handles.split(",")
+            if item.strip()
+        )

@@ -116,6 +116,8 @@ def test_cookie_names_and_secure_flags_follow_deployment_mode() -> None:
         build_sha="0123456789abcdef",
         auth_hmac_secret="production-auth-secret-that-is-long-enough",
         public_origin="https://community.example.test",
+        require_moderation=True,
+        moderator_handles="test-moderator",
     )
 
     assert auth_cookie_names(development) == DEVELOPMENT_AUTH_COOKIE_NAMES

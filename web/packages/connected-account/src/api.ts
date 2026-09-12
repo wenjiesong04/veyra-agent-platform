@@ -20,6 +20,8 @@ import type {
   CommunityRegistryReviewRequest,
   CommunityRegistryReviewsResponse,
   CommunityRegistryVersionsResponse,
+  CommunityRegistryModerationQueueResponse,
+  CommunityRegistryModerationRequest,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -60,6 +62,8 @@ export type CommunityApi = {
   listRegistryAgents: (query?: string) => Promise<CommunityRegistryEntry[]>;
   getRegistryAgent: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityRegistryEntry>;
   listRegistryAgentVersions: (ownerHandle: string, slug: string) => Promise<CommunityRegistryEntry[]>;
+  listRegistryModerationQueue: () => Promise<CommunityRegistryEntry[]>;
+  moderateRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryModerationRequest) => Promise<CommunityRegistryEntry>;
   downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
   publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin) => Promise<CommunityRegistryEntry>;
   starRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
@@ -262,6 +266,15 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
     async listRegistryAgentVersions(ownerHandle, slug) {
       const response = await request<CommunityRegistryVersionsResponse>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions`);
       return response.versions;
+    },
+
+    async listRegistryModerationQueue() {
+      const response = await request<CommunityRegistryModerationQueueResponse>("/registry/moderation/queue");
+      return response.entries;
+    },
+
+    async moderateRegistryAgent(ownerHandle, slug, version, input) {
+      return request<CommunityRegistryEntry>(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/moderate`, { method: "POST", body: jsonBody(input) });
     },
 
     async downloadRegistryAgent(ownerHandle, slug, version) {

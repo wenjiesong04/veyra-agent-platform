@@ -144,8 +144,30 @@ class CommunityAgentVersion(CommunityBase):
     behavior_hash: Mapped[str] = mapped_column(String(64))
     lock_hash: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="published")
+    scan_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(UtcDateTime())
     published_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+
+
+class CommunityAgentModeration(CommunityBase):
+    """Append-only receipt for a moderator's package decision."""
+
+    __tablename__ = "community_agent_moderations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_agent_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    moderator_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("community_users.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
 
 
 class CommunityAgentFork(CommunityBase):
