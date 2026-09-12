@@ -29,6 +29,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
   const live = useLiveRun({ api, projectId, agentId, locale });
   const { chrome, setChrome } = useStudioChrome();
   const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialSourceInputs(source.inputs));
+  const [fileOptions, setFileOptions] = React.useState<string[]>([]);
   const zh = locale === "zh";
   const run = live.run;
   const inFlight = live.busy || run?.status === "running" || run?.status === "waiting";
@@ -39,6 +40,20 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
     setInputs(initialSourceInputs(source.inputs));
     live.clear();
   }, [source.agent_id, source.inputs, live.clear]);
+
+  React.useEffect(() => {
+    if (!api.listProjectFiles) {
+      setFileOptions([]);
+      return;
+    }
+    let current = true;
+    void api.listProjectFiles(projectId).then((response) => {
+      if (current) setFileOptions(response.files.map((item) => item.path));
+    }).catch(() => {
+      if (current) setFileOptions([]);
+    });
+    return () => { current = false; };
+  }, [api, projectId]);
 
   const nodes = nodeRunStates(source, run?.events ?? []);
 
@@ -71,6 +86,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             values={inputs}
             onChange={setInputs}
             emptyLabel={zh ? "此 Agent 不需要输入。" : "This Agent has no inputs."}
+            fileOptions={fileOptions}
           />
           <div className="studio-run-actions">
             <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runAgent} onClick={() => void live.start(inputs)}>

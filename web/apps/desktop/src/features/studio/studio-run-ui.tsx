@@ -129,11 +129,13 @@ export function RunInputFields({
   values,
   onChange,
   emptyLabel,
+  fileOptions = [],
 }: {
   schema: Record<string, string>;
   values: Record<string, JsonValue>;
   onChange: (values: Record<string, JsonValue>) => void;
   emptyLabel: string;
+  fileOptions?: string[];
 }) {
   return (
     <>
@@ -167,19 +169,23 @@ export function RunInputFields({
               }}
             />
           ) : (
-            <input
-              type={type === "integer" || type === "number" ? "number" : "text"}
-              step={type === "integer" ? "1" : "any"}
-              value={String(values[name] ?? "")}
-              onChange={(event) => {
-                const value: JsonValue = type === "integer"
-                  ? Number.parseInt(event.target.value || "0", 10)
-                  : type === "number"
-                    ? Number.parseFloat(event.target.value || "0")
-                    : event.target.value;
-                onChange({ ...values, [name]: value });
-              }}
-            />
+            <>
+              <input
+                type={type === "integer" || type === "number" ? "number" : "text"}
+                step={type === "integer" ? "1" : "any"}
+                list={type === "string" && fileOptions.length > 0 && /(^|_)(path|file|document)(_|$)/i.test(name) ? `run-file-options-${name}` : undefined}
+                value={String(values[name] ?? "")}
+                onChange={(event) => {
+                  const value: JsonValue = type === "integer"
+                    ? Number.parseInt(event.target.value || "0", 10)
+                    : type === "number"
+                      ? Number.parseFloat(event.target.value || "0")
+                      : event.target.value;
+                  onChange({ ...values, [name]: value });
+                }}
+              />
+              {type === "string" && fileOptions.length > 0 && /(^|_)(path|file|document)(_|$)/i.test(name) ? <datalist id={`run-file-options-${name}`}>{fileOptions.slice(0, 100).map((path) => <option value={path} key={path} />)}</datalist> : null}
+            </>
           )}
         </label>
       ))}
