@@ -907,8 +907,8 @@ workspace per layer, not one Canvas for every page.
 | Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output. Left palette projects Model, Tool, Knowledge bindings, plus HumanApproval and Verifier. Condition, Transform, and AgentCall stay on the Workflow canvas. Right inspector edits parameters. Bottom panel test-runs. |
 | Workflow | Same Canvas shell | Declares its own inputs and outputs. Palette is AgentCall plus control flow (Condition, Transform, HumanApproval, Verifier). No Model or Tool nodes. Existing Agents are not renamed into Workflows. |
 | Component | Resource Catalog + Project Resource Library | Global Catalog owns description, version, examples, and references; Project Resource Library owns selected versions and usage. Not a flowchart. Primitive vs composite stays a required class. |
-| Knowledge | Library + preview | Project documents, metadata, and citations. Not a flowchart. |
-| Files / Assets | File manager | Raw indexed files, separate from Knowledge documents. |
+| Knowledge | Library + preview | Project documents, metadata, and citations. A document can be explicitly bound to an Agent from its detail page. Not a flowchart. |
+| Files / Assets | File manager | Raw indexed files, separate from Knowledge documents; a file can open an Agent Studio run with its relative path prefilled. |
 | Runs | List + timeline + logs | Inspect steps, outputs, and replay. No editing. |
 | Community | Marketplace | Share and download versioned packages. Never execute remotely. |
 | Settings | Control panel | Model providers, API keys, and runtime environment. Secrets stay out of Project directories. |
