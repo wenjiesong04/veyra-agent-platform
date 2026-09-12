@@ -450,7 +450,7 @@ WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；�
 
 ### 已完成：Community Plugin Registry
 
-Community 现在单独维护 Plugin Pack 身份和不可变版本，不复用 Agent 表。Desktop 的社区页可以发布、浏览、下载 `.vplugin.zip`，并支持“下载并导入本机”；本机仍会重新进入 Plugin Pack 的 quarantine/activation 流程。Community 只保存包字节和不含 Skill 正文/凭据值的公开 manifest 摘要，不启动 MCP、不解释 Skill 指令。配置了 Community moderation 时，Plugin Pack 版本也会进入独立审核队列并留下 moderation receipt。
+Community 现在单独维护 Plugin Pack 身份和不可变版本，不复用 Agent 表。Desktop 的社区页可以发布、浏览、查看详情、切换版本、下载 `.vplugin.zip`，并支持“下载并导入本机”；页面会把社区版本与本机已安装版本按 plugin_id、版本和包哈希对比，标出未安装、可更新、已同步或本机版本较新。本机仍会重新进入 Plugin Pack 的 quarantine/activation 流程。Community 只保存包字节和不含 Skill 正文/凭据值的公开 manifest 摘要，不启动 MCP、不解释 Skill 指令。配置了 Community moderation 时，Plugin Pack 版本也会进入独立审核队列并留下 moderation receipt。
 
 ### 下一波 C：发行与部署
 
