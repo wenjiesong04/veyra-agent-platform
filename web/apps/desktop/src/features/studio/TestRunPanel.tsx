@@ -5,9 +5,9 @@ import { Alert, Button, Panel, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { nodeRunStates, useLiveRun } from "./live-run";
 import { RunApprovalBar } from "./RunApprovalBar";
+import { RunEventList } from "./RunEventList";
 import { useStudioChrome } from "./studio-chrome";
 import {
-  eventLabel,
   initialSourceInputs,
   nodeStateLabel,
   RunInputFields,
@@ -98,18 +98,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
               ))}
             </ol>
           ) : null}
-          {run?.events?.length ? (
-            <ol className="studio-event-list">
-              {run.events.map((event) => (
-                <li key={event.event_id} className={event.kind.endsWith("failed") ? "bad" : ""}>
-                  <span>{event.sequence}</span>
-                  <strong>{eventLabel(event.kind, locale)}</strong>
-                  <small>{event.kind}</small>
-                  <small>{event.node_id ?? "run"}</small>
-                </li>
-              ))}
-            </ol>
-          ) : !run && !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
+          {run?.events?.length ? <RunEventList events={run.events} locale={locale} /> : !run && !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
         </div>
       </div>
       )}

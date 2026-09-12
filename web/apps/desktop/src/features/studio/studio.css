@@ -894,6 +894,16 @@ html.is-pane-resizing .studio-canvas {
 .studio-event-list li > span { color: var(--accent-strong); font: 700 9px ui-monospace, monospace; }
 .studio-event-list li > small { color: var(--subtle); font: 9px ui-monospace, monospace; }
 .studio-event-list li.bad { color: var(--bad); background: var(--bad-soft); }
+.studio-event-row { grid-column: 1 / -1; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; min-width: 0; }
+.studio-event-row > span { color: var(--accent-strong); font: 700 9px ui-monospace, monospace; }
+.studio-event-row > small { color: var(--subtle); font: 9px ui-monospace, monospace; }
+.studio-event-list details,
+.studio-stream-evidence { grid-column: 1 / -1; min-width: 0; }
+.studio-event-list details summary,
+.studio-stream-evidence summary { cursor: pointer; color: var(--accent-strong); font-size: 10px; }
+.studio-event-list details pre,
+.studio-stream-evidence pre { max-height: 180px; overflow: auto; margin: 6px 0 0; border-radius: 7px; padding: 8px; color: var(--hero-text); background: var(--hero-start); font: 9px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.studio-stream-evidence { display: grid; gap: 6px; margin-bottom: 6px; border-radius: 8px; padding: 8px; background: var(--surface); }
 
 .studio-canvas .react-flow__controls,
 .studio-canvas .react-flow__minimap { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--soft-shadow); }
