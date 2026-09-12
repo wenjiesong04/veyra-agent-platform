@@ -10,10 +10,11 @@ export async function bindKnowledgeToAgent(
   if (!api.saveDraft) throw new Error("This workspace cannot update Agent context.");
   const draft = await api.getDraft(projectId, agentId);
   const reference = `${knowledge.knowledge_id}@${knowledge.version ?? "1.0.0"}`;
-  const bindings = { ...(draft.source.ui.bindings ?? {}) };
-  const existing = Object.entries(bindings).find(([, binding]) => binding.kind === "knowledge" && binding.reference === reference);
-  const bindingId = existing?.[0] ?? nextBindingId(bindings, knowledge.knowledge_id);
-  const position = existing?.[1] ?? {
+  const knowledgePrefix = `${knowledge.knowledge_id}@`;
+  const previous = Object.entries(draft.source.ui.bindings ?? {}).find(([, binding]) => binding.kind === "knowledge" && binding.reference.startsWith(knowledgePrefix));
+  const bindings = Object.fromEntries(Object.entries(draft.source.ui.bindings ?? {}).filter(([, binding]) => !(binding.kind === "knowledge" && binding.reference.startsWith(knowledgePrefix))));
+  const bindingId = previous?.[0] ?? nextBindingId(bindings, knowledge.knowledge_id);
+  const position = previous?.[1] ?? {
     kind: "knowledge" as const,
     reference,
     x: 24 + (Object.keys(bindings).length % 3) * 220,
@@ -25,14 +26,20 @@ export async function bindKnowledgeToAgent(
       ...draft.source.extensions,
       veyra: {
         ...draft.source.extensions.veyra,
-        knowledge_refs: [...new Set([...(draft.source.extensions.veyra.knowledge_refs ?? []), reference])],
+        knowledge_refs: [...new Set([
+          ...(draft.source.extensions.veyra.knowledge_refs ?? []).filter((item) => !item.startsWith(knowledgePrefix)),
+          reference,
+        ])],
       },
     },
     ui: {
       ...draft.source.ui,
-      bindings: { ...bindings, [bindingId]: position },
+      bindings: { ...bindings, [bindingId]: { ...position, reference } },
     },
-    lock: { ...draft.source.lock, [reference]: knowledge.source_file_hash },
+    lock: {
+      ...Object.fromEntries(Object.entries(draft.source.lock).filter(([item]) => !item.startsWith(knowledgePrefix))),
+      [reference]: knowledge.source_file_hash,
+    },
   };
   return api.saveDraft(
     projectId,

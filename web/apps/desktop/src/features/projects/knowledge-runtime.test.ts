@@ -50,4 +50,25 @@ describe("bindKnowledgeToAgent", () => {
     expect(request.source.ui.bindings?.knowledge_knowledge1).toMatchObject({ kind: "knowledge", reference: "knowledge-1@1.0.0" });
     expect(saveDraft.mock.calls[0]?.[3]).toEqual({ etag: "etag-3" });
   });
+
+  it("replaces an older version of the same Knowledge document", async () => {
+    const previous = {
+      ...source,
+      extensions: { ...source.extensions, veyra: { ...source.extensions.veyra, knowledge_refs: ["knowledge-1@0.9.0"] } },
+      ui: { ...source.ui, bindings: { knowledge_knowledge1: { kind: "knowledge" as const, reference: "knowledge-1@0.9.0", x: 360, y: 180 } } },
+      lock: { "knowledge-1@0.9.0": "a".repeat(64) },
+    };
+    const saveDraft = vi.fn().mockResolvedValue({ source: previous });
+    const api = {
+      getDraft: vi.fn().mockResolvedValue({ source: previous, revision: 4, etag: "etag-4" }),
+      saveDraft,
+    } as unknown as LocalProjectApi;
+
+    await bindKnowledgeToAgent(api, "project-1", "agent-1", knowledge);
+
+    const request = saveDraft.mock.calls[0]?.[2] as { source: AgentSource };
+    expect(request.source.extensions.veyra.knowledge_refs).toEqual(["knowledge-1@1.0.0"]);
+    expect(request.source.lock).toEqual({ "knowledge-1@1.0.0": "b".repeat(64) });
+    expect(request.source.ui.bindings?.knowledge_knowledge1).toEqual({ kind: "knowledge", reference: "knowledge-1@1.0.0", x: 360, y: 180 });
+  });
 });
