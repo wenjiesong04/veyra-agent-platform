@@ -42,12 +42,32 @@ class SetRuntimeApiProfileRequest(BaseModel):
     profile: RuntimeApiProfileInput | None
 
 
+class ValidateRuntimeProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: RuntimeApiProfileInput
+
+
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["runtime"])
 
     @router.get("/runtime/status")
     def runtime_status(request: Request) -> dict[str, Any]:
         return _runtime(request).status()
+
+    @router.post("/runtime/profile/validate")
+    def validate_runtime_profile(
+        payload: ValidateRuntimeProfileRequest, request: Request
+    ) -> dict[str, Any]:
+        return _profile_translate(
+            lambda: _runtime(request).validate_profile(payload.profile.profile())
+        )
+
+    @router.get("/projects/{project_id}/agents/{agent_id}/runtime-readiness")
+    def runtime_readiness(
+        project_id: str, agent_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(lambda: _runtime(request).readiness(project_id, agent_id))
 
     @router.get("/projects/{project_id}/runtime-profile")
     def get_project_profile(project_id: str, request: Request) -> dict[str, Any]:

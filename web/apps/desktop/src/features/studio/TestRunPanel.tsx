@@ -81,7 +81,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
           <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
           {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
           {!api.runAgent ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
-          {api.runtimeStatus && !disabled ? <RuntimeKeyNote api={api} locale={locale} /> : null}
+          {(api.runtimeStatus || api.runtimeReadiness) && !disabled ? <RuntimeKeyNote api={api} projectId={projectId} agentId={agentId} locale={locale} /> : null}
         </div>
         <div className={`studio-run-result${!run && !live.error ? " is-empty" : ""}`} aria-live="polite">
           {live.error ? <Alert type="error" title={live.error} /> : null}

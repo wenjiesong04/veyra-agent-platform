@@ -19,6 +19,9 @@ from veyra_agent_platform.contracts.common import (
     new_uuid7,
 )
 from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.library.dependencies import (
+    inspect_agent_dependencies,
+)
 from veyra_agent_platform.local.library.knowledge_context import read_knowledge_context
 from veyra_agent_platform.local.library.service import LibraryService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
@@ -28,7 +31,7 @@ from veyra_agent_platform.local.storage.repositories import LocalRepository
 from .client import RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
 from .conversations import AgentConversationService
-from .profiles import RuntimeProfileStore
+from .profiles import RuntimeApiProfile, RuntimeProfileStore
 from .tools import ToolRuntime, ToolRuntimeError
 
 _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
@@ -100,6 +103,158 @@ class RuntimeService:
 
     def status(self) -> dict[str, Any]:
         return self.model.status()
+
+    def validate_profile(self, profile: RuntimeApiProfile) -> dict[str, Any]:
+        """Validate a supplied profile without persisting it or running a prompt."""
+        settings = self.model.settings.model_copy(
+            update={
+                "model_base_url": profile.base_url,
+                "model_id": profile.model_id,
+                "model_api_key_env": profile.api_key_env,
+            }
+        )
+        client = RuntimeModelClient(
+            settings,
+            transport=self.model.transport,
+            secret_store=self.model.secret_store,
+        )
+        try:
+            client.validate()
+        except RuntimeProviderError as exc:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "valid": False,
+                "configured": exc.code != "runtime_not_configured",
+                "model_available": False,
+                "provider": profile.provider,
+                "base_url": profile.base_url,
+                "model_id": profile.model_id,
+                "api_key_env": profile.api_key_env,
+                "code": exc.code,
+                "message": str(exc),
+            }
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "valid": True,
+            "configured": True,
+            "model_available": True,
+            "provider": profile.provider,
+            "base_url": profile.base_url,
+            "model_id": profile.model_id,
+            "api_key_env": profile.api_key_env,
+            "code": "validated",
+            "message": (
+                "Runtime model credentials and model availability were verified."
+            ),
+        }
+
+    def readiness(self, project_id: str, agent_id: str) -> dict[str, Any]:
+        """Return a no-effect startup preflight for one effective Agent Runtime."""
+        agent = self.library._agent_in_project(project_id, agent_id)
+        source_path = self.library._source_path(project_id, agent)
+        source_text = self.projects._read_text(source_path)
+        source = AgentSource.from_dict(
+            self.projects._parse_yaml(source_text, agent["slug"])
+        )
+        dependencies = inspect_agent_dependencies(
+            self.projects, self.tools.catalog, project_id, source
+        )
+        model = self._model_for(project_id, agent_id)
+        model_status = model.status()
+        requires_model = any(
+            node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
+            for node in source.nodes
+        )
+        model_ready = not requires_model or bool(model_status["configured"])
+        model_detail = (
+            "No model node is present in this Agent."
+            if not requires_model
+            else (
+                "Effective Runtime model credentials are available."
+                if model_ready
+                else "Effective Runtime model credentials are not configured."
+            )
+        )
+        _, profile_source = self.profiles.effective(project_id, agent_id)
+        tool_checks = self._tool_readiness(source)
+        tools_ready = all(item["ready"] for item in tool_checks)
+        checks = [
+            {
+                "id": "dependencies",
+                "ready": bool(dependencies["runtime_ready"]),
+                "code": "ready"
+                if dependencies["runtime_ready"]
+                else "dependency_attention",
+                "detail": (
+                    "All Agent dependencies are resolved."
+                    if dependencies["runtime_ready"]
+                    else "One or more Agent dependencies need attention."
+                ),
+            },
+            {
+                "id": "model",
+                "ready": model_ready,
+                "code": "ready" if model_ready else "runtime_not_configured",
+                "detail": model_detail,
+            },
+            {
+                "id": "tools",
+                "ready": tools_ready,
+                "code": "ready" if tools_ready else "tool_runtime_unavailable",
+                "detail": (
+                    "Tool Runtime authorization preflight passed."
+                    if tools_ready
+                    else "One or more Tools cannot pass Runtime authorization."
+                ),
+            },
+        ]
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "project_id": project_id,
+            "agent_id": agent_id,
+            "ready": all(item["ready"] for item in checks),
+            "profile_source": profile_source,
+            "model": {
+                "required": requires_model,
+                "configured": bool(model_status["configured"]),
+                "model_id": model_status["model_id"],
+                "model_base_url": model_status["model_base_url"],
+                "model_api_key_env": model_status["model_api_key_env"],
+            },
+            "dependency_summary": dependencies["dependency_summary"],
+            "dependencies": dependencies["dependencies"],
+            "tool_checks": tool_checks,
+            "checks": checks,
+        }
+
+    def _tool_readiness(self, source: AgentSource) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        for node in source.nodes:
+            if node.component_type is not ComponentType.TOOL:
+                continue
+            authorization = self.tools.authorize(source=source, node=node, values={})
+            ready = authorization.decision == "allowed"
+            code = authorization.code
+            detail = authorization.reason
+            resource = authorization.resource or {}
+            spec = resource.get("spec")
+            if ready and isinstance(spec, Mapping):
+                server_id = spec.get("mcp_server_id")
+                if isinstance(server_id, str) and self.tools.mcp is not None:
+                    mcp_status = self.tools.mcp.readiness(server_id)
+                    ready = bool(mcp_status["ready"])
+                    code = str(mcp_status["code"])
+                    detail = str(mcp_status["detail"])
+            checks.append(
+                {
+                    "node_id": node.id,
+                    "reference": node.uses or "tool_reference_missing",
+                    "ready": ready,
+                    "code": code,
+                    "detail": detail,
+                }
+            )
+        return checks
 
     def components(self) -> dict[str, Any]:
         from veyra_agent_platform.local.components import component_registry
@@ -1250,7 +1405,7 @@ class RuntimeService:
                 "model_api_key_env": profile.api_key_env,
             }
         )
-        return RuntimeModelClient(settings)
+        return RuntimeModelClient(settings, secret_store=self.model.secret_store)
 
     def _agent_system_prompt(self, node: Any, source: AgentSource) -> str:
         prompt = node.system_prompt or ""

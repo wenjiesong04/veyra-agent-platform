@@ -105,6 +105,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/agents/{agent_id}/runs/{run_id}/events",
         "/api/v1/projects/{project_id}/runtime-profile",
         "/api/v1/projects/{project_id}/agents/{agent_id}/runtime-profile",
+        "/api/v1/projects/{project_id}/agents/{agent_id}/runtime-readiness",
         "/api/v1/projects/{project_id}/factory/sessions",
         "/api/v1/projects/{project_id}/factory/sessions/{session_id}",
         "/api/v1/projects/{project_id}/factory/sessions/{session_id}/messages",
@@ -115,6 +116,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/system/reveal-project",
         "/api/v1/factory/status",
         "/api/v1/runtime/status",
+        "/api/v1/runtime/profile/validate",
     }
     assert local_paths == expected_local_paths
     assert community_paths == shared_paths | {

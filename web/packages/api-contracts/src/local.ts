@@ -806,6 +806,53 @@ export type RuntimeStatus = {
   user_provided_only: boolean;
 };
 
+export type RuntimeProfileValidation = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  valid: boolean;
+  configured: boolean;
+  model_available: boolean;
+  provider: string;
+  base_url: string;
+  model_id: string;
+  api_key_env: string;
+  code: string;
+  message: string;
+};
+
+export type RuntimeReadinessCheck = {
+  id: "dependencies" | "model" | "tools";
+  ready: boolean;
+  code: string;
+  detail: string;
+};
+
+export type RuntimeToolReadiness = {
+  node_id: string;
+  reference: string;
+  ready: boolean;
+  code: string;
+  detail: string;
+};
+
+export type RuntimeReadiness = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  agent_id: string;
+  ready: boolean;
+  profile_source: "agent" | "project" | "default";
+  model: {
+    required: boolean;
+    configured: boolean;
+    model_id: string;
+    model_base_url: string;
+    model_api_key_env: string;
+  };
+  dependency_summary: AgentDependencySummary;
+  dependencies: AgentDependencyCheck[];
+  tool_checks: RuntimeToolReadiness[];
+  checks: RuntimeReadinessCheck[];
+};
+
 export type SecretStatus = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   secret_ref: string;

@@ -269,6 +269,12 @@ class RuntimeModelClient:
             return
         yield transport.complete(messages).content
 
+    def validate(self) -> None:
+        """Verify credentials and the model through the provider model list."""
+        if not self.configured:
+            raise RuntimeProviderNotConfigured()
+        self._ensure_model(self._transport())
+
     def _ensure_model(self, transport: RuntimeModelTransport) -> None:
         if self._model_checked:
             return

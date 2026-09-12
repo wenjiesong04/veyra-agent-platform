@@ -268,6 +268,40 @@ class McpService:
         except McpTransportError as exc:
             raise McpError(exc.code, str(exc)) from exc
 
+    def readiness(self, server_id: str) -> dict[str, Any]:
+        """Check an MCP server without spawning its process or calling a tool."""
+        try:
+            row = self._require(server_id)
+        except McpError as exc:
+            return {"ready": False, "code": exc.code, "detail": str(exc)}
+        if not row["enabled"]:
+            return {
+                "ready": False,
+                "code": "mcp_server_disabled",
+                "detail": "MCP server is disabled",
+            }
+        env_names = json.loads(row["env_names_json"])
+        for binding in env_names.values():
+            secret_ref = binding if _SECRET_REF.fullmatch(binding) else ""
+            value = resolve_secret(
+                self._secret_store if secret_ref else None,
+                secret_ref,
+                binding,
+            )
+            if not value:
+                return {
+                    "ready": False,
+                    "code": "mcp_env_missing",
+                    "detail": "MCP server environment binding is not configured",
+                }
+        return {
+            "ready": True,
+            "code": "ready",
+            "detail": (
+                "MCP server is enabled and its environment bindings are configured"
+            ),
+        }
+
     def _require(self, server_id: str) -> Any:
         row = self.store.get(server_id)
         if row is None:

@@ -426,6 +426,31 @@ a.project-agent-row:hover { color: var(--accent-strong); background: var(--surfa
   font-size: 11px;
 }
 
+.runtime-profile-api {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-profile-api label {
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-profile-api-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-profile-success,
+.runtime-profile-error {
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.runtime-profile-success { color: var(--good); }
+.runtime-profile-error { color: var(--bad); }
+
 .runtime-profile-note {
   color: var(--muted);
   font-size: 10px;

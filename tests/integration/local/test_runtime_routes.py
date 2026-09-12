@@ -579,6 +579,50 @@ def test_agent_node_uses_injected_runtime_model(tmp_path: Path) -> None:
         assert response["error"] is None
 
 
+def test_runtime_profile_validation_and_agent_readiness_use_effective_model(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedRuntimeTransport("unused")
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    profile = {
+        "provider": "openai_compatible",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model_id": "kimi-k3",
+        "api_key_env": "MOONSHOT_API_KEY",
+    }
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        validated = client.post(
+            "/api/v1/runtime/profile/validate", json={"profile": profile}
+        )
+        assert validated.status_code == 200
+        assert validated.json()["valid"] is True
+        assert validated.json()["model_available"] is True
+
+        unavailable = client.post(
+            "/api/v1/runtime/profile/validate",
+            json={"profile": {**profile, "model_id": "missing-model"}},
+        )
+        assert unavailable.status_code == 200
+        assert unavailable.json()["valid"] is False
+        assert unavailable.json()["code"] == "runtime_model_unavailable"
+
+        project = client.post(
+            "/api/v1/projects", json={"agents": [_agent_source()]}
+        ).json()
+        agent = project["agents"][0]
+        readiness = client.get(
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/runtime-readiness"
+        )
+        assert readiness.status_code == 200
+        assert readiness.json()["ready"] is True
+        assert readiness.json()["model"]["configured"] is True
+        assert readiness.json()["profile_source"] == "default"
+        assert transport.calls == []
+
+
 def test_agent_node_accepts_declared_object_output(tmp_path: Path) -> None:
     transport = ScriptedRuntimeTransport(json.dumps({"summary": "ok"}))
     source = _agent_source()

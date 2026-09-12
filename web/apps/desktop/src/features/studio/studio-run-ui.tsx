@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentRunResponse, JsonValue, WorkflowRunResponse } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonValue, RuntimeReadiness, WorkflowRunResponse } from "@veyra/api-contracts";
 import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 
@@ -72,12 +72,27 @@ export function workflowRunAsAgentRun(run: WorkflowRunResponse): AgentRunRespons
   };
 }
 
-export function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: "zh" | "en" }) {
+export function RuntimeKeyNote({ api, locale, projectId, agentId }: { api: LocalProjectApi; locale: "zh" | "en"; projectId?: string; agentId?: string }) {
   const [configured, setConfigured] = React.useState<boolean | null>(null);
   const [userProvidedOnly, setUserProvidedOnly] = React.useState(false);
+  const [readiness, setReadiness] = React.useState<RuntimeReadiness | null>(null);
   const zh = locale === "zh";
   React.useEffect(() => {
     let current = true;
+    setReadiness(null);
+    if (projectId && agentId && api.runtimeReadiness) {
+      void api.runtimeReadiness(projectId, agentId)
+        .then((result) => {
+          if (current) setReadiness(result);
+        })
+        .catch(() => {
+          if (current) {
+            setReadiness(null);
+            setConfigured(false);
+          }
+        });
+      return () => { current = false; };
+    }
     void api.runtimeStatus?.()
       .then((status) => {
         if (!current) return;
@@ -86,9 +101,16 @@ export function RuntimeKeyNote({ api, locale }: { api: LocalProjectApi; locale: 
       })
       .catch(() => {
         if (current) setConfigured(false);
-      });
+    });
     return () => { current = false; };
-  }, [api]);
+  }, [api, projectId, agentId]);
+  if (readiness) {
+    if (!readiness.ready) {
+      const failed = readiness.checks.find((item) => !item.ready);
+      return <Alert type="warning" title={zh ? "当前 Agent 尚未通过 Runtime 预检。" : "This Agent has not passed the Runtime preflight."} description={failed?.detail ?? (zh ? "请先处理依赖或模型配置。" : "Resolve the dependency or model configuration first.")} />;
+    }
+    return <Alert type="info" title={zh ? "当前 Agent 已通过本地 Runtime 预检；真正运行时仍会检查 Provider 响应。" : "This Agent passed the local Runtime preflight; the Provider response is still checked during the Run."} closable duration={8000} />;
+  }
   if (configured === null) return null;
   if (userProvidedOnly && !configured) {
     return <Alert type="warning" title={zh ? "上线模式不会使用本机共享密钥。请提供你自己的 Runtime API 后再运行。" : "Release mode will not use the host shared key. Provide your own Runtime API before running."} />;

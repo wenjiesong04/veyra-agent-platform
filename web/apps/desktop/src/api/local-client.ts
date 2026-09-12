@@ -33,6 +33,10 @@ import {
   type RuntimeApiProfileInput,
   type RuntimeApiProfileSummary,
   type RuntimeProfileResponse,
+  type RuntimeProfileValidation,
+  type RuntimeReadiness,
+  type RuntimeReadinessCheck,
+  type RuntimeToolReadiness,
   type ApplyFactoryDraftResponse,
   type FactoryMessage,
   type JsonObject,
@@ -177,6 +181,8 @@ export type LocalProjectApi = {
   getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
   factoryStatus?(): Promise<FactoryStatus>;
   runtimeStatus?(): Promise<RuntimeStatus>;
+  validateRuntimeProfile?(profile: RuntimeApiProfileInput): Promise<RuntimeProfileValidation>;
+  runtimeReadiness?(projectId: string, agentId: string): Promise<RuntimeReadiness>;
   getSecretStatus?(secretRef: string): Promise<SecretStatus>;
   setSecret?(secretRef: string, value: string): Promise<SecretStatus>;
   deleteSecret?(secretRef: string): Promise<SecretStatus>;
@@ -1332,6 +1338,78 @@ function runtimeStatus(value: unknown, status = 502): RuntimeStatus {
   };
 }
 
+function runtimeProfileValidation(value: unknown, status = 502): RuntimeProfileValidation {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    valid: asBoolean(record.valid, "runtime profile validation.valid", status),
+    configured: asBoolean(record.configured, "runtime profile validation.configured", status),
+    model_available: asBoolean(record.model_available, "runtime profile validation.model_available", status),
+    provider: asString(record.provider, "runtime profile validation.provider", status),
+    base_url: asString(record.base_url, "runtime profile validation.base_url", status),
+    model_id: asString(record.model_id, "runtime profile validation.model_id", status),
+    api_key_env: asString(record.api_key_env, "runtime profile validation.api_key_env", status),
+    code: asString(record.code, "runtime profile validation.code", status),
+    message: asText(record.message, "runtime profile validation.message", status),
+  };
+}
+
+function runtimeReadiness(value: unknown, status = 502): RuntimeReadiness {
+  const record = schemaRecord(value, status);
+  const profileSource = asString(record.profile_source, "runtime readiness profile_source", status);
+  if (profileSource !== "agent" && profileSource !== "project" && profileSource !== "default") {
+    throw new LocalApiClientError("The local service returned an invalid Runtime profile source.", { status, code: "invalid_response" });
+  }
+  const model = asRecord(record.model, status);
+  const modelRequired = asBoolean(model.required, "runtime readiness model.required", status);
+  const modelConfigured = asBoolean(model.configured, "runtime readiness model.configured", status);
+  const checks = asArray(record.checks, "runtime readiness checks", status).map((item) => runtimeReadinessCheck(item, status));
+  const toolChecks = asArray(record.tool_checks, "runtime readiness tool_checks", status).map((item) => runtimeToolReadiness(item, status));
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "runtime readiness project_id", status),
+    agent_id: asString(record.agent_id, "runtime readiness agent_id", status),
+    ready: asBoolean(record.ready, "runtime readiness ready", status),
+    profile_source: profileSource,
+    model: {
+      required: modelRequired,
+      configured: modelConfigured,
+      model_id: asString(model.model_id, "runtime readiness model_id", status),
+      model_base_url: asString(model.model_base_url, "runtime readiness model_base_url", status),
+      model_api_key_env: asString(model.model_api_key_env, "runtime readiness model_api_key_env", status),
+    },
+    dependency_summary: validationDependencySummary(record.dependency_summary, status),
+    dependencies: asArray(record.dependencies, "runtime readiness dependencies", status).map((item) => validationDependency(item, status)),
+    tool_checks: toolChecks,
+    checks,
+  };
+}
+
+function runtimeReadinessCheck(value: unknown, status = 502): RuntimeReadinessCheck {
+  const record = asRecord(value, status);
+  const id = asString(record.id, "runtime readiness check id", status);
+  if (id !== "dependencies" && id !== "model" && id !== "tools") {
+    throw new LocalApiClientError("The local service returned an invalid Runtime readiness check.", { status, code: "invalid_response" });
+  }
+  return {
+    id,
+    ready: asBoolean(record.ready, "runtime readiness check ready", status),
+    code: asString(record.code, "runtime readiness check code", status),
+    detail: asText(record.detail, "runtime readiness check detail", status),
+  };
+}
+
+function runtimeToolReadiness(value: unknown, status = 502): RuntimeToolReadiness {
+  const record = asRecord(value, status);
+  return {
+    node_id: asString(record.node_id, "runtime readiness tool node_id", status),
+    reference: asString(record.reference, "runtime readiness tool reference", status),
+    ready: asBoolean(record.ready, "runtime readiness tool ready", status),
+    code: asString(record.code, "runtime readiness tool code", status),
+    detail: asText(record.detail, "runtime readiness tool detail", status),
+  };
+}
+
 function secretStatus(value: unknown, status = 502): SecretStatus {
   const record = schemaRecord(value, status);
   const source = asString(record.source, "secret.source", status);
@@ -1924,6 +2002,17 @@ export class LocalApiClient {
 
   runtimeStatus(): Promise<RuntimeStatus> {
     return this.request("runtime/status", runtimeStatus);
+  }
+
+  validateRuntimeProfile(profile: RuntimeApiProfileInput): Promise<RuntimeProfileValidation> {
+    return this.request("runtime/profile/validate", runtimeProfileValidation, {
+      method: "POST",
+      body: { profile },
+    });
+  }
+
+  runtimeReadiness(projectId: string, agentId: string): Promise<RuntimeReadiness> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-readiness`, runtimeReadiness);
   }
 
   getSecretStatus(secretRef: string): Promise<SecretStatus> {
