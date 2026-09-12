@@ -421,6 +421,11 @@
   padding: 0 4px 8px;
 }
 
+.agent-convo-context-stack {
+  display: grid;
+  gap: 4px;
+}
+
 .agent-convo-context-chip {
   display: inline-flex;
   max-width: min(280px, 58vw);

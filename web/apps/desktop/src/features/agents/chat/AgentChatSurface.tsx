@@ -8,6 +8,7 @@ import { useLiveRun } from "../../studio/live-run";
 import { assistantPreview, conversationCanvas, scalarResultText, workingCaption } from "./canvas-artifact";
 import { CanvasOpenCard, ConversationCanvasPanel } from "./conversation-canvas";
 import { ConversationComposer, ConversationInputGrid, ConversationStage, ConversationTyping } from "./conversation-stage";
+import { RuntimeKeyNote } from "../../studio/studio-run-ui";
 
 type Locale = "zh" | "en";
 type InputValues = Record<string, JsonValue>;
@@ -90,6 +91,7 @@ export function AgentChatSurface({
   const live = useLiveRun({ api, projectId, agentId, locale });
   const [source, setSource] = React.useState<AgentSource | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
+  const [fileOptions, setFileOptions] = React.useState<string[]>([]);
   const [loadState, setLoadState] = React.useState<"loading" | "ready" | "error">("loading");
   const [values, setValues] = React.useState<InputValues>({});
   const [submitted, setSubmitted] = React.useState<InputValues | null>(null);
@@ -125,6 +127,16 @@ export function AgentChatSurface({
       api.listResources({ kind: "tool" }),
     ]).then(([components, tools]) => setCatalog([...components.resources, ...tools.resources])).catch(() => setCatalog([]));
   }, [api]);
+  React.useEffect(() => {
+    if (!api.listProjectFiles) return;
+    let active = true;
+    void api.listProjectFiles(projectId).then((response) => {
+      if (active) setFileOptions(response.files.map((item) => item.path));
+    }).catch(() => {
+      if (active) setFileOptions([]);
+    });
+    return () => { active = false; };
+  }, [api, projectId]);
   React.useEffect(() => {
     if (!api.listAgentRuns) return;
     let active = true;
@@ -234,15 +246,16 @@ export function AgentChatSurface({
       canvasOpen={canvasOpen && Boolean(spec)}
       data-project-id={projectId}
       data-agent-id={agentId}
-      contextBar={hasConversationApi ? (
-        <div className="agent-convo-context agent-convo-context-history">
+      contextBar={hasConversationApi || api.runtimeReadiness || api.runtimeStatus ? <div className="agent-convo-context-stack">
+        {hasConversationApi ? <div className="agent-convo-context agent-convo-context-history">
           <select aria-label={locale === "zh" ? "选择会话" : "Choose conversation"} value={conversationId ?? ""} onChange={(event) => { setConversationId(event.target.value || null); setSubmitted(null); live.clear(); }}>
             <option value="">{locale === "zh" ? "新会话" : "New conversation"}</option>
             {conversations.map((conversation) => <option key={conversation.conversation_id} value={conversation.conversation_id}>{conversation.title} · {conversation.message_count}</option>)}
           </select>
           <button type="button" onClick={reset}>{locale === "zh" ? "新建会话" : "New conversation"}</button>
-        </div>
-      ) : undefined}
+        </div> : null}
+        <RuntimeKeyNote api={api} projectId={projectId} agentId={agentId} locale={locale} />
+      </div> : undefined}
       greetingTitle={text.greeting}
       greetingDetail={source.description || text.empty}
       suggestions={!api.runAgent ? <ErrorState message={text.runtimeUnavailable} /> : undefined}
@@ -263,7 +276,7 @@ export function AgentChatSurface({
           hideTextarea={!singleString}
           extraFields={!singleString ? (
             inputEntries.length ? (
-              <ConversationInputGrid entries={inputEntries} values={values} onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))} />
+              <ConversationInputGrid entries={inputEntries} values={values} onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))} fileOptions={fileOptions} />
             ) : <p className="agent-convo-hint">{text.noInputs}</p>
           ) : undefined}
           footerLeft={(

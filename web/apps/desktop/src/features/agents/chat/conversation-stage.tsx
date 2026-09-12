@@ -184,10 +184,12 @@ export function ConversationInputGrid({
   entries,
   values,
   onChange,
+  fileOptions = [],
 }: {
   entries: Array<[string, string]>;
   values: Record<string, JsonValue>;
   onChange: (name: string, value: JsonValue) => void;
+  fileOptions?: string[];
 }) {
   return (
     <div className="agent-chat-input-grid">
@@ -200,13 +202,17 @@ export function ConversationInputGrid({
               <option value="true">true</option>
             </select>
           ) : (
-            <input
-              aria-label={name}
-              type={type === "integer" || type === "number" ? "number" : "text"}
-              step={type === "integer" ? "1" : "any"}
-              value={String(values[name] ?? "")}
-              onChange={(event) => onChange(name, type === "integer" ? Number.parseInt(event.target.value || "0", 10) : type === "number" ? Number.parseFloat(event.target.value || "0") : event.target.value)}
-            />
+            <>
+              <input
+                aria-label={name}
+                type={type === "integer" || type === "number" ? "number" : "text"}
+                step={type === "integer" ? "1" : "any"}
+                list={type === "string" && fileOptions.length > 0 && /(^|_)(path|file|document)(_|$)/i.test(name) ? `conversation-file-options-${name}` : undefined}
+                value={String(values[name] ?? "")}
+                onChange={(event) => onChange(name, type === "integer" ? Number.parseInt(event.target.value || "0", 10) : type === "number" ? Number.parseFloat(event.target.value || "0") : event.target.value)}
+              />
+              {type === "string" && fileOptions.length > 0 && /(^|_)(path|file|document)(_|$)/i.test(name) ? <datalist id={`conversation-file-options-${name}`}>{fileOptions.slice(0, 100).map((path) => <option value={path} key={path} />)}</datalist> : null}
+            </>
           )}
         </label>
       ))}
