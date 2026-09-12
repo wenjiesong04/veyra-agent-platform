@@ -1,13 +1,15 @@
-import type { CommunityRegistryEntry } from "@veyra/api-contracts";
+import type { CommunityAgentScan, CommunityRegistryEntry } from "@veyra/api-contracts";
 import { SectionHeading, StatusBadge, Tag } from "@veyra/ui";
 
 type Capabilities = NonNullable<CommunityRegistryEntry["capabilities"]>;
 
 export function CommunityCapabilitySummary({
   capabilities,
+  scan,
   zh,
 }: {
   capabilities: Capabilities;
+  scan?: CommunityAgentScan | null;
   zh: boolean;
 }) {
   const none = zh ? "无" : "None";
@@ -40,6 +42,7 @@ export function CommunityCapabilitySummary({
         <div><strong>{zh ? "Skills" : "Skills"}</strong><p>{values(capabilities.skills)}</p></div>
       </div>
       {capabilities.risk_reasons.length ? <div className="resource-card-meta">{capabilities.risk_reasons.map((reason) => <Tag key={reason}>{reason}</Tag>)}</div> : null}
+      {scan ? <div className="resource-card-meta"><StatusBadge label={scan.status} tone={scan.status === "passed" ? "good" : "warn"} />{scan.warnings.map((warning) => <Tag key={warning.code}>{warning.code}</Tag>)}</div> : null}
     </div>
   );
 }

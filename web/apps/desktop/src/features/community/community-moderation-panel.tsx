@@ -48,7 +48,7 @@ export function CommunityModerationPanel({ communityApi }: { communityApi: Commu
       <div className="run-list">
         {entries.map((entry) => {
           const key = `${entry.owner_handle}/${entry.slug}/${entry.version}`;
-          return <div className="run-row" key={key}><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle}/{entry.slug} · v{entry.version}</small></span>{entry.scan?.risk_level ? <Tag>{zh ? `风险 ${entry.scan.risk_level}` : `risk ${entry.scan.risk_level}`}</Tag> : null}<StatusBadge label={entry.status} tone="warn" /><Button size="sm" disabled={busy !== null || !reason.trim()} onClick={() => void decide(entry, "publish")}>{zh ? "发布" : "Publish"}</Button><Button size="sm" variant="danger" disabled={busy !== null || !reason.trim()} onClick={() => void decide(entry, "reject")}>{zh ? "拒绝" : "Reject"}</Button></div>;
+          return <div className="run-row" key={key}><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle}/{entry.slug} · v{entry.version}</small></span>{entry.scan?.risk_level ? <Tag>{zh ? `风险 ${entry.scan.risk_level}` : `risk ${entry.scan.risk_level}`}</Tag> : null}{entry.scan?.status === "warning" ? <Tag>{zh ? `${entry.scan.warnings.length} 个扫描提示` : `${entry.scan.warnings.length} scan warnings`}</Tag> : null}<StatusBadge label={entry.status} tone="warn" /><Button size="sm" disabled={busy !== null || !reason.trim()} onClick={() => void decide(entry, "publish")}>{zh ? "发布" : "Publish"}</Button><Button size="sm" variant="danger" disabled={busy !== null || !reason.trim()} onClick={() => void decide(entry, "reject")}>{zh ? "拒绝" : "Reject"}</Button></div>;
         })}
       </div>
     </Panel>

@@ -29,9 +29,10 @@ export type CommunityAgentCapabilities = {
 
 export type CommunityAgentScan = {
   schema_version: "community.scan.v1";
-  status: "passed";
+  status: "passed" | "warning";
   package_bytes: number;
-  checks: { name: string; status: "passed" }[];
+  checks: { name: string; status: "passed" | "warning" }[];
+  warnings: { code: string; details: string[] }[];
   risk_level: "low" | "medium" | "high";
   risk_reasons: string[];
 };

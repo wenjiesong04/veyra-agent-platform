@@ -660,16 +660,68 @@ def _capabilities_from_content(
 
 def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
     capabilities = _capability_payload(source)
+    warnings: list[dict[str, Any]] = []
+    declared = (
+        {node.uses for node in source.nodes if node.uses is not None}
+        | set(source.skill_refs)
+        | set(source.policy_refs)
+        | set(source.knowledge_refs)
+        | {
+            str(binding["reference"])
+            for binding in (source.ui.get("bindings") or {}).values()
+        }
+        | {"veyra.runtime.profile@1.0.0"}
+    )
+    unbound_locks = sorted(set(source.lock) - declared)
+    if unbound_locks:
+        warnings.append(
+            {
+                "code": "unbound_lock_entries",
+                "details": unbound_locks,
+            }
+        )
+    non_project_roots = sorted(
+        {
+            root
+            for root in (
+                *source.permissions.filesystem_read_roots,
+                *source.permissions.filesystem_write_roots,
+            )
+            if root != "project"
+        }
+    )
+    if non_project_roots:
+        warnings.append(
+            {
+                "code": "filesystem_scope_review",
+                "details": non_project_roots,
+            }
+        )
+    if not source.verification.required:
+        warnings.append({"code": "verification_not_required", "details": []})
     return {
         "schema_version": "community.scan.v1",
-        "status": "passed",
+        "status": "warning" if warnings else "passed",
         "package_bytes": len(source_text.encode("utf-8")),
         "checks": [
             {"name": "utf8", "status": "passed"},
             {"name": "agent_source", "status": "passed"},
             {"name": "secret_markers", "status": "passed"},
             {"name": "source_hash", "status": "passed"},
+            {
+                "name": "dependency_lock",
+                "status": "warning" if unbound_locks else "passed",
+            },
+            {
+                "name": "filesystem_scope",
+                "status": "warning" if non_project_roots else "passed",
+            },
+            {
+                "name": "verification",
+                "status": "passed" if source.verification.required else "warning",
+            },
         ],
+        "warnings": warnings,
         "risk_level": capabilities["risk_level"],
         "risk_reasons": capabilities["risk_reasons"],
     }
