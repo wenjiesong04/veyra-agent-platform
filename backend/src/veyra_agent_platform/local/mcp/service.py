@@ -51,6 +51,126 @@ class McpError(ValueError):
         self.code = code
 
 
+def normalize_mcp_config(value: object) -> list[dict[str, Any]]:
+    """Normalize a standard MCP config without resolving any secret values."""
+    if not isinstance(value, Mapping):
+        raise McpError("mcp_import_invalid", "MCP config must be a JSON object")
+    raw = value["mcpServers"] if "mcpServers" in value else value.get("servers")
+    if isinstance(raw, Mapping):
+        entries = list(raw.items())
+    elif isinstance(raw, list):
+        entries = [(str(index), item) for index, item in enumerate(raw)]
+    else:
+        raise McpError("mcp_import_invalid", "MCP config has no server definitions")
+    if not entries or len(entries) > 32:
+        raise McpError("mcp_import_invalid", "Import between one and 32 MCP servers")
+
+    normalized: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for key, raw_config in entries:
+        if not isinstance(raw_config, Mapping):
+            raise McpError("mcp_import_invalid", "Each MCP server must be an object")
+        raw_name = raw_config.get("name", key)
+        name = _text(raw_name, "mcp_name_invalid", "MCP server name is required")
+        args = raw_config.get("args", [])
+        if not isinstance(args, list):
+            raise McpError("mcp_args_invalid", "MCP args must be a list of strings")
+        has_url = isinstance(raw_config.get("url"), str) and bool(
+            raw_config["url"].strip()
+        )
+        has_command = isinstance(raw_config.get("command"), str) and bool(
+            raw_config["command"].strip()
+        )
+        if has_url == has_command:
+            raise McpError(
+                "mcp_transport_invalid",
+                "Each MCP server needs exactly one command or URL",
+            )
+        raw_env = (
+            raw_config["env_names"]
+            if "env_names" in raw_config
+            else raw_config.get("env", {})
+        )
+        if raw_env is None:
+            raw_env = {}
+        if not isinstance(raw_env, Mapping):
+            raise McpError(
+                "mcp_env_invalid", "MCP environment bindings must be an object"
+            )
+        env_names: dict[str, str] = {}
+        for env_key, binding in raw_env.items():
+            if not isinstance(env_key, str) or _ENV_NAME.fullmatch(env_key) is None:
+                raise McpError(
+                    "mcp_env_invalid", "MCP environment names must be uppercase"
+                )
+            env_names[env_key] = _normalize_binding(binding)
+        raw_headers = (
+            raw_config["headers"]
+            if "headers" in raw_config
+            else raw_config.get("header_templates", {})
+        )
+        if raw_headers is None:
+            raw_headers = {}
+        if not isinstance(raw_headers, Mapping):
+            raise McpError("mcp_header_invalid", "MCP HTTP headers must be an object")
+        headers: dict[str, str] = {}
+        for header_name, header_value in raw_headers.items():
+            if not isinstance(header_name, str) or not isinstance(header_value, str):
+                raise McpError(
+                    "mcp_header_invalid", "MCP HTTP header bindings are invalid"
+                )
+            headers[header_name] = header_value
+        if "enabled" in raw_config:
+            enabled_value = raw_config["enabled"]
+            if not isinstance(enabled_value, bool):
+                raise McpError("mcp_enabled_invalid", "MCP enabled must be a boolean")
+            enabled = enabled_value
+        else:
+            disabled_value = raw_config.get("disabled", False)
+            if not isinstance(disabled_value, bool):
+                raise McpError("mcp_enabled_invalid", "MCP disabled must be a boolean")
+            enabled = not disabled_value
+        candidate = {
+            "name": name,
+            "command": raw_config.get("command") if has_command else None,
+            "args": args if not has_url else [],
+            "env_names": env_names if not has_url else {},
+            "transport": "streamable_http" if has_url else "stdio",
+            "url": raw_config.get("url") if has_url else None,
+            "headers": headers,
+            "enabled": enabled,
+        }
+        cleaned = _validated_server_config(**candidate)
+        if name in names:
+            raise McpError(
+                "mcp_import_invalid", "Imported MCP server names must be unique"
+            )
+        names.add(name)
+        (
+            clean_name,
+            clean_command,
+            clean_args,
+            clean_env,
+            clean_transport,
+            clean_url,
+            clean_headers,
+            clean_enabled,
+        ) = cleaned
+        normalized.append(
+            {
+                "name": clean_name,
+                "command": clean_command,
+                "args": clean_args,
+                "env_names": clean_env,
+                "transport": clean_transport,
+                "url": clean_url,
+                "headers": clean_headers,
+                "enabled": clean_enabled,
+            }
+        )
+    return normalized
+
+
 class McpService:
     """Host-owned MCP configuration and Runtime adapter. Secrets stay in env names."""
 
@@ -721,6 +841,25 @@ def _env_names(values: dict[str, str]) -> dict[str, str]:
             )
         parsed[key] = host_name
     return parsed
+
+
+def _normalize_binding(value: Any) -> str:
+    if not isinstance(value, str):
+        raise McpError(
+            "mcp_env_invalid",
+            "MCP config may contain environment names or secret references only",
+        )
+    binding = value.strip()
+    template = re.fullmatch(r"\$\{([A-Z][A-Z0-9_]{0,127})\}", binding)
+    if template:
+        return template.group(1)
+    if _ENV_NAME.fullmatch(binding) or _SECRET_REF.fullmatch(binding):
+        return binding
+    raise McpError(
+        "mcp_env_invalid",
+        "MCP config may contain environment names or secret references only; "
+        "plaintext credentials were not imported",
+    )
 
 
 def _url(value: str) -> str:

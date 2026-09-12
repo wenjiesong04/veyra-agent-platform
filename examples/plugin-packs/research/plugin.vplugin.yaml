@@ -1,0 +1,12 @@
+schema_version: "1.0"
+plugin_id: veyra.plugin.research
+name: Research Pack
+description: A reviewable research Skill with an optional local MCP server.
+version: 1.0.0
+license: MIT
+skills:
+  - path: skills/research/SKILL.md
+    reference: veyra.skill.research-pack@1.0.0
+    name: Research Pack Skill
+    description: Keep claims, evidence, and uncertainty separate.
+mcp_config: mcp.json

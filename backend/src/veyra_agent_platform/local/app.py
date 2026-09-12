@@ -15,6 +15,7 @@ from .api.factory import build_router as build_factory_router
 from .api.health import build_router
 from .api.mcp import build_router as build_mcp_router
 from .api.orchestrator import build_router as build_orchestrator_router
+from .api.plugins import build_router as build_plugins_router
 from .api.projects import TypedApiError, typed_error_response
 from .api.projects import build_router as build_projects_router
 from .api.resources import build_router as build_resources_router
@@ -31,6 +32,7 @@ from .library import LibraryService
 from .mcp import McpServerStore, McpService
 from .mcp.transport import TransportFactory
 from .orchestrator import OrchestratorService, OrchestratorStore
+from .plugins import PluginService
 from .projects import ProjectService
 from .resources import ResourceCatalog, ResourceWorkshop
 from .resources.project import ProjectResourceService
@@ -140,7 +142,11 @@ def create_app(
             http_client=mcp_http_client,
         )
         application.state.mcp = mcp
-        application.state.workshop = ResourceWorkshop(overlay_root, catalog)
+        workshop = ResourceWorkshop(overlay_root, catalog)
+        application.state.workshop = workshop
+        application.state.plugins = PluginService(
+            database_path.parent / "plugins", catalog, workshop, mcp
+        )
         application.state.runtime = RuntimeService(
             repository,
             projects,
@@ -197,6 +203,7 @@ def create_app(
     application.include_router(build_resources_router())
     application.include_router(build_secrets_router())
     application.include_router(build_mcp_router())
+    application.include_router(build_plugins_router())
     application.include_router(build_orchestrator_router())
 
     return application

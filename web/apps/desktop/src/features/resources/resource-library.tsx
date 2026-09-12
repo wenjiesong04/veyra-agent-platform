@@ -37,6 +37,7 @@ import { useProjectWorkspace } from "../../api/project-workspace";
 import type { LocalProjectApi } from "../../api/local-client";
 import { resourceLibraryCatalogHref, resourceLibraryTabFromHash, type ResourceLibraryTab } from "./library-navigation";
 import { McpConfigError, parseMcpConfig } from "./mcp-config";
+import { PluginPackPanel } from "./plugin-pack-panel";
 
 const tabKinds: Array<{ id: ResourceLibraryTab; kinds: ResourceKind[] }> = [
   { id: "all", kinds: ["component", "tool", "mcp_tool", "skill", "policy", "template"] },
@@ -45,6 +46,7 @@ const tabKinds: Array<{ id: ResourceLibraryTab; kinds: ResourceKind[] }> = [
   { id: "skill", kinds: ["skill"] },
   { id: "policy", kinds: ["policy"] },
   { id: "template", kinds: ["template"] },
+  { id: "plugin", kinds: [] },
 ];
 
 const iconForKind: Record<ResourceKind, typeof Box> = {
@@ -64,8 +66,8 @@ function resourceKindLabel(kind: ResourceKind, zh: boolean): string {
 
 function tabLabel(tab: ResourceLibraryTab, zh: boolean): string {
   return zh
-    ? { all: "全部", component: "组件", tooling: "工具 / MCP", skill: "技能", policy: "策略", template: "模板" }[tab]
-    : { all: "All", component: "Components", tooling: "Tools / MCP", skill: "Skills", policy: "Policies", template: "Templates" }[tab];
+    ? { all: "全部", component: "组件", tooling: "工具 / MCP", skill: "技能", policy: "策略", template: "模板", plugin: "插件" }[tab]
+    : { all: "All", component: "Components", tooling: "Tools / MCP", skill: "Skills", policy: "Policies", template: "Templates", plugin: "Plugin Packs" }[tab];
 }
 
 function availabilityLabel(value: ResourceDescriptor["availability"], zh: boolean): string {
@@ -357,8 +359,8 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
       {tab === "skill" ? <Panel><SectionHeading eyebrow={copy.createSkill} title={copy.createSkill} detail={copy.skillDraftHint} /><div className="inspector-fields"><label><span>{skillFileCopy.label}</span><input type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={(event) => { void importSkillFile(event.target.files?.item(0) ?? null); event.target.value = ""; }} />{skillFileName ? <small className="resource-detail-muted">{skillFileCopy.selected}: {skillFileName}</small> : null}{skillFileError ? <small className="resource-detail-error">{skillFileError}</small> : null}</label><label><span>{copy.skillName}</span><input value={skillDraftName} onChange={(event) => setSkillDraftName(event.target.value)} /></label><label><span>{copy.skillReference}</span><input value={skillDraftReference} onChange={(event) => setSkillDraftReference(event.target.value)} placeholder={copy.skillReferenceHint} /></label><label><span>{copy.skillDraftInstruction}</span><textarea value={skillDraftInstruction} onChange={(event) => setSkillDraftInstruction(event.target.value)} rows={5} /></label><div className="button-row"><Button variant="primary" disabled={!api.createResourceDraft || skillDraftState === "creating" || !skillDraftReference.trim() || !skillDraftInstruction.trim()} onClick={() => void createSkillDraft()}>{skillDraftState === "creating" ? "…" : skillDraftState === "created" ? copy.skillCreated : copy.createSkillAction}</Button>{skillDraftState === "error" ? <span className="resource-detail-error">{copy.skillCreateFailed}</span> : null}</div></div></Panel> : null}
       {status === "error" ? <ErrorState message={error ?? copy.unavailable} onRetry={() => void load()} /> : null}
       {status === "loading" ? <Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel> : null}
-      {status === "ready" && visible.length === 0 ? <Panel><EmptyState icon={LayoutGrid} title={copy.empty} detail={copy.emptyDetail} /></Panel> : null}
-      {status === "ready" && visible.length > 0 ? (
+      {status === "ready" && tab !== "plugin" && visible.length === 0 ? <Panel><EmptyState icon={LayoutGrid} title={copy.empty} detail={copy.emptyDetail} /></Panel> : null}
+      {status === "ready" && tab !== "plugin" && visible.length > 0 ? (
         <div className="resource-card-grid">
           {visible.map((item) => {
             const Icon = iconForKind[item.kind];
@@ -389,6 +391,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
           })}
         </div>
       ) : null}
+      {tab === "plugin" ? <PluginPackPanel api={api} zh={zh} /> : null}
       {tab === "tooling" ? <McpServerPanel api={api} zh={zh} onChanged={() => void load()} importCopy={{ importConfig: copy.importConfig, importingConfig: copy.importingConfig, importedConfig: copy.importedConfig, importConfigFailed: copy.importConfigFailed, importConfigHint: copy.importConfigHint }} /> : null}
     </div>
   );

@@ -425,6 +425,17 @@ Resource Library 的 MCP 面板可以选择标准 JSON 配置并批量导入本�
 `mcpServers` 对象和 `servers` 数组；导入先完整校验并原子写入，不会自动启动、发现或
 执行外部进程。
 
+### 已完成：声明式 Plugin Pack
+
+Resource Library 的 Plugin Packs 页签可以导入 `.vplugin.zip`。包格式只允许严格的
+`plugin.vplugin.yaml`、`skills/<slug>/SKILL.md` 和标准 `mcp.json`，会拒绝路径逃逸、
+链接、加密成员、任意代码和明文环境凭据。导入后包保存在本机应用数据并标记为
+`quarantined`，页面展示 Skill 指令和 MCP 连接信息供用户审查；它不会启动进程或访问网络。
+
+用户点击“审核并激活”后，Skill 才会通过 Resource Workshop 进入 Resource Catalog/Factory；
+MCP 服务器会注册为停用状态，仍需到工具 / MCP 面板显式启用、检查、发现并审核工具。激活
+可重放且不会重复注册。参考包位于 `examples/plugin-packs/research/`。
+
 ### 已完成：Orchestrator lease/attempt/retry
 
 WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；依赖未完成时保持 backlog，stale WorkItem 可以先停止 Runtime、CAS 回收 lease 并记录 `stall_recovered`，随后 Monitor 可 Retry。下一步只补独立 worktree 和更丰富 reconcile 等高阶调度。

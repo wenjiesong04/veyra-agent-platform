@@ -1,6 +1,6 @@
 import { desktopRoutePaths } from "@veyra/api-contracts";
 
-export type ResourceLibraryTab = "all" | "component" | "tooling" | "skill" | "policy" | "template";
+export type ResourceLibraryTab = "all" | "component" | "tooling" | "skill" | "policy" | "template" | "plugin";
 
 const lastProjectStorageKey = "veyra.last-project-id";
 
@@ -29,11 +29,12 @@ export const resourceLibraryTabPaths: Record<ResourceLibraryTab, string> = {
   skill: resourceLibraryCatalogHref("skill"),
   policy: resourceLibraryCatalogHref("policy"),
   template: resourceLibraryCatalogHref("template"),
+  plugin: resourceLibraryCatalogHref("plugin"),
 };
 
 export function resourceLibraryTabFromHash(hash: string): ResourceLibraryTab {
   const query = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
   const tab = new URLSearchParams(query).get("tab");
-  if (tab === "tooling" || tab === "skill" || tab === "policy" || tab === "template" || tab === "component") return tab;
+  if (tab === "tooling" || tab === "skill" || tab === "policy" || tab === "template" || tab === "component" || tab === "plugin") return tab;
   return "all";
 }

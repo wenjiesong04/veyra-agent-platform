@@ -50,6 +50,7 @@ import {
   type ListAgentTemplatesResponse,
   type ListComponentsResponse,
   type ListMcpServersResponse,
+  type ListPluginPacksResponse,
   type ListResourceFilters,
   type ListResourcesResponse,
   type ListProjectsResponse,
@@ -89,6 +90,9 @@ import {
   type ResourceDescriptor,
   type ResourceAvailability,
   type ResourceDraftResponse,
+  type PluginPack,
+  type PluginPackResponse,
+  type PluginPackState,
   type ResourceKind,
   type ResourceOrigin,
   type ResourceRuntimeStatus,
@@ -205,6 +209,9 @@ export type LocalProjectApi = {
   createResourceDraft?(input: { confirm: boolean; kind: string; requested_reference: string; name?: string; description?: string; instruction?: string }): Promise<ResourceDraftResponse>;
   approveResourceDraft?(resourceId: string, version: string, instruction: string): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }>;
   listMcpServers?(): Promise<ListMcpServersResponse>;
+  listPluginPacks?(): Promise<ListPluginPacksResponse>;
+  importPluginPack?(file: File): Promise<PluginPackResponse>;
+  activatePluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackResponse>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   importMcpServers?(input: ImportMcpServersRequest): Promise<ImportMcpServersResponse>;
   updateMcpServer?(serverId: string, input: UpdateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
@@ -1114,6 +1121,73 @@ function resourceDraft(value: unknown, status = 502): ResourceDraftResponse {
 function approvedResourceDraft(value: unknown, status = 502): { schema_version: "1.0"; resource: ResourceDescriptor } {
   const record = schemaRecord(value, status);
   return { schema_version: LOCAL_API_SCHEMA_VERSION, resource: resource(record.resource, status) };
+}
+
+const pluginPackStates = new Set<PluginPackState>(["quarantined", "active", "activation_failed"]);
+
+function pluginPackSkill(value: unknown, status = 502): PluginPack["skills"][number] {
+  const record = asRecord(value, status);
+  return {
+    path: asString(record.path, "plugin.skill.path", status),
+    reference: asString(record.reference, "plugin.skill.reference", status),
+    name: asString(record.name, "plugin.skill.name", status),
+    description: asText(record.description, "plugin.skill.description", status),
+    instruction: asText(record.instruction, "plugin.skill.instruction", status),
+  };
+}
+
+function pluginPackMcpServer(value: unknown, status = 502): PluginPack["mcp_servers"][number] {
+  const record = asRecord(value, status);
+  const transport = asString(record.transport, "plugin.mcp.transport", status);
+  if (transport !== "stdio" && transport !== "streamable_http") {
+    throw new LocalApiClientError("The local service returned an invalid Plugin Pack MCP transport.", { status, code: "invalid_response" });
+  }
+  return {
+    name: asString(record.name, "plugin.mcp.name", status),
+    command: asText(record.command, "plugin.mcp.command", status),
+    args: asArray(record.args, "plugin.mcp.args", status).map((item) => asString(item, "plugin.mcp.args", status)),
+    env_names: Object.fromEntries(Object.entries(asRecord(record.env_names, status)).map(([key, item]) => [key, asString(item, "plugin.mcp.env_names", status)])),
+    transport,
+    url: record.url === null ? null : asString(record.url, "plugin.mcp.url", status),
+    headers: Object.fromEntries(Object.entries(asRecord(record.headers, status)).map(([key, item]) => [key, asString(item, "plugin.mcp.headers", status)])),
+    enabled: asBoolean(record.enabled, "plugin.mcp.enabled", status),
+  };
+}
+
+function pluginPack(value: unknown, status = 502): PluginPack {
+  const record = schemaRecord(value, status);
+  const state = asString(record.state, "plugin.state", status) as PluginPackState;
+  if (!pluginPackStates.has(state)) {
+    throw new LocalApiClientError("The local service returned an invalid Plugin Pack state.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    plugin_id: asString(record.plugin_id, "plugin.plugin_id", status),
+    name: asString(record.name, "plugin.name", status),
+    description: asText(record.description, "plugin.description", status),
+    version: asString(record.version, "plugin.version", status),
+    license: record.license === null ? null : asString(record.license, "plugin.license", status),
+    content_hash: asString(record.content_hash, "plugin.content_hash", status),
+    state,
+    skills: asArray(record.skills, "plugin.skills", status).map((item) => pluginPackSkill(item, status)),
+    mcp_servers: asArray(record.mcp_servers, "plugin.mcp_servers", status).map((item) => pluginPackMcpServer(item, status)),
+    skill_resources: asArray(record.skill_resources, "plugin.skill_resources", status).map((item) => asString(item, "plugin.skill_resources", status)),
+    mcp_server_ids: asArray(record.mcp_server_ids, "plugin.mcp_server_ids", status).map((item) => asString(item, "plugin.mcp_server_ids", status)),
+    activation_error: record.activation_error === null ? null : asText(record.activation_error, "plugin.activation_error", status),
+  };
+}
+
+function listedPluginPacks(value: unknown, status = 502): ListPluginPacksResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    plugins: asArray(record.plugins, "plugins", status).map((item) => pluginPack(item, status)),
+  };
+}
+
+function pluginPackResponse(value: unknown, status = 502): PluginPackResponse {
+  const record = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, plugin: pluginPack(record.plugin, status) };
 }
 
 function mcpServer(value: unknown, status = 502): McpServer {
@@ -2091,6 +2165,24 @@ export class LocalApiClient {
 
   getResource(resourceId: string, version: string): Promise<ResourceDescriptor> {
     return this.request(`resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}`, resource);
+  }
+
+  listPluginPacks(): Promise<ListPluginPacksResponse> {
+    return this.request("plugins", listedPluginPacks);
+  }
+
+  importPluginPack(file: File): Promise<PluginPackResponse> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request("plugins/import", pluginPackResponse, { method: "POST", formData });
+  }
+
+  activatePluginPack(pluginId: string, version: string, confirm = true): Promise<PluginPackResponse> {
+    return this.request(
+      `plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/activate`,
+      pluginPackResponse,
+      { method: "POST", body: { confirm } },
+    );
   }
 
   factoryStatus(): Promise<FactoryStatus> {

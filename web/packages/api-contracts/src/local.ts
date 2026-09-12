@@ -1030,6 +1030,53 @@ export type ResourceDraftResponse = {
   resource: ResourceDescriptor;
 };
 
+export type PluginPackState = "quarantined" | "active" | "activation_failed";
+
+export type PluginPackSkill = {
+  path: string;
+  reference: string;
+  name: string;
+  description: string;
+  instruction: string;
+};
+
+export type PluginPackMcpServer = {
+  name: string;
+  command: string;
+  args: string[];
+  env_names: Record<string, string>;
+  transport: "stdio" | "streamable_http";
+  url: string | null;
+  headers: Record<string, string>;
+  enabled: boolean;
+};
+
+export type PluginPack = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  plugin_id: string;
+  name: string;
+  description: string;
+  version: string;
+  license: string | null;
+  content_hash: string;
+  state: PluginPackState;
+  skills: PluginPackSkill[];
+  mcp_servers: PluginPackMcpServer[];
+  skill_resources: string[];
+  mcp_server_ids: string[];
+  activation_error: string | null;
+};
+
+export type ListPluginPacksResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  plugins: PluginPack[];
+};
+
+export type PluginPackResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  plugin: PluginPack;
+};
+
 export type McpServer = {
   server_id: string;
   name: string;

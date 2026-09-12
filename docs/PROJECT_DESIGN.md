@@ -663,6 +663,26 @@ and host environment/Keychain references; it rejects plaintext credential
 values and writes the validated batch atomically. Importing never discovers or
 executes a server automatically.
 The wire behavior follows the [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+
+### 5.5.2 Declarative Plugin Packs
+
+Veyra accepts a bounded `.vplugin.zip` format as a convenience bundle for
+external extensions. A pack contains a strict `plugin.vplugin.yaml`, optional
+`skills/<slug>/SKILL.md` files, and an optional standard `mcp.json`. It cannot
+contain Python/Node code, symlinks, encrypted members, arbitrary paths, or
+plaintext environment values. The pack is stored in application data with a
+content hash and a `quarantined` state; importing never starts a process,
+contacts a URL, or changes the Catalog.
+
+Activation is a separate, explicit user action. It promotes the declared Skills
+through Resource Workshop into the Catalog, while MCP server definitions are
+registered with `enabled=false`; the user must enable the server and explicitly
+discover its tools in the Tools/MCP panel. Discovered tools retain the normal
+review gate. This gives a useful Codex/OpenClaw-style bundle entrypoint without
+executing untrusted plugin code inside the desktop process.
+
+The reference tree is under `examples/plugin-packs/research/`. A pack can be
+assembled with `zip -r research.vplugin.zip plugin.vplugin.yaml skills mcp.json`.
 - **Skill** — a non-executable, versioned instruction/method asset. Factory may
   compile Skill content into an Agent prompt, while the exact Skill reference
   and hash remain in the dependency lock.
@@ -1550,6 +1570,9 @@ Star does not mean safe or effective.
 - `DELETE /api/v1/projects/{project_id}/resources/{resource_id}/versions/{version}`
 - `GET /api/v1/mcp/servers/{server_id}/readiness`
 - `POST /api/v1/mcp/servers/import`
+- `GET /api/v1/plugins`
+- `POST /api/v1/plugins/import` (quarantined declarative `.vplugin.zip`)
+- `POST /api/v1/plugins/{plugin_id}/versions/{version}/activate`
 - `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`
 - `POST /api/v1/files/import`
@@ -1786,6 +1809,7 @@ Historical smoke counts are not a quality goal.
 
 - Resource Catalog and availability projection
 - built-in Component, Skill, Policy, and honest Tool/MCP descriptors
+- declarative Plugin Pack import, quarantine, review, and explicit activation
 - Project-scoped Factory conversation persistence
 - model discovery/settings
 - AgentBlueprint
