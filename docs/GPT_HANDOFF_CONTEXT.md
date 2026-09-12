@@ -488,8 +488,7 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34687852813` 和 Pull Request `34687854129`：`ff6bc20` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。其前置 Runtime/文件/Knowledge/MCP UI 提交也均已通过对应 CI。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=c0c01578dd635152b6cbd49a8ec9047ed2f7f8bb`、`local_0018_mcp_streamable_http`、`database_ready=true`；Agent/Workflow Runtime 预检、Keychain-backed profile、stdio/HTTP MCP 路由和 Plugin Pack 路由已加载，`GET /api/v1/plugins` 当前为空，未输出任何密钥值。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=ea6d45c6ef91b57fc86df009c3c8ce17cdd28565`、`local_0018_mcp_streamable_http`、`database_ready=true`；Agent/Workflow Runtime 预检、Keychain-backed profile、stdio/HTTP MCP 路由和 Plugin Pack 路由已加载，`GET /api/v1/plugins` 当前为空，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，扫描逻辑已加载，未输出任何密钥值。
 - 真实模型验证：经用户授权，Runtime profile 的一次 `/models` 校验返回 `valid=true`、`configured=true`、目标 `kimi-k3` 可用；另做一次短 Agent Run，收到 `model.delta` 并以 `unverified`/`run.completed` 结束。没有发送批量请求，也没有把 Key 写入输出或仓库。
 - Plugin Pack 验证：本地临时包完成“multipart 导入 → quarantined → 明确激活 → Skill 进入 Catalog、MCP 以 disabled 注册 → 哈希校验下载”的 API 闭环；实际桌面页 `http://127.0.0.1:5173/#/resources?tab=plugin` 可加载。没有导入真实用户插件或连接外部 MCP。
