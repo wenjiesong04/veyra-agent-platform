@@ -1196,9 +1196,11 @@ Monitor focuses on current operational attention:
 - workspace/branch conflicts
 
 The local implementation currently enforces four global and two per-Project
-active WorkItems. Monitor also exposes a stale signal after five minutes
-without a Runtime event; stale is an operator warning, while lease expiry is
-the separate failure/recovery boundary.
+active WorkItems. Monitor exposes a stale signal after five minutes without a
+Runtime event. An operator can explicitly recover a stale running item: the
+local Runtime is stopped when still attached, the WorkItem is CAS-failed with a
+`stall_recovered` classification, and the item can be retried. Lease expiry
+remains the automatic failure/recovery boundary.
 
 Runs remains immutable history. Monitor must not duplicate the full Run detail page.
 

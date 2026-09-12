@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`24e85c09ec8e18481289b9900e2aae64aa0a1352`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要和可配置发布审核队列。
+- 最新功能代码基线：`007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、扫描 warning 和可配置发布审核队列。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -38,8 +38,8 @@
 
 最后一次 live 检查：
 
-- Local `/api/v1/health`：`build_sha=1cc24e1369a72341761de37ec7e87257a35f13de`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
-- Community `/api/v1/health`：`build_sha=85d5cb534fca0f9e31777fb007a287b3e8f755cc`、`database_revision=community_0007_agent_moderation`，`database_ready=true`。
+- Local `/api/v1/health`：`build_sha=007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`、`database_revision=local_0017_community_agent_origins`、`database_ready=true`。
+- Community `/api/v1/health`：`build_sha=007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`、`database_revision=community_0007_agent_moderation`，`database_ready=true`。
 - Local `/api/v1/factory/status` 和 `/api/v1/runtime/status` 能看到 Kimi K3 配置状态，但不会返回密钥。
 - Community `GET /api/v1/registry/agents` 已经是真实 API；当前本机返回 `community.registry.v1` 空目录。
 
@@ -350,7 +350,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Root `#/projects` 当前兼容地显示 New Chat；真实 Project 列表主要在侧栏和 Project routes。是否恢复一个独立 Projects dashboard，要以用户后续 UX 决定。
 - `#/chat` New Chat 仍是入口提示；具体 Agent 对话在 Agent context 中走 Runtime Chat。
 - Agent 详情现在直接进入 Runtime Chat；Factory 只保留在新 Agent/Factory 路径。
-- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，并支持从界面创建 WorkItem、选择同 Project 依赖、派发、取消、重试、5 秒自动刷新，显示并发上限、依赖阻塞和 stale 信号。
+- `#/runs` 已读取真实 Agent/Workflow Run API；`#/monitor` 已读取真实本机 Orchestrator/WorkItem API，并支持从界面创建 WorkItem、选择同 Project 依赖、派发、取消、重试、恢复 stale、5 秒自动刷新，显示并发上限、依赖阻塞和 stale 信号。
 - Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、能力/风险摘要、YAML 下载、目标 Project 导入、从本地 Project 发布和 moderator 审核队列均已接入。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
@@ -362,7 +362,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 1. Tool Runtime 的核心读取型工具已覆盖 Browser Navigate 和 Web Search；Browser Navigate 当前是 HTTP/HTML 读取器，不是带鼠标/JS 页面状态的交互式浏览器。Filesystem、Shell、HTTP、GitHub Read/Write 和 discovered MCP tools 也已接入真实 adapter boundary。
 2. POST `/run` 已立即返回 `running`，并通过可回放 SSE 推送节点事件和 `model.delta` 增量；Studio/Agent 对话已有运行节点状态、流式输出和审批控制面（waiting、approve/reject/stop/retry、checkpoint）；`resume` 对审批等待明确不适用。
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
-4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限和基于 Runtime 事件的 stale 信号；独立 worktree、真正的执行 stall recovery 和更丰富 reconcile 仍未完成。
+4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限、基于 Runtime 事件的 stale 信号和显式 stall recovery；独立 worktree 和更丰富 reconcile 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 已展示 attempt 详情和 WorkItem 依赖，仍需更丰富 reconcile。
 6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需更完整的路径与依赖扫描及长期 moderation 运营工具。
 7. Tauri/PyInstaller/macOS arm64 包。
@@ -399,7 +399,7 @@ Agent Chat 现在从 Agent 详情入口直接进入，支持最近 Run 回放、
 
 ### 已完成：Orchestrator lease/attempt/retry
 
-WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；依赖未完成时保持 backlog，终态会回收 lease，失败会保存 failure class，Monitor 可 Retry。下一步只补 worktree、真正的 stall recovery 和更丰富 reconcile 等高阶调度。
+WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；依赖未完成时保持 backlog，stale WorkItem 可以先停止 Runtime、CAS 回收 lease 并记录 `stall_recovered`，随后 Monitor 可 Retry。下一步只补独立 worktree 和更丰富 reconcile 等高阶调度。
 
 ### 下一波 B：Community registry
 
@@ -447,8 +447,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34673262909` 和 Pull Request `34673265525`：`24e85c0` 均通过；Backend Ruff/mypy、243 个后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=1cc24e1...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry/依赖、MCP 启停/编辑/审核边界、Web Search Catalog descriptor、Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限、`stale_count` 和 attempt 历史，Monitor 提供 WorkItem 创建与依赖选择，未输出任何密钥值。
+- GitHub Actions Push `34674286198` 和 Pull Request `34674287806`：`007e7f1` 均通过；Backend Ruff/mypy、243 个后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=007e7f1...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry/依赖/stale 恢复、MCP 启停/编辑/审核边界、Web Search Catalog descriptor、Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限、`stale_count` 和 attempt 历史，Monitor 提供 WorkItem 创建、依赖选择和 stale 恢复，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=85d5cb5...`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含 capability/risk、scan 摘要和反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=17b117e...`、`community_0006_agent_feedback`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
