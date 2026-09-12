@@ -216,6 +216,31 @@ class OrchestratorStore:
         )
         return cursor.rowcount == 1
 
+    def fail_stalled(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        work_item_id: str,
+        run_id: str | None,
+        lease_token: str,
+        failure_class: str,
+        updated_at: str,
+    ) -> bool:
+        conditions = "work_item_id = ? AND status = 'running' AND lease_token = ?"
+        parameters: list[Any] = [work_item_id, lease_token]
+        if run_id is None:
+            conditions += " AND run_id IS NULL"
+        else:
+            conditions += " AND run_id = ?"
+            parameters.append(run_id)
+        cursor = connection.execute(
+            "UPDATE work_items SET status = 'failed', run_id = NULL, "
+            "lease_token = NULL, lease_expires_at = NULL, failure_class = ?, "
+            f"updated_at = ? WHERE {conditions}",
+            [failure_class, updated_at, *parameters],
+        )
+        return cursor.rowcount == 1
+
     def attempt(self, attempt_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:
             return cast(

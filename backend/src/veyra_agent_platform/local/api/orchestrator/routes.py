@@ -98,6 +98,10 @@ def build_router() -> APIRouter:
     def cancel(work_item_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _orchestrator(request).cancel(work_item_id))
 
+    @router.post("/api/v1/work-items/{work_item_id}/recover")
+    def recover(work_item_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _orchestrator(request).recover_stalled(work_item_id))
+
     return router
 
 

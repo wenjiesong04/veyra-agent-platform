@@ -101,6 +101,19 @@ export function MonitorPage() {
     }
   };
 
+  const recover = async (workItemId: string) => {
+    if (!api.recoverWorkItem) return;
+    setBusyId(workItemId);
+    try {
+      await api.recoverWorkItem(workItemId);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "恢复停滞 WorkItem 失败。" : "Stalled WorkItem recovery failed."));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const create = async () => {
     if (!api.createWorkItem || !project || !agentId || !title.trim()) return;
     setBusyId("create");
@@ -196,6 +209,9 @@ export function MonitorPage() {
                   ) : null}
                   {item.status === "failed" ? (
                     <Button size="sm" icon={RotateCcw} disabled={busyId === item.work_item_id || !api.retryWorkItem} onClick={() => void retry(item.work_item_id)}>{copy.retry}</Button>
+                  ) : null}
+                  {item.stale && api.recoverWorkItem ? (
+                    <Button size="sm" icon={RotateCcw} variant="danger" disabled={busyId === item.work_item_id} onClick={() => void recover(item.work_item_id)}>{zh ? "恢复停滞" : "Recover stale"}</Button>
                   ) : null}
                 </div>
               ))}

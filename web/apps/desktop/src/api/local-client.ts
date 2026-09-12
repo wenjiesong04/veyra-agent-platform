@@ -200,6 +200,7 @@ export type LocalProjectApi = {
   dispatchWorkItem?(workItemId: string): Promise<WorkItem>;
   retryWorkItem?(workItemId: string): Promise<WorkItem>;
   cancelWorkItem?(workItemId: string): Promise<WorkItem>;
+  recoverWorkItem?(workItemId: string): Promise<WorkItem>;
   runWorkflow?(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse>;
   getWorkflowRun?(projectId: string, workflowId: string, runId: string): Promise<WorkflowRunResponse>;
   listWorkflowRuns?(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }>;
@@ -2023,6 +2024,10 @@ export class LocalApiClient {
 
   cancelWorkItem(workItemId: string): Promise<WorkItem> {
     return this.request(`work-items/${encodeURIComponent(workItemId)}/cancel`, workItem, { method: "POST" });
+  }
+
+  recoverWorkItem(workItemId: string): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}/recover`, workItem, { method: "POST" });
   }
 
   runWorkflow(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse> {

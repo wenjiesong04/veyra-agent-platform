@@ -334,6 +334,70 @@ class OrchestratorService:
                 )
         return self.get_work_item(work_item_id)
 
+    def recover_stalled(self, work_item_id: str) -> dict[str, Any]:
+        """Stop and fail a stale run so the WorkItem can be retried."""
+        row = self._row(work_item_id)
+        current = self._reconcile(row)
+        if current["status"] != "running" or not current.get("stale", False):
+            raise OrchestratorError(
+                "work_item_not_stalled",
+                "Only a stale running WorkItem can be recovered",
+            )
+        run_id = current["run_id"]
+        lease_token = row["lease_token"]
+        if not isinstance(lease_token, str) or not lease_token:
+            raise OrchestratorError(
+                "stall_recovery_failed", "Stalled WorkItem has no active lease"
+            )
+        if run_id:
+            try:
+                self.runtime.command(
+                    current["project_id"],
+                    current["agent_id"],
+                    run_id,
+                    "stop",
+                    new_uuid7(),
+                )
+            except (RuntimeError, ProjectError) as exc:
+                refreshed = self._reconcile(self._row(work_item_id))
+                if refreshed["status"] != "running" or not refreshed.get(
+                    "stale", False
+                ):
+                    return refreshed
+                raise OrchestratorError(
+                    "stall_recovery_failed",
+                    "The stale Runtime run could not be stopped",
+                ) from exc
+        now = _now()
+        with self.store.transaction() as connection:
+            recovered = self.store.fail_stalled(
+                connection,
+                work_item_id=work_item_id,
+                run_id=run_id,
+                lease_token=lease_token,
+                failure_class="stall_recovered",
+                updated_at=now,
+            )
+            if recovered:
+                attempt = self.store.latest_attempt_in_connection(
+                    connection, work_item_id
+                )
+                if attempt and attempt["status"] in {
+                    "dispatching",
+                    "running",
+                    "waiting",
+                }:
+                    self.store.update_attempt(
+                        connection,
+                        attempt["attempt_id"],
+                        status="failed",
+                        failure_class="stall_recovered",
+                        finished_at=now,
+                    )
+        if not recovered:
+            return self.get_work_item(work_item_id)
+        return self.get_work_item(work_item_id)
+
     def _reconcile(self, row: Any) -> dict[str, Any]:
         payload = OrchestratorStore.payload(row)
         run_id = payload["run_id"]
