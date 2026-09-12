@@ -1000,6 +1000,18 @@ not rename Agent into Workflow.
 Agent and Workflow share one Canvas shell, with distinct source contracts,
 node sets, dependency validation, interface mappings, and Runtime entry points.
 
+Agent validation has two deliberately separate outcomes. The existing
+`valid=true` result means that the source, graph, permissions, and lock shape
+are structurally valid. When the Local Catalog is available, the same response
+also includes dependency checks for every Tool/MCP, Skill, Policy, Template,
+and explicit Knowledge reference. Those checks compare the exact content hash,
+availability, runtime support, permission subset, MCP review state, and
+Knowledge version/content hash. `runtime_ready` is scoped to these dependency
+checks; the model provider credential and host-bound Tool secrets remain
+execution-time checks and are never claimed to be configured by validation.
+Studio shows this report after validation without turning a missing host
+credential into a fake successful Run.
+
 ```text
 Left      Catalog projection (Agent: Model / Tool / Knowledge;
           Workflow: AgentCall / control flow).
