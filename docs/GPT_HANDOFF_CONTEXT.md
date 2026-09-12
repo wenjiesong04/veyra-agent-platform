@@ -438,6 +438,7 @@ Resource Library 的 Plugin Packs 页签可以导入 `.vplugin.zip`。包格式�
 位于 `examples/plugin-packs/research/`。
 已安装的包也可以从同一能力面导出下载；下载前会重新核对本机保存的包哈希。
 激活包还可以停用/重新启用；停用会同步关闭 MCP 服务器并让包内 Skill 暂时不可被 Factory 选择。
+卸载是可恢复操作：包先停用，再移动到本机回收区；恢复后仍保持停用，用户可再次明确启用。
 
 ### 已完成：Orchestrator lease/attempt/retry
 

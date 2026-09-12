@@ -35,6 +35,20 @@ def build_router() -> APIRouter:
     def list_plugins(request: Request) -> dict[str, Any]:
         return _translate(lambda: _plugins(request).list_packs())
 
+    @router.get("/trash")
+    def list_plugin_trash(request: Request) -> dict[str, Any]:
+        return _translate(lambda: _plugins(request).list_trash())
+
+    @router.post("/trash/{trash_id}/restore")
+    def restore_plugin(
+        trash_id: str,
+        payload: ActivatePluginRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _plugins(request).restore(trash_id, confirm=payload.confirm)
+        )
+
     @router.post("/import", status_code=status.HTTP_201_CREATED)
     def import_plugin(
         request: Request,
@@ -69,6 +83,19 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _plugins(request).disable(
+                plugin_id, version, confirm=payload.confirm
+            )
+        )
+
+    @router.post("/{plugin_id}/versions/{version}/uninstall")
+    def uninstall_plugin(
+        plugin_id: str,
+        version: str,
+        payload: ActivatePluginRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _plugins(request).uninstall(
                 plugin_id, version, confirm=payload.confirm
             )
         )

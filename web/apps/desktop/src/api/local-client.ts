@@ -51,6 +51,7 @@ import {
   type ListComponentsResponse,
   type ListMcpServersResponse,
   type ListPluginPacksResponse,
+  type ListPluginTrashResponse,
   type ListResourceFilters,
   type ListResourcesResponse,
   type ListProjectsResponse,
@@ -92,6 +93,8 @@ import {
   type ResourceDraftResponse,
   type PluginPack,
   type PluginPackResponse,
+  type PluginPackTrash,
+  type PluginPackUninstallResponse,
   type PluginPackState,
   type ResourceKind,
   type ResourceOrigin,
@@ -210,9 +213,12 @@ export type LocalProjectApi = {
   approveResourceDraft?(resourceId: string, version: string, instruction: string): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }>;
   listMcpServers?(): Promise<ListMcpServersResponse>;
   listPluginPacks?(): Promise<ListPluginPacksResponse>;
+  listPluginTrash?(): Promise<ListPluginTrashResponse>;
   importPluginPack?(file: File): Promise<PluginPackResponse>;
   activatePluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackResponse>;
   disablePluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackResponse>;
+  uninstallPluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackUninstallResponse>;
+  restorePluginPack?(trashId: string, confirm?: boolean): Promise<PluginPackResponse>;
   downloadPluginPack?(pluginId: string, version: string): Promise<Blob>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   importMcpServers?(input: ImportMcpServersRequest): Promise<ImportMcpServersResponse>;
@@ -1184,6 +1190,31 @@ function listedPluginPacks(value: unknown, status = 502): ListPluginPacksRespons
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     plugins: asArray(record.plugins, "plugins", status).map((item) => pluginPack(item, status)),
+  };
+}
+
+function pluginTrash(value: unknown, status = 502): PluginPackTrash {
+  const record = asRecord(value, status);
+  return { ...pluginPack(record, status), trash_id: asString(record.trash_id, "plugin.trash_id", status) };
+}
+
+function listedPluginTrash(value: unknown, status = 502): ListPluginTrashResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    plugins: asArray(record.plugins, "plugin trash", status).map((item) => pluginTrash(item, status)),
+  };
+}
+
+function uninstalledPluginPack(value: unknown, status = 502): PluginPackUninstallResponse {
+  const record = schemaRecord(value, status);
+  const plugin = pluginTrash(record.plugin, status);
+  if (record.plugin && typeof record.plugin === "object" && (record.plugin as Record<string, unknown>).disposition !== "trashed") {
+    throw new LocalApiClientError("The local service returned an invalid Plugin Pack uninstall result.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    plugin: { ...plugin, disposition: "trashed" },
   };
 }
 
@@ -2173,6 +2204,10 @@ export class LocalApiClient {
     return this.request("plugins", listedPluginPacks);
   }
 
+  listPluginTrash(): Promise<ListPluginTrashResponse> {
+    return this.request("plugins/trash", listedPluginTrash);
+  }
+
   importPluginPack(file: File): Promise<PluginPackResponse> {
     const formData = new FormData();
     formData.append("file", file);
@@ -2190,6 +2225,22 @@ export class LocalApiClient {
   disablePluginPack(pluginId: string, version: string, confirm = true): Promise<PluginPackResponse> {
     return this.request(
       `plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/disable`,
+      pluginPackResponse,
+      { method: "POST", body: { confirm } },
+    );
+  }
+
+  uninstallPluginPack(pluginId: string, version: string, confirm = true): Promise<PluginPackUninstallResponse> {
+    return this.request(
+      `plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/uninstall`,
+      uninstalledPluginPack,
+      { method: "POST", body: { confirm } },
+    );
+  }
+
+  restorePluginPack(trashId: string, confirm = true): Promise<PluginPackResponse> {
+    return this.request(
+      `plugins/trash/${encodeURIComponent(trashId)}/restore`,
       pluginPackResponse,
       { method: "POST", body: { confirm } },
     );

@@ -151,3 +151,23 @@ def test_plugin_pack_import_is_quarantined_then_activates_skill_and_disabled_mcp
         assert downloaded.status_code == 200
         assert downloaded.headers["content-type"].startswith("application/zip")
         assert hashlib.sha256(downloaded.content).hexdigest() == plugin["content_hash"]
+
+        removed = client.post(
+            f"/api/v1/plugins/{plugin['plugin_id']}/versions/{plugin['version']}/uninstall",
+            json={"confirm": True},
+        )
+        assert removed.status_code == 200, removed.text
+        trash_id = removed.json()["plugin"]["trash_id"]
+        assert removed.json()["plugin"]["disposition"] == "trashed"
+        assert client.get("/api/v1/plugins").json()["plugins"] == []
+
+        trash = client.get("/api/v1/plugins/trash")
+        assert trash.status_code == 200
+        assert trash.json()["plugins"][0]["trash_id"] == trash_id
+        restored = client.post(
+            f"/api/v1/plugins/trash/{trash_id}/restore",
+            json={"confirm": True},
+        )
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["plugin"]["state"] == "disabled"
+        assert client.get("/api/v1/plugins").json()["plugins"][0]["state"] == "disabled"

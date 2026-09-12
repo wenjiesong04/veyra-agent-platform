@@ -61,6 +61,19 @@ class PluginService:
                     packs.append(self._summary(*self._read_record(version_root)))
         return {"schema_version": SCHEMA_VERSION, "plugins": packs}
 
+    def list_trash(self) -> dict[str, Any]:
+        packs: list[dict[str, Any]] = []
+        trash_root = self.root / ".trash"
+        if trash_root.is_dir():
+            for trash_entry in sorted(trash_root.iterdir()):
+                if trash_entry.name.startswith(".") or not trash_entry.is_dir():
+                    continue
+                metadata, state = self._read_record(trash_entry)
+                item = self._summary(metadata, state)
+                item["trash_id"] = trash_entry.name
+                packs.append(item)
+        return {"schema_version": SCHEMA_VERSION, "plugins": packs}
+
     def import_archive(
         self, *, filename: str | None, contents: bytes
     ) -> dict[str, Any]:
@@ -200,17 +213,7 @@ class PluginService:
         target = self._target(plugin_id, version)
         metadata, state = self._read_record(target)
         try:
-            for reference in state["skill_resources"]:
-                resource_id, resource_version = _split_reference(reference)
-                self.workshop.set_skill_enabled(
-                    resource_id, resource_version, enabled=False
-                )
-            for server_id in state["mcp_server_ids"]:
-                try:
-                    self.mcp.update_server(server_id, enabled=False)
-                except McpError as exc:
-                    if exc.code != "mcp_server_not_found":
-                        raise
+            self._disable_resources(state)
             state["state"] = "disabled"
             state["activation_error"] = None
             self._write_state(target, state)
@@ -226,6 +229,83 @@ class PluginService:
             "schema_version": SCHEMA_VERSION,
             "plugin": self._summary(metadata, state),
         }
+
+    def uninstall(
+        self, plugin_id: str, version: str, *, confirm: bool
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise PluginError(
+                "plugin_confirmation_required",
+                "Explicit confirmation is required to move a Plugin Pack to trash",
+            )
+        target = self._target(plugin_id, version)
+        metadata, state = self._read_record(target)
+        try:
+            self._disable_resources(state)
+            state["state"] = "disabled"
+            state["activation_error"] = None
+            self._write_state(target, state)
+            trash_id = new_uuid7()
+            trash_target = self.root / ".trash" / trash_id
+            trash_target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            os.replace(target, trash_target)
+        except (McpError, ResourceWorkshopError, OSError, KeyError, TypeError) as exc:
+            state["state"] = "activation_failed"
+            state["activation_error"] = str(exc)[:500]
+            with suppress(OSError):
+                self._write_state(target, state)
+            raise PluginError(
+                "plugin_uninstall_failed", "Plugin Pack could not be moved to trash"
+            ) from exc
+        result = self._summary(metadata, state)
+        result.update({"trash_id": trash_id, "disposition": "trashed"})
+        return {"schema_version": SCHEMA_VERSION, "plugin": result}
+
+    def restore(self, trash_id: str, *, confirm: bool) -> dict[str, Any]:
+        if not confirm:
+            raise PluginError(
+                "plugin_confirmation_required",
+                "Explicit confirmation is required to restore a Plugin Pack",
+            )
+        if (
+            re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                trash_id,
+            )
+            is None
+        ):
+            raise PluginError("plugin_not_found", "Plugin Pack was not found")
+        trash_target = self.root / ".trash" / trash_id
+        metadata, state = self._read_record(trash_target)
+        target = self._target(metadata["plugin_id"], metadata["version"])
+        if target.exists():
+            raise PluginError(
+                "plugin_conflict", "A Plugin Pack with this id and version is installed"
+            )
+        try:
+            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            os.replace(trash_target, target)
+        except OSError as exc:
+            raise PluginError(
+                "plugin_storage_failed", "Plugin Pack could not be restored"
+            ) from exc
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "plugin": self._summary(metadata, state),
+        }
+
+    def _disable_resources(self, state: dict[str, Any]) -> None:
+        for reference in state["skill_resources"]:
+            resource_id, resource_version = _split_reference(reference)
+            self.workshop.set_skill_enabled(
+                resource_id, resource_version, enabled=False
+            )
+        for server_id in state["mcp_server_ids"]:
+            try:
+                self.mcp.update_server(server_id, enabled=False)
+            except McpError as exc:
+                if exc.code != "mcp_server_not_found":
+                    raise
 
     def _enable_mcp_servers(
         self, configs: list[dict[str, Any]], server_ids: list[str]

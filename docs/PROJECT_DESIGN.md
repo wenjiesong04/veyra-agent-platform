@@ -1574,6 +1574,9 @@ Star does not mean safe or effective.
 - `POST /api/v1/plugins/import` (quarantined declarative `.vplugin.zip`)
 - `POST /api/v1/plugins/{plugin_id}/versions/{version}/activate`
 - `POST /api/v1/plugins/{plugin_id}/versions/{version}/disable`
+- `POST /api/v1/plugins/{plugin_id}/versions/{version}/uninstall` (moves to recoverable trash)
+- `GET /api/v1/plugins/trash`
+- `POST /api/v1/plugins/trash/{trash_id}/restore`
 - `GET /api/v1/plugins/{plugin_id}/versions/{version}/download`
 - `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`

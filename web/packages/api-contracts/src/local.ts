@@ -1077,6 +1077,22 @@ export type PluginPackResponse = {
   plugin: PluginPack;
 };
 
+export type PluginPackTrash = PluginPack & {
+  trash_id: string;
+};
+
+export type ListPluginTrashResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  plugins: PluginPackTrash[];
+};
+
+export type PluginPackUninstallResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  plugin: PluginPackTrash & {
+    disposition: "trashed";
+  };
+};
+
 export type McpServer = {
   server_id: string;
   name: string;

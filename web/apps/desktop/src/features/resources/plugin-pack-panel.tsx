@@ -1,5 +1,5 @@
 import { Download, PackageOpen, RefreshCw, ShieldCheck, Upload } from "lucide-react";
-import type { PluginPack, PluginPackState } from "@veyra/api-contracts";
+import type { PluginPack, PluginPackState, PluginPackTrash } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, StatusBadge, Tag } from "@veyra/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LocalProjectApi } from "../../api/local-client";
@@ -16,6 +16,7 @@ function stateTone(state: PluginPackState): "good" | "warn" | "bad" | "neutral" 
 
 export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; projects: Array<{ project_id: string; name: string }>; zh: boolean }) {
   const [plugins, setPlugins] = useState<PluginPack[]>([]);
+  const [trash, setTrash] = useState<PluginPackTrash[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -29,7 +30,12 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
   const load = useCallback(async () => {
     if (!api.listPluginPacks) return;
     try {
-      setPlugins((await api.listPluginPacks()).plugins);
+      const [installed, removed] = await Promise.all([
+        api.listPluginPacks(),
+        api.listPluginTrash ? api.listPluginTrash() : Promise.resolve({ plugins: [] as PluginPackTrash[] }),
+      ]);
+      setPlugins(installed.plugins);
+      setTrash(removed.plugins);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "无法加载插件包。" : "Plugin Packs could not be loaded."));
     }
@@ -83,6 +89,40 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "插件包停用失败。" : "Plugin Pack disable failed."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const uninstall = async (plugin: PluginPack) => {
+    if (!api.uninstallPluginPack) return;
+    const key = `uninstall:${plugin.plugin_id}@${plugin.version}`;
+    setBusy(key);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.uninstallPluginPack(plugin.plugin_id, plugin.version, true);
+      setMessage(zh ? "插件包已移到回收区；包内 Skill 会保留为停用状态，恢复后可重新启用。" : "Plugin Pack moved to trash; its Skills remain disabled and can be re-enabled after restore.");
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "插件包卸载失败。" : "Plugin Pack uninstall failed."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restore = async (plugin: PluginPackTrash) => {
+    if (!api.restorePluginPack) return;
+    const key = `restore:${plugin.trash_id}`;
+    setBusy(key);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.restorePluginPack(plugin.trash_id, true);
+      setMessage(zh ? "插件包已恢复到已安装列表，可重新启用。" : "Plugin Pack restored to the installed list and can be re-enabled.");
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "插件包恢复失败。" : "Plugin Pack restore failed."));
     } finally {
       setBusy(null);
     }
@@ -165,13 +205,14 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
                   {plugin.mcp_servers.map((server) => <div key={server.name}><RefreshCw size={14} aria-hidden="true" /><span><strong>{server.name}</strong><small>{server.transport === "stdio" ? `${server.command} ${server.args.join(" ")}` : server.url}</small><small>{zh ? "激活后默认停用" : "Disabled by default after activation"}</small></span></div>)}
                 </div>
               </details>
-              <div className="button-row"><Button size="sm" variant="ghost" disabled={busy !== null || !api.downloadPluginPack} onClick={() => void downloadPack(plugin)}><Download size={14} aria-hidden="true" />{busy === `download:${key}` ? "…" : (zh ? "下载包" : "Download")}</Button>{plugin.state === "active" ? <><Button size="sm" variant="ghost" disabled={busy !== null || !api.disablePluginPack} onClick={() => void disable(plugin)}>{busy === `disable:${key}` ? "…" : (zh ? "停用" : "Disable")}</Button>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : plugin.state === "disabled" ? (zh ? "重新启用" : "Re-enable") : (zh ? "审核并激活" : "Review and activate"))}</Button>}</div>
+              <div className="button-row"><Button size="sm" variant="ghost" disabled={busy !== null || !api.downloadPluginPack} onClick={() => void downloadPack(plugin)}><Download size={14} aria-hidden="true" />{busy === `download:${key}` ? "…" : (zh ? "下载包" : "Download")}</Button>{plugin.state === "active" ? <><Button size="sm" variant="ghost" disabled={busy !== null || !api.disablePluginPack} onClick={() => void disable(plugin)}>{busy === `disable:${key}` ? "…" : (zh ? "停用" : "Disable")}</Button>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : plugin.state === "disabled" ? (zh ? "重新启用" : "Re-enable") : (zh ? "审核并激活" : "Review and activate"))}</Button>}<Button size="sm" variant="ghost" disabled={busy !== null || !api.uninstallPluginPack} onClick={() => void uninstall(plugin)}>{busy === `uninstall:${key}` ? "…" : (zh ? "移到回收区" : "Move to trash")}</Button></div>
               {plugin.state === "active" ? <small className="plugin-pack-active-note">{zh ? `已注册 ${plugin.skill_resources.length} 个 Skill、${plugin.mcp_server_ids.length} 个 MCP 服务器。` : `${plugin.skill_resources.length} Skill(s) and ${plugin.mcp_server_ids.length} MCP server(s) registered.`}</small> : null}
               {plugin.activation_error ? <small className="resource-detail-error">{plugin.activation_error}</small> : null}
             </article>
           );
         })}
       </div>
+      {trash.length ? <div className="plugin-pack-trash"><strong>{zh ? "最近移到回收区" : "Recently moved to trash"}</strong>{trash.map((plugin) => <div className="plugin-pack-trash-row" key={plugin.trash_id}><span><b>{plugin.name}</b><small>{plugin.plugin_id} · v{plugin.version}</small></span><Button size="sm" variant="secondary" disabled={busy !== null || !api.restorePluginPack} onClick={() => void restore(plugin)}>{busy === `restore:${plugin.trash_id}` ? "…" : (zh ? "恢复" : "Restore")}</Button></div>)}</div> : null}
     </Panel>
   );
 }
