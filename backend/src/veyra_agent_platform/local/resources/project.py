@@ -72,6 +72,7 @@ class ProjectResourceService:
                 item["name"],
             )
         )
+        stale_count = sum(item.get("binding_status") == "stale" for item in resources)
         return {
             "schema_version": "1.0",
             "project_id": project_id,
@@ -81,6 +82,7 @@ class ProjectResourceService:
             "used_count": sum(bool(item["used_by"]) for item in resources),
             "unbound_count": sum(item["scope"] == "used_unbound" for item in resources),
             "builtin_count": sum(item["scope"] == "builtin" for item in resources),
+            "stale_count": stale_count,
         }
 
     def add(
@@ -154,6 +156,15 @@ class ProjectResourceService:
         result.update(
             {
                 "scope": scope,
+                "binding_status": (
+                    "builtin"
+                    if scope == "builtin"
+                    else "unbound"
+                    if binding is None
+                    else "current"
+                    if binding.content_hash == descriptor["content_hash"]
+                    else "stale"
+                ),
                 "binding_source": binding.source if binding is not None else None,
                 "bound_content_hash": (
                     binding.content_hash if binding is not None else None

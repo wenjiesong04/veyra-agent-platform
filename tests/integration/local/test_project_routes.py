@@ -122,6 +122,7 @@ def test_project_resources_are_separate_from_global_catalog(tmp_path: Path) -> N
         )
         assert selected["scope"] == "project"
         assert selected["binding_source"] == "manual"
+        assert selected["binding_status"] == "current"
 
         manifest = Path(created.json()["root_path"]) / "project.vproject.yaml"
         assert candidate["reference"] in manifest.read_text(encoding="utf-8")

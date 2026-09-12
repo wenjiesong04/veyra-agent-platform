@@ -32,6 +32,7 @@ DependencyStatus = Literal[
     "secret_declaration_missing",
     "context_not_declared",
     "context_too_large",
+    "project_binding_stale",
 ]
 
 _CATALOG_KINDS = {"component", "tool", "mcp_tool", "skill", "policy", "template"}
@@ -87,6 +88,14 @@ def inspect_agent_dependencies(
     for reference in source.knowledge_refs:
         add(reference, "knowledge")
 
+    try:
+        project_bindings = {
+            binding.reference: binding.content_hash
+            for binding in projects.project_resource_bindings(project_id)
+        }
+    except ProjectError:
+        project_bindings = {}
+
     bindings = source.ui.get("bindings") or {}
     if isinstance(bindings, Mapping):
         for binding_id, binding in bindings.items():
@@ -121,6 +130,7 @@ def inspect_agent_dependencies(
                     expected_kinds,
                     usage["node_ids"],
                     usage["binding_ids"],
+                    project_bindings.get(reference),
                 )
             )
 
@@ -145,6 +155,7 @@ def _catalog_check(
     expected_kinds: set[str],
     node_ids: list[str],
     binding_ids: list[str],
+    project_binding_hash: str | None,
 ) -> dict[str, Any]:
     expected_kind = _display_kind(expected_kinds)
     result: dict[str, Any] = {
@@ -155,6 +166,9 @@ def _catalog_check(
         "detail": "Resource version is not registered in the local catalog.",
         "used_by": node_ids,
         "bound_by": binding_ids,
+        "project_binding_status": "unbound"
+        if project_binding_hash is None
+        else "unknown",
     }
     locked_hash = source.lock.get(reference)
     if locked_hash is not None:
@@ -192,6 +206,17 @@ def _catalog_check(
         result["status"] = "lock_mismatch"
         result["detail"] = "Agent lock does not match the current catalog content hash."
         return result
+
+    if project_binding_hash is not None:
+        result["project_binding_status"] = (
+            "current" if project_binding_hash == resource["content_hash"] else "stale"
+        )
+        if project_binding_hash != resource["content_hash"]:
+            result["status"] = "project_binding_stale"
+            result["detail"] = (
+                "Project binding hash does not match the current catalog content."
+            )
+            return result
 
     availability = resource["availability"]
     if availability != "ready":

@@ -69,6 +69,7 @@ import {
   type ProjectKnowledgeRecord,
   type ProjectSummaryResponse,
   type ProjectResourceDescriptor,
+  type ProjectResourceBindingStatus,
   type ProjectResourcesResponse,
   type ProjectWorkflowRecord,
   type RevealProjectResponse,
@@ -759,7 +760,7 @@ function validationDependency(value: unknown, status = 502): AgentDependencyChec
   const kind = asString(record.kind, "validation dependency kind", status);
   const dependencyStatus = asString(record.status, "validation dependency status", status);
   const kinds = new Set(["component", "tool", "mcp_tool", "skill", "policy", "template", "knowledge"]);
-  const statuses = new Set<AgentDependencyStatus>(["ready", "missing", "lock_missing", "lock_mismatch", "kind_mismatch", "configuration_required", "runtime_unavailable", "review_required", "permission_denied", "secret_declaration_missing", "context_not_declared", "context_too_large"]);
+  const statuses = new Set<AgentDependencyStatus>(["ready", "missing", "lock_missing", "lock_mismatch", "kind_mismatch", "configuration_required", "runtime_unavailable", "review_required", "permission_denied", "secret_declaration_missing", "context_not_declared", "context_too_large", "project_binding_stale"]);
   if (!kinds.has(kind) || !statuses.has(dependencyStatus as AgentDependencyStatus)) {
     throw new LocalApiClientError("The local service returned an invalid Agent dependency check.", { status, code: "invalid_response" });
   }
@@ -769,6 +770,10 @@ function validationDependency(value: unknown, status = 502): AgentDependencyChec
   }
   const availability = record.availability === undefined ? undefined : asString(record.availability, "validation dependency availability", status) as ResourceAvailability;
   const runtimeStatus = record.runtime_status === undefined ? undefined : asString(record.runtime_status, "validation dependency runtime_status", status) as ResourceRuntimeStatus;
+  const projectBindingStatus = record.project_binding_status === undefined ? undefined : asString(record.project_binding_status, "validation dependency project_binding_status", status) as AgentDependencyCheck["project_binding_status"];
+  if (projectBindingStatus !== undefined && !new Set(["current", "stale", "unbound", "unknown"]).has(projectBindingStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent dependency project binding status.", { status, code: "invalid_response" });
+  }
   if (availability !== undefined && !resourceAvailability.has(availability)) {
     throw new LocalApiClientError("The local service returned an invalid Agent dependency availability.", { status, code: "invalid_response" });
   }
@@ -791,6 +796,7 @@ function validationDependency(value: unknown, status = 502): AgentDependencyChec
     ...(record.byte_length === undefined ? {} : { byte_length: asNumber(record.byte_length, "validation dependency byte_length", status) }),
     used_by: asArray(record.used_by, "validation dependency used_by", status).map((item) => asString(item, "validation dependency node", status)),
     bound_by: asArray(record.bound_by, "validation dependency bound_by", status).map((item) => asString(item, "validation dependency binding", status)),
+    ...(projectBindingStatus === undefined ? {} : { project_binding_status: projectBindingStatus }),
   };
 }
 
@@ -1049,10 +1055,15 @@ function projectResource(value: unknown, status = 502): ProjectResourceDescripto
   if (!projectResourceScopes.has(scope)) {
     throw new LocalApiClientError("The local service returned an invalid Project resource scope.", { status, code: "invalid_response" });
   }
+  const bindingStatus = record.binding_status === undefined ? undefined : asString(record.binding_status, "project_resource.binding_status", status) as ProjectResourceBindingStatus;
+  if (bindingStatus !== undefined && !new Set<ProjectResourceBindingStatus>(["current", "stale", "unbound", "builtin"]).has(bindingStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Project resource binding status.", { status, code: "invalid_response" });
+  }
   const bindingSource = record.binding_source === null ? null : asString(record.binding_source, "project_resource.binding_source", status);
   return {
     ...resource(record, status),
     scope: scope as ProjectResourceDescriptor["scope"],
+    ...(bindingStatus === undefined ? {} : { binding_status: bindingStatus }),
     binding_source: bindingSource as ProjectResourceDescriptor["binding_source"],
     bound_content_hash: record.bound_content_hash === null ? null : asString(record.bound_content_hash, "project_resource.bound_content_hash", status),
     used_by: asArray(record.used_by, "project_resource.used_by", status).map((item) => {
@@ -1075,6 +1086,7 @@ function projectResources(value: unknown, status = 502): ProjectResourcesRespons
     used_count: asNumber(record.used_count, "project_resources.used_count", status),
     unbound_count: asNumber(record.unbound_count, "project_resources.unbound_count", status),
     builtin_count: asNumber(record.builtin_count, "project_resources.builtin_count", status),
+    ...(record.stale_count === undefined ? {} : { stale_count: asNumber(record.stale_count, "project_resources.stale_count", status) }),
   };
 }
 

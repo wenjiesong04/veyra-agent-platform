@@ -14,6 +14,7 @@ const statusCopy: Record<AgentDependencyCheck["status"], { zh: string; en: strin
   secret_declaration_missing: { zh: "未声明密钥", en: "Secret not declared" },
   context_not_declared: { zh: "未声明上下文", en: "Context not declared" },
   context_too_large: { zh: "上下文过大", en: "Context too large" },
+  project_binding_stale: { zh: "项目绑定已过期", en: "Project binding stale" },
 };
 
 export function DependencyReport({ validation, locale }: { validation: ValidateResponse; locale: "zh" | "en" }) {
@@ -29,7 +30,7 @@ export function DependencyReport({ validation, locale }: { validation: ValidateR
         <StatusBadge label={healthy ? (zh ? "依赖已就绪" : "Dependencies ready") : (zh ? "需要处理" : "Attention needed")} tone={healthy ? "good" : "warn"} />
       </div>
       <small>{zh ? `${summary.total} 项依赖 · ${summary.ready} 项就绪 · ${summary.attention} 项需要处理。模型 API Key 和主机密钥仍会在真正运行时检查。` : `${summary.total} dependencies · ${summary.ready} ready · ${summary.attention} need attention. The model API key and host secrets are still checked at execution time.`}</small>
-      {dependencies.length ? <ul className="studio-dependency-list">{dependencies.map((dependency) => <li key={dependency.reference} className={dependency.status === "ready" ? "is-ready" : "is-attention"}><span><strong>{dependency.name}</strong><code>{dependency.reference}</code></span><StatusBadge label={statusCopy[dependency.status][locale]} tone={dependency.status === "ready" ? "good" : "warn"} /><p>{dependency.detail}</p></li>)}</ul> : <p className="studio-dependency-empty">{zh ? "这个 Agent 没有额外的 Tool、Skill 或 Knowledge 依赖。" : "This Agent has no additional Tool, Skill, or Knowledge dependencies."}</p>}
+      {dependencies.length ? <ul className="studio-dependency-list">{dependencies.map((dependency) => <li key={dependency.reference} className={dependency.status === "ready" ? "is-ready" : "is-attention"}><span><strong>{dependency.name}</strong><code>{dependency.reference}</code></span><StatusBadge label={statusCopy[dependency.status][locale]} tone={dependency.status === "ready" ? "good" : "warn"} /><p>{dependency.detail}{dependency.project_binding_status === "stale" ? ` · ${zh ? "请在项目资源页和 Agent 中重新绑定" : "Rebind it in Project resources and the Agent"}` : ""}</p></li>)}</ul> : <p className="studio-dependency-empty">{zh ? "这个 Agent 没有额外的 Tool、Skill 或 Knowledge 依赖。" : "This Agent has no additional Tool, Skill, or Knowledge dependencies."}</p>}
     </div>
   );
 }

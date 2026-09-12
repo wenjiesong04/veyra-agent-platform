@@ -31,14 +31,16 @@ function ProjectResourceRow({
   onRemove: (resource: ProjectResourceDescriptor) => void;
 }) {
   const inUse = resource.used_by.length > 0;
+  const bindingStale = resource.binding_status === "stale";
   return (
     <div className="project-resource-row">
       <span className="resource-row-icon" aria-hidden="true">{resource.kind === "policy" ? "◇" : "◆"}</span>
       <div className="project-resource-row-main">
         <div className="project-resource-row-title"><strong>{resource.name}</strong><Tag>{kindLabel(resource.kind, zh)}</Tag><Tag>v{resource.version}</Tag></div>
-        <small>{resource.reference} · {inUse ? resource.used_by.map((item) => `${item.kind === "agent" ? "Agent" : "Workflow"}: ${item.name}`).join("、") : zh ? "尚未被 Agent 或 Workflow 引用" : "Not referenced by an Agent or Workflow"}</small>
+        <small>{resource.reference} · {inUse ? resource.used_by.map((item) => `${item.kind === "agent" ? "Agent" : "Workflow"}: ${item.name}`).join("、") : zh ? "尚未被 Agent 或 Workflow 引用" : "Not referenced by an Agent or Workflow"}{bindingStale ? ` · ${zh ? "Catalog 内容已变化，请重新绑定" : "Catalog content changed; rebind it"}` : ""}</small>
       </div>
       <StatusBadge label={availabilityLabel(resource.availability, zh)} tone={tone(resource.availability)} />
+      {bindingStale ? <StatusBadge label={zh ? "版本已漂移" : "Version drift"} tone="warn" /> : null}
       <button className="project-resource-remove" type="button" disabled={inUse || resource.scope !== "project"} title={inUse ? (zh ? "资源正在使用中" : "Resource is in use") : (zh ? "移除资源" : "Remove resource")} onClick={() => onRemove(resource)} aria-label={`${zh ? "移除" : "Remove"} ${resource.name}`}><Trash2 size={15} aria-hidden="true" /></button>
     </div>
   );
@@ -117,6 +119,7 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         <div><strong>{data?.project_count ?? 0}</strong><span>{zh ? "已锁定资源" : "Bound resources"}</span></div>
         <div><strong>{data?.used_count ?? 0}</strong><span>{zh ? "正在使用" : "In use"}</span></div>
         <div className={data?.unbound_count ? "is-warning" : ""}><strong>{data?.unbound_count ?? 0}</strong><span>{zh ? "待加入项目" : "Used but unbound"}</span></div>
+        <div className={data?.stale_count ? "is-warning" : ""}><strong>{data?.stale_count ?? 0}</strong><span>{zh ? "版本已漂移" : "Stale bindings"}</span></div>
         <div><strong>{data?.builtin_count ?? 0}</strong><span>{zh ? "平台内置" : "Built-in primitives"}</span></div>
       </div>
       {showCatalog ? <Panel className="project-resource-catalog-panel"><SectionHeading eyebrow={zh ? "总资源目录" : "Resource Catalog"} title={zh ? "选择要加入 Project 的资源" : "Choose resources to add"} detail={zh ? "平台内置 Primitive 无需加入。" : "Platform primitives are always available."} />{addable.length ? <div className="project-resource-catalog-list">{addable.map((resource) => <div className="project-resource-catalog-item" key={resource.reference}><div><strong>{resource.name}</strong><small>{kindLabel(resource.kind, zh)} · v{resource.version} · {resource.description}</small></div><Button size="sm" variant="secondary" onClick={() => void addResource(resource)}>{zh ? "加入" : "Add"}</Button></div>)}</div> : <EmptyState icon={CheckCircle2} title={zh ? "没有可加入的新资源" : "No new resources to add"} detail={zh ? "当前项目已经包含目录中的可选资源。" : "This Project already contains the optional Catalog resources."} />}</Panel> : null}

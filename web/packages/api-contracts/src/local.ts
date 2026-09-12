@@ -545,7 +545,8 @@ export type AgentDependencyStatus =
   | "permission_denied"
   | "secret_declaration_missing"
   | "context_not_declared"
-  | "context_too_large";
+  | "context_too_large"
+  | "project_binding_stale";
 
 export type AgentDependencyCheck = {
   reference: string;
@@ -563,6 +564,7 @@ export type AgentDependencyCheck = {
   byte_length?: number;
   used_by: string[];
   bound_by: string[];
+  project_binding_status?: "current" | "stale" | "unbound" | "unknown";
 };
 
 export type AgentDependencySummary = {
@@ -689,6 +691,7 @@ export type ListResourcesResponse = {
 };
 
 export type ProjectResourceScope = "project" | "used_unbound" | "builtin";
+export type ProjectResourceBindingStatus = "current" | "stale" | "unbound" | "builtin";
 
 export type ProjectResourceUsage = {
   kind: "agent" | "workflow";
@@ -698,6 +701,7 @@ export type ProjectResourceUsage = {
 
 export type ProjectResourceDescriptor = ResourceDescriptor & {
   scope: ProjectResourceScope;
+  binding_status?: ProjectResourceBindingStatus;
   binding_source: "manual" | "factory" | "imported" | "reconciled" | null;
   bound_content_hash: string | null;
   used_by: ProjectResourceUsage[];
@@ -712,6 +716,7 @@ export type ProjectResourcesResponse = {
   used_count: number;
   unbound_count: number;
   builtin_count: number;
+  stale_count?: number;
 };
 
 export type AddProjectResourceRequest = {
