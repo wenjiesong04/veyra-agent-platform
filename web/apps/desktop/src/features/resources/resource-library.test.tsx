@@ -37,9 +37,10 @@ const tools = [
 const mcp = [descriptor("mcp_tool", "MCP Call", "call", "requires_configuration")];
 const catalog = [...components, ...skills, ...policies, ...tools, ...mcp];
 
-function apiFor(): LocalProjectApi & { listResources: ReturnType<typeof vi.fn>; getResource: ReturnType<typeof vi.fn> } {
+function apiFor(extra: unknown[] = []): LocalProjectApi & { listResources: ReturnType<typeof vi.fn>; getResource: ReturnType<typeof vi.fn> } {
   const listResources = vi.fn(async ({ kind }: { kind?: string } = {}): Promise<ListResourcesResponse> => {
-    const resources = kind ? catalog.filter((item) => item.kind === kind) : catalog;
+    const allResources = [...catalog, ...extra] as typeof catalog;
+    const resources = kind ? allResources.filter((item) => item.kind === kind) : allResources;
     return { schema_version: "1.0", resources: resources as never, kinds: ["component", "tool", "mcp_tool", "skill", "policy", "template"].map((item) => ({ kind: item, count: resources.filter((resource) => resource.kind === item).length })) as never };
   });
   const getResource = vi.fn(async (resourceId: string) => skills.find((resource) => resource.resource_id === resourceId));
@@ -110,5 +111,19 @@ describe("ResourceLibraryPage", () => {
     expect(await screen.findByText("Research Brief description")).toBeInTheDocument();
     expect(await screen.findByText("a".repeat(64))).toBeInTheDocument();
     expect(api.getResource).toHaveBeenCalledWith("veyra.skill.research-brief", "1.0.0");
+  });
+
+  it("reloads discovered MCP tools after the Resource Library is reopened", async () => {
+    const discovered = { ...descriptor("tool", "Discovered Echo", "mcp.echo"), origin: "discovered", factory_selectable: false, spec: { mcp_server_id: "server-1", review_required: true } };
+    const api = apiFor([discovered]);
+    api.listMcpServers = vi.fn().mockResolvedValue({ schema_version: "1.0", servers: [{ server_id: "server-1", name: "demo", command: "node", args: [], env_names: {}, enabled: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }] });
+    api.mcpServerReadiness = vi.fn().mockResolvedValue({ schema_version: "1.0", server_id: "server-1", ready: true, code: "ready", detail: "ready" });
+    const user = userEvent.setup();
+    renderPage(api);
+
+    await user.click(await screen.findByRole("tab", { name: "Tools / MCP" }));
+
+    expect((await screen.findAllByText("Discovered Echo")).length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText(/Review required/)).toBeInTheDocument();
   });
 });

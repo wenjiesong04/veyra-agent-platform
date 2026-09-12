@@ -434,6 +434,18 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
     try {
       const response = await api.listMcpServers();
       setServers(response.servers);
+      if (api.listResources) {
+        try {
+          const catalog = await api.listResources({ kind: "tool" });
+          const serverIds = new Set(response.servers.map((server) => server.server_id));
+          setTools(catalog.resources.filter((resource) => {
+            const spec = (resource.spec ?? {}) as Record<string, unknown>;
+            return resource.origin === "discovered" && typeof spec.mcp_server_id === "string" && serverIds.has(spec.mcp_server_id);
+          }));
+        } catch {
+          // Catalog loading must not hide MCP servers that can still be edited.
+        }
+      }
       if (!api.mcpServerReadiness) {
         setServerReadiness({});
       } else {
