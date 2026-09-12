@@ -37,6 +37,8 @@ import {
   type RuntimeReadiness,
   type RuntimeReadinessCheck,
   type RuntimeToolReadiness,
+  type WorkflowRuntimeReadiness,
+  type WorkflowRuntimeReadinessCheck,
   type ApplyFactoryDraftResponse,
   type FactoryMessage,
   type JsonObject,
@@ -175,6 +177,7 @@ export type LocalProjectApi = {
   saveWorkflowDraft?(projectId: string, workflowId: string, input: SaveWorkflowDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveWorkflowDraftResponse>;
   reloadWorkflowDraft?(projectId: string, workflowId: string): Promise<WorkflowDraftResponse>;
   validateWorkflow?(projectId: string, workflowId: string): Promise<ValidateResponse>;
+  workflowRuntimeReadiness?(projectId: string, workflowId: string): Promise<WorkflowRuntimeReadiness>;
   commitWorkflow?(projectId: string, workflowId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
   validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
   commit?(projectId: string, agentId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
@@ -1424,6 +1427,63 @@ function runtimeReadinessCheck(value: unknown, status = 502): RuntimeReadinessCh
   };
 }
 
+function workflowRuntimeReadiness(value: unknown, status = 502): WorkflowRuntimeReadiness {
+  const record = schemaRecord(value, status);
+  const checks = asArray(record.checks, "workflow runtime readiness checks", status).map((item) => workflowRuntimeReadinessCheck(item, status));
+  const calls = asArray(record.calls, "workflow runtime readiness calls", status).map((value) => {
+    const call = asRecord(value, status);
+    const model = asRecord(call.model, status);
+    const gaps = asArray(call.permission_gaps, "workflow runtime permission gaps", status).map((value) => {
+      const gap = asRecord(value, status);
+      return {
+        field: asString(gap.field, "workflow runtime permission field", status),
+        missing: asArray(gap.missing, "workflow runtime permission values", status).map((item, index) => asJsonValue(item, `workflow runtime permission value ${index}`, status)),
+      };
+    });
+    return {
+      node_id: asString(call.node_id, "workflow runtime call node_id", status),
+      agent_id: asString(call.agent_id, "workflow runtime call agent_id", status),
+      version_id: asString(call.version_id, "workflow runtime call version_id", status),
+      source_hash: asString(call.source_hash, "workflow runtime call source_hash", status),
+      ready: asBoolean(call.ready, "workflow runtime call ready", status),
+      detail: asText(call.detail, "workflow runtime call detail", status),
+      permission_gaps: gaps,
+      model: {
+        required: asBoolean(model.required, "workflow runtime call model.required", status),
+        configured: asBoolean(model.configured, "workflow runtime call model.configured", status),
+        model_id: asString(model.model_id, "workflow runtime call model_id", status),
+        model_base_url: asString(model.model_base_url, "workflow runtime call model_base_url", status),
+        model_api_key_env: asString(model.model_api_key_env, "workflow runtime call model_api_key_env", status),
+      },
+      dependency_summary: validationDependencySummary(call.dependency_summary, status),
+      checks: asArray(call.checks, "workflow runtime call checks", status).map((item) => runtimeReadinessCheck(item, status)),
+      tool_checks: asArray(call.tool_checks, "workflow runtime call tool_checks", status).map((item) => runtimeToolReadiness(item, status)),
+    };
+  });
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "workflow runtime readiness project_id", status),
+    workflow_id: asString(record.workflow_id, "workflow runtime readiness workflow_id", status),
+    ready: asBoolean(record.ready, "workflow runtime readiness ready", status),
+    calls,
+    checks,
+  };
+}
+
+function workflowRuntimeReadinessCheck(value: unknown, status = 502): WorkflowRuntimeReadinessCheck {
+  const record = asRecord(value, status);
+  const id = asString(record.id, "workflow runtime readiness check id", status);
+  if (id !== "agent_calls" && id !== "permissions" && id !== "limits") {
+    throw new LocalApiClientError("The local service returned an invalid Workflow Runtime readiness check.", { status, code: "invalid_response" });
+  }
+  return {
+    id,
+    ready: asBoolean(record.ready, "workflow runtime readiness check ready", status),
+    code: asString(record.code, "workflow runtime readiness check code", status),
+    detail: asText(record.detail, "workflow runtime readiness check detail", status),
+  };
+}
+
 function runtimeToolReadiness(value: unknown, status = 502): RuntimeToolReadiness {
   const record = asRecord(value, status);
   return {
@@ -2038,6 +2098,10 @@ export class LocalApiClient {
 
   runtimeReadiness(projectId: string, agentId: string): Promise<RuntimeReadiness> {
     return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-readiness`, runtimeReadiness);
+  }
+
+  workflowRuntimeReadiness(projectId: string, workflowId: string): Promise<WorkflowRuntimeReadiness> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runtime-readiness`, workflowRuntimeReadiness);
   }
 
   getSecretStatus(secretRef: string): Promise<SecretStatus> {

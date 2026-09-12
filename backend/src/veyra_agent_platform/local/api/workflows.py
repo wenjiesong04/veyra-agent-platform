@@ -32,6 +32,12 @@ def build_router() -> APIRouter:
             )
         )
 
+    @router.get("/runtime-readiness")
+    def runtime_readiness(
+        project_id: str, workflow_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(lambda: _runtime(request).readiness(project_id, workflow_id))
+
     @router.get("/runs")
     def runs(project_id: str, workflow_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _runtime(request).runs(project_id, workflow_id))

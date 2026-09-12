@@ -156,6 +156,23 @@ class RuntimeService:
         source = AgentSource.from_dict(
             self.projects._parse_yaml(source_text, agent["slug"])
         )
+        return self.readiness_for_source(project_id, agent_id, source)
+
+    def readiness_for_source(
+        self, project_id: str, agent_id: str, source: AgentSource
+    ) -> dict[str, Any]:
+        """Preflight a current draft or an immutable Agent snapshot.
+
+        Workflow AgentCall nodes execute pinned snapshots.  Keeping this
+        source-based variant separate from ``readiness`` prevents a Workflow
+        preflight from accidentally inspecting an Agent's newer mutable draft.
+        It is deliberately non-mutating and never calls the model provider.
+        """
+        if source.agent_id != agent_id:
+            raise RuntimeError(
+                "source_identity_invalid",
+                "source identity does not match requested Agent",
+            )
         dependencies = inspect_agent_dependencies(
             self.projects, self.tools.catalog, project_id, source
         )

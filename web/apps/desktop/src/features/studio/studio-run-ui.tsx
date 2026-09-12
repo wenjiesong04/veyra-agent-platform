@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentRunResponse, JsonValue, RuntimeReadiness, WorkflowRunResponse } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonValue, RuntimeReadiness, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
 import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 
@@ -122,6 +122,28 @@ export function RuntimeKeyNote({ api, locale, projectId, agentId }: { api: Local
     return <Alert type="warning" title={zh ? "尚未配置 Runtime 模型。可在设置中保存模型 API Key，或在无界面运行时设置 MOONSHOT_API_KEY。" : "The Runtime model is not configured. Save a model API key in Settings, or set MOONSHOT_API_KEY for headless runs."} />;
   }
   return <Alert type="info" title={zh ? "Runtime 正使用本机凭据试跑；上线后请在设置中绑定你自己的 API Key。" : "Runtime is using a host credential for this run. Bind your own API key in Settings before release."} closable duration={8000} />;
+}
+
+export function WorkflowRuntimeNote({ api, locale, projectId, workflowId }: { api: LocalProjectApi; locale: "zh" | "en"; projectId: string; workflowId: string }) {
+  const [readiness, setReadiness] = React.useState<WorkflowRuntimeReadiness | null>(null);
+  const zh = locale === "zh";
+  React.useEffect(() => {
+    let current = true;
+    setReadiness(null);
+    if (!api.workflowRuntimeReadiness) return () => { current = false; };
+    void api.workflowRuntimeReadiness(projectId, workflowId)
+      .then((result) => { if (current) setReadiness(result); })
+      .catch(() => { if (current) setReadiness(null); });
+    return () => { current = false; };
+  }, [api, projectId, workflowId]);
+  if (!api.workflowRuntimeReadiness) return api.runtimeStatus ? <RuntimeKeyNote api={api} locale={locale} /> : null;
+  if (!readiness) return null;
+  if (!readiness.ready) {
+    const failed = readiness.checks.find((item) => !item.ready);
+    const call = readiness.calls.find((item) => !item.ready);
+    return <Alert type="warning" title={zh ? "当前工作流尚未通过 Runtime 预检。" : "This Workflow has not passed the Runtime preflight."} description={failed?.detail ?? call?.detail ?? (zh ? "请先处理被调用 Agent 的配置。" : "Resolve the configuration for the called Agent first.")} />;
+  }
+  return <Alert type="info" title={zh ? "工作流及其锁定的 Agent 已通过本地 Runtime 预检；真正运行时仍会检查 Provider 响应。" : "The Workflow and its pinned Agents passed the local Runtime preflight; Provider responses are still checked during the Run."} closable duration={8000} />;
 }
 
 export function RunInputFields({

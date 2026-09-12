@@ -235,6 +235,42 @@ def test_workflow_executes_pinned_version_after_agent_draft_changes(client: Test
     assert "id: 1\n" not in events
 
 
+def test_workflow_runtime_readiness_resolves_pinned_agent_snapshot(
+    client: TestClient,
+):
+    _, _, version, url, draft = setup_call(client)
+    save(client, url, draft)
+
+    response = client.get(f"{url}/runtime-readiness")
+
+    assert response.status_code == 200, response.text
+    readiness = response.json()
+    assert readiness["ready"] is True
+    assert readiness["checks"] == [
+        {
+            "id": "agent_calls",
+            "ready": True,
+            "code": "ready",
+            "detail": "All pinned Agent Runtime preflights passed.",
+        },
+        {
+            "id": "permissions",
+            "ready": True,
+            "code": "ready",
+            "detail": "Workflow permissions cover every pinned Agent.",
+        },
+        {
+            "id": "limits",
+            "ready": True,
+            "code": "ready",
+            "detail": "Workflow is within the Project execution limit.",
+        },
+    ]
+    assert readiness["calls"][0]["version_id"] == version["version_id"]
+    assert readiness["calls"][0]["source_hash"] == version["source_hash"]
+    assert readiness["calls"][0]["ready"] is True
+
+
 @pytest.mark.parametrize(
     "decision,expected", [("approve", "Version A: box"), ("reject", "Declined")]
 )

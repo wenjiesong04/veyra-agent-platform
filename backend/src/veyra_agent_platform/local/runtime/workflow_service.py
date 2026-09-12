@@ -10,11 +10,16 @@ from typing import Any
 
 from veyra_agent_platform.contracts.agent import ComponentType
 from veyra_agent_platform.contracts.canonical import sha256_digest
-from veyra_agent_platform.contracts.common import IdempotencyKey, new_uuid7
+from veyra_agent_platform.contracts.common import (
+    ContractValidationError,
+    IdempotencyKey,
+    new_uuid7,
+)
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.library.workflow_dependencies import (
     resolve_workflow_calls,
 )
+from veyra_agent_platform.local.projects.service import ProjectError
 
 from .service import (
     RuntimeError,
@@ -63,6 +68,106 @@ class WorkflowRuntimeService:
             "runs": [self.store.detail(run_id) for run_id in ids],
         }
 
+    def readiness(self, project_id: str, workflow_id: str) -> dict[str, Any]:
+        """Preflight the pinned Agent versions a Workflow would execute.
+
+        This is a no-effect check: it resolves references and inspects each
+        immutable child source, but it does not commit a Workflow version,
+        contact the model provider, or start an Agent run.
+        """
+        self.library._workflow_in_project(project_id, workflow_id)
+        draft = self.library.workflow_draft(project_id, workflow_id)
+        source = WorkflowSource.from_dict(draft["source"])
+        try:
+            calls = resolve_workflow_calls(self.repository, project_id, source)
+        except (ContractValidationError, ProjectError) as exc:
+            return _workflow_readiness_failure(
+                project_id,
+                workflow_id,
+                code=getattr(exc, "code", "workflow_dependency_invalid"),
+                detail=str(exc),
+            )
+
+        call_reports: list[dict[str, Any]] = []
+        permission_gaps: list[dict[str, Any]] = []
+        for node in source.nodes:
+            if node.component_type is not ComponentType.AGENT_CALL:
+                continue
+            call = calls[node.id]
+            gaps = _permission_gaps(source, call.source)
+            permission_gaps.extend({"node_id": node.id, **gap} for gap in gaps)
+            child = self.runtime.readiness_for_source(
+                project_id, call.agent_id, call.source
+            )
+            call_reports.append(
+                {
+                    "node_id": node.id,
+                    "agent_id": call.agent_id,
+                    "version_id": call.version_id,
+                    "source_hash": call.source_hash,
+                    "ready": bool(child["ready"]) and not gaps,
+                    "detail": (
+                        "Pinned Agent Runtime preflight passed."
+                        if child["ready"] and not gaps
+                        else (
+                            "Workflow permissions do not cover the pinned Agent."
+                            if gaps
+                            else "Pinned Agent Runtime needs attention."
+                        )
+                    ),
+                    "permission_gaps": gaps,
+                    "model": child["model"],
+                    "dependency_summary": child["dependency_summary"],
+                    "checks": child["checks"],
+                    "tool_checks": child["tool_checks"],
+                }
+            )
+
+        _, _, _, _, manifest = self.runtime.projects._project_manifest_state(project_id)
+        within_limit = len(source.nodes) <= manifest.resource_policy.max_nodes_per_run
+        agents_ready = all(item["ready"] for item in call_reports)
+        permissions_ready = not permission_gaps
+        checks = [
+            {
+                "id": "agent_calls",
+                "ready": agents_ready,
+                "code": "ready" if agents_ready else "agent_runtime_attention",
+                "detail": (
+                    "All pinned Agent Runtime preflights passed."
+                    if agents_ready
+                    else "One or more pinned Agents need Runtime attention."
+                ),
+            },
+            {
+                "id": "permissions",
+                "ready": permissions_ready,
+                "code": "ready" if permissions_ready else "workflow_permission_denied",
+                "detail": (
+                    "Workflow permissions cover every pinned Agent."
+                    if permissions_ready
+                    else "Workflow permissions do not cover every pinned Agent."
+                ),
+            },
+            {
+                "id": "limits",
+                "ready": within_limit,
+                "code": "ready" if within_limit else "workflow_node_limit",
+                "detail": (
+                    "Workflow is within the Project execution limit."
+                    if within_limit
+                    else "Workflow exceeds the Project execution node limit."
+                ),
+            },
+        ]
+        return {
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "workflow_id": workflow_id,
+            "ready": all(item["ready"] for item in checks),
+            "calls": call_reports,
+            "checks": checks,
+        }
+
     def run(
         self, project_id: str, workflow_id: str, inputs: dict[str, Any], key: str
     ) -> dict[str, Any]:
@@ -72,20 +177,13 @@ class WorkflowRuntimeService:
         self.runtime._validate_inputs(source, inputs)
         calls = resolve_workflow_calls(self.repository, project_id, source)
         for call in calls.values():
-            for permission in (
-                "tools",
-                "network_hosts",
-                "filesystem_read_roots",
-                "filesystem_write_roots",
-            ):
-                if not set(getattr(call.source.permissions, permission)).issubset(
-                    set(getattr(source.permissions, permission))
-                ):
-                    raise RuntimeError(
-                        "workflow_permission_denied",
-                        "Workflow must explicitly allow the called Agent's "
-                        f"{permission}",
-                    )
+            gaps = _permission_gaps(source, call.source)
+            if gaps:
+                raise RuntimeError(
+                    "workflow_permission_denied",
+                    "Workflow must explicitly allow the called Agent's "
+                    + ", ".join(item["field"] for item in gaps),
+                )
         _, _, _, _, manifest = self.runtime.projects._project_manifest_state(project_id)
         policy = manifest.resource_policy
         if len(source.nodes) > policy.max_nodes_per_run:
@@ -526,3 +624,60 @@ class WorkflowRuntimeService:
                 return
             if not events:
                 time.sleep(0.05)
+
+
+def _permission_gaps(parent: WorkflowSource, child: Any) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    for field in (
+        "tools",
+        "network_hosts",
+        "filesystem_read_roots",
+        "filesystem_write_roots",
+    ):
+        missing = sorted(
+            set(getattr(child.permissions, field))
+            - set(getattr(parent.permissions, field))
+        )
+        if missing:
+            gaps.append({"field": field, "missing": missing})
+    if (
+        child.permissions.shell_workspace_only
+        and not parent.permissions.shell_workspace_only
+    ):
+        gaps.append({"field": "shell_workspace_only", "missing": [True]})
+    return gaps
+
+
+def _workflow_readiness_failure(
+    project_id: str, workflow_id: str, *, code: str, detail: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "project_id": project_id,
+        "workflow_id": workflow_id,
+        "ready": False,
+        "calls": [],
+        "checks": [
+            {
+                "id": "agent_calls",
+                "ready": False,
+                "code": code,
+                "detail": detail,
+            },
+            {
+                "id": "permissions",
+                "ready": False,
+                "code": "workflow_dependency_invalid",
+                "detail": (
+                    "Workflow permissions cannot be evaluated until Agent "
+                    "references resolve."
+                ),
+            },
+            {
+                "id": "limits",
+                "ready": True,
+                "code": "not_checked",
+                "detail": "Execution limit check was not reached.",
+            },
+        ],
+    }

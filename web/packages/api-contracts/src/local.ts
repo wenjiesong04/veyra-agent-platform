@@ -858,6 +858,41 @@ export type RuntimeReadiness = {
   checks: RuntimeReadinessCheck[];
 };
 
+export type WorkflowRuntimeReadinessCheck = {
+  id: "agent_calls" | "permissions" | "limits";
+  ready: boolean;
+  code: string;
+  detail: string;
+};
+
+export type WorkflowRuntimePermissionGap = {
+  field: string;
+  missing: JsonValue[];
+};
+
+export type WorkflowRuntimeCallReadiness = {
+  node_id: string;
+  agent_id: string;
+  version_id: string;
+  source_hash: string;
+  ready: boolean;
+  detail: string;
+  permission_gaps: WorkflowRuntimePermissionGap[];
+  model: RuntimeReadiness["model"];
+  dependency_summary: AgentDependencySummary;
+  checks: RuntimeReadinessCheck[];
+  tool_checks: RuntimeToolReadiness[];
+};
+
+export type WorkflowRuntimeReadiness = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  workflow_id: string;
+  ready: boolean;
+  calls: WorkflowRuntimeCallReadiness[];
+  checks: WorkflowRuntimeReadinessCheck[];
+};
+
 export type SecretStatus = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   secret_ref: string;

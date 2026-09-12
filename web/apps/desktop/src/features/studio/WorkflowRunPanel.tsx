@@ -11,7 +11,7 @@ import {
   initialSourceInputs,
   nodeStateLabel,
   RunInputFields,
-  RuntimeKeyNote,
+  WorkflowRuntimeNote,
   runStatusLabel,
   runTone,
   workflowRunAsAgentRun,
@@ -141,7 +141,7 @@ export function WorkflowRunPanel({
           <RunApprovalBar run={run ? workflowRunAsAgentRun(run) : null} locale={locale} disabled={busy} onCommand={(value) => void command(value)} />
           {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
           {!api.runWorkflow ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
-          {api.runtimeStatus && !disabled ? <RuntimeKeyNote api={api} locale={locale} /> : null}
+          {(!disabled && (api.workflowRuntimeReadiness || api.runtimeStatus)) ? <WorkflowRuntimeNote api={api} projectId={projectId} workflowId={workflowId} locale={locale} /> : null}
         </div>
         <div className={`studio-run-result${!run && !error ? " is-empty" : ""}`} aria-live="polite">
           {error ? <Alert type="error" title={error} /> : null}
