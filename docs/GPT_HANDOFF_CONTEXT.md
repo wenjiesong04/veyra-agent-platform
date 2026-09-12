@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`3b0e62d6cc3a87896f20c9711aa3bc627776a071`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除/配置预检、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告、模型 API 验证/Runtime 预检、Project 资源绑定漂移提示、测试运行文件路径建议、Agent Chat Runtime 状态和 Keychain profile 状态修复、Workflow 锁定 Agent 的 Runtime 预检与权限包含检查。
+- 最新功能代码基线：`86888718df030a3fba0fb2a5d14f5f5ee6f4fc52`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除/配置预检、标准 MCP `mcpServers` 配置导入、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告、模型 API 验证/Runtime 预检、Project 资源绑定漂移提示、测试运行文件路径建议、Agent Chat Runtime 状态和 Keychain profile 状态修复、Workflow 锁定 Agent 的 Runtime 预检与权限包含检查。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -361,6 +361,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Community 发布扫描现在还会保留可疑绝对/穿越/敏感路径、外部依赖和不可随单 YAML 携带的 Knowledge warning；详情页展示字段位置和引用，不展示原始路径内容。
 - Project Resource Library 现在区分 `current/stale/unbound/builtin` 绑定状态并显示 stale 计数；Agent 校验会将已发现的 Project binding hash 漂移标为 attention，避免把旧版本绑定误认为当前版本。
 - MCP 页面会在服务器列表显示配置 readiness，并提供不启动进程的“检查配置”；“发现工具”仍是显式动作，完成后工具还要经过审核才能进入 Agent Runtime。
+- MCP 页面支持导入标准 JSON 配置；导入只保存命令、参数和环境变量/Keychain 引用，明文凭据会被拒绝，且必须继续经过配置检查、工具发现和人工审核。
 - Agent 测试运行中，名称包含 `path/file/document` 的字符串输入会得到当前 Project 文件索引的相对路径建议；实际读取仍必须通过已授权的 Filesystem Tool。
 - Agent Chat 顶部也会显示当前 Agent 的 Runtime 预检，并为相同类型的文件输入提供 Project 文件路径建议；聊天仍只提交用户选择的输入，不会自动读取整棵文件树。
 - Workflow 测试运行面板现在显示锁定子 Agent 的 Runtime 预检；预检失败会指出 Agent 配置、依赖、权限或节点上限问题，但不会阻止用户查看真实 Run 返回的具体错误。
@@ -415,6 +416,12 @@ Workflow 运行面板会在真正提交 Run 前读取锁定的 Agent 版本并�
 必须显式覆盖子 Agent 的工具、网络、文件和 workspace Shell 权限；预检不调用模型，真实
 执行仍由子 Agent Runtime 完成并保留独立 Run 证据。
 
+### 已完成：标准 MCP 配置导入
+
+Resource Library 的 MCP 面板可以选择标准 JSON 配置并批量导入本机服务器。支持
+`mcpServers` 对象和 `servers` 数组；导入先完整校验并原子写入，不会自动启动、发现或
+执行外部进程。
+
 ### 已完成：Orchestrator lease/attempt/retry
 
 WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；依赖未完成时保持 backlog，stale WorkItem 可以先停止 Runtime、CAS 回收 lease 并记录 `stall_recovered`，随后 Monitor 可 Retry。下一步只补独立 worktree 和更丰富 reconcile 等高阶调度。
@@ -465,8 +472,8 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34682939598` 和 Pull Request `34682941573`：`3b0e62d` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=3b0e62d6cc3a87896f20c9711aa3bc627776a071`、`local_0017_community_agent_origins`、`database_ready=true`；Agent/Workflow Runtime 预检和 Keychain-backed profile 已加载，未输出任何密钥值。
+- GitHub Actions Push `34683862589` 和 Pull Request `34683863961`：`8688871` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=86888718df030a3fba0fb2a5d14f5f5ee6f4fc52`、`local_0017_community_agent_origins`、`database_ready=true`；Agent/Workflow Runtime 预检、Keychain-backed profile 和 MCP 配置导入路由已加载，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，扫描逻辑已加载，未输出任何密钥值。
 - 真实模型验证：经用户授权，Runtime profile 的一次 `/models` 校验返回 `valid=true`、`configured=true`、目标 `kimi-k3` 可用；另做一次短 Agent Run，收到 `model.delta` 并以 `unverified`/`run.completed` 结束。没有发送批量请求，也没有把 Key 写入输出或仓库。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。

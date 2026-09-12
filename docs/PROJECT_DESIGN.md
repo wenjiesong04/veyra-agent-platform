@@ -652,6 +652,12 @@ from model output. It exposes immutable, versioned descriptors for:
   before a Runtime call. Stdio uses newline-delimited JSON-RPC with bounded
   message/timeout/process cleanup. Architecture diagrams must not draw MCP as
   its own resource class.
+
+The Resource Library accepts a standard JSON `mcpServers` object (and the
+equivalent `servers` array) as a convenience import. The import normalizes
+server names, commands, arguments, and host environment/Keychain references;
+it rejects plaintext credential values and writes the validated batch
+atomically. Importing never discovers or executes a server automatically.
 - **Skill** — a non-executable, versioned instruction/method asset. Factory may
   compile Skill content into an Agent prompt, while the exact Skill reference
   and hash remain in the dependency lock.
@@ -1537,6 +1543,7 @@ Star does not mean safe or effective.
 - `POST /api/v1/projects/{project_id}/resources`
 - `DELETE /api/v1/projects/{project_id}/resources/{resource_id}/versions/{version}`
 - `GET /api/v1/mcp/servers/{server_id}/readiness`
+- `POST /api/v1/mcp/servers/import`
 - `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`
 - `POST /api/v1/files/import`
