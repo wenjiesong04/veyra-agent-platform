@@ -1038,6 +1038,14 @@ Top       name, version, validation, save
 Bottom    local Agent / Workflow run, immutable version, events, approval and stop
 ```
 
+The Resource Library's MCP tab shows a non-invasive server readiness check for
+enabled state and host environment bindings. Discovery is an explicit action
+that may start the configured MCP process; discovered tools remain review-gated
+before they can be selected or run. Agent Test Run inputs named like `path`,
+`file`, or `document` may offer the current Project's indexed relative files as
+suggestions, but the Runtime still reads them only through an authorized
+Filesystem Tool.
+
 ### 7.4 Canonical state
 
 Prompt, Form, Canvas, and Source edit the same normalized IR.
@@ -1514,6 +1522,7 @@ Star does not mean safe or effective.
 - `GET /api/v1/projects/{project_id}/resources`
 - `POST /api/v1/projects/{project_id}/resources`
 - `DELETE /api/v1/projects/{project_id}/resources/{resource_id}/versions/{version}`
+- `GET /api/v1/mcp/servers/{server_id}/readiness`
 - `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`
 - `POST /api/v1/files/import`
