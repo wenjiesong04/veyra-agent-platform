@@ -328,6 +328,8 @@ class McpService:
         row = self.store.set_enabled(server_id, enabled=enabled, updated_at=_now())
         if row is None:
             raise McpError("mcp_server_not_found", "MCP server was not found")
+        self._sync_discovered_state(server_id, enabled=enabled)
+        self.catalog.reload_overlays()
         return {
             "schema_version": SCHEMA_VERSION,
             "server": McpServerStore.payload(row),
@@ -423,7 +425,7 @@ class McpService:
         self, server_id: str, resource_id: str, version: str
     ) -> dict[str, Any]:
         """Promote one discovered descriptor after an explicit user review."""
-        self._require(server_id)
+        server = self._require(server_id)
         try:
             descriptor = self.catalog.detail(resource_id, version)
         except ValueError as exc:
@@ -448,11 +450,12 @@ class McpService:
             ) from exc
         if not isinstance(payload, dict):
             raise McpError("mcp_discovery_invalid", "MCP tool package is invalid")
-        payload["factory_selectable"] = True
         package_spec = payload.get("spec")
         if not isinstance(package_spec, dict):
             raise McpError("mcp_discovery_invalid", "MCP tool spec is invalid")
         package_spec["review_required"] = False
+        payload["availability"] = "ready" if bool(server["enabled"]) else "disabled"
+        payload["factory_selectable"] = bool(server["enabled"])
         temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
         try:
             temporary.write_text(
@@ -738,6 +741,38 @@ class McpService:
         if root.is_dir():
             for path in root.glob(f"{prefix}*/node.yaml"):
                 shutil.rmtree(path.parent, ignore_errors=True)
+
+    def _sync_discovered_state(self, server_id: str, *, enabled: bool) -> None:
+        """Keep discovered catalog availability aligned with server lifecycle."""
+        root = self.overlay_root / "discovered"
+        if not root.is_dir():
+            return
+        prefix = _package_prefix(server_id)
+        for target in root.glob(f"{prefix}*/node.yaml"):
+            if target.is_symlink() or not target.is_file():
+                continue
+            try:
+                payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            spec = payload.get("spec")
+            if not isinstance(spec, dict) or spec.get("mcp_server_id") != server_id:
+                continue
+            payload["availability"] = "ready" if enabled else "disabled"
+            payload["factory_selectable"] = bool(
+                enabled and not spec.get("review_required", False)
+            )
+            temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
+            try:
+                temporary.write_text(
+                    yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+                    encoding="utf-8",
+                )
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
 
 
 def _stdio_factory(

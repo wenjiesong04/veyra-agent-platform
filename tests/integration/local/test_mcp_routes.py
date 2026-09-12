@@ -168,6 +168,57 @@ def test_mcp_config_import_is_atomic_and_keeps_only_bindings(tmp_path: Path) -> 
         ) == ["docs", "local"]
 
 
+def test_mcp_server_lifecycle_updates_discovered_tool_availability(
+    tmp_path: Path,
+) -> None:
+    with TestClient(
+        create_app(
+            LocalSettings(
+                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+                project_storage_root=tmp_path / "projects",
+            ),
+            mcp_transport_factory=_factory,
+        )
+    ) as client:
+        created = client.post(
+            "/api/v1/mcp/servers",
+            json={"name": "demo", "command": "npx", "args": ["-y", "demo"]},
+        )
+        assert created.status_code == 201, created.text
+        server_id = created.json()["server"]["server_id"]
+        discovered = client.post(f"/api/v1/mcp/servers/{server_id}/discover")
+        assert discovered.status_code == 200, discovered.text
+        tool = discovered.json()["tools"][0]
+        approved = client.post(
+            f"/api/v1/mcp/servers/{server_id}/tools/"
+            f"{tool['resource_id']}/versions/{tool['version']}/approve"
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["resource"]["factory_selectable"] is True
+
+        disabled = client.patch(
+            f"/api/v1/mcp/servers/{server_id}", json={"enabled": False}
+        )
+        assert disabled.status_code == 200, disabled.text
+        paused_tool = client.get(
+            f"/api/v1/resources/{tool['resource_id']}/versions/{tool['version']}"
+        )
+        assert paused_tool.status_code == 200, paused_tool.text
+        assert paused_tool.json()["availability"] == "disabled"
+        assert paused_tool.json()["factory_selectable"] is False
+
+        enabled = client.patch(
+            f"/api/v1/mcp/servers/{server_id}", json={"enabled": True}
+        )
+        assert enabled.status_code == 200, enabled.text
+        restored_tool = client.get(
+            f"/api/v1/resources/{tool['resource_id']}/versions/{tool['version']}"
+        )
+        assert restored_tool.status_code == 200, restored_tool.text
+        assert restored_tool.json()["availability"] == "ready"
+        assert restored_tool.json()["factory_selectable"] is True
+
+
 def test_streamable_http_mcp_server_can_be_checked_and_discovered(
     tmp_path: Path, monkeypatch
 ) -> None:
