@@ -650,14 +650,19 @@ from model output. It exposes immutable, versioned descriptors for:
   never enter Project or SQLite. Discovered descriptors are
   review-required, are not Factory-selectable by default, and require approval
   before a Runtime call. Stdio uses newline-delimited JSON-RPC with bounded
-  message/timeout/process cleanup. Architecture diagrams must not draw MCP as
-  its own resource class.
+  message/timeout/process cleanup. Streamable HTTP uses a configured HTTPS
+  endpoint, JSON/SSE responses, protocol/session headers, and host-bound header
+  references; a discovered remote Tool records the endpoint host as a required
+  Agent network permission. Architecture diagrams must not draw MCP as its own
+  resource class.
 
 The Resource Library accepts a standard JSON `mcpServers` object (and the
 equivalent `servers` array) as a convenience import. The import normalizes
-server names, commands, arguments, and host environment/Keychain references;
-it rejects plaintext credential values and writes the validated batch
-atomically. Importing never discovers or executes a server automatically.
+server names, stdio commands or HTTPS endpoints, arguments, header templates,
+and host environment/Keychain references; it rejects plaintext credential
+values and writes the validated batch atomically. Importing never discovers or
+executes a server automatically.
+The wire behavior follows the [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
 - **Skill** — a non-executable, versioned instruction/method asset. Factory may
   compile Skill content into an Agent prompt, while the exact Skill reference
   and hash remain in the dependency lock.
