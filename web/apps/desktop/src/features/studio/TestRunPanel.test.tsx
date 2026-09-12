@@ -137,4 +137,11 @@ describe("TestRunPanel", () => {
     expect(await screen.findByRole("list", { name: "Node run states" })).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Node run states" }).querySelector('[data-state="running"]')).toHaveTextContent("transform");
   });
+
+  it("prefills a selected Project file into a file-like Agent input", () => {
+    const fileSource = { ...source, inputs: { document_path: "string" } };
+    render(<TestRunPanel api={{} as LocalProjectApi} projectId="project-1" agentId="agent-1" source={fileSource} disabled={false} locale="en" initialFilePath="resources/note.md" />);
+
+    expect(screen.getByRole("textbox", { name: /document_path/ })).toHaveValue("resources/note.md");
+  });
 });
