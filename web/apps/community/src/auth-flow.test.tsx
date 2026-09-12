@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorCopy } from "@veyra/connected-account";
@@ -234,8 +234,7 @@ describe("Community account flows", () => {
     const user = userEvent.setup();
     render(<CommunityApp />);
     const name = await screen.findByLabelText("Name");
-    await user.clear(name);
-    await user.type(name, "Alice Chen");
+    fireEvent.change(name, { target: { value: "Alice Chen" } });
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(requests.some((request) => request.url.endsWith("/account/profile"))).toBe(true), { timeout: 3000 });
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Profile updated."), { timeout: 3000 });
