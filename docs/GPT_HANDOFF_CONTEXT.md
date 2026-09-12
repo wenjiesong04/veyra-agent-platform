@@ -439,6 +439,9 @@ Resource Library 的 Plugin Packs 页签可以导入 `.vplugin.zip`。包格式�
 已安装的包也可以从同一能力面导出下载；下载前会重新核对本机保存的包哈希。
 激活包还可以停用/重新启用；停用会同步关闭 MCP 服务器并让包内 Skill 暂时不可被 Factory 选择。
 卸载是可恢复操作：包先停用，再移动到本机回收区；恢复后仍保持停用，用户可再次明确启用。
+同一个 `plugin_id` 可以安装多个版本，但同一时间只允许一个版本为 active；激活另一个版本
+会停用旧版本，重新激活旧版本即可回滚。Workshop 资源 ID 使用 UUIDv7 随机尾部，避免同一
+毫秒创建多个版本时发生碰撞。
 
 ### 已完成：Orchestrator lease/attempt/retry
 

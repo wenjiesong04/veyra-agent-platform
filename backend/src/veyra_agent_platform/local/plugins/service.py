@@ -188,6 +188,7 @@ class PluginService:
                         metadata["mcp_servers"], state["mcp_server_ids"]
                     )
                 self._write_state(target, state)
+            self._disable_sibling_versions(plugin_id, version)
             state["state"] = "active"
             state["activation_error"] = None
             self._write_state(target, state)
@@ -306,6 +307,25 @@ class PluginService:
             except McpError as exc:
                 if exc.code != "mcp_server_not_found":
                     raise
+
+    def _disable_sibling_versions(self, plugin_id: str, version: str) -> None:
+        plugin_root = self.root / plugin_id
+        if not plugin_root.is_dir():
+            return
+        for sibling in sorted(plugin_root.iterdir()):
+            if (
+                sibling.name.startswith(".")
+                or not sibling.is_dir()
+                or sibling.name == version
+            ):
+                continue
+            _metadata, state = self._read_record(sibling)
+            if state["state"] != "active":
+                continue
+            self._disable_resources(state)
+            state["state"] = "disabled"
+            state["activation_error"] = None
+            self._write_state(sibling, state)
 
     def _enable_mcp_servers(
         self, configs: list[dict[str, Any]], server_ids: list[str]

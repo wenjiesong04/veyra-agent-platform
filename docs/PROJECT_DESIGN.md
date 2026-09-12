@@ -681,6 +681,11 @@ discover its tools in the Tools/MCP panel. Discovered tools retain the normal
 review gate. This gives a useful Codex/OpenClaw-style bundle entrypoint without
 executing untrusted plugin code inside the desktop process.
 
+For multiple installed versions of one `plugin_id`, activation is exclusive:
+activating one version disables the other versions' Skills and MCP servers.
+Activating an older version is the rollback operation; the previous package
+remains installed and is not overwritten.
+
 The reference tree is under `examples/plugin-packs/research/`. A pack can be
 assembled with `zip -r research.vplugin.zip plugin.vplugin.yaml skills mcp.json`.
 - **Skill** — a non-executable, versioned instruction/method asset. Factory may

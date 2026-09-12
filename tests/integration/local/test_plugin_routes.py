@@ -13,18 +13,19 @@ from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 
 
-def _plugin_archive() -> bytes:
+def _plugin_archive(version: str = "1.0.0") -> bytes:
+    skill_reference = f"veyra.skill.research-pack@{version}"
     manifest = yaml.safe_dump(
         {
             "schema_version": "1.0",
             "plugin_id": "veyra.plugin.research",
             "name": "Research Pack",
             "description": "A bounded Skill and MCP bundle.",
-            "version": "1.0.0",
+            "version": version,
             "skills": [
                 {
                     "path": "skills/research/SKILL.md",
-                    "reference": "veyra.skill.research-pack@1.0.0",
+                    "reference": skill_reference,
                     "name": "Research Pack Skill",
                     "description": "Keeps research evidence structured.",
                 }
@@ -171,3 +172,77 @@ def test_plugin_pack_import_is_quarantined_then_activates_skill_and_disabled_mcp
         assert restored.status_code == 200, restored.text
         assert restored.json()["plugin"]["state"] == "disabled"
         assert client.get("/api/v1/plugins").json()["plugins"][0]["state"] == "disabled"
+
+
+def test_plugin_pack_activation_switches_versions_and_supports_rollback(
+    tmp_path: Path,
+) -> None:
+    with TestClient(
+        create_app(
+            LocalSettings(
+                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+                project_storage_root=tmp_path / "projects",
+            )
+        )
+    ) as client:
+        imported_versions = []
+        for version in ("1.0.0", "2.0.0"):
+            response = client.post(
+                "/api/v1/plugins/import",
+                files={
+                    "file": (
+                        f"research-{version}.vplugin.zip",
+                        _plugin_archive(version),
+                        "application/zip",
+                    )
+                },
+            )
+            assert response.status_code == 201, response.text
+            imported_versions.append(response.json()["plugin"])
+
+        plugin_id = imported_versions[0]["plugin_id"]
+        activated_v1 = client.post(
+            f"/api/v1/plugins/{plugin_id}/versions/1.0.0/activate",
+            json={"confirm": True},
+        )
+        assert activated_v1.status_code == 200, activated_v1.text
+
+        activated_v2 = client.post(
+            f"/api/v1/plugins/{plugin_id}/versions/2.0.0/activate",
+            json={"confirm": True},
+        )
+        assert activated_v2.status_code == 200, activated_v2.text
+        listed = {
+            item["version"]: item
+            for item in client.get("/api/v1/plugins").json()["plugins"]
+        }
+        assert listed["1.0.0"]["state"] == "disabled"
+        assert listed["2.0.0"]["state"] == "active"
+
+        skills = client.get("/api/v1/resources", params={"kind": "skill"}).json()[
+            "resources"
+        ]
+        by_reference = {
+            item["spec"]["requested_reference"]: item
+            for item in skills
+            if item["origin"] == "workshop" and "requested_reference" in item["spec"]
+        }
+        assert (
+            by_reference["veyra.skill.research-pack@1.0.0"]["availability"]
+            == "disabled"
+        )
+        assert (
+            by_reference["veyra.skill.research-pack@2.0.0"]["availability"] == "ready"
+        )
+
+        rolled_back = client.post(
+            f"/api/v1/plugins/{plugin_id}/versions/1.0.0/activate",
+            json={"confirm": True},
+        )
+        assert rolled_back.status_code == 200, rolled_back.text
+        listed = {
+            item["version"]: item
+            for item in client.get("/api/v1/plugins").json()["plugins"]
+        }
+        assert listed["1.0.0"]["state"] == "active"
+        assert listed["2.0.0"]["state"] == "disabled"

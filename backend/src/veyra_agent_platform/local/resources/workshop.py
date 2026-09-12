@@ -277,5 +277,7 @@ def _workshop_resource_id(kind: str, requested_reference: str, draft_id: str) ->
     slug_source = identity.removeprefix("veyra.")
     slug = _SLUG.sub("-", slug_source.lower()).strip("-") or "draft"
     kind_slug = _KIND_SLUG[kind]
-    suffix = draft_id.replace("-", "")[:8]
+    # UUIDv7 starts with a timestamp; use the random tail so drafts created in
+    # the same millisecond cannot collide across Plugin Pack versions.
+    suffix = draft_id.replace("-", "")[-12:]
     return f"veyra.workshop.{kind_slug}.{slug}-{suffix}"
