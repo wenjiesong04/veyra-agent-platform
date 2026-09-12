@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -177,6 +178,23 @@ class PluginService:
             "schema_version": SCHEMA_VERSION,
             "plugin": self._summary(metadata, state),
         }
+
+    def archive(self, plugin_id: str, version: str) -> bytes:
+        """Return an installed archive after checking its stored content hash."""
+        target = self._target(plugin_id, version)
+        metadata, _state = self._read_record(target)
+        archive_path = target / "package.vplugin.zip"
+        try:
+            contents = archive_path.read_bytes()
+        except OSError as exc:
+            raise PluginError(
+                "plugin_storage_invalid", "Plugin Pack archive is missing"
+            ) from exc
+        if hashlib.sha256(contents).hexdigest() != metadata.get("content_hash"):
+            raise PluginError(
+                "plugin_storage_invalid", "Plugin Pack archive integrity check failed"
+            )
+        return contents
 
     def _target(self, plugin_id: str, version: str) -> Path:
         if (

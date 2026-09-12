@@ -1573,6 +1573,7 @@ Star does not mean safe or effective.
 - `GET /api/v1/plugins`
 - `POST /api/v1/plugins/import` (quarantined declarative `.vplugin.zip`)
 - `POST /api/v1/plugins/{plugin_id}/versions/{version}/activate`
+- `GET /api/v1/plugins/{plugin_id}/versions/{version}/download`
 - `GET /api/v1/components` (compatibility projection of Component resources)
 - `GET /api/v1/files`
 - `POST /api/v1/files/import`

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Annotated, Any, TypeVar, cast
 
 from fastapi import APIRouter, File, Request, UploadFile, status
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 from veyra_agent_platform.local.api.projects import TypedApiError
@@ -57,6 +58,20 @@ def build_router() -> APIRouter:
             lambda: _plugins(request).activate(
                 plugin_id, version, confirm=payload.confirm
             )
+        )
+
+    @router.get("/{plugin_id}/versions/{version}/download")
+    def download_plugin(plugin_id: str, version: str, request: Request) -> Response:
+        contents = _translate(lambda: _plugins(request).archive(plugin_id, version))
+        return Response(
+            content=contents,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": (
+                    'attachment; filename="'
+                    f'{plugin_id.replace(".", "-")}-{version}.vplugin.zip"'
+                )
+            },
         )
 
     return router

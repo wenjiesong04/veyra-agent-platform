@@ -436,6 +436,7 @@ Resource Library 的 Plugin Packs 页签可以导入 `.vplugin.zip`。包格式�
 页面可以选择 Project，把激活后的 Skill 引用直接绑定进去；MCP 服务器会注册为停用状态，
 仍需到工具 / MCP 面板显式启用、检查、发现并审核工具。激活可重放且不会重复注册。参考包
 位于 `examples/plugin-packs/research/`。
+已安装的包也可以从同一能力面导出下载；下载前会重新核对本机保存的包哈希。
 
 ### 已完成：Orchestrator lease/attempt/retry
 

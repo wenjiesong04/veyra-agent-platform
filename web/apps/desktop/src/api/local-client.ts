@@ -212,6 +212,7 @@ export type LocalProjectApi = {
   listPluginPacks?(): Promise<ListPluginPacksResponse>;
   importPluginPack?(file: File): Promise<PluginPackResponse>;
   activatePluginPack?(pluginId: string, version: string, confirm?: boolean): Promise<PluginPackResponse>;
+  downloadPluginPack?(pluginId: string, version: string): Promise<Blob>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   importMcpServers?(input: ImportMcpServersRequest): Promise<ImportMcpServersResponse>;
   updateMcpServer?(serverId: string, input: UpdateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
@@ -2183,6 +2184,10 @@ export class LocalApiClient {
       pluginPackResponse,
       { method: "POST", body: { confirm } },
     );
+  }
+
+  downloadPluginPack(pluginId: string, version: string): Promise<Blob> {
+    return this.requestBlob(`plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/download`);
   }
 
   factoryStatus(): Promise<FactoryStatus> {

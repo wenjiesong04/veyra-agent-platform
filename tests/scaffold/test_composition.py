@@ -87,6 +87,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/plugins",
         "/api/v1/plugins/import",
         "/api/v1/plugins/{plugin_id}/versions/{version}/activate",
+        "/api/v1/plugins/{plugin_id}/versions/{version}/download",
         "/api/v1/secrets",
         "/api/v1/secrets/{secret_ref}",
         "/api/v1/mcp/servers",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -115,3 +116,10 @@ def test_plugin_pack_import_is_quarantined_then_activates_skill_and_disabled_mcp
         assert replay.status_code == 200
         assert replay.json()["plugin"]["skill_resources"] == active["skill_resources"]
         assert replay.json()["plugin"]["mcp_server_ids"] == active["mcp_server_ids"]
+
+        downloaded = client.get(
+            f"/api/v1/plugins/{plugin['plugin_id']}/versions/{plugin['version']}/download"
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.headers["content-type"].startswith("application/zip")
+        assert hashlib.sha256(downloaded.content).hexdigest() == plugin["content_hash"]

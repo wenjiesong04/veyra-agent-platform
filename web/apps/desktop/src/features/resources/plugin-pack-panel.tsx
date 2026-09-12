@@ -1,4 +1,4 @@
-import { PackageOpen, RefreshCw, ShieldCheck, Upload } from "lucide-react";
+import { Download, PackageOpen, RefreshCw, ShieldCheck, Upload } from "lucide-react";
 import type { PluginPack, PluginPackState } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, StatusBadge, Tag } from "@veyra/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -90,6 +90,28 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
     }
   };
 
+  const downloadPack = async (plugin: PluginPack) => {
+    if (!api.downloadPluginPack) return;
+    const key = `download:${plugin.plugin_id}@${plugin.version}`;
+    setBusy(key);
+    setError(null);
+    try {
+      const blob = await api.downloadPluginPack(plugin.plugin_id, plugin.version);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${plugin.plugin_id.replace(/\./g, "-")}-${plugin.version}.vplugin.zip`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "插件包下载失败。" : "Plugin Pack download failed."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (!api.listPluginPacks || !api.importPluginPack || !api.activatePluginPack) {
     return <Panel><SectionHeading eyebrow={zh ? "插件包" : "Plugin Packs"} title={zh ? "插件入口尚未连接" : "Plugin Pack entrypoint is not connected"} detail={zh ? "当前本地 sidecar 版本还没有提供插件包 API。" : "The current local sidecar does not expose the Plugin Pack API."} /></Panel>;
   }
@@ -126,7 +148,8 @@ export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; p
                   {plugin.mcp_servers.map((server) => <div key={server.name}><RefreshCw size={14} aria-hidden="true" /><span><strong>{server.name}</strong><small>{server.transport === "stdio" ? `${server.command} ${server.args.join(" ")}` : server.url}</small><small>{zh ? "激活后默认停用" : "Disabled by default after activation"}</small></span></div>)}
                 </div>
               </details>
-              {plugin.state === "active" ? <><small className="plugin-pack-active-note">{zh ? `已注册 ${plugin.skill_resources.length} 个 Skill、${plugin.mcp_server_ids.length} 个 MCP 服务器。` : `${plugin.skill_resources.length} Skill(s) and ${plugin.mcp_server_ids.length} MCP server(s) registered.`}</small>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : (zh ? "审核并激活" : "Review and activate"))}</Button>}
+              <div className="button-row"><Button size="sm" variant="ghost" disabled={busy !== null || !api.downloadPluginPack} onClick={() => void downloadPack(plugin)}><Download size={14} aria-hidden="true" />{busy === `download:${key}` ? "…" : (zh ? "下载包" : "Download")}</Button>{plugin.state === "active" ? <>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : (zh ? "审核并激活" : "Review and activate"))}</Button>}</div>
+              {plugin.state === "active" ? <small className="plugin-pack-active-note">{zh ? `已注册 ${plugin.skill_resources.length} 个 Skill、${plugin.mcp_server_ids.length} 个 MCP 服务器。` : `${plugin.skill_resources.length} Skill(s) and ${plugin.mcp_server_ids.length} MCP server(s) registered.`}</small> : null}
               {plugin.activation_error ? <small className="resource-detail-error">{plugin.activation_error}</small> : null}
             </article>
           );
