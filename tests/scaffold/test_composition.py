@@ -47,6 +47,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/projects/{project_id}/agents/{agent_id}/versions",
         "/api/v1/projects/{project_id}/workflows/{workflow_id}/versions",
         "/api/v1/projects/{project_id}/workflows/{workflow_id}/run",
+        "/api/v1/projects/{project_id}/workflows/{workflow_id}/runtime-readiness",
         "/api/v1/projects/{project_id}/workflows/{workflow_id}/runs",
         "/api/v1/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}",
         "/api/v1/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/commands",
