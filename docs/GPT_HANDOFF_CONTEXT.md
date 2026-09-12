@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`c0c01578dd635152b6cbd49a8ec9047ed2f7f8bb`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除/配置预检、标准 MCP `mcpServers` 配置导入、Streamable HTTP 远程 MCP、刷新后恢复已发现工具、侧栏 Knowledge 绑定 Agent、Knowledge 版本升级替换旧绑定、侧栏 Files 预填 Agent 运行路径、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告、模型 API 验证/Runtime 预检、Project 资源绑定漂移提示、测试运行文件路径建议、Agent Chat Runtime 状态和 Keychain profile 状态修复、Workflow 锁定 Agent 的 Runtime 预检与权限包含检查、声明式 Plugin Pack 导入/隔离/显式激活。
+- 最新功能代码基线：`ea6d45c6ef91b57fc86df009c3c8ce17cdd28565`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除/配置预检、标准 MCP `mcpServers` 配置导入、Streamable HTTP 远程 MCP、刷新后恢复已发现工具、侧栏 Knowledge 绑定 Agent、Knowledge 版本升级替换旧绑定、侧栏 Files 预填 Agent 运行路径、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告、模型 API 验证/Runtime 预检、Project 资源绑定漂移提示、测试运行文件路径建议、Agent Chat Runtime 状态和 Keychain profile 状态修复、Workflow 锁定 Agent 的 Runtime 预检与权限包含检查、声明式 Plugin Pack 导入/隔离/显式激活/Skill 绑定/包导出。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -492,8 +492,8 @@ npm run dev --workspace=@veyra/desktop
 - Local live：`8771 /api/v1/health` 返回 `build_sha=c0c01578dd635152b6cbd49a8ec9047ed2f7f8bb`、`local_0018_mcp_streamable_http`、`database_ready=true`；Agent/Workflow Runtime 预检、Keychain-backed profile、stdio/HTTP MCP 路由和 Plugin Pack 路由已加载，`GET /api/v1/plugins` 当前为空，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，扫描逻辑已加载，未输出任何密钥值。
 - 真实模型验证：经用户授权，Runtime profile 的一次 `/models` 校验返回 `valid=true`、`configured=true`、目标 `kimi-k3` 可用；另做一次短 Agent Run，收到 `model.delta` 并以 `unverified`/`run.completed` 结束。没有发送批量请求，也没有把 Key 写入输出或仓库。
-- Plugin Pack 验证：本地临时包完成“multipart 导入 → quarantined → 明确激活 → Skill 进入 Catalog、MCP 以 disabled 注册”的 API 闭环；实际桌面页 `http://127.0.0.1:5173/#/resources?tab=plugin` 可加载。没有导入真实用户插件或连接外部 MCP。
-- GitHub Actions Push `34689502232` 和 Pull Request `34689504054`：`c0c0157` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Plugin Pack 验证：本地临时包完成“multipart 导入 → quarantined → 明确激活 → Skill 进入 Catalog、MCP 以 disabled 注册 → 哈希校验下载”的 API 闭环；实际桌面页 `http://127.0.0.1:5173/#/resources?tab=plugin` 可加载。没有导入真实用户插件或连接外部 MCP。
+- GitHub Actions Push `34690184104` 和 Pull Request `34690185433`：`ea6d45c` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
 - Desktop production build 仍有约 893 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则
