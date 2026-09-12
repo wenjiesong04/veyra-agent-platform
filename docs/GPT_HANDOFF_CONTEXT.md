@@ -433,8 +433,9 @@ Resource Library 的 Plugin Packs 页签可以导入 `.vplugin.zip`。包格式�
 `quarantined`，页面展示 Skill 指令和 MCP 连接信息供用户审查；它不会启动进程或访问网络。
 
 用户点击“审核并激活”后，Skill 才会通过 Resource Workshop 进入 Resource Catalog/Factory；
-MCP 服务器会注册为停用状态，仍需到工具 / MCP 面板显式启用、检查、发现并审核工具。激活
-可重放且不会重复注册。参考包位于 `examples/plugin-packs/research/`。
+页面可以选择 Project，把激活后的 Skill 引用直接绑定进去；MCP 服务器会注册为停用状态，
+仍需到工具 / MCP 面板显式启用、检查、发现并审核工具。激活可重放且不会重复注册。参考包
+位于 `examples/plugin-packs/research/`。
 
 ### 已完成：Orchestrator lease/attempt/retry
 

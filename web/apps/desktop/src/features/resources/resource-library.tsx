@@ -391,7 +391,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
           })}
         </div>
       ) : null}
-      {tab === "plugin" ? <PluginPackPanel api={api} zh={zh} /> : null}
+      {tab === "plugin" ? <PluginPackPanel api={api} projects={projects} zh={zh} /> : null}
       {tab === "tooling" ? <McpServerPanel api={api} zh={zh} onChanged={() => void load()} importCopy={{ importConfig: copy.importConfig, importingConfig: copy.importingConfig, importedConfig: copy.importedConfig, importConfigFailed: copy.importConfigFailed, importConfigHint: copy.importConfigHint }} /> : null}
     </div>
   );

@@ -266,6 +266,8 @@
 .plugin-pack-panel { gap: 16px; }
 .plugin-pack-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .plugin-pack-heading > :first-child { min-width: 0; }
+.plugin-pack-actions { display: flex; align-items: flex-start; gap: 8px; }
+.plugin-pack-actions select { min-height: 34px; max-width: 190px; border: 1px solid var(--line); border-radius: 9px; padding: 0 9px; color: var(--ink); background: var(--surface-soft); font: inherit; font-size: 11px; }
 .plugin-pack-message { margin: 0; color: var(--good); font-size: 12px; }
 .plugin-pack-empty { display: grid; justify-items: center; gap: 8px; padding: 28px; color: var(--muted); font-size: 12px; }
 .plugin-pack-list { display: grid; gap: 10px; }
@@ -295,6 +297,7 @@
   .resource-library-toolbar { display: grid; }
   .resource-library-search { flex-basis: auto; }
   .plugin-pack-heading { display: grid; }
+  .plugin-pack-actions { flex-wrap: wrap; }
 }
 
 @media (max-width: 640px) {

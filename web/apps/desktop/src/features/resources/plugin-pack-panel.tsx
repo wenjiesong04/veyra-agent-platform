@@ -14,12 +14,17 @@ function stateTone(state: PluginPackState): "good" | "warn" | "bad" {
   return state === "active" ? "good" : state === "activation_failed" ? "bad" : "warn";
 }
 
-export function PluginPackPanel({ api, zh }: { api: LocalProjectApi; zh: boolean }) {
+export function PluginPackPanel({ api, projects, zh }: { api: LocalProjectApi; projects: Array<{ project_id: string; name: string }>; zh: boolean }) {
   const [plugins, setPlugins] = useState<PluginPack[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [targetProjectId, setTargetProjectId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!targetProjectId && projects[0]) setTargetProjectId(projects[0].project_id);
+  }, [projects, targetProjectId]);
 
   const load = useCallback(async () => {
     if (!api.listPluginPacks) return;
@@ -66,6 +71,25 @@ export function PluginPackPanel({ api, zh }: { api: LocalProjectApi; zh: boolean
     }
   };
 
+  const bindSkills = async (plugin: PluginPack) => {
+    if (!api.addProjectResource || !targetProjectId || !plugin.skill_resources.length) return;
+    const key = `bind:${plugin.plugin_id}@${plugin.version}`;
+    setBusy(key);
+    setError(null);
+    setMessage(null);
+    try {
+      for (const reference of plugin.skill_resources) {
+        await api.addProjectResource(targetProjectId, { reference, source: "imported" });
+      }
+      const project = projects.find((item) => item.project_id === targetProjectId);
+      setMessage(zh ? `已将 ${plugin.skill_resources.length} 个 Skill 绑定到 ${project?.name ?? "Project"}。` : `Bound ${plugin.skill_resources.length} Skill(s) to ${project?.name ?? "Project"}.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "Skill 绑定失败。" : "Skill binding failed."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (!api.listPluginPacks || !api.importPluginPack || !api.activatePluginPack) {
     return <Panel><SectionHeading eyebrow={zh ? "插件包" : "Plugin Packs"} title={zh ? "插件入口尚未连接" : "Plugin Pack entrypoint is not connected"} detail={zh ? "当前本地 sidecar 版本还没有提供插件包 API。" : "The current local sidecar does not expose the Plugin Pack API."} /></Panel>;
   }
@@ -74,10 +98,11 @@ export function PluginPackPanel({ api, zh }: { api: LocalProjectApi; zh: boolean
     <Panel className="plugin-pack-panel">
       <div className="plugin-pack-heading">
         <SectionHeading eyebrow={zh ? "插件包" : "Plugin Packs"} title={zh ? "导入可审查的 Skill + MCP 扩展" : "Import reviewable Skill + MCP extensions"} detail={zh ? "只接受声明式 .vplugin.zip。导入会隔离；激活后 Skill 才进入 Factory，MCP 仍需单独启用。" : "Only declarative .vplugin.zip archives are accepted. Import quarantines them; activation exposes Skills to Factory, while MCP still requires a separate enable step."} />
-        <>
+        <div className="plugin-pack-actions">
+          {projects.length ? <select value={targetProjectId} onChange={(event) => setTargetProjectId(event.target.value)} aria-label={zh ? "绑定 Skill 的目标 Project" : "Project for Skill binding"}>{projects.map((project) => <option value={project.project_id} key={project.project_id}>{project.name}</option>)}</select> : null}
           <input ref={inputRef} className="sidebar-import-input" type="file" accept=".vplugin.zip,.zip,application/zip" tabIndex={-1} onChange={(event) => { const file = event.target.files?.item(0) ?? null; event.target.value = ""; void importPack(file); }} />
           <Button icon={Upload} variant="primary" disabled={busy !== null} onClick={() => inputRef.current?.click()}>{busy === "import" ? "…" : (zh ? "导入插件包" : "Import Pack")}</Button>
-        </>
+        </div>
       </div>
       {message ? <p className="plugin-pack-message" role="status">{message}</p> : null}
       {error ? <p className="resource-detail-error" role="alert">{error}</p> : null}
@@ -101,7 +126,7 @@ export function PluginPackPanel({ api, zh }: { api: LocalProjectApi; zh: boolean
                   {plugin.mcp_servers.map((server) => <div key={server.name}><RefreshCw size={14} aria-hidden="true" /><span><strong>{server.name}</strong><small>{server.transport === "stdio" ? `${server.command} ${server.args.join(" ")}` : server.url}</small><small>{zh ? "激活后默认停用" : "Disabled by default after activation"}</small></span></div>)}
                 </div>
               </details>
-              {plugin.state === "active" ? <small className="plugin-pack-active-note">{zh ? `已注册 ${plugin.skill_resources.length} 个 Skill、${plugin.mcp_server_ids.length} 个 MCP 服务器。` : `${plugin.skill_resources.length} Skill(s) and ${plugin.mcp_server_ids.length} MCP server(s) registered.`}</small> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : (zh ? "审核并激活" : "Review and activate"))}</Button>}
+              {plugin.state === "active" ? <><small className="plugin-pack-active-note">{zh ? `已注册 ${plugin.skill_resources.length} 个 Skill、${plugin.mcp_server_ids.length} 个 MCP 服务器。` : `${plugin.skill_resources.length} Skill(s) and ${plugin.mcp_server_ids.length} MCP server(s) registered.`}</small>{plugin.skill_resources.length ? <Button size="sm" variant="secondary" disabled={busy !== null || !targetProjectId || !api.addProjectResource} onClick={() => void bindSkills(plugin)}>{busy === `bind:${key}` ? "…" : (zh ? "绑定 Skill 到 Project" : "Bind Skills to Project")}</Button> : null}</> : <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void activate(plugin)}>{busy === key ? "…" : (plugin.state === "activation_failed" ? (zh ? "重试激活" : "Retry activation") : (zh ? "审核并激活" : "Review and activate"))}</Button>}
               {plugin.activation_error ? <small className="resource-detail-error">{plugin.activation_error}</small> : null}
             </article>
           );

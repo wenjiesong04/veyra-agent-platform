@@ -33,13 +33,14 @@ describe("PluginPackPanel", () => {
     const api = {
       listPluginPacks: vi.fn(async () => ({ schema_version: "1.0" as const, plugins: [current] })),
       importPluginPack: vi.fn(),
+      addProjectResource: vi.fn().mockResolvedValue({}),
       activatePluginPack: vi.fn(async () => {
         current = pack("active");
         return { schema_version: "1.0" as const, plugin: current };
       }),
     } as unknown as LocalProjectApi;
 
-    render(<ThemeProvider><PluginPackPanel api={api} zh /></ThemeProvider>);
+    render(<ThemeProvider><PluginPackPanel api={api} projects={[{ project_id: "project-1", name: "Research" }]} zh /></ThemeProvider>);
 
     expect(await screen.findByText("Research Pack")).toBeInTheDocument();
     await user.click(screen.getByText("查看包内容"));
@@ -47,5 +48,8 @@ describe("PluginPackPanel", () => {
     await user.click(screen.getByRole("button", { name: "审核并激活" }));
     await waitFor(() => expect(api.activatePluginPack).toHaveBeenCalledWith("veyra.plugin.research", "1.0.0", true));
     expect(await screen.findByText("已激活")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "绑定 Skill 到 Project" }));
+    await waitFor(() => expect(api.addProjectResource).toHaveBeenCalledWith("project-1", { reference: "veyra.workshop.skill.research-12345678@0.0.1", source: "imported" }));
+    expect(await screen.findByText(/已将 1 个 Skill 绑定到 Research/)).toBeInTheDocument();
   });
 });
