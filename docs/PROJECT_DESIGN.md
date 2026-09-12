@@ -1422,11 +1422,12 @@ Community data:
 
 The current local Community registry implements the first runnable slice:
 Desktop export plus authenticated multipart YAML upload, AgentSource validation,
-size/UTF-8 checks, obvious credential-marker rejection, content-addressed
-storage, immutable version metadata, public listing/detail, version download,
-local Project import, and Community Fork edges. It publishes directly after
-these checks, so it must not be described as the final quarantine/moderation
-pipeline.
+size/UTF-8 checks, obvious credential-marker rejection, path/dependency scan
+warnings, content-addressed storage, immutable version metadata, public
+listing/detail, version download, local Project import, and Community Fork
+edges. Development can publish directly after these checks; production can
+quarantine the version for moderator review. This is still not the final
+quarantine/moderation pipeline.
 
 ```text
 explicit upload
@@ -1434,7 +1435,7 @@ explicit upload
 → size/MIME/schema check
 → secret scan
 → permission/risk analysis
-→ dependency lock check
+→ dependency lock/path/portability check
 → license/provenance check
 → preview
 → moderation/review
@@ -1564,7 +1565,7 @@ Star does not mean safe or effective.
 - `GET /api/v1/registry/agents/{owner_handle}/{slug}/versions/{version}/download`
 - `POST /api/v1/registry/agents` (authenticated multipart YAML publish)
 - Existing local import: `POST /api/v1/projects/{project_id}/agents/import` accepts optional Community owner/slug/version/source-hash fields; the local service revalidates the source, creates a new local Agent identity, and stores the origin separately.
-- Community quarantine and moderation are now configurable: development keeps direct publication, while production can require a moderator queue, persisted scan reports, and append-only decisions. Version-bound stars, reviews, and reports remain part of the runnable local Community slice, including persisted current-user Star state. Full path/dependency/license scanning and long-lived moderation operations remain future work.
+- Community quarantine and moderation are now configurable: development keeps direct publication, while production can require a moderator queue, persisted scan reports, and append-only decisions. Version-bound stars, reviews, and reports remain part of the runnable local Community slice, including persisted current-user Star state. Path/dependency warning scans are present; license scanning and long-lived moderation operations remain future work.
 
 ---
 

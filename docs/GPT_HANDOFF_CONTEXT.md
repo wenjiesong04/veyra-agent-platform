@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`21dc9945af1b348a835bac60ac2a238a8d8c0b74`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告和模型 API 验证/Runtime 预检。
+- 最新功能代码基线：`eeac9879a61225405c1cbefc1f81072494a44ff3`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口和 stale 恢复、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择/恢复与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要、路径/依赖扫描 warning、可配置发布审核队列、Run 证据查看器、Agent 依赖可运行性报告和模型 API 验证/Runtime 预检。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -357,6 +357,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Desktop `#/community` 已读取真实 Community registry；空目录、错误态、版本哈希详情、能力/风险摘要、YAML 下载、目标 Project 导入、从本地 Project 发布和 moderator 审核队列均已接入。
 - Studio Test Run 和 Workflow Test Run 的事件列表支持展开查看 JSON payload/receipt，并将 `model.delta` 合并为可读的流式证据。
 - Studio 在 Agent 校验后显示依赖报告；报告不替代真实 Run，也不会把侧栏文件索引自动当作模型上下文。Filesystem Tool 仍需在 Agent 源中绑定并映射输入，Knowledge 则按显式 Knowledge binding 注入。
+- Community 发布扫描现在还会保留可疑绝对/穿越/敏感路径、外部依赖和不可随单 YAML 携带的 Knowledge warning；详情页展示字段位置和引用，不展示原始路径内容。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
 - 目前没有 Tauri/PyInstaller 完整发行包。
 
@@ -452,9 +453,9 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34677166035` 和 Pull Request `34677167591`：`21dc994` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
-- Local live：`8771 /api/v1/health` 返回 `build_sha=21dc9945af1b348a835bac60ac2a238a8d8c0b74`、`local_0017_community_agent_origins`、`database_ready=true`；真实 Agent `/runtime-readiness` 返回 `ready=true`、`profile_source=default`、模型 `required=true/configured=true` 和空依赖清单，未输出任何密钥值。由于本机已有模型环境凭据，本次没有擅自执行真实 Provider `/models` 外部调用；验证成功/模型不存在由集成用例覆盖。
-- Community live：`8772 /api/v1/health` 返回 `build_sha=007e7f1a0cf2710b6cd81dea1509a8dbd28d9110`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，未输出任何密钥值。
+- GitHub Actions Push `34678023338` 和 Pull Request `34678024637`：`eeac987` 均通过；Backend Ruff/mypy、完整后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- Local live：`8771 /api/v1/health` 返回 `build_sha=21dc9945af1b348a835bac60ac2a238a8d8c0b74`、`local_0017_community_agent_origins`、`database_ready=true`；真实 Agent `/runtime-readiness` 返回 `ready=true`、模型 `required=true/configured=true` 和空依赖清单，未输出任何密钥值。
+- Community live：`8772 /api/v1/health` 返回 `build_sha=eeac9879a61225405c1cbefc1f81072494a44ff3`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，扫描逻辑已加载，未输出任何密钥值。
 - Desktop production build 仍有约 611 KB 主 JS chunk warning；不影响构建，但应在功能闭环后用动态分包处理。
 
 ## 11. Git 与协作规则
