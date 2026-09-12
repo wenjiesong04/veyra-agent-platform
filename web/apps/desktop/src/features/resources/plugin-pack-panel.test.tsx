@@ -33,6 +33,7 @@ describe("PluginPackPanel", () => {
     const api = {
       listPluginPacks: vi.fn(async () => ({ schema_version: "1.0" as const, plugins: [current] })),
       importPluginPack: vi.fn(),
+      disablePluginPack: vi.fn(async () => ({ schema_version: "1.0" as const, plugin: current })),
       addProjectResource: vi.fn().mockResolvedValue({}),
       activatePluginPack: vi.fn(async () => {
         current = pack("active");
