@@ -19,7 +19,7 @@
 - 权威代码目录：`/Users/spectre/PycharmProjects/veyra-agent-platform`
 - GitHub：`https://github.com/wenjiesong04/veyra-agent-platform.git`
 - 当前分支：`codex/agent-platform`
-- 最新功能代码基线：`85d5cb534fca0f9e31777fb007a287b3e8f755cc`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要和可配置发布审核队列。
+- 最新功能代码基线：`24e85c09ec8e18481289b9900e2aae64aa0a1352`，已接入 Host Keychain 凭据、MCP 环境绑定、模型凭据解析、Tool 参数映射、Agent conversation、WorkItem lease/attempt/retry/依赖入口、Community Agent registry、目标 Project 导入 lineage、Desktop 发布面板、Browser Navigate、Web Search、Orchestrator 并发/停滞信号、Monitor WorkItem 创建/依赖选择与自动刷新、最近 20 次 WorkItem attempt 历史、Community Fork lineage、版本反馈、持久化 Star 状态、`SKILL.md` 导入、MCP 配置编辑/启停/删除、审核门禁/schema 校验、模型流式输出、Community Agent capability/risk 摘要和可配置发布审核队列。
 - 当前远端分支在推送本提交后应与本地一致。
 - Draft PR：仓库中的 `codex/agent-platform → main` Draft PR。
 - 专用 Conda 环境：`veyra-agent-platform`
@@ -256,7 +256,7 @@ VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 - 两者都拒绝绝对路径、`..` traversal、软链接、`.env`/credentials/密钥类后缀、非普通文件和超过 1 MiB 的内容。
 - Run 事件记录 `tool.requested`、`tool.started`、`tool.completed`；receipt 只包含 adapter、相对路径、字节数和输入/输出 digest，不记录文件全文。Write 的 `content` 只进 digest。
 - HumanApproval 会把同一 run 置为 `waiting`，持久化 approval request 和 checkpoint。`approve`/`reject` 从下一节点继续同一 run；`stop` → `cancelled`；`retry` → 新 run；`resume` 对审批等待返回 `command_not_applicable`。
-- Shell、HTTP、Browser Navigate、Web Search、GitHub Read/Write 和审核后的 discovered MCP Tool 已可运行；Web Search 使用固定的 DuckDuckGo HTML provider，返回有界的标题、链接和摘要，调用需要网络权限和审批。MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference。MCP 服务器还支持不删除配置的启用/停用；发现工具会在 Runtime 再次检查审核状态，并按发现到的输入 schema 校验必填项和基础类型。
+- Shell、HTTP、Browser Navigate、Web Search、GitHub Read/Write 和审核后的 discovered MCP Tool 已可运行；Web Search 使用固定的 DuckDuckGo HTML provider，返回有界的标题、链接和摘要，调用需要网络权限和审批。MCP 服务器命令、参数和环境绑定保存在应用数据，环境绑定可以指向主机变量或 Keychain secret reference；页面支持编辑、启停、发现和删除。发现工具会在 Runtime 再次检查审核状态，并按发现到的输入 schema 校验必填项和基础类型。
 - Tool 节点支持 `input_mapping` / `output_mapping`，Runtime 先映射后授权，执行后按映射回写，避免外部 MCP/GitHub 字段名绑死 Agent 输入。
 - 模型节点支持 OpenAI-compatible SSE 流式响应；增量通过 `model.delta` 进入可回放 Run 事件，Provider 没有 `stream()` 时自动回退到一次性 completion。
 
@@ -447,7 +447,7 @@ npm run dev --workspace=@veyra/desktop
 
 最后一次验证结果：
 
-- GitHub Actions Push `34672694005` 和 Pull Request `34672695564`：`85d5cb5` 均通过；Backend Ruff/mypy、243 个后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
+- GitHub Actions Push `34673262909` 和 Pull Request `34673265525`：`24e85c0` 均通过；Backend Ruff/mypy、243 个后端用例和两套迁移门禁通过，Frontend typecheck/tests/build 通过。
 - Local live：`8771 /api/v1/health` 返回 `build_sha=1cc24e1...`、`local_0017_community_agent_origins`；`/api/v1/secrets`、`/api/v1/runtime/status`、`/api/v1/factory/status`、`/api/v1/mcp/servers`、Agent conversation、WorkItem retry/依赖、MCP 启停/编辑/审核边界、Web Search Catalog descriptor、Community-origin import boundary 可用，`/api/v1/orchestrator/status` 返回并发上限、`stale_count` 和 attempt 历史，Monitor 提供 WorkItem 创建与依赖选择，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=85d5cb5...`、`community_0007_agent_moderation`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含 capability/risk、scan 摘要和反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
 - Community live：`8772 /api/v1/health` 返回 `build_sha=17b117e...`、`community_0006_agent_feedback`、`database_ready=true`；`GET /api/v1/registry/agents` 返回 `community.registry.v1` 空目录，条目契约包含反馈统计，详情页可读取当前账号 Star 状态，未输出任何密钥值。
