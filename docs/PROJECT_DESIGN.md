@@ -432,6 +432,11 @@ now has different content than the Project hash; Studio and Agent Runtime
 preflight surface that drift for explicit re-binding rather than silently
 accepting a changed capability.
 
+The Agent Chat surface uses the same local Runtime preflight as Studio and can
+offer indexed Project file paths for explicitly declared path-like inputs. A
+suggestion only fills a relative path value; it does not turn the Files page
+into implicit model context or bypass the Agent's Filesystem Tool permission.
+
 The manifest contains a stable UUIDv7 `project_id`, Project name, listed Agent
 UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
 Run state, account tokens, secrets, caches, and event history never enter the
