@@ -71,3 +71,61 @@ def test_mcp_configure_and_discover_writes_overlay_catalog(tmp_path: Path) -> No
             json={"name": "bad", "command": "python; rm -rf /"},
         )
         assert rejected.status_code == 422
+
+
+def test_mcp_config_import_is_atomic_and_keeps_only_bindings(tmp_path: Path) -> None:
+    with TestClient(
+        create_app(
+            LocalSettings(
+                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+                project_storage_root=tmp_path / "projects",
+            )
+        )
+    ) as client:
+        imported = client.post(
+            "/api/v1/mcp/servers/import",
+            json={
+                "servers": [
+                    {
+                        "name": "docs",
+                        "command": "npx",
+                        "args": ["-y", "@example/docs"],
+                        "env_names": {"API_KEY": "DOCS_API_KEY"},
+                    },
+                    {"name": "local", "command": "node", "args": []},
+                ]
+            },
+        )
+        assert imported.status_code == 200, imported.text
+        assert [item["name"] for item in imported.json()["servers"]] == [
+            "docs",
+            "local",
+        ]
+        assert imported.json()["servers"][0]["env_names"] == {"API_KEY": "DOCS_API_KEY"}
+
+        rejected = client.post(
+            "/api/v1/mcp/servers/import",
+            json={
+                "servers": [
+                    {"name": "valid", "command": "node"},
+                    {"name": "invalid", "command": "node;rm"},
+                ]
+            },
+        )
+        assert rejected.status_code == 422
+        plaintext = client.post(
+            "/api/v1/mcp/servers/import",
+            json={
+                "servers": [
+                    {
+                        "name": "secret",
+                        "command": "node",
+                        "env_names": {"TOKEN": "sk-live-secret"},
+                    }
+                ]
+            },
+        )
+        assert plaintext.status_code == 422
+        assert sorted(
+            item["name"] for item in client.get("/api/v1/mcp/servers").json()["servers"]
+        ) == ["docs", "local"]

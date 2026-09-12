@@ -6,7 +6,7 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,7 @@ from .transport import (
 
 _COMMAND = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-_SECRET_REF = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_SECRET_REF = re.compile(r"^[a-z][a-z0-9_-]{0,63}\.[a-z][a-z0-9_.-]{0,127}$")
 _TOOL_SLUG = re.compile(r"[^a-z0-9]+")
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 
@@ -71,14 +71,15 @@ class McpService:
         env_names: dict[str, str] | None = None,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        clean_name = _text(name, "mcp_name_invalid", "MCP server name is required")
-        if _NAME.fullmatch(clean_name) is None:
-            raise McpError(
-                "mcp_name_invalid", "MCP server name is not a safe identifier"
+        clean_name, clean_command, clean_args, clean_env, clean_enabled = (
+            _validated_server_config(
+                name=name,
+                command=command,
+                args=args or [],
+                env_names=env_names or {},
+                enabled=enabled,
             )
-        clean_command = _command(command)
-        clean_args = _args(args or [])
-        clean_env = _env_names(env_names or {})
+        )
         server_id = new_uuid7()
         now = _now()
         with self.store.transaction() as connection:
@@ -89,7 +90,7 @@ class McpService:
                 command=clean_command,
                 args=clean_args,
                 env_names=clean_env,
-                enabled=enabled,
+                enabled=clean_enabled,
                 created_at=now,
             )
         row = self.store.get(server_id)
@@ -98,6 +99,51 @@ class McpService:
         return {
             "schema_version": SCHEMA_VERSION,
             "server": McpServerStore.payload(row),
+        }
+
+    def import_servers(self, configs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """Atomically import already-parsed standard MCP server definitions."""
+        if not configs or len(configs) > 32:
+            raise McpError(
+                "mcp_import_invalid", "Import between one and 32 MCP servers"
+            )
+        prepared = [
+            _validated_server_config(
+                name=config.get("name"),
+                command=config.get("command"),
+                args=config.get("args") or [],
+                env_names=config.get("env_names") or {},
+                enabled=config.get("enabled", True),
+            )
+            for config in configs
+        ]
+        names = [item[0] for item in prepared]
+        if len(set(names)) != len(names):
+            raise McpError(
+                "mcp_import_invalid", "Imported MCP server names must be unique"
+            )
+        now = _now()
+        server_ids = [new_uuid7() for _ in prepared]
+        with self.store.transaction() as connection:
+            for server_id, (name, command, args, env_names, enabled) in zip(
+                server_ids, prepared, strict=True
+            ):
+                self.store.create(
+                    connection,
+                    server_id=server_id,
+                    name=name,
+                    command=command,
+                    args=args,
+                    env_names=env_names,
+                    enabled=enabled,
+                    created_at=now,
+                )
+        rows = [self.store.get(server_id) for server_id in server_ids]
+        if any(row is None for row in rows):
+            raise McpError("mcp_server_not_found", "Imported MCP server was not found")
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "servers": [McpServerStore.payload(row) for row in rows if row is not None],
         }
 
     def delete_server(self, server_id: str) -> dict[str, Any]:
@@ -420,6 +466,36 @@ def _stdio_factory(
     command: str, args: list[str], env: Mapping[str, str]
 ) -> McpTransport:
     return StdioMcpTransport(command, list(args), env)
+
+
+def _validated_server_config(
+    *,
+    name: Any,
+    command: Any,
+    args: Any,
+    env_names: Any,
+    enabled: Any,
+) -> tuple[str, str, list[str], dict[str, str], bool]:
+    if not isinstance(name, str):
+        raise McpError("mcp_name_invalid", "MCP server name is required")
+    clean_name = _text(name, "mcp_name_invalid", "MCP server name is required")
+    if _NAME.fullmatch(clean_name) is None:
+        raise McpError("mcp_name_invalid", "MCP server name is not a safe identifier")
+    if not isinstance(command, str):
+        raise McpError("mcp_command_invalid", "MCP command is required")
+    if not isinstance(args, list):
+        raise McpError("mcp_args_invalid", "MCP args must be a list of strings")
+    if not isinstance(env_names, dict):
+        raise McpError("mcp_env_invalid", "MCP environment bindings must be an object")
+    if not isinstance(enabled, bool):
+        raise McpError("mcp_enabled_invalid", "MCP enabled must be a boolean")
+    return (
+        clean_name,
+        _command(command),
+        _args(args),
+        _env_names(env_names),
+        enabled,
+    )
 
 
 def _command(value: str) -> str:

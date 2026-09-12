@@ -27,6 +27,10 @@ class CreateMcpServerRequest(_ClosedModel):
     enabled: bool = True
 
 
+class ImportMcpServersRequest(_ClosedModel):
+    servers: list[CreateMcpServerRequest] = Field(min_length=1, max_length=32)
+
+
 class UpdateMcpServerRequest(_ClosedModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
     command: str | None = Field(default=None, min_length=1, max_length=512)
@@ -59,6 +63,16 @@ def build_router() -> APIRouter:
                 args=payload.args,
                 env_names=payload.env_names,
                 enabled=payload.enabled,
+            )
+        )
+
+    @router.post("/servers/import")
+    def import_servers(
+        payload: ImportMcpServersRequest, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _mcp(request).import_servers(
+                [item.model_dump() for item in payload.servers]
             )
         )
 

@@ -1062,6 +1062,15 @@ export type CreateMcpServerRequest = {
   enabled?: boolean;
 };
 
+export type ImportMcpServersRequest = {
+  servers: CreateMcpServerRequest[];
+};
+
+export type ImportMcpServersResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  servers: McpServer[];
+};
+
 export type UpdateMcpServerRequest = {
   name?: string;
   command?: string;

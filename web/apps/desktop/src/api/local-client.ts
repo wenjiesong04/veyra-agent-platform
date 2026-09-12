@@ -55,6 +55,8 @@ import {
   type ListProjectsResponse,
   type ListWorkItemsResponse,
   type CreateMcpServerRequest,
+  type ImportMcpServersRequest,
+  type ImportMcpServersResponse,
   type UpdateMcpServerRequest,
   type McpServer,
   type McpServerReadiness,
@@ -204,6 +206,7 @@ export type LocalProjectApi = {
   approveResourceDraft?(resourceId: string, version: string, instruction: string): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }>;
   listMcpServers?(): Promise<ListMcpServersResponse>;
   createMcpServer?(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
+  importMcpServers?(input: ImportMcpServersRequest): Promise<ImportMcpServersResponse>;
   updateMcpServer?(serverId: string, input: UpdateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }>;
   discoverMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; tools: ResourceDescriptor[] }>;
   mcpServerReadiness?(serverId: string): Promise<McpServerReadiness>;
@@ -2223,6 +2226,10 @@ export class LocalApiClient {
 
   createMcpServer(input: CreateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }> {
     return this.request("mcp/servers", createdMcpServer, { method: "POST", body: input });
+  }
+
+  importMcpServers(input: ImportMcpServersRequest): Promise<ImportMcpServersResponse> {
+    return this.request("mcp/servers/import", listedMcpServers, { method: "POST", body: input });
   }
 
   updateMcpServer(serverId: string, input: UpdateMcpServerRequest): Promise<{ schema_version: "1.0"; server: McpServer }> {

@@ -32,10 +32,11 @@ import {
   Button,
   useLocale,
 } from "@veyra/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useProjectWorkspace } from "../../api/project-workspace";
 import type { LocalProjectApi } from "../../api/local-client";
 import { resourceLibraryCatalogHref, resourceLibraryTabFromHash, type ResourceLibraryTab } from "./library-navigation";
+import { McpConfigError, parseMcpConfig } from "./mcp-config";
 
 const tabKinds: Array<{ id: ResourceLibraryTab; kinds: ResourceKind[] }> = [
   { id: "all", kinds: ["component", "tool", "mcp_tool", "skill", "policy", "template"] },
@@ -184,10 +185,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
 
   const copy = zh
     ? {
-      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败", createSkill: "创建 Skill 草稿", skillName: "Skill 名称", skillReference: "请求引用", skillDraftInstruction: "初始指令", skillReferenceHint: "例如 veyra.skill.invoice-review@1.0.0", skillDraftHint: "创建后会进入隔离状态，审核前不会被 Factory 选择。", createSkillAction: "创建隔离草稿", skillCreated: "草稿已创建", skillCreateFailed: "Skill 草稿创建失败", importSkillFile: "导入 SKILL.md", skillFileSelected: "已读取", skillFileInvalid: "请选择 Markdown 或纯文本 Skill 文件。",
+      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败", createSkill: "创建 Skill 草稿", skillName: "Skill 名称", skillReference: "请求引用", skillDraftInstruction: "初始指令", skillReferenceHint: "例如 veyra.skill.invoice-review@1.0.0", skillDraftHint: "创建后会进入隔离状态，审核前不会被 Factory 选择。", createSkillAction: "创建隔离草稿", skillCreated: "草稿已创建", skillCreateFailed: "Skill 草稿创建失败", importSkillFile: "导入 SKILL.md", skillFileSelected: "已读取", skillFileInvalid: "请选择 Markdown 或纯文本 Skill 文件。", importConfig: "导入 MCP 配置", importingConfig: "正在导入…", importedConfig: "MCP 配置已导入。请检查配置后再发现工具。", importConfigFailed: "MCP 配置导入失败。请确认 JSON 格式和环境变量引用。", importConfigHint: "支持 mcpServers 配置；只导入命令、参数和变量名，不会导入明文 Key。",
     }
     : {
-      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear the search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed", createSkill: "Create Skill draft", skillName: "Skill name", skillReference: "Requested reference", skillDraftInstruction: "Initial instruction", skillReferenceHint: "For example veyra.skill.invoice-review@1.0.0", skillDraftHint: "The draft is quarantined and cannot be selected by Factory until reviewed.", createSkillAction: "Create quarantined draft", skillCreated: "Draft created", skillCreateFailed: "Skill draft could not be created",
+      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed", createSkill: "Create Skill draft", skillName: "Skill name", skillReference: "Requested reference", skillDraftInstruction: "Initial instruction", skillReferenceHint: "For example veyra.skill.invoice-review@1.0.0", skillDraftHint: "The draft is quarantined and cannot be selected by Factory until reviewed.", createSkillAction: "Create quarantined draft", skillCreated: "Draft created", skillCreateFailed: "Skill draft could not be created", importConfig: "Import MCP config", importingConfig: "Importing…", importedConfig: "MCP config imported. Check the configuration before discovery.", importConfigFailed: "MCP config import failed. Check the JSON and environment-variable references.", importConfigHint: "Supports mcpServers configs; only commands, args, and variable names are imported. Plaintext keys are never imported.",
     };
   const skillFileCopy = zh
     ? { label: "导入 SKILL.md", selected: "已读取", invalid: "请选择 Markdown 或纯文本 Skill 文件。" }
@@ -388,7 +389,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
           })}
         </div>
       ) : null}
-      {tab === "tooling" ? <McpServerPanel api={api} zh={zh} onChanged={() => void load()} /> : null}
+      {tab === "tooling" ? <McpServerPanel api={api} zh={zh} onChanged={() => void load()} importCopy={{ importConfig: copy.importConfig, importingConfig: copy.importingConfig, importedConfig: copy.importedConfig, importConfigFailed: copy.importConfigFailed, importConfigHint: copy.importConfigHint }} /> : null}
     </div>
   );
 }
@@ -405,7 +406,15 @@ function parseMcpEnvNames(value: string): Record<string, string> {
   return bindings;
 }
 
-function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: boolean; onChanged: () => void }) {
+type McpImportCopy = {
+  importConfig: string;
+  importingConfig: string;
+  importedConfig: string;
+  importConfigFailed: string;
+  importConfigHint: string;
+};
+
+function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectApi; zh: boolean; onChanged: () => void; importCopy: McpImportCopy }) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [serverReadiness, setServerReadiness] = useState<Record<string, McpServerReadiness>>({});
   const [tools, setTools] = useState<ResourceDescriptor[]>([]);
@@ -417,6 +426,9 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
   const [busyServerId, setBusyServerId] = useState<string | null>(null);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [savingServer, setSavingServer] = useState(false);
+  const [importingConfig, setImportingConfig] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const importInputRef = useRef<HTMLInputElement>(null);
   const loadServers = useCallback(async () => {
     if (!api.listMcpServers) return;
     try {
@@ -472,6 +484,23 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
       setError(cause instanceof Error ? cause.message : (zh ? "无法保存 MCP 服务器。" : "Could not save the MCP server."));
     } finally {
       setSavingServer(false);
+    }
+  };
+  const importConfig = async (file: File | null) => {
+    if (!file || !api.importMcpServers) return;
+    setImportingConfig(true);
+    setImportMessage("");
+    setError("");
+    try {
+      const payload = parseMcpConfig(JSON.parse(await file.text()) as unknown);
+      await api.importMcpServers({ servers: payload });
+      setImportMessage(importCopy.importedConfig);
+      await loadServers();
+      onChanged();
+    } catch (cause) {
+      setError(cause instanceof McpConfigError ? cause.message : importCopy.importConfigFailed);
+    } finally {
+      setImportingConfig(false);
     }
   };
   const edit = (server: McpServer) => {
@@ -555,6 +584,11 @@ function McpServerPanel({ api, zh, onChanged }: { api: LocalProjectApi; zh: bool
         <label>{zh ? "环境映射" : "Environment bindings"}<textarea value={envNames} onChange={(event) => setEnvNames(event.target.value)} placeholder={zh ? "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY" : "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY"} rows={3} /></label>
         <div className="button-row"><Button onClick={() => void create()} disabled={savingServer || (!editingServerId && !api.createMcpServer) || Boolean(editingServerId && !api.updateMcpServer)}>{savingServer ? "…" : editingServerId ? (zh ? "更新服务器" : "Update server") : (zh ? "保存服务器" : "Save server")}</Button>{editingServerId ? <Button variant="ghost" onClick={cancelEdit} disabled={savingServer}>{zh ? "取消编辑" : "Cancel edit"}</Button> : null}</div>
       </div>
+      {api.importMcpServers ? <div className="resource-detail-block">
+        <input ref={importInputRef} className="sidebar-import-input" type="file" accept=".json,application/json" tabIndex={-1} onChange={(event) => { const file = event.target.files?.item(0) ?? null; event.target.value = ""; void importConfig(file); }} />
+        <div className="button-row"><Button variant="secondary" disabled={importingConfig} onClick={() => importInputRef.current?.click()}>{importingConfig ? importCopy.importingConfig : importCopy.importConfig}</Button>{importMessage ? <span className="resource-detail-muted" role="status">{importMessage}</span> : null}</div>
+        <small className="resource-detail-muted">{importCopy.importConfigHint}</small>
+      </div> : null}
       {servers.map((server) => (
         <div className="resource-row" key={server.server_id}>
           <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}{Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}</small></span>

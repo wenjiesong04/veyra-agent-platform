@@ -87,6 +87,7 @@ def test_each_app_exposes_its_versioned_routes(tmp_path: Path) -> None:
         "/api/v1/secrets",
         "/api/v1/secrets/{secret_ref}",
         "/api/v1/mcp/servers",
+        "/api/v1/mcp/servers/import",
         "/api/v1/mcp/servers/{server_id}",
         "/api/v1/mcp/servers/{server_id}/discover",
         "/api/v1/mcp/servers/{server_id}/readiness",
