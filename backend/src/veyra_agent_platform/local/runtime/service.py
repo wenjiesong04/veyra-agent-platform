@@ -1198,6 +1198,38 @@ class RuntimeService:
                     )
                 elif node.component_type in {ComponentType.AGENT, ComponentType.MODEL}:
                     context_text = ""
+                    if source.skill_refs:
+                        emit(
+                            node.id,
+                            "tool.requested",
+                            {
+                                "tool_reference": "skill.context",
+                                "authorization": "allowed",
+                                "references": list(source.skill_refs),
+                            },
+                        )
+                        skill_resources = self._skill_resources(source)
+                        emit(
+                            node.id,
+                            "tool.completed",
+                            {
+                                "tool_reference": "skill.context",
+                                "receipts": [
+                                    {
+                                        "reference": resource["reference"],
+                                        "name": resource["name"],
+                                        "content_hash": resource["content_hash"],
+                                        "instruction_byte_length": len(
+                                            str(
+                                                resource["spec"].get("instruction", "")
+                                            ).encode("utf-8")
+                                        ),
+                                        "verified": True,
+                                    }
+                                    for resource in skill_resources
+                                ],
+                            },
+                        )
                     if source.knowledge_refs or any(
                         item["kind"] == "knowledge"
                         for item in (source.ui.get("bindings") or {}).values()
@@ -1409,6 +1441,16 @@ class RuntimeService:
 
     def _agent_system_prompt(self, node: Any, source: AgentSource) -> str:
         prompt = node.system_prompt or ""
+        for resource in self._skill_resources(source):
+            instruction = str(resource["spec"].get("instruction", "")).strip()
+            marker = f"[{resource['name']}]"
+            if instruction and marker not in prompt:
+                block = f"{marker} {instruction}"
+                prompt = f"{prompt}\n\n{block}" if prompt else block
+        return prompt
+
+    def _skill_resources(self, source: AgentSource) -> list[dict[str, Any]]:
+        resources: list[dict[str, Any]] = []
         for reference in source.skill_refs:
             try:
                 resource = self.tools.catalog.by_reference(reference)
@@ -1424,12 +1466,13 @@ class RuntimeService:
                 )
             if resource["kind"] != "skill":
                 raise RuntimeError("skill_invalid", "Locked skill_ref is not a Skill")
-            instruction = str(resource["spec"].get("instruction", "")).strip()
-            marker = f"[{resource['name']}]"
-            if instruction and marker not in prompt:
-                block = f"{marker} {instruction}"
-                prompt = f"{prompt}\n\n{block}" if prompt else block
-        return prompt
+            if resource["availability"] != "ready":
+                raise RuntimeError(
+                    "skill_unavailable",
+                    "Skill is not enabled for local Runtime use",
+                )
+            resources.append(resource)
+        return resources
 
 
 def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:

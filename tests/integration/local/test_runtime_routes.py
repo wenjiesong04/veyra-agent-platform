@@ -12,6 +12,7 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.contracts.wire import RunEvent
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.runtime.client import RuntimeCompletion
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -577,6 +578,39 @@ def test_agent_node_uses_injected_runtime_model(tmp_path: Path) -> None:
         assert response["result"] == {"result": "The sky is clear."}
         assert transport.calls
         assert response["error"] is None
+
+
+def test_skill_context_is_locked_injected_and_receipted(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedRuntimeTransport("Skill-aware response")
+    source = _agent_source()
+    skill = ResourceCatalog().detail("veyra.skill.research-brief", "1.0.0")
+    reference = skill["reference"]
+    source["extensions"]["veyra"]["skill_refs"] = [reference]
+    source["lock"][reference] = skill["content_hash"]
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        result = _run_until_settled(client, url, {"request": "Make a brief"})
+        assert result["status"] == "unverified"
+        assert "Research Brief" in json.dumps(transport.calls)
+        events = client.get(f"{url}s/{result['run_id']}").json()["events"]
+        completed = next(
+            event
+            for event in events
+            if event["kind"] == "tool.completed"
+            and event["payload"].get("tool_reference") == "skill.context"
+        )
+        receipt = completed["payload"]["receipts"][0]
+        assert receipt["content_hash"] == skill["content_hash"]
+        assert receipt["verified"] is True
+        assert "Produce a reviewable plan" not in json.dumps(completed)
 
 
 def test_runtime_profile_validation_and_agent_readiness_use_effective_model(
