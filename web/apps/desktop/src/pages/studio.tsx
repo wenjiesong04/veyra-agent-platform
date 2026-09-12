@@ -34,6 +34,13 @@ const AUTOSAVE_MS = 2000;
 const STUDIO_MESSAGE_ALERT_MS = 6000;
 const STUDIO_DIAGNOSTIC_ALERT_MS = 12000;
 
+function initialFilePathFromHash(): string | undefined {
+  const queryIndex = window.location.hash.indexOf("?");
+  if (queryIndex < 0) return undefined;
+  const value = new URLSearchParams(window.location.hash.slice(queryIndex + 1)).get("file");
+  return value?.trim() || undefined;
+}
+
 function adoptStudioSource(source: StudioSource): StudioSource {
   const rewritten = repairInvalidNodeIds(source);
   return rewritten.component_type === "Workflow" ? repairAgentCallMappings(rewritten) : rewritten;
@@ -43,6 +50,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const { api, projects } = useProjectWorkspace(); const { locale } = useLocale();
   const copy = studioCopy[locale];
   const isWorkflow = Boolean(workflowId) && !agentId;
+  const initialFilePath = React.useMemo(initialFilePathFromHash, []);
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<StudioSource | null>(null);
   const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null); const [validation, setValidation] = React.useState<ValidateResponse | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
@@ -165,7 +173,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
           <StudioStage view={view}>
             {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
             {isWorkflow && workflowId && source.component_type === "Workflow" ? <StudioRunDock locale={locale}><WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
-            {!isWorkflow && agentId && source.component_type === "Flow" ? <StudioRunDock locale={locale}><TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
+            {!isWorkflow && agentId && source.component_type === "Flow" ? <StudioRunDock locale={locale}><TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} initialFilePath={initialFilePath} /></StudioRunDock> : null}
           </StudioStage>
         </div>
       </LiveRunProvider>

@@ -7,7 +7,7 @@ import type { LocalProjectApi } from "../api/local-client";
 import { FilesPage } from "./files";
 import { projectFileId } from "../features/projects/agent-tree";
 
-function project(): ProjectSummaryResponse {
+function project(overrides: Partial<ProjectSummaryResponse> = {}): ProjectSummaryResponse {
   return {
     schema_version: "1.0",
     project_id: "project-1",
@@ -21,6 +21,7 @@ function project(): ProjectSummaryResponse {
     default_agent_id: null,
     agent_count: 0,
     agents: [],
+    ...overrides,
   };
 }
 
@@ -77,5 +78,30 @@ describe("FilesPage", () => {
     renderPage(api, projectFileId("project-1", "resources/note.md"));
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(screen.getByText("resource")).toBeInTheDocument();
+  });
+
+  it("offers a Project file as a prefilled Agent Studio input", async () => {
+    const summary = project({
+      default_agent_id: "agent-1",
+      agent_count: 1,
+      agents: [{ agent_id: "agent-1", slug: "reader", name: "Reader", description: "", pinned: false, source_path: "agents/reader/agent.vagent.yaml", source_file_hash: "hash" }],
+    });
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [summary] }),
+      listProjectFiles: vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", files: [] }),
+      getProjectFile: vi.fn().mockResolvedValue({
+        schema_version: "1.0",
+        project_id: "project-1",
+        path: "resources/note.md",
+        kind: "resource",
+        byte_length: 5,
+        text: "hello",
+      }),
+    } as unknown as LocalProjectApi;
+
+    renderPage(api, projectFileId("project-1", "resources/note.md"));
+
+    const link = await screen.findByRole("link", { name: "Open Agent Studio" });
+    expect(link).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/design?file=resources%2Fnote.md");
   });
 });

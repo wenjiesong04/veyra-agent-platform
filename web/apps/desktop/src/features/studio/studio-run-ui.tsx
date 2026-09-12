@@ -3,13 +3,18 @@ import type { AgentRunResponse, JsonValue, RuntimeReadiness, WorkflowRunResponse
 import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 
-export function initialSourceInputs(inputs: Record<string, string>): Record<string, JsonValue> {
-  return Object.fromEntries(
+export function initialSourceInputs(inputs: Record<string, string>, initialFilePath?: string): Record<string, JsonValue> {
+  const values = Object.fromEntries(
     Object.entries(inputs).map(([name, type]) => [
       name,
       type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "object" ? {} : type === "array" ? [] : "",
     ]),
   );
+  if (initialFilePath) {
+    const field = Object.entries(inputs).find(([name, type]) => type === "string" && /(^|_)(path|file|document)(_|$)/i.test(name))?.[0];
+    if (field) values[field] = initialFilePath;
+  }
+  return values;
 }
 
 export function runTone(status: AgentRunResponse["status"]): "good" | "warn" | "bad" {

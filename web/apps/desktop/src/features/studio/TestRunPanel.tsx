@@ -25,10 +25,10 @@ type TestRunPanelProps = {
   locale: "zh" | "en";
 };
 
-export function TestRunPanel({ api, projectId, agentId, source, disabled, locale }: TestRunPanelProps) {
+export function TestRunPanel({ api, projectId, agentId, source, disabled, locale, initialFilePath }: TestRunPanelProps & { initialFilePath?: string }) {
   const live = useLiveRun({ api, projectId, agentId, locale });
   const { chrome, setChrome } = useStudioChrome();
-  const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialSourceInputs(source.inputs));
+  const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialSourceInputs(source.inputs, initialFilePath));
   const [fileOptions, setFileOptions] = React.useState<string[]>([]);
   const zh = locale === "zh";
   const run = live.run;
@@ -37,9 +37,9 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
   const collapseLabel = collapsed ? (zh ? "展开测试面板" : "Expand test panel") : (zh ? "折叠测试面板" : "Collapse test panel");
 
   React.useEffect(() => {
-    setInputs(initialSourceInputs(source.inputs));
+    setInputs(initialSourceInputs(source.inputs, initialFilePath));
     live.clear();
-  }, [source.agent_id, source.inputs, live.clear]);
+  }, [initialFilePath, source.agent_id, source.inputs, live.clear]);
 
   React.useEffect(() => {
     if (!api.listProjectFiles) {

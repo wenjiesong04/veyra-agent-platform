@@ -14,9 +14,9 @@ export function FilesPage({ fileId, projectId }: { fileId?: string; projectId?: 
     [projectId, projects],
   );
   const copy = zh ? {
-    missing: "找不到文件", missingDetail: "请求的文件在已索引的项目源中不可用。", back: "返回文件", file: "文件", all: "全部文件", library: "知识库", title: "文件", description: "这里只列出项目里已索引的源文件、README、测试和 resources，不包含运行状态或密钥。", openProject: "打开项目", projectLibrary: "项目文件", count: "个文件", empty: "还没有项目文件", emptyDetail: "创建或打开一个项目后，这里会显示它的源文件树。", preview: "预览", identity: "文件身份", kind: "类型", size: "大小", project: "项目", path: "路径",
+    missing: "找不到文件", missingDetail: "请求的文件在已索引的项目源中不可用。", back: "返回文件", file: "文件", all: "全部文件", library: "知识库", title: "文件", description: "这里只列出项目里已索引的源文件、README、测试和 resources，不包含运行状态或密钥。", openProject: "打开项目", projectLibrary: "项目文件", count: "个文件", empty: "还没有项目文件", emptyDetail: "创建或打开一个项目后，这里会显示它的源文件树。", preview: "预览", identity: "文件身份", kind: "类型", size: "大小", project: "项目", path: "路径", runtime: "Runtime", useInAgent: "在 Agent 中使用此文件", useInAgentDetail: "只会把相对路径预填到 Agent 的 path/file/document 输入；是否读取由 Agent 的 Filesystem Tool 权限决定。", chooseAgent: "选择 Agent", openStudio: "打开 Agent Studio", noAgents: "此 Project 还没有 Agent。",
   } : {
-    missing: "File not found", missingDetail: "The requested file is not available in the indexed Project sources.", back: "Back to Files", file: "File", all: "All Files", library: "Knowledge base", title: "Files", description: "Indexed source files, READMEs, tests, and resources stay separate from run state and secrets.", openProject: "Open Project", projectLibrary: "Project files", count: "Files", empty: "No Project files yet", emptyDetail: "Create or open a Project to see its source file tree here.", preview: "Preview", identity: "File identity", kind: "Kind", size: "Size", project: "Project", path: "Path",
+    missing: "File not found", missingDetail: "The requested file is not available in the indexed Project sources.", back: "Back to Files", file: "File", all: "All Files", library: "Knowledge base", title: "Files", description: "Indexed source files, READMEs, tests, and resources stay separate from run state and secrets.", openProject: "Open Project", projectLibrary: "Project files", count: "Files", empty: "No Project files yet", emptyDetail: "Create or open a Project to see its source file tree here.", preview: "Preview", identity: "File identity", kind: "Kind", size: "Size", project: "Project", path: "Path", runtime: "Runtime", useInAgent: "Use this file in an Agent", useInAgentDetail: "Only the relative path is prefilled into a path/file/document input; reading still depends on the Agent's authorized Filesystem Tool.", chooseAgent: "Choose an Agent", openStudio: "Open Agent Studio", noAgents: "This Project has no Agent yet.",
   };
   const [listings, setListings] = useState<Record<string, ProjectFileRecord[]>>({});
   const [listingError, setListingError] = useState<string | null>(null);
@@ -76,6 +76,13 @@ function FilePreviewPage({
   const [meta, setMeta] = useState<ProjectFileRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const project = selected ? projects.find((item) => item.project_id === selected.projectId) : undefined;
+  const [targetAgentId, setTargetAgentId] = useState(project?.default_agent_id ?? project?.agents[0]?.agent_id ?? "");
+
+  useEffect(() => {
+    if (!project?.agents.some((agent) => agent.agent_id === targetAgentId)) {
+      setTargetAgentId(project?.default_agent_id ?? project?.agents[0]?.agent_id ?? "");
+    }
+  }, [project, targetAgentId]);
 
   useEffect(() => {
     if (!selected || !api.getProjectFile) {
@@ -101,7 +108,11 @@ function FilePreviewPage({
     return <div className="project-missing"><ErrorState message={error} /><p>{copy.missingDetail}</p><LinkButton href={desktopRoutePaths.files} icon={ArrowLeft} variant="primary">{copy.back}</LinkButton></div>;
   }
   if (!meta) return <LoadingState label={copy.file} />;
+  const studioHref = project && targetAgentId
+    ? `${projectRoutePaths.agentDesign(project.project_id, targetAgentId)}?file=${encodeURIComponent(meta.path)}`
+    : null;
   return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.file} / {fileId}</span><h2>{meta.path.split("/").at(-1)}</h2><p>{meta.path}</p></div><LinkButton href={desktopRoutePaths.files} icon={ArrowLeft} variant="ghost">{copy.all}</LinkButton></div>
     <Panel><SectionHeading eyebrow={copy.preview} title={copy.identity} /><div className="settings-facts"><div><span>{copy.kind}</span><strong>{meta.kind}</strong></div><div><span>{copy.size}</span><strong>{meta.byte_length}</strong></div><div><span>{copy.project}</span><strong>{project?.name ?? selected.projectId}</strong></div><div><span>{copy.path}</span><strong>{meta.path}</strong></div></div>{text !== null ? <pre className="project-file-preview">{text}</pre> : null}</Panel>
+    <Panel><SectionHeading eyebrow={copy.runtime} title={copy.useInAgent} detail={copy.useInAgentDetail} />{project?.agents.length && studioHref ? <div className="button-row"><select aria-label={copy.chooseAgent} value={targetAgentId} onChange={(event) => setTargetAgentId(event.target.value)}>{project.agents.map((agent) => <option value={agent.agent_id} key={agent.agent_id}>{agent.name || agent.slug}</option>)}</select><LinkButton href={studioHref} icon={FolderOpen} variant="primary">{copy.openStudio}</LinkButton></div> : <p className="project-file-preview">{copy.noAgents}</p>}</Panel>
   </div>;
 }
