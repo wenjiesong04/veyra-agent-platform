@@ -25,6 +25,8 @@ import type {
   CommunityPluginEntry,
   CommunityPluginListResponse,
   CommunityPluginVersionsResponse,
+  CommunityPluginModerationQueueResponse,
+  CommunityPluginModerationRequest,
 } from "@veyra/api-contracts";
 import { communityAccountApiPaths } from "@veyra/api-contracts";
 
@@ -80,6 +82,8 @@ export type CommunityApi = {
   listRegistryPluginVersions: (ownerHandle: string, slug: string) => Promise<CommunityPluginEntry[]>;
   downloadRegistryPlugin: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
   publishRegistryPlugin: (file: File) => Promise<CommunityPluginEntry>;
+  listRegistryPluginModerationQueue: () => Promise<CommunityPluginEntry[]>;
+  moderateRegistryPlugin: (ownerHandle: string, slug: string, version: string, input: CommunityPluginModerationRequest) => Promise<CommunityPluginEntry>;
 };
 
 type ErrorBody = {
@@ -351,6 +355,15 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
       const body = new FormData();
       body.append("package", file, file.name);
       return request<CommunityPluginEntry>("/registry/plugins", { method: "POST", body });
+    },
+
+    async listRegistryPluginModerationQueue() {
+      const response = await request<CommunityPluginModerationQueueResponse>("/registry/plugins/moderation/queue");
+      return response.entries;
+    },
+
+    async moderateRegistryPlugin(ownerHandle, slug, version, input) {
+      return request<CommunityPluginEntry>(`/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/moderate`, { method: "POST", body: jsonBody(input) });
     },
   };
 
