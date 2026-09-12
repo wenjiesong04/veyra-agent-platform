@@ -185,10 +185,10 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
 
   const copy = zh
     ? {
-      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败", createSkill: "创建 Skill 草稿", skillName: "Skill 名称", skillReference: "请求引用", skillDraftInstruction: "初始指令", skillReferenceHint: "例如 veyra.skill.invoice-review@1.0.0", skillDraftHint: "创建后会进入隔离状态，审核前不会被 Factory 选择。", createSkillAction: "创建隔离草稿", skillCreated: "草稿已创建", skillCreateFailed: "Skill 草稿创建失败", importSkillFile: "导入 SKILL.md", skillFileSelected: "已读取", skillFileInvalid: "请选择 Markdown 或纯文本 Skill 文件。", importConfig: "导入 MCP 配置", importingConfig: "正在导入…", importedConfig: "MCP 配置已导入。请检查配置后再发现工具。", importConfigFailed: "MCP 配置导入失败。请确认 JSON 格式和环境变量引用。", importConfigHint: "支持 mcpServers 配置；只导入命令、参数和变量名，不会导入明文 Key。",
+      eyebrow: "资源目录", title: "资源目录", description: "平台登记的版本化 Components、Tools、MCP、Skills、Policies 和 Templates。选择资源后，再加入具体 Project。", count: "项", search: "搜索总资源", empty: "没有匹配的资源", emptyDetail: "换一个分类，或清空搜索后再看。", unavailable: "资源目录暂时不可用。", detail: "资源详情", hash: "内容哈希", availability: "可用性", runtime: "Runtime", factorySelectable: "Factory 可选", permissions: "权限要求", spec: "资源规格", noPermissions: "无额外权限", selectable: "可选", notSelectable: "不可选", back: "返回资源目录", tags: "标签", addToProject: "加入 Project", added: "已加入 Project", addFailed: "加入失败", noProject: "暂无可用 Project", skillInstruction: "Skill 指令", skillInstructionHint: "写清楚这个 Skill 要如何指导 Agent。审核后会进入 Factory 和 Model Prompt。", approveSkill: "审核并启用 Skill", skillApproved: "Skill 已启用", skillApprovalFailed: "Skill 审核失败", createSkill: "创建 Skill 草稿", skillName: "Skill 名称", skillReference: "请求引用", skillDraftInstruction: "初始指令", skillReferenceHint: "例如 veyra.skill.invoice-review@1.0.0", skillDraftHint: "创建后会进入隔离状态，审核前不会被 Factory 选择。", createSkillAction: "创建隔离草稿", skillCreated: "草稿已创建", skillCreateFailed: "Skill 草稿创建失败", importSkillFile: "导入 SKILL.md", skillFileSelected: "已读取", skillFileInvalid: "请选择 Markdown 或纯文本 Skill 文件。", importConfig: "导入 MCP 配置", importingConfig: "正在导入…", importedConfig: "MCP 配置已导入。请检查配置后再发现工具。", importConfigFailed: "MCP 配置导入失败。请确认 JSON 格式、URL 和环境变量引用。", importConfigHint: "支持 mcpServers 配置中的 stdio 命令或 HTTPS URL；只导入连接信息和变量/Keychain 引用，不会导入明文 Key。",
     }
     : {
-      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed", createSkill: "Create Skill draft", skillName: "Skill name", skillReference: "Requested reference", skillDraftInstruction: "Initial instruction", skillReferenceHint: "For example veyra.skill.invoice-review@1.0.0", skillDraftHint: "The draft is quarantined and cannot be selected by Factory until reviewed.", createSkillAction: "Create quarantined draft", skillCreated: "Draft created", skillCreateFailed: "Skill draft could not be created", importConfig: "Import MCP config", importingConfig: "Importing…", importedConfig: "MCP config imported. Check the configuration before discovery.", importConfigFailed: "MCP config import failed. Check the JSON and environment-variable references.", importConfigHint: "Supports mcpServers configs; only commands, args, and variable names are imported. Plaintext keys are never imported.",
+      eyebrow: "Resource Catalog", title: "Resource Catalog", description: "Versioned platform Components, Tools, MCP, Skills, Policies, and Templates. Choose a resource here, then add it to a Project.", count: "items", search: "Search Catalog", empty: "No matching resources", emptyDetail: "Try another category or clear search.", unavailable: "The Resource Catalog is unavailable.", detail: "Resource detail", hash: "Content hash", availability: "Availability", runtime: "Runtime", factorySelectable: "Factory selectable", permissions: "Required permissions", spec: "Resource spec", noPermissions: "No additional permissions", selectable: "Selectable", notSelectable: "Not selectable", back: "Back to Resource Catalog", tags: "Tags", addToProject: "Add to Project", added: "Added to Project", addFailed: "Could not add resource", noProject: "No Project is available", skillInstruction: "Skill instruction", skillInstructionHint: "Describe how this Skill should guide an Agent. After approval it becomes available to Factory and Model prompts.", approveSkill: "Review and enable Skill", skillApproved: "Skill enabled", skillApprovalFailed: "Skill approval failed", createSkill: "Create Skill draft", skillName: "Skill name", skillReference: "Requested reference", skillDraftInstruction: "Initial instruction", skillReferenceHint: "For example veyra.skill.invoice-review@1.0.0", skillDraftHint: "The draft is quarantined and cannot be selected by Factory until reviewed.", createSkillAction: "Create quarantined draft", skillCreated: "Draft created", skillCreateFailed: "Skill draft could not be created", importConfig: "Import MCP config", importingConfig: "Importing…", importedConfig: "MCP config imported. Check the configuration before discovery.", importConfigFailed: "MCP config import failed. Check the JSON, URL, and environment-variable references.", importConfigHint: "Supports stdio commands or HTTPS URLs from mcpServers configs; only connection data and variable/Keychain references are imported. Plaintext keys are never imported.",
     };
   const skillFileCopy = zh
     ? { label: "导入 SKILL.md", selected: "已读取", invalid: "请选择 Markdown 或纯文本 Skill 文件。" }
@@ -406,6 +406,18 @@ function parseMcpEnvNames(value: string): Record<string, string> {
   return bindings;
 }
 
+function parseMcpHeaderTemplates(value: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const entry of value.split(/[\r\n]+/)) {
+    const separator = entry.indexOf("=");
+    if (separator < 1) continue;
+    const name = entry.slice(0, separator).trim();
+    const template = entry.slice(separator + 1).trim();
+    if (name && template) headers[name] = template;
+  }
+  return headers;
+}
+
 type McpImportCopy = {
   importConfig: string;
   importingConfig: string;
@@ -422,6 +434,9 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
   const [command, setCommand] = useState("npx");
   const [args, setArgs] = useState("");
   const [envNames, setEnvNames] = useState("");
+  const [transport, setTransport] = useState<"stdio" | "streamable_http">("stdio");
+  const [url, setUrl] = useState("");
+  const [headers, setHeaders] = useState("");
   const [error, setError] = useState("");
   const [busyServerId, setBusyServerId] = useState<string | null>(null);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
@@ -484,9 +499,18 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
     try {
       const input = {
         name,
-        command,
-        args: args.split(" ").map((item) => item.trim()).filter(Boolean),
-        env_names: parseMcpEnvNames(envNames),
+        ...(transport === "stdio"
+          ? {
+            command,
+            args: args.split(" ").map((item) => item.trim()).filter(Boolean),
+            env_names: parseMcpEnvNames(envNames),
+            transport,
+          }
+          : {
+            transport,
+            url: url.trim(),
+            headers: parseMcpHeaderTemplates(headers),
+          }),
       };
       if (editingServerId) await api.updateMcpServer!(editingServerId, input);
       else await api.createMcpServer!(input);
@@ -518,9 +542,12 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
   const edit = (server: McpServer) => {
     setEditingServerId(server.server_id);
     setName(server.name);
-    setCommand(server.command);
+    setTransport(server.transport ?? "stdio");
+    setCommand(server.command ?? "");
     setArgs(server.args.join(" "));
     setEnvNames(Object.entries(server.env_names).map(([key, value]) => `${key}=${value}`).join("\n"));
+    setUrl(server.url ?? "");
+    setHeaders(Object.entries(server.headers ?? {}).map(([key, value]) => `${key}=${value}`).join("\n"));
     setError("");
   };
   const cancelEdit = () => {
@@ -529,6 +556,9 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
     setCommand("npx");
     setArgs("");
     setEnvNames("");
+    setTransport("stdio");
+    setUrl("");
+    setHeaders("");
   };
   const discover = async (serverId: string) => {
     if (!api.discoverMcpServer) return;
@@ -587,13 +617,12 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
   };
   return (
     <Panel>
-      <SectionHeading eyebrow="MCP" title={zh ? "本机 MCP 服务器" : "Local MCP servers"} detail={zh ? "命令和参数保存在应用数据里，不会写入 Project 目录。环境映射只保存变量名或 Keychain 引用。" : "Commands stay in application data, not in Project directories. Environment mappings store names or Keychain references only."} />
+      <SectionHeading eyebrow="MCP" title={zh ? "本机 MCP 服务器" : "Local MCP servers"} detail={zh ? "支持本机 stdio 和 HTTPS Streamable HTTP。连接配置保存在应用数据里，不会写入 Project 目录；凭据只保存变量名或 Keychain 引用。" : "Supports local stdio and HTTPS Streamable HTTP. Connection settings stay in application data, not Project directories; credentials are variable names or Keychain references only."} />
       {error ? <p className="resource-detail-muted">{error}</p> : null}
       <div className="inspector-fields">
         <label>{zh ? "名称" : "Name"}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
-        <label>{zh ? "命令" : "Command"}<input value={command} onChange={(event) => setCommand(event.target.value)} /></label>
-        <label>{zh ? "参数" : "Args"}<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-everything" /></label>
-        <label>{zh ? "环境映射" : "Environment bindings"}<textarea value={envNames} onChange={(event) => setEnvNames(event.target.value)} placeholder={zh ? "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY" : "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY"} rows={3} /></label>
+        <label>{zh ? "传输方式" : "Transport"}<select aria-label={zh ? "传输方式" : "Transport"} value={transport} onChange={(event) => setTransport(event.target.value as "stdio" | "streamable_http")}><option value="stdio">stdio</option><option value="streamable_http">Streamable HTTP</option></select></label>
+        {transport === "stdio" ? <><label>{zh ? "命令" : "Command"}<input value={command} onChange={(event) => setCommand(event.target.value)} /></label><label>{zh ? "参数" : "Args"}<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-everything" /></label><label>{zh ? "环境映射" : "Environment bindings"}<textarea value={envNames} onChange={(event) => setEnvNames(event.target.value)} placeholder={zh ? "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY" : "GITHUB_TOKEN=github.main\nAPI_KEY=MY_API_KEY"} rows={3} /></label></> : <><label>{zh ? "MCP Endpoint URL" : "MCP endpoint URL"}<input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com/mcp" /></label><label>{zh ? "HTTP Header 模板" : "HTTP header templates"}<textarea value={headers} onChange={(event) => setHeaders(event.target.value)} placeholder={zh ? "Authorization=Bearer ${MCP_TOKEN}" : "Authorization=Bearer ${MCP_TOKEN}"} rows={3} /></label></>}
         <div className="button-row"><Button onClick={() => void create()} disabled={savingServer || (!editingServerId && !api.createMcpServer) || Boolean(editingServerId && !api.updateMcpServer)}>{savingServer ? "…" : editingServerId ? (zh ? "更新服务器" : "Update server") : (zh ? "保存服务器" : "Save server")}</Button>{editingServerId ? <Button variant="ghost" onClick={cancelEdit} disabled={savingServer}>{zh ? "取消编辑" : "Cancel edit"}</Button> : null}</div>
       </div>
       {api.importMcpServers ? <div className="resource-detail-block">
@@ -603,7 +632,7 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
       </div> : null}
       {servers.map((server) => (
         <div className="resource-row" key={server.server_id}>
-          <span className="row-copy"><strong>{server.name}</strong><small>{server.command} {server.args.join(" ")}{Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}</small></span>
+          <span className="row-copy"><strong>{server.name}</strong><small>{(server.transport ?? "stdio") === "stdio" ? `${server.command} ${server.args.join(" ")}${Object.keys(server.env_names).length ? ` · env: ${Object.keys(server.env_names).join(", ")}` : ""}` : `${server.url ?? "HTTP endpoint missing"}${Object.keys(server.headers ?? {}).length ? ` · headers: ${Object.keys(server.headers ?? {}).join(", ")}` : ""}`}</small></span>
           <StatusBadge label={server.enabled ? (zh ? "已启用" : "Enabled") : (zh ? "已停用" : "Disabled")} tone={server.enabled ? "good" : "neutral"} />
           {serverReadiness[server.server_id] ? <StatusBadge label={serverReadiness[server.server_id].ready ? (zh ? "配置可用" : "Config ready") : (zh ? "配置问题" : "Config issue")} tone={serverReadiness[server.server_id].ready ? "good" : "warn"} /> : null}
           <Button size="sm" variant="ghost" disabled={savingServer || busyServerId === server.server_id} onClick={() => edit(server)}><Pencil size={14} aria-hidden="true" />{zh ? "编辑" : "Edit"}</Button>

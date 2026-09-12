@@ -2,7 +2,12 @@
 
 from .service import McpError, McpService
 from .store import McpServerStore
-from .transport import McpTransport, ScriptedMcpTransport, StdioMcpTransport
+from .transport import (
+    McpTransport,
+    ScriptedMcpTransport,
+    StdioMcpTransport,
+    StreamableHttpMcpTransport,
+)
 
 __all__ = [
     "McpError",
@@ -11,4 +16,5 @@ __all__ = [
     "McpTransport",
     "ScriptedMcpTransport",
     "StdioMcpTransport",
+    "StreamableHttpMcpTransport",
 ]

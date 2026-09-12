@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 
 from .api.factory import build_router as build_factory_router
@@ -74,6 +75,7 @@ def create_app(
     runtime_transport: RuntimeModelTransport | None = None,
     runtime_settings: RuntimeSettings | None = None,
     mcp_transport_factory: TransportFactory | None = None,
+    mcp_http_client: httpx.Client | None = None,
     tool_adapters: Mapping[str, ToolAdapter] | None = None,
     secret_store: SecretStore | None = None,
 ) -> FastAPI:
@@ -135,6 +137,7 @@ def create_app(
             catalog,
             mcp_transport_factory,
             secret_store=application.state.secrets,
+            http_client=mcp_http_client,
         )
         application.state.mcp = mcp
         application.state.workshop = ResourceWorkshop(overlay_root, catalog)

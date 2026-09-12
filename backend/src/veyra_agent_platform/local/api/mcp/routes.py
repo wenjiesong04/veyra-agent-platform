@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -21,9 +21,12 @@ class _ClosedModel(BaseModel):
 
 class CreateMcpServerRequest(_ClosedModel):
     name: str = Field(min_length=1, max_length=64)
-    command: str = Field(min_length=1, max_length=512)
+    command: str | None = Field(default=None, max_length=512)
     args: list[str] = Field(default_factory=list)
     env_names: dict[str, str] = Field(default_factory=dict)
+    transport: Literal["stdio", "streamable_http"] = "stdio"
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -33,9 +36,12 @@ class ImportMcpServersRequest(_ClosedModel):
 
 class UpdateMcpServerRequest(_ClosedModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
-    command: str | None = Field(default=None, min_length=1, max_length=512)
+    command: str | None = Field(default=None, max_length=512)
     args: list[str] | None = None
     env_names: dict[str, str] | None = None
+    transport: Literal["stdio", "streamable_http"] | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
     enabled: bool | None = None
 
     @model_validator(mode="after")
@@ -62,6 +68,9 @@ def build_router() -> APIRouter:
                 command=payload.command,
                 args=payload.args,
                 env_names=payload.env_names,
+                transport=payload.transport,
+                url=payload.url,
+                headers=payload.headers,
                 enabled=payload.enabled,
             )
         )
@@ -105,6 +114,9 @@ def build_router() -> APIRouter:
                 command=payload.command,
                 args=payload.args,
                 env_names=payload.env_names,
+                transport=payload.transport,
+                url=payload.url,
+                headers=payload.headers,
                 enabled=payload.enabled,
             )
         )

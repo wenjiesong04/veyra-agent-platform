@@ -1118,6 +1118,10 @@ function approvedResourceDraft(value: unknown, status = 502): { schema_version: 
 
 function mcpServer(value: unknown, status = 502): McpServer {
   const record = asRecord(value, status);
+  const transport = record.transport === undefined ? "stdio" : asString(record.transport, "mcp.transport", status);
+  if (transport !== "stdio" && transport !== "streamable_http") {
+    throw new LocalApiClientError("The local service returned an invalid MCP transport.", { status, code: "invalid_response" });
+  }
   return {
     server_id: asString(record.server_id, "mcp.server_id", status),
     name: asString(record.name, "mcp.name", status),
@@ -1125,6 +1129,11 @@ function mcpServer(value: unknown, status = 502): McpServer {
     args: asArray(record.args, "mcp.args", status).map((item) => asString(item, "mcp.args", status)),
     env_names: Object.fromEntries(
       Object.entries(asRecord(record.env_names, status)).map(([key, item]) => [key, asString(item, "mcp.env_names", status)]),
+    ),
+    transport,
+    url: record.url === undefined || record.url === null ? null : asString(record.url, "mcp.url", status),
+    headers: Object.fromEntries(
+      Object.entries(record.headers === undefined ? {} : asRecord(record.headers, status)).map(([key, item]) => [key, asString(item, "mcp.headers", status)]),
     ),
     enabled: asBoolean(record.enabled, "mcp.enabled", status),
     created_at: asString(record.created_at, "mcp.created_at", status),

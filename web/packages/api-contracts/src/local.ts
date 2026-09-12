@@ -1036,6 +1036,9 @@ export type McpServer = {
   command: string;
   args: string[];
   env_names: Record<string, string>;
+  transport: "stdio" | "streamable_http";
+  url: string | null;
+  headers: Record<string, string>;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -1056,9 +1059,12 @@ export type ListMcpServersResponse = {
 
 export type CreateMcpServerRequest = {
   name: string;
-  command: string;
+  command?: string;
   args?: string[];
   env_names?: Record<string, string>;
+  transport?: "stdio" | "streamable_http";
+  url?: string | null;
+  headers?: Record<string, string>;
   enabled?: boolean;
 };
 
@@ -1076,6 +1082,9 @@ export type UpdateMcpServerRequest = {
   command?: string;
   args?: string[];
   env_names?: Record<string, string>;
+  transport?: "stdio" | "streamable_http";
+  url?: string | null;
+  headers?: Record<string, string>;
   enabled?: boolean;
 };
 

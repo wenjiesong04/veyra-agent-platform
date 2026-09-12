@@ -10,19 +10,26 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 import yaml  # type: ignore[import-untyped]
 
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.resources.registry import NodePackageError
-from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
+from veyra_agent_platform.local.secrets import (
+    SecretStore,
+    resolve_secret,
+    secret_environment_name,
+)
 
 from .store import McpServerStore
 from .transport import (
     McpTransport,
     McpTransportError,
     StdioMcpTransport,
+    StreamableHttpMcpTransport,
     TransportFactory,
 )
 
@@ -31,6 +38,11 @@ _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _SECRET_REF = re.compile(r"^[a-z][a-z0-9_-]{0,63}\.[a-z][a-z0-9_.-]{0,127}$")
 _TOOL_SLUG = re.compile(r"[^a-z0-9]+")
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+_HEADER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,127}$")
+_HEADER_PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]{0,127})\}")
+_TRANSPORTS = {"stdio", "streamable_http"}
+_RESERVED_HEADERS = {"accept", "content-type", "mcp-protocol-version", "mcp-session-id"}
+_SENSITIVE_HEADERS = ("authorization", "token", "key", "secret", "credential")
 
 
 class McpError(ValueError):
@@ -49,12 +61,14 @@ class McpService:
         catalog: ResourceCatalog,
         transport_factory: TransportFactory | None = None,
         secret_store: SecretStore | None = None,
+        http_client: httpx.Client | None = None,
     ) -> None:
         self.store = store
         self.overlay_root = overlay_root
         self.catalog = catalog
         self._transport_factory = transport_factory or _stdio_factory
         self._secret_store = secret_store
+        self._http_client = http_client
 
     def list_servers(self) -> dict[str, Any]:
         return {
@@ -66,19 +80,32 @@ class McpService:
         self,
         *,
         name: str,
-        command: str,
+        command: str | None = None,
         args: list[str] | None = None,
         env_names: dict[str, str] | None = None,
+        transport: str = "stdio",
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        clean_name, clean_command, clean_args, clean_env, clean_enabled = (
-            _validated_server_config(
-                name=name,
-                command=command,
-                args=args or [],
-                env_names=env_names or {},
-                enabled=enabled,
-            )
+        (
+            clean_name,
+            clean_command,
+            clean_args,
+            clean_env,
+            clean_transport,
+            clean_url,
+            clean_headers,
+            clean_enabled,
+        ) = _validated_server_config(
+            name=name,
+            command=command,
+            args=args or [],
+            env_names=env_names or {},
+            transport=transport,
+            url=url,
+            headers=headers or {},
+            enabled=enabled,
         )
         server_id = new_uuid7()
         now = _now()
@@ -90,6 +117,9 @@ class McpService:
                 command=clean_command,
                 args=clean_args,
                 env_names=clean_env,
+                transport=clean_transport,
+                url=clean_url,
+                header_templates=clean_headers,
                 enabled=clean_enabled,
                 created_at=now,
             )
@@ -113,6 +143,9 @@ class McpService:
                 command=config.get("command"),
                 args=config.get("args") or [],
                 env_names=config.get("env_names") or {},
+                transport=config.get("transport", "stdio"),
+                url=config.get("url"),
+                headers=config.get("headers") or {},
                 enabled=config.get("enabled", True),
             )
             for config in configs
@@ -125,9 +158,16 @@ class McpService:
         now = _now()
         server_ids = [new_uuid7() for _ in prepared]
         with self.store.transaction() as connection:
-            for server_id, (name, command, args, env_names, enabled) in zip(
-                server_ids, prepared, strict=True
-            ):
+            for server_id, (
+                name,
+                command,
+                args,
+                env_names,
+                transport,
+                url,
+                headers,
+                enabled,
+            ) in zip(server_ids, prepared, strict=True):
                 self.store.create(
                     connection,
                     server_id=server_id,
@@ -135,6 +175,9 @@ class McpService:
                     command=command,
                     args=args,
                     env_names=env_names,
+                    transport=transport,
+                    url=url,
+                    header_templates=headers,
                     enabled=enabled,
                     created_at=now,
                 )
@@ -178,6 +221,9 @@ class McpService:
         command: str | None = None,
         args: list[str] | None = None,
         env_names: dict[str, str] | None = None,
+        transport: str | None = None,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
         enabled: bool | None = None,
     ) -> dict[str, Any]:
         """Edit one MCP configuration and invalidate stale discovery metadata."""
@@ -193,16 +239,45 @@ class McpService:
             )
         old_args = list(json.loads(current["args_json"]))
         old_env = dict(json.loads(current["env_names_json"]))
-        clean_command = _command(command if command is not None else current["command"])
-        clean_args = _args(args if args is not None else old_args)
-        clean_env = _env_names(env_names if env_names is not None else old_env)
-        clean_enabled = bool(current["enabled"]) if enabled is None else enabled
+        old_transport = str(current["transport"] or "stdio")
+        old_url = current["url"]
+        old_headers = dict(json.loads(current["header_templates_json"]))
+        requested_transport = transport if transport is not None else old_transport
+        same_transport = requested_transport == old_transport
+        (
+            clean_name,
+            clean_command,
+            clean_args,
+            clean_env,
+            clean_transport,
+            clean_url,
+            clean_headers,
+            clean_enabled,
+        ) = _validated_server_config(
+            name=clean_name,
+            command=command
+            if command is not None
+            else (current["command"] if same_transport else None),
+            args=args if args is not None else (old_args if same_transport else []),
+            env_names=env_names
+            if env_names is not None
+            else (old_env if same_transport else {}),
+            transport=requested_transport,
+            url=url if url is not None else (old_url if same_transport else None),
+            headers=headers
+            if headers is not None
+            else (old_headers if same_transport else {}),
+            enabled=bool(current["enabled"]) if enabled is None else enabled,
+        )
         row = self.store.update(
             server_id,
             name=clean_name,
             command=clean_command,
             args=clean_args,
             env_names=clean_env,
+            transport=clean_transport,
+            url=clean_url,
+            header_templates=clean_headers,
             enabled=clean_enabled,
             updated_at=_now(),
         )
@@ -213,6 +288,9 @@ class McpService:
             or clean_command != current["command"]
             or clean_args != old_args
             or clean_env != old_env
+            or clean_transport != old_transport
+            or clean_url != old_url
+            or clean_headers != old_headers
         ):
             self._clear_discovered(server_id)
             self.catalog.reload_overlays()
@@ -284,8 +362,11 @@ class McpService:
         except McpTransportError as exc:
             raise McpError(exc.code, str(exc)) from exc
         written: list[dict[str, Any]] = []
+        network_hosts = self._network_hosts(row)
         for tool in tools:
-            descriptor = self._write_discovered(row["server_id"], row["name"], tool)
+            descriptor = self._write_discovered(
+                row["server_id"], row["name"], tool, network_hosts=network_hosts
+            )
             if descriptor is not None:
                 written.append(descriptor)
         try:
@@ -326,19 +407,39 @@ class McpService:
                 "code": "mcp_server_disabled",
                 "detail": "MCP server is disabled",
             }
-        env_names = json.loads(row["env_names_json"])
-        for binding in env_names.values():
-            secret_ref = binding if _SECRET_REF.fullmatch(binding) else ""
-            value = resolve_secret(
-                self._secret_store if secret_ref else None,
-                secret_ref,
-                binding,
-            )
-            if not value:
+        transport = str(row["transport"] or "stdio")
+        if transport == "streamable_http":
+            if not isinstance(row["url"], str) or not row["url"].strip():
                 return {
                     "ready": False,
-                    "code": "mcp_env_missing",
-                    "detail": "MCP server environment binding is not configured",
+                    "code": "mcp_url_missing",
+                    "detail": "MCP HTTP transport requires an endpoint URL",
+                }
+            try:
+                _url(row["url"])
+                self._resolve_headers(json.loads(row["header_templates_json"]))
+            except McpError as exc:
+                return {"ready": False, "code": exc.code, "detail": str(exc)}
+            return {
+                "ready": True,
+                "code": "ready",
+                "detail": "MCP HTTP endpoint and header bindings are configured",
+            }
+        if transport != "stdio":
+            return {
+                "ready": False,
+                "code": "mcp_transport_invalid",
+                "detail": "MCP transport is not supported",
+            }
+        env_names = json.loads(row["env_names_json"])
+        for binding in env_names.values():
+            try:
+                self._resolve_binding(binding, "mcp_env_missing")
+            except McpError as exc:
+                return {
+                    "ready": False,
+                    "code": exc.code,
+                    "detail": str(exc),
                 }
         return {
             "ready": True,
@@ -355,26 +456,83 @@ class McpService:
         return row
 
     def _transport(self, row: Any) -> McpTransport:
+        transport = str(row["transport"] or "stdio")
+        if transport == "streamable_http":
+            url = row["url"]
+            if not isinstance(url, str) or not url.strip():
+                raise McpError(
+                    "mcp_url_missing", "MCP HTTP transport requires an endpoint URL"
+                )
+            endpoint = _url(url)
+            headers = self._resolve_headers(json.loads(row["header_templates_json"]))
+            return StreamableHttpMcpTransport(
+                endpoint, headers, http_client=self._http_client
+            )
+        if transport != "stdio":
+            raise McpError("mcp_transport_invalid", "MCP transport is not supported")
         env_names = dict(json.loads(row["env_names_json"]))
         env: dict[str, str] = {}
         for mcp_key, binding in env_names.items():
-            secret_ref = binding if _SECRET_REF.fullmatch(binding) else ""
-            value = resolve_secret(
-                self._secret_store if secret_ref else None,
-                secret_ref,
-                binding,
-            )
-            if not value:
-                raise McpError(
-                    "mcp_env_missing",
-                    f"MCP binding {binding} is not configured",
-                )
-            env[mcp_key] = value
+            env[mcp_key] = self._resolve_binding(binding, "mcp_env_missing")
         args = list(json.loads(row["args_json"]))
         return self._transport_factory(row["command"], args, env)
 
+    def _resolve_binding(self, binding: Any, code: str) -> str:
+        if not isinstance(binding, str):
+            raise McpError(code, "MCP host binding is not configured")
+        secret_ref = binding if _SECRET_REF.fullmatch(binding) else ""
+        env_name = secret_environment_name(binding) if secret_ref else binding
+        value = resolve_secret(
+            self._secret_store if secret_ref else None,
+            secret_ref,
+            env_name,
+        )
+        if not value:
+            raise McpError(code, "MCP host binding is not configured")
+        return value
+
+    def _resolve_headers(self, templates: Any) -> dict[str, str]:
+        if not isinstance(templates, dict):
+            raise McpError("mcp_header_invalid", "MCP HTTP headers are invalid")
+        resolved: dict[str, str] = {}
+        for name, template in templates.items():
+            if not isinstance(name, str) or not isinstance(template, str):
+                raise McpError("mcp_header_invalid", "MCP HTTP headers are invalid")
+            if _HEADER_PLACEHOLDER.search(template):
+                resolved[name] = _HEADER_PLACEHOLDER.sub(
+                    lambda match: self._resolve_binding(
+                        match.group(1), "mcp_header_missing"
+                    ),
+                    template,
+                )
+            elif _ENV_NAME.fullmatch(template) or _SECRET_REF.fullmatch(template):
+                resolved[name] = self._resolve_binding(template, "mcp_header_missing")
+            else:
+                resolved[name] = template
+        return resolved
+
+    @staticmethod
+    def _network_hosts(row: Any) -> list[str]:
+        if str(row["transport"] or "stdio") != "streamable_http":
+            return []
+        url = row["url"]
+        if not isinstance(url, str):
+            raise McpError(
+                "mcp_url_missing", "MCP HTTP transport requires an endpoint URL"
+            )
+        endpoint = _url(url)
+        hostname = urlsplit(endpoint).hostname
+        if not hostname:
+            raise McpError("mcp_url_invalid", "MCP HTTP endpoint URL is invalid")
+        return [hostname.lower()]
+
     def _write_discovered(
-        self, server_id: str, server_name: str, tool: dict[str, Any]
+        self,
+        server_id: str,
+        server_name: str,
+        tool: dict[str, Any],
+        *,
+        network_hosts: list[str] | None = None,
     ) -> dict[str, str] | None:
         name = tool.get("name")
         if not isinstance(name, str) or not name.strip():
@@ -397,7 +555,7 @@ class McpService:
             "factory_selectable": False,
             "runtime_status": "supported",
             "required_permissions": {
-                "network_hosts": [],
+                "network_hosts": list(network_hosts or []),
                 "tools": [resource_id],
                 "filesystem_read_roots": [],
                 "filesystem_write_roots": [],
@@ -474,26 +632,59 @@ def _validated_server_config(
     command: Any,
     args: Any,
     env_names: Any,
+    transport: Any,
+    url: Any,
+    headers: Any,
     enabled: Any,
-) -> tuple[str, str, list[str], dict[str, str], bool]:
+) -> tuple[str, str, list[str], dict[str, str], str, str | None, dict[str, str], bool]:
     if not isinstance(name, str):
         raise McpError("mcp_name_invalid", "MCP server name is required")
     clean_name = _text(name, "mcp_name_invalid", "MCP server name is required")
     if _NAME.fullmatch(clean_name) is None:
         raise McpError("mcp_name_invalid", "MCP server name is not a safe identifier")
-    if not isinstance(command, str):
-        raise McpError("mcp_command_invalid", "MCP command is required")
+    if not isinstance(transport, str) or transport not in _TRANSPORTS:
+        raise McpError("mcp_transport_invalid", "MCP transport is not supported")
     if not isinstance(args, list):
         raise McpError("mcp_args_invalid", "MCP args must be a list of strings")
     if not isinstance(env_names, dict):
         raise McpError("mcp_env_invalid", "MCP environment bindings must be an object")
+    if not isinstance(headers, dict):
+        raise McpError("mcp_header_invalid", "MCP HTTP headers must be an object")
     if not isinstance(enabled, bool):
         raise McpError("mcp_enabled_invalid", "MCP enabled must be a boolean")
+    if transport == "stdio":
+        if not isinstance(command, str):
+            raise McpError("mcp_command_invalid", "MCP command is required")
+        if url is not None or headers:
+            raise McpError(
+                "mcp_transport_invalid",
+                "stdio MCP servers cannot define an HTTP URL or headers",
+            )
+        return (
+            clean_name,
+            _command(command),
+            _args(args),
+            _env_names(env_names),
+            transport,
+            None,
+            {},
+            enabled,
+        )
+    if command not in {None, ""} or args or env_names:
+        raise McpError(
+            "mcp_transport_invalid",
+            "HTTP MCP servers cannot define a subprocess command or environment",
+        )
+    if not isinstance(url, str):
+        raise McpError("mcp_url_missing", "MCP HTTP transport requires an endpoint URL")
     return (
         clean_name,
-        _command(command),
-        _args(args),
-        _env_names(env_names),
+        "",
+        [],
+        {},
+        transport,
+        _url(url),
+        _header_templates(headers),
         enabled,
     )
 
@@ -529,6 +720,76 @@ def _env_names(values: dict[str, str]) -> dict[str, str]:
                 "references",
             )
         parsed[key] = host_name
+    return parsed
+
+
+def _url(value: str) -> str:
+    url = value.strip()
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise McpError("mcp_url_invalid", "MCP HTTP endpoint URL is invalid") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise McpError(
+            "mcp_url_invalid",
+            "MCP HTTP endpoint must be an http(s) URL without embedded credentials",
+        )
+    if parsed.scheme == "http" and hostname.lower() not in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }:
+        raise McpError(
+            "mcp_url_invalid",
+            "Remote MCP endpoints must use HTTPS",
+        )
+    return url
+
+
+def _header_templates(values: dict[str, str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for name, template in values.items():
+        if (
+            not isinstance(name, str)
+            or _HEADER_NAME.fullmatch(name) is None
+            or name.lower() in _RESERVED_HEADERS
+            or not isinstance(template, str)
+            or not template.strip()
+            or len(template) > 2_000
+            or "\r" in template
+            or "\n" in template
+        ):
+            raise McpError("mcp_header_invalid", "MCP HTTP header binding is invalid")
+        placeholders = list(_HEADER_PLACEHOLDER.finditer(template))
+        remainder = _HEADER_PLACEHOLDER.sub("", template).strip()
+        if "${" in template and len(placeholders) == 0:
+            raise McpError(
+                "mcp_header_invalid",
+                "MCP HTTP header references must use uppercase environment "
+                "placeholders",
+            )
+        if (
+            any(part in name.lower() for part in _SENSITIVE_HEADERS)
+            and not placeholders
+            and not (
+                _ENV_NAME.fullmatch(template.strip())
+                or _SECRET_REF.fullmatch(template.strip())
+            )
+        ):
+            raise McpError(
+                "mcp_header_invalid",
+                "Sensitive MCP headers must use an environment or secret reference",
+            )
+        if placeholders and not remainder and not template.strip().startswith("${"):
+            raise McpError("mcp_header_invalid", "MCP HTTP header binding is invalid")
+        parsed[name] = template.strip()
     return parsed
 
 
