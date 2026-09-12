@@ -1,4 +1,4 @@
-import { BookOpen, Bot, Box, ChevronDown, ChevronRight, FileText, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, Box, ChevronDown, ChevronRight, FileArchive, FileText, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { ProjectAgentRecord, ProjectKnowledgeRecord, ProjectWorkflowRecord } from "@veyra/api-contracts";
 import type { NavigationGroup, NavigationItem } from "@veyra/ui";
@@ -292,9 +292,9 @@ function ResourceActionsPopover({ labels, onPin, onEdit, onDelete }: { labels: {
 
 function AgentChooserPopover({ project, zh, onChoose }: { project: ProjectSummaryResponse; zh: boolean; onChoose: (project: ProjectSummaryResponse, mode: AgentCreateMode) => void }) {
   const options = zh ? [
-    { mode: "blank" as const, icon: Plus, title: "创建空白 Agent", detail: "从空白定义开始" }, { mode: "template" as const, icon: Box, title: "从模板导入 Agent", detail: "选择已注册的模板" }, { mode: "file" as const, icon: FileUp, title: "导入 Agent 文件", detail: "导入 .vagent.yaml 文件" },
+    { mode: "blank" as const, icon: Plus, title: "创建空白 Agent", detail: "从空白定义开始" }, { mode: "template" as const, icon: Box, title: "从模板导入 Agent", detail: "选择已注册的模板" }, { mode: "file" as const, icon: FileUp, title: "导入 Agent 文件", detail: "导入 .vagent.yaml 文件" }, { mode: "external" as const, icon: FileArchive, title: "导入外部 Agent", detail: "分析 YAML、文件夹或 ZIP" },
   ] : [
-    { mode: "blank" as const, icon: Plus, title: "Create blank Agent", detail: "Start from an empty definition" }, { mode: "template" as const, icon: Box, title: "Import Agent from template", detail: "Choose a registered template" }, { mode: "file" as const, icon: FileUp, title: "Import Agent file", detail: "Import a .vagent.yaml file" },
+    { mode: "blank" as const, icon: Plus, title: "Create blank Agent", detail: "Start from an empty definition" }, { mode: "template" as const, icon: Box, title: "Import Agent from template", detail: "Choose a registered template" }, { mode: "file" as const, icon: FileUp, title: "Import Agent file", detail: "Import a .vagent.yaml file" }, { mode: "external" as const, icon: FileArchive, title: "Import external Agent", detail: "Analyze YAML, folder, or ZIP" },
   ];
   return <div className="sidebar-action-menu" role="menu" aria-label={zh ? `添加 Agent：${project.name}` : `Add Agent: ${project.name}`}>{options.map(({ mode, icon: Icon, title, detail }) => <SidebarMenuItem key={mode} icon={Icon} title={title} detail={detail} onClick={() => onChoose(project, mode)} />)}</div>;
 }

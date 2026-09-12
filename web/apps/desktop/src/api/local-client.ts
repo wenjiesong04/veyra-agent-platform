@@ -2,6 +2,9 @@ import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersio
 import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
+  type AgentImportApplyRequest,
+  type AgentImportApplyResponse,
+  type AgentImportRecord,
   type AgentRunResponse,
   type AgentConversation,
   type AgentConversationSummary,
@@ -166,6 +169,10 @@ export type LocalProjectApi = {
   updateKnowledge?(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
   deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; community_origin?: CommunityAgentOrigin }): Promise<CreatedAgentResponse>;
+  analyzeAgentImport?(file: File): Promise<AgentImportRecord>;
+  analyzeAgentImportFolder?(path: string): Promise<AgentImportRecord>;
+  getAgentImport?(importId: string): Promise<AgentImportRecord>;
+  applyAgentImport?(importId: string, input: AgentImportApplyRequest): Promise<AgentImportApplyResponse>;
   importProject?(file: File): Promise<ProjectSummaryResponse>;
   importProjectFromPath?(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse>;
   listProjectResources?(projectId: string): Promise<ProjectResourcesResponse>;
@@ -1223,6 +1230,94 @@ function pluginPackResponse(value: unknown, status = 502): PluginPackResponse {
   return { schema_version: LOCAL_API_SCHEMA_VERSION, plugin: pluginPack(record.plugin, status) };
 }
 
+const agentImportStates = new Set<AgentImportRecord["state"]>(["analyzed", "applied"]);
+const agentImportKinds = new Set<AgentImportRecord["source_kind"]>(["yaml", "zip", "folder"]);
+const agentImportFormats = new Set<AgentImportRecord["detected_format"]>(["generic_yaml", "veyra_agent_yaml"]);
+const agentImportCapabilityStates = new Set<AgentImportRecord["capabilities"][number]["status"]>(["supported", "partial", "unsupported"]);
+
+function agentImportCapability(value: unknown, status = 502): AgentImportRecord["capabilities"][number] {
+  const record = asRecord(value, status);
+  const capabilityStatus = asString(record.status, "agent_import.capability.status", status) as AgentImportRecord["capabilities"][number]["status"];
+  if (!agentImportCapabilityStates.has(capabilityStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent Import capability.", { status, code: "invalid_response" });
+  }
+  return {
+    kind: asString(record.kind, "agent_import.capability.kind", status),
+    original: asString(record.original, "agent_import.capability.original", status),
+    status: capabilityStatus,
+    reason: asText(record.reason, "agent_import.capability.reason", status),
+    ...(record.reference === undefined ? {} : { reference: asString(record.reference, "agent_import.capability.reference", status) }),
+    ...(record.included === undefined ? {} : { included: asBoolean(record.included, "agent_import.capability.included", status) }),
+  };
+}
+
+function agentImportWarning(value: unknown, status = 502): AgentImportRecord["warnings"][number] {
+  const record = asRecord(value, status);
+  return {
+    code: asString(record.code, "agent_import.warning.code", status),
+    message: asText(record.message, "agent_import.warning.message", status),
+    ...(record.path === undefined ? {} : { path: asString(record.path, "agent_import.warning.path", status) }),
+  };
+}
+
+function agentImportPreview(value: unknown, status = 502): AgentImportRecord["preview"] {
+  const record = asRecord(value, status);
+  return {
+    name: asString(record.name, "agent_import.preview.name", status),
+    description: asText(record.description, "agent_import.preview.description", status),
+    instructions: asText(record.instructions, "agent_import.preview.instructions", status),
+    model: Object.fromEntries(Object.entries(asRecord(record.model, status)).map(([key, item]) => [key, asString(item, `agent_import.preview.model.${key}`, status)])),
+    inputs: Object.fromEntries(Object.entries(asRecord(record.inputs, status)).map(([key, item]) => [key, asString(item, `agent_import.preview.inputs.${key}`, status)])),
+    outputs: Object.fromEntries(Object.entries(asRecord(record.outputs, status)).map(([key, item]) => [key, asString(item, `agent_import.preview.outputs.${key}`, status)])),
+    tools: asArray(record.tools, "agent_import.preview.tools", status).map((item) => asString(item, "agent_import.preview.tools", status)),
+    skills: asArray(record.skills, "agent_import.preview.skills", status).map((item) => asString(item, "agent_import.preview.skills", status)),
+    knowledge_files: asArray(record.knowledge_files, "agent_import.preview.knowledge_files", status).map((item) => asString(item, "agent_import.preview.knowledge_files", status)),
+    workflow_present: asBoolean(record.workflow_present, "agent_import.preview.workflow_present", status),
+    ...(record.source_path === undefined ? {} : { source_path: asString(record.source_path, "agent_import.preview.source_path", status) }),
+  };
+}
+
+function agentImportRecord(value: unknown, status = 502): AgentImportRecord {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible Agent Import schema.", { status, code: "schema_mismatch" });
+  }
+  const state = asString(record.state, "agent_import.state", status) as AgentImportRecord["state"];
+  const sourceKind = asString(record.source_kind, "agent_import.source_kind", status) as AgentImportRecord["source_kind"];
+  const detectedFormat = asString(record.detected_format, "agent_import.detected_format", status) as AgentImportRecord["detected_format"];
+  if (!agentImportStates.has(state) || !agentImportKinds.has(sourceKind) || !agentImportFormats.has(detectedFormat)) {
+    throw new LocalApiClientError("The local service returned an invalid Agent Import state.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: "agent.import.v1",
+    import_id: asString(record.import_id, "agent_import.import_id", status),
+    state,
+    source_kind: sourceKind,
+    source_name: asString(record.source_name, "agent_import.source_name", status),
+    source_path: asString(record.source_path, "agent_import.source_path", status),
+    detected_format: detectedFormat,
+    compatibility: asNumber(record.compatibility, "agent_import.compatibility", status),
+    preview: agentImportPreview(record.preview, status),
+    capabilities: asArray(record.capabilities, "agent_import.capabilities", status).map((item) => agentImportCapability(item, status)),
+    warnings: asArray(record.warnings, "agent_import.warnings", status).map((item) => agentImportWarning(item, status)),
+    generated_source: source(record.generated_source, status),
+    manifest: asRecord(record.manifest, status) as AgentImportRecord["manifest"],
+    ...(record.applied_agent === undefined ? {} : { applied_agent: createdAgent(record.applied_agent, status) }),
+  };
+}
+
+function agentImportApplyResponse(value: unknown, status = 502): AgentImportApplyResponse {
+  const record = asRecord(value, status);
+  if (record.schema_version !== "agent.import.v1") {
+    throw new LocalApiClientError("The local service returned an incompatible Agent Import schema.", { status, code: "schema_mismatch" });
+  }
+  return {
+    schema_version: "agent.import.v1",
+    import: agentImportRecord(record.import, status),
+    agent: createdAgent(record.agent, status),
+  };
+}
+
 function mcpServer(value: unknown, status = 502): McpServer {
   const record = asRecord(value, status);
   const transport = record.transport === undefined ? "stdio" : asString(record.transport, "mcp.transport", status);
@@ -2006,6 +2101,26 @@ export class LocalApiClient {
       method: "POST",
       formData,
     });
+  }
+
+  analyzeAgentImport(file: File): Promise<AgentImportRecord> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request("agent-imports", agentImportRecord, { method: "POST", formData });
+  }
+
+  analyzeAgentImportFolder(path: string): Promise<AgentImportRecord> {
+    const formData = new FormData();
+    formData.append("path", path);
+    return this.request("agent-imports", agentImportRecord, { method: "POST", formData });
+  }
+
+  getAgentImport(importId: string): Promise<AgentImportRecord> {
+    return this.request(`agent-imports/${encodeURIComponent(importId)}`, agentImportRecord);
+  }
+
+  applyAgentImport(importId: string, input: AgentImportApplyRequest): Promise<AgentImportApplyResponse> {
+    return this.request(`agent-imports/${encodeURIComponent(importId)}/apply`, agentImportApplyResponse, { method: "POST", body: input });
   }
 
   importProject(file: File): Promise<ProjectSummaryResponse> {

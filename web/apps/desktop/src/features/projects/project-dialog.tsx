@@ -1,6 +1,6 @@
 import { Box, FileArchive, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
-import type { AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, RuntimeApiProfileInput, WorkflowSource } from "@veyra/api-contracts";
-import { Button, useLocale } from "@veyra/ui";
+import type { AgentImportRecord, AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, RuntimeApiProfileInput, WorkflowSource } from "@veyra/api-contracts";
+import { Button, StatusBadge, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LocalApiClientError } from "../../api/local-client";
@@ -8,7 +8,7 @@ import { useProjectWorkspace } from "../../api/project-workspace";
 import { RuntimeProfileFields, profileInput } from "./runtime-profile-fields";
 
 export type ProjectDialogMode = "create" | "open";
-export type AgentCreateMode = "blank" | "template" | "file";
+export type AgentCreateMode = "blank" | "template" | "file" | "external";
 
 function folderName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).at(-1) || path;
@@ -459,15 +459,17 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [externalImport, setExternalImport] = useState<AgentImportRecord | null>(null);
+  const [analyzingExternal, setAnalyzingExternal] = useState(false);
   const [loadingTemplates, setLoadingTemplates] = useState(mode === "template");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const copy = zh ? {
-    title: parentAgentId ? "创建子 Agent" : mode === "blank" ? "创建空白 Agent" : mode === "template" ? "从模板导入 Agent" : "导入 Agent 文件",
+    title: parentAgentId ? "创建子 Agent" : mode === "blank" ? "创建空白 Agent" : mode === "template" ? "从模板导入 Agent" : mode === "external" ? "导入外部 Agent" : "导入 Agent 文件",
     name: "Agent 名称（可选）", description: "描述（可选）", namePlaceholder: "留空使用默认名称", descriptionPlaceholder: "这个 Agent 要完成什么？", cancel: "取消", close: "关闭对话框", create: "创建 Agent", import: "导入 Agent", template: "选择模板", loading: "正在加载模板…", noTemplates: "尚无可用模板。", file: "选择 Agent 文件", drop: "拖放 .vagent.yaml、.yaml 或 .yml 文件到此处", selected: "已选择", fileRequired: "请选择一个 Agent 文件。", templateRequired: "请选择一个模板。", failed: "无法创建 Agent，请检查输入后重试。",
   } : {
-    title: parentAgentId ? "Create child Agent" : mode === "blank" ? "Create blank Agent" : mode === "template" ? "Import Agent from template" : "Import Agent file",
+    title: parentAgentId ? "Create child Agent" : mode === "blank" ? "Create blank Agent" : mode === "template" ? "Import Agent from template" : mode === "external" ? "Import external Agent" : "Import Agent file",
     name: "Agent name (optional)", description: "Description (optional)", namePlaceholder: "Leave blank for the default name", descriptionPlaceholder: "What should this Agent do?", cancel: "Cancel", close: "Close dialog", create: "Create Agent", import: "Import Agent", template: "Select a template", loading: "Loading templates…", noTemplates: "No registered templates are available.", file: "Choose Agent file", drop: "Drop a .vagent.yaml, .yaml, or .yml file here", selected: "Selected", fileRequired: "Choose an Agent file.", templateRequired: "Select a template.", failed: "The Agent could not be created. Check the input and try again.",
   };
 
@@ -492,16 +494,42 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
   const chooseFile = (nextFile: File | null) => {
     setError(null);
     if (!nextFile) return;
+    if (mode === "external") {
+      if (!/\.(yaml|yml|zip)$/i.test(nextFile.name)) {
+        setFile(null); setExternalImport(null); setError(zh ? "请选择 .yaml、.yml 或 .zip 文件。" : "Choose a .yaml, .yml, or .zip file."); return;
+      }
+      if (!api.analyzeAgentImport) {
+        setFile(null); setExternalImport(null); setError(zh ? "当前 sidecar 不支持外部 Agent 分析。" : "This sidecar does not support external Agent analysis."); return;
+      }
+      setFile(nextFile);
+      setAnalyzingExternal(true);
+      void api.analyzeAgentImport(nextFile).then((result) => { setExternalImport(result); }).catch((cause) => { setExternalImport(null); setError(cause instanceof Error ? cause.message : (zh ? "外部 Agent 分析失败。" : "External Agent analysis failed.")); }).finally(() => setAnalyzingExternal(false));
+      return;
+    }
     if (!/\.(vagent\.yaml|yaml|yml)$/i.test(nextFile.name)) {
       setFile(null); setError(zh ? "请选择 .vagent.yaml、.yaml 或 .yml 文件。" : "Choose a .vagent.yaml, .yaml, or .yml file."); return;
     }
     setFile(nextFile);
   };
 
+  const chooseExternalFolder = async () => {
+    if (mode !== "external" || !api.analyzeAgentImportFolder) return;
+    setAnalyzingExternal(true); setError(null); setFile(null); setExternalImport(null);
+    try {
+      const result = await api.selectDirectory();
+      if (result.status === "selected" && result.root_path) {
+        setExternalImport(await api.analyzeAgentImportFolder(result.root_path));
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : (zh ? "外部 Agent 文件夹分析失败。" : "External Agent folder analysis failed."));
+    } finally { setAnalyzingExternal(false); }
+  };
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (mode === "template" && !templateId) return setError(copy.templateRequired);
     if (mode === "file" && !file) return setError(copy.fileRequired);
+    if (mode === "external" && !externalImport) return setError(zh ? "请选择并分析一个 YAML、ZIP 或文件夹。" : "Choose and analyze a YAML, ZIP, or folder.");
     setSaving(true); setError(null);
     const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}), ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) };
     try {
@@ -516,6 +544,19 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
         agentId = imported.agent_id;
         if (runtimeProfile && api.setAgentRuntimeProfile) {
           await api.setAgentRuntimeProfile(project.project_id, imported.agent_id, runtimeProfile);
+        }
+      } else if (mode === "external") {
+        if (!api.applyAgentImport) throw new Error(zh ? "当前 sidecar 不支持外部 Agent 导入。" : "This sidecar does not support external Agent import.");
+        const applied = await api.applyAgentImport(externalImport!.import_id, {
+          project_id: project.project_id,
+          confirm: true,
+          ...(name.trim() ? { name: name.trim() } : {}),
+          ...(description.trim() ? { description: description.trim() } : {}),
+          ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
+        });
+        agentId = applied.agent.agent_id;
+        if (runtimeProfile && api.setAgentRuntimeProfile) {
+          await api.setAgentRuntimeProfile(project.project_id, agentId, runtimeProfile);
         }
       } else {
         const created = await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
@@ -539,10 +580,11 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
     <form className="project-form agent-create-form" onSubmit={(event) => void submit(event)}>
       {mode === "template" ? <label><span>{copy.template}</span><select aria-label={copy.template} value={templateId} onChange={(event) => setTemplateId(event.target.value)} disabled={loadingTemplates || saving}>{loadingTemplates ? <option>{copy.loading}</option> : templates.length ? templates.map((template) => <option key={template.template_id} value={template.template_id}>{template.name}</option>) : <option value="">{copy.noTemplates}</option>}</select>{templates.find((template) => template.template_id === templateId)?.description ? <small className="agent-template-detail">{templates.find((template) => template.template_id === templateId)?.description}</small> : null}</label> : null}
       {mode === "file" ? <label className={`agent-file-drop ${file ? "is-selected" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files.item(0)); }}><input type="file" aria-label={copy.file} accept=".vagent.yaml,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)} /><span className="agent-file-icon"><FileUp size={18} aria-hidden="true" /></span><strong>{file ? `${copy.selected}: ${file.name}` : copy.file}</strong><small>{copy.drop}</small></label> : null}
+      {mode === "external" ? <div className="agent-external-import"><label className={`agent-file-drop ${file ? "is-selected" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files.item(0)); }}><input type="file" aria-label={zh ? "选择外部 YAML 或 ZIP" : "Choose external YAML or ZIP"} accept=".yaml,.yml,.zip" onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)} /><span className="agent-file-icon"><FileArchive size={18} aria-hidden="true" /></span><strong>{file ? `${copy.selected}: ${file.name}` : (zh ? "选择 YAML 或 ZIP" : "Choose YAML or ZIP")}</strong><small>{zh ? "只分析并生成 Veyra 草稿，不执行外部代码。" : "Analyze and generate a Veyra draft; external code is never executed."}</small></label><Button type="button" size="sm" variant="secondary" icon={FolderOpen} onClick={() => void chooseExternalFolder()} disabled={saving || analyzingExternal || !api.analyzeAgentImportFolder}>{zh ? "选择 Agent 文件夹" : "Choose Agent folder"}</Button>{analyzingExternal ? <small className="agent-template-detail">{zh ? "正在分析导入内容…" : "Analyzing import…"}</small> : null}{externalImport ? <div className="agent-import-preview"><div><strong>{externalImport.preview.name}</strong><span>{externalImport.detected_format} · {Math.round(externalImport.compatibility * 100)}% {zh ? "可兼容" : "compatible"}</span></div><p>{externalImport.preview.description}</p><details><summary>{zh ? "查看兼容性报告" : "View compatibility report"}</summary><div className="agent-import-capabilities">{externalImport.capabilities.map((capability, index) => <div key={`${capability.kind}-${capability.original}-${index}`}><StatusBadge label={capability.status === "supported" ? (zh ? "支持" : "Supported") : capability.status === "partial" ? (zh ? "部分" : "Partial") : (zh ? "不支持" : "Unsupported")} tone={capability.status === "supported" ? "good" : capability.status === "partial" ? "warn" : "bad"} /><span><strong>{capability.original}</strong><small>{capability.reason}</small></span></div>)}</div>{externalImport.warnings.length ? <div className="agent-import-warnings">{externalImport.warnings.map((warning, index) => <small key={`${warning.code}-${index}`}>⚠ {warning.message}</small>)}</div> : null}</details></div> : null}</div> : null}
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" disabled={saving} /></label>
       <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} disabled={saving} /></label><RuntimeProfileFields value={runtimeProfile} onChange={setRuntimeProfile} locale={locale} api={api} />
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
-      <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button icon={mode === "blank" ? Plus : mode === "template" ? Box : FileUp} variant="primary" type="submit" disabled={saving || loadingTemplates || (mode === "template" && templates.length === 0)}>{saving ? "…" : mode === "blank" ? copy.create : copy.import}</Button></div>
+      <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button icon={mode === "blank" ? Plus : mode === "template" ? Box : mode === "external" ? FileArchive : FileUp} variant="primary" type="submit" disabled={saving || loadingTemplates || analyzingExternal || (mode === "template" && templates.length === 0) || (mode === "external" && !externalImport)}>{saving ? "…" : mode === "blank" ? copy.create : copy.import}</Button></div>
     </form>
   </Modal>;
 }

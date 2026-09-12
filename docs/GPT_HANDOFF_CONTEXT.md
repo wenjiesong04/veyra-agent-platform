@@ -455,6 +455,19 @@ WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；�
 
 Community 现在单独维护 Plugin Pack 身份和不可变版本，不复用 Agent 表。Desktop 的社区页可以发布、浏览、查看详情、切换版本、下载 `.vplugin.zip`，并支持“下载并导入本机”；页面会把社区版本与本机已安装版本按 plugin_id、版本和包哈希对比，标出未安装、可更新、已同步或本机版本较新。本机仍会重新进入 Plugin Pack 的 quarantine/activation 流程。Community 只保存包字节和不含 Skill 正文/凭据值的公开 manifest 摘要，不启动 MCP、不解释 Skill 指令。配置了 Community moderation 时，Plugin Pack 版本也会进入独立审核队列并留下 moderation receipt。
 
+### 已完成：External Agent Import V1
+
+外部 Agent 现在可以从单个 YAML、文件夹或 ZIP 进入同一条导入管线。ZIP 只作为
+传输层，先做 bounded 解包，再和文件夹走相同的 YAML detector/scanner。当前支持
+generic Agent YAML 的 name/description/instructions、model metadata、inputs、outputs、
+可映射的只读 Veyra Tool、已安装 Skill reference；不认识的 Tool、inline Skill、Knowledge
+文件、外部 workflow 和权限声明会保留在 Compatibility Report 中，不会静默删除或授权。
+导入过程分成 `POST /api/v1/agent-imports` 分析、`GET /api/v1/agent-imports/{id}` 预览、
+`POST /api/v1/agent-imports/{id}/apply` 明确应用三步。应用后会生成标准 Veyra Agent
+Source/Canvas 草稿，并在 Agent 目录内写入 `import/manifest.json`。外部代码不会执行，
+不会自动安装 requirements 或导入模型 Key；模型 API 仍在本机 Settings/Keychain 配置。
+桌面 Project/Agent 的添加菜单已提供“导入外部 Agent”，支持 YAML/ZIP 文件和本机文件夹。
+
 ### 下一波 C：发行与部署
 
 只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。

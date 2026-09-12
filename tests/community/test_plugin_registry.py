@@ -69,6 +69,11 @@ def test_plugin_registry_publishes_browses_and_downloads_immutable_pack(
     assert entry["skill_count"] == 1
     assert entry["mcp_count"] == 1
     assert entry["skills"][0]["reference"] == "veyra.skill.research-pack@1.0.0"
+    assert entry["license_scan"] == {
+        "status": "passed",
+        "code": "spdx_identifier",
+        "value": "MIT",
+    }
     assert "Separate claims" not in json.dumps(entry)
 
     listed = community.client.get("/api/v1/registry/plugins")

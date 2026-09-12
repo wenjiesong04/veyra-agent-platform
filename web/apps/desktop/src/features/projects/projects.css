@@ -56,6 +56,20 @@
 .agent-file-drop strong { color: var(--ink); font-size: 12px; }
 .agent-file-drop small { color: var(--subtle); font-size: 11px; text-align: center !important; }
 .agent-file-icon { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 9px; color: var(--accent-strong); background: var(--accent-soft); }
+.agent-external-import { display: grid; gap: 10px; }
+.agent-external-import > .ui-button { justify-self: start; }
+.agent-import-preview { display: grid; gap: 9px; border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--surface-soft); }
+.agent-import-preview > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.agent-import-preview > div:first-child span { color: var(--muted); font-size: 11px; }
+.agent-import-preview > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.agent-import-preview details { border-top: 1px solid var(--line); padding-top: 9px; }
+.agent-import-preview summary { color: var(--accent-strong); cursor: pointer; font-size: 11px; font-weight: 720; }
+.agent-import-capabilities, .agent-import-warnings { display: grid; gap: 7px; margin-top: 9px; }
+.agent-import-capabilities > div { display: flex; align-items: flex-start; gap: 7px; }
+.agent-import-capabilities .ui-status { flex: 0 0 auto; }
+.agent-import-capabilities span { display: grid; gap: 2px; min-width: 0; }
+.agent-import-capabilities small, .agent-import-warnings small { color: var(--muted); font-size: 10px; line-height: 1.35; }
+.agent-import-warnings small { color: var(--bad); }
 
 .project-form label small {
   color: var(--subtle);

@@ -99,6 +99,66 @@ export type AgentSource = {
   lock: Record<string, string>;
 };
 
+export type AgentImportCapability = {
+  kind: string;
+  original: string;
+  status: "supported" | "partial" | "unsupported";
+  reason: string;
+  reference?: string;
+  included?: boolean;
+};
+
+export type AgentImportWarning = {
+  code: string;
+  message: string;
+  path?: string;
+};
+
+export type AgentImportPreview = {
+  name: string;
+  description: string;
+  instructions: string;
+  model: Record<string, string>;
+  inputs: Record<string, string>;
+  outputs: Record<string, string>;
+  tools: string[];
+  skills: string[];
+  knowledge_files: string[];
+  workflow_present: boolean;
+  source_path?: string;
+};
+
+export type AgentImportRecord = {
+  schema_version: "agent.import.v1";
+  import_id: string;
+  state: "analyzed" | "applied";
+  source_kind: "yaml" | "zip" | "folder";
+  source_name: string;
+  source_path: string;
+  detected_format: "generic_yaml" | "veyra_agent_yaml";
+  compatibility: number;
+  preview: AgentImportPreview;
+  capabilities: AgentImportCapability[];
+  warnings: AgentImportWarning[];
+  generated_source: AgentSource;
+  manifest: Record<string, JsonValue>;
+  applied_agent?: CreatedAgentResponse;
+};
+
+export type AgentImportApplyRequest = {
+  project_id: string;
+  confirm: boolean;
+  name?: string;
+  description?: string;
+  parent_agent_id?: string;
+};
+
+export type AgentImportApplyResponse = {
+  schema_version: "agent.import.v1";
+  import: AgentImportRecord;
+  agent: CreatedAgentResponse;
+};
+
 export type WorkflowSource = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   component_type: "Workflow";

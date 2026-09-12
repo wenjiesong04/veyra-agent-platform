@@ -688,6 +688,51 @@ remains installed and is not overwritten.
 
 The reference tree is under `examples/plugin-packs/research/`. A pack can be
 assembled with `zip -r research.vplugin.zip plugin.vplugin.yaml skills mcp.json`.
+
+### 5.5.3 External Agent Import V1
+
+External Agent import has three input forms: a generic YAML file, a selected
+folder, and a ZIP archive. ZIP is only a transport; it is validated and then
+sent through the same bounded file scanner as a folder. The importer does not
+execute Python/Node/Shell code, install dependencies, or reuse a foreign
+Runtime.
+
+```text
+YAML / Folder / ZIP
+        ↓
+bounded scanner + format detector
+        ↓
+generic Import IR
+        ↓
+capability mapping + compatibility report
+        ↓
+user preview and confirmation
+        ↓
+standard Veyra Agent Source
+        ↓
+Canvas / validate / Runtime
+```
+
+V1 maps prompt/instructions, model metadata, inputs, outputs, selected
+read-only Veyra Tools, and installed Skill references. Unknown tools, inline
+Skills, Knowledge files, external workflow steps, and raw permission claims
+remain visible as `partial` or `unsupported` findings; they are never silently
+discarded or granted. The applied Agent keeps `import/manifest.json` beside
+its source so the original mapping decision remains inspectable. Model API
+credentials are never imported; the user configures the host Keychain profile
+through the normal Runtime settings.
+
+The import record is persisted in local application data so analysis and
+application are separate actions:
+
+- `POST /api/v1/agent-imports` — analyze an uploaded YAML/ZIP or folder path.
+- `GET /api/v1/agent-imports/{import_id}` — read the compatibility preview.
+- `POST /api/v1/agent-imports/{import_id}/apply` — explicitly create a local
+  Agent Draft in a selected Project.
+
+This is a generic adapter boundary, not a promise to reproduce Dify, Coze,
+CrewAI, AutoGen, or LangGraph runtimes. Platform-specific adapters can be
+added later without changing Canvas or Runtime contracts.
 - **Skill** — a non-executable, versioned instruction/method asset. Factory may
   compile Skill content into an Agent prompt, while the exact Skill reference
   and hash remain in the dependency lock.
@@ -1570,6 +1615,9 @@ Star does not mean safe or effective.
 - `POST /api/v1/projects/{project_id}/agents/{agent_id}/fork`
 - `POST /api/v1/import`
 - `GET /api/v1/projects/{project_id}/agents/{agent_id}/export`
+- `POST /api/v1/agent-imports` (analyze YAML, folder path, or ZIP)
+- `GET /api/v1/agent-imports/{import_id}` (compatibility preview)
+- `POST /api/v1/agent-imports/{import_id}/apply` (create a local Agent Draft)
 
 ### Components and files
 
@@ -1835,6 +1883,7 @@ Historical smoke counts are not a quality goal.
 - Resource Catalog and availability projection
 - built-in Component, Skill, Policy, and honest Tool/MCP descriptors
 - declarative Plugin Pack import, quarantine, review, and explicit activation
+- generic external Agent YAML/folder/ZIP import with compatibility preview
 - Project-scoped Factory conversation persistence
 - model discovery/settings
 - AgentBlueprint

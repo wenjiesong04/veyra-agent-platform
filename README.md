@@ -49,3 +49,9 @@ Settings and save the API key or token in the Credentials panels. Project and
 Agent sources store only opaque references; values are never written to Project
 files or local SQLite. `MOONSHOT_API_KEY` and `GITHUB_TOKEN` remain supported
 for headless development and CI.
+
+To bring in an external Agent, open a Project's Add Agent menu and choose
+Import external Agent. Veyra accepts a generic YAML file, a folder, or a ZIP
+archive. It first shows a compatibility report, then creates an editable
+Veyra Agent draft only after confirmation; ZIP is treated as a transport and
+external code or dependency files are never executed automatically.

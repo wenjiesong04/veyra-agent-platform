@@ -404,10 +404,11 @@ describe("desktop Project workspace", () => {
 
     await user.click(await screen.findByRole("button", { name: "Add Agent: Before edit" }));
     expect(window.location.hash).toBe(projectRoutePaths.project("editable"));
-    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(4);
     expect(screen.getByRole("menuitem", { name: /Create blank Agent/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Import Agent from template/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Import Agent file/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Import external Agent/ })).toBeInTheDocument();
     await user.click(screen.getByRole("menuitem", { name: /Create blank Agent/ }));
     await user.type(screen.getByRole("textbox", { name: "Agent name (optional)" }), "Requested Agent");
     await user.type(screen.getByRole("textbox", { name: "Description (optional)" }), "Created here");

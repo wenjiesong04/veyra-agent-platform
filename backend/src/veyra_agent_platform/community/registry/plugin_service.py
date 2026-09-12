@@ -20,6 +20,7 @@ from ..storage.identifiers import utc_now
 from ..storage.package_storage import LocalPackageStorage
 from ..storage.plugin_repository import CommunityPluginRepository
 from ..storage.schema import CommunityPlugin, CommunityPluginVersion, CommunityUser
+from .license_scan import scan_license
 
 MAX_PLUGIN_PACKAGE_BYTES = 5_000_000
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -285,6 +286,7 @@ class CommunityPluginRegistryService:
             "skills": manifest.get("skills", []),
             "mcp_servers": manifest.get("mcp_servers", []),
             "license": manifest.get("license"),
+            "license_scan": manifest.get("license_scan"),
             "created_at": record.created_at.isoformat(),
             "published_at": record.published_at.isoformat()
             if record.published_at
@@ -296,6 +298,7 @@ def _public_manifest(pack: PluginPack) -> dict[str, Any]:
     return {
         "plugin_id": pack.plugin_id,
         "license": pack.license,
+        "license_scan": scan_license(pack.license),
         "skills": [
             {
                 "path": skill.path,

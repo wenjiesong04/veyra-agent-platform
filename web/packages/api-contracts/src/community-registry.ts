@@ -141,6 +141,12 @@ export type CommunityPluginMcpSummary = {
   url: string | null;
 };
 
+export type CommunityLicenseScan = {
+  status: "passed" | "warning";
+  code: string;
+  value: string | null;
+};
+
 export type CommunityPluginEntry = {
   schema_version: "community.plugin.registry.v1";
   owner_handle: string;
@@ -157,6 +163,7 @@ export type CommunityPluginEntry = {
   skills: CommunityPluginSkillSummary[];
   mcp_servers: CommunityPluginMcpSummary[];
   license: string | null;
+  license_scan?: CommunityLicenseScan;
   created_at: string;
   published_at: string | null;
 };
