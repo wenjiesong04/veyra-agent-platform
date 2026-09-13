@@ -21,8 +21,9 @@ def _config() -> S3StorageConfig:
     )
 
 
-def test_s3_package_storage_signs_path_style_requests_and_verifies_content_hash(
-) -> None:
+def test_s3_package_storage_signs_path_style_requests_and_verifies_content_hash() -> (
+    None
+):
     content = b"package-bytes"
     requests: list[httpx.Request] = []
 

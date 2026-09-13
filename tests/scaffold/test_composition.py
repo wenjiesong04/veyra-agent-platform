@@ -339,9 +339,7 @@ def test_global_environment_selects_community_production_mode(
     monkeypatch.setenv("VEYRA_COMMUNITY_REQUIRE_MODERATION", "true")
     monkeypatch.setenv("VEYRA_COMMUNITY_MODERATOR_HANDLES", "test-moderator")
     monkeypatch.setenv("VEYRA_COMMUNITY_OBJECT_STORAGE_BACKEND", "s3")
-    monkeypatch.setenv(
-        "VEYRA_COMMUNITY_S3_ENDPOINT_URL", "http://minio.example:9000"
-    )
+    monkeypatch.setenv("VEYRA_COMMUNITY_S3_ENDPOINT_URL", "http://minio.example:9000")
     monkeypatch.setenv("VEYRA_COMMUNITY_S3_BUCKET", "veyra-community")
     monkeypatch.setenv("VEYRA_COMMUNITY_S3_ACCESS_KEY_ID", "test-access")
     monkeypatch.setenv(

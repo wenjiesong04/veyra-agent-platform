@@ -184,12 +184,12 @@ class _S3ObjectClient:
 
     def _key(self, key: str) -> str:
         clean = key.strip("/")
-        if not clean or "\\" in clean or any(
-            part in {"", ".", ".."} for part in clean.split("/")
+        if (
+            not clean
+            or "\\" in clean
+            or any(part in {"", ".", ".."} for part in clean.split("/"))
         ):
-            raise S3StorageError(
-                "object_storage_key_invalid", "Object key is invalid"
-            )
+            raise S3StorageError("object_storage_key_invalid", "Object key is invalid")
         prefix = self.config.key_prefix.strip("/")
         return f"{prefix}/{clean}" if prefix else clean
 
