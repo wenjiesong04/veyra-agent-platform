@@ -17,7 +17,7 @@ from veyra_agent_platform.local.plugins.packaging import (
 from ..accounts.profiles import AccountProfile, AccountProfileService
 from ..storage.database import CommunityDatabase
 from ..storage.identifiers import utc_now
-from ..storage.package_storage import LocalPackageStorage
+from ..storage.package_storage import PackageStorage
 from ..storage.plugin_repository import CommunityPluginRepository
 from ..storage.schema import CommunityPlugin, CommunityPluginVersion, CommunityUser
 from .license_scan import scan_license
@@ -40,7 +40,7 @@ class CommunityPluginRegistryService:
     def __init__(
         self,
         database: CommunityDatabase,
-        storage: LocalPackageStorage,
+        storage: PackageStorage,
         profiles: AccountProfileService,
         *,
         require_moderation: bool = False,

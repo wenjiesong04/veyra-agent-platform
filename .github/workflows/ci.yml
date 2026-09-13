@@ -13,6 +13,19 @@ jobs:
     timeout-minutes: 15
     env:
       VEYRA_BUILD_SHA: ${{ github.sha }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: veyra_community
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veyra_community"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Check out source
@@ -51,6 +64,12 @@ jobs:
           database_path="${database_dir}/community.sqlite3"
           VEYRA_COMMUNITY_DATABASE_URL="sqlite:///${database_path}" \
             python -m alembic -c backend/migrations/community/alembic.ini upgrade head
+
+      - name: Validate Community migrations against PostgreSQL
+        env:
+          VEYRA_COMMUNITY_MODE: test
+          VEYRA_COMMUNITY_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/veyra_community
+        run: python -m alembic -c backend/migrations/community/alembic.ini upgrade head
 
   frontend:
     runs-on: ubuntu-24.04

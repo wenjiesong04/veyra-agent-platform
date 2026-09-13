@@ -6,6 +6,15 @@ import hashlib
 import os
 import secrets
 from pathlib import Path
+from typing import Protocol
+
+
+class PackageStorage(Protocol):
+    """Storage boundary required by the Community package registries."""
+
+    def put(self, content: bytes) -> str: ...
+
+    def get(self, storage_id: str) -> bytes | None: ...
 
 
 class LocalPackageStorage:

@@ -16,7 +16,7 @@ from veyra_agent_platform.contracts.resource import ResourceRef
 from ..accounts.profiles import AccountProfileService
 from ..storage.database import CommunityDatabase
 from ..storage.identifiers import utc_now
-from ..storage.package_storage import LocalPackageStorage
+from ..storage.package_storage import PackageStorage
 from ..storage.registry_repository import CommunityRegistryRepository
 from ..storage.schema import CommunityAgent, CommunityAgentVersion, CommunityUser
 
@@ -106,7 +106,7 @@ class CommunityRegistryService:
     def __init__(
         self,
         database: CommunityDatabase,
-        storage: LocalPackageStorage,
+        storage: PackageStorage,
         profiles: AccountProfileService,
         *,
         require_moderation: bool = False,

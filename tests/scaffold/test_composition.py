@@ -338,6 +338,15 @@ def test_global_environment_selects_community_production_mode(
     monkeypatch.setenv("VEYRA_COMMUNITY_ORIGIN", "https://community.veyra.example")
     monkeypatch.setenv("VEYRA_COMMUNITY_REQUIRE_MODERATION", "true")
     monkeypatch.setenv("VEYRA_COMMUNITY_MODERATOR_HANDLES", "test-moderator")
+    monkeypatch.setenv("VEYRA_COMMUNITY_OBJECT_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv(
+        "VEYRA_COMMUNITY_S3_ENDPOINT_URL", "http://minio.example:9000"
+    )
+    monkeypatch.setenv("VEYRA_COMMUNITY_S3_BUCKET", "veyra-community")
+    monkeypatch.setenv("VEYRA_COMMUNITY_S3_ACCESS_KEY_ID", "test-access")
+    monkeypatch.setenv(
+        "VEYRA_COMMUNITY_S3_SECRET_ACCESS_KEY", "test-secret-that-is-long-enough"
+    )
 
     settings = CommunitySettings()
 
@@ -362,6 +371,11 @@ def test_community_production_accepts_psycopg_postgresql_url(
         public_origin="https://community.veyra.example",
         require_moderation=True,
         moderator_handles="test-moderator",
+        object_storage_backend="s3",
+        s3_endpoint_url="http://minio.example:9000",
+        s3_bucket="veyra-community",
+        s3_access_key_id="test-access",
+        s3_secret_access_key="test-secret-that-is-long-enough",
     )
 
     assert settings.mode == "production"

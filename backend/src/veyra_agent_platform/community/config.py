@@ -60,6 +60,12 @@ class CommunitySettings(BaseSettings):
     database_url: str = Field(default_factory=_default_database_url)
     avatar_storage_root: Path = Field(default_factory=_default_avatar_storage_root)
     registry_storage_root: Path = Field(default_factory=_default_registry_storage_root)
+    object_storage_backend: Literal["local", "s3"] = "local"
+    s3_endpoint_url: str | None = None
+    s3_bucket: str | None = None
+    s3_region: str = "us-east-1"
+    s3_access_key_id: SecretStr | None = None
+    s3_secret_access_key: SecretStr | None = None
     mode: EnvironmentMode = Field(
         default="development",
         validation_alias=AliasChoices(
@@ -134,9 +140,32 @@ class CommunitySettings(BaseSettings):
                 )
             if not self.moderator_handle_set:
                 raise ValueError("production Community mode requires moderator handles")
+            if self.object_storage_backend != "s3":
+                raise ValueError("production Community mode requires S3 object storage")
         if len(self.auth_hmac_secret.get_secret_value().encode("utf-8")) < 32:
             raise ValueError("auth HMAC secret must contain at least 32 bytes")
+        if self.object_storage_backend == "s3":
+            self._validate_s3_storage()
         return self
+
+    def _validate_s3_storage(self) -> None:
+        if not self.s3_endpoint_url or not self.s3_bucket:
+            raise ValueError("S3 object storage requires endpoint URL and bucket")
+        parsed = urlsplit(self.s3_endpoint_url.rstrip("/"))
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("S3 endpoint must be a plain HTTP(S) origin")
+        if not self.s3_region.strip():
+            raise ValueError("S3 region is required")
+        if not self.s3_access_key_id or not self.s3_secret_access_key:
+            raise ValueError("S3 access and secret keys are required")
 
     @field_validator("public_origin")
     @classmethod

@@ -29,9 +29,14 @@ from .mail.outbox import MailOutboxDispatcher
 from .mail.provider import MailProvider
 from .mail.smtp import QQSmtpMailProvider
 from .registry import CommunityPluginRegistryService, CommunityRegistryService
-from .storage.avatar_storage import LocalAvatarStorage
+from .storage.avatar_storage import AvatarStorage, LocalAvatarStorage
 from .storage.database import CommunityDatabase
-from .storage.package_storage import LocalPackageStorage
+from .storage.package_storage import LocalPackageStorage, PackageStorage
+from .storage.s3_storage import (
+    S3AvatarStorage,
+    S3PackageStorage,
+    S3StorageConfig,
+)
 
 COMMUNITY_DATABASE_HEAD = "community_0008_plugin_registry"
 
@@ -54,6 +59,38 @@ def _database_revision(database: CommunityDatabase) -> str | None:
         return None
     revision = revisions[0]
     return revision if isinstance(revision, str) else None
+
+
+def _s3_config(settings: CommunitySettings, *, prefix: str) -> S3StorageConfig:
+    config = S3StorageConfig(
+        endpoint_url=settings.s3_endpoint_url or "",
+        bucket=settings.s3_bucket or "",
+        region=settings.s3_region,
+        access_key_id=(
+            settings.s3_access_key_id.get_secret_value()
+            if settings.s3_access_key_id
+            else ""
+        ),
+        secret_access_key=(
+            settings.s3_secret_access_key.get_secret_value()
+            if settings.s3_secret_access_key
+            else ""
+        ),
+        key_prefix=prefix,
+    )
+    return config
+
+
+def _package_storage(settings: CommunitySettings) -> PackageStorage:
+    if settings.object_storage_backend == "local":
+        return LocalPackageStorage(settings.registry_storage_root)
+    return S3PackageStorage(_s3_config(settings, prefix="packages"))
+
+
+def _avatar_storage(settings: CommunitySettings) -> AvatarStorage:
+    if settings.object_storage_backend == "local":
+        return LocalAvatarStorage(settings.avatar_storage_root)
+    return S3AvatarStorage(_s3_config(settings, prefix="avatars"))
 
 
 def create_app(
@@ -96,17 +133,18 @@ def create_app(
     application.state.auth_workflows = auth_workflows
     application.state.account_profiles = AccountProfileService(resolved_database)
     application.state.account_avatars = AccountAvatarService(
-        resolved_database, LocalAvatarStorage(resolved_settings.avatar_storage_root)
+        resolved_database,
+        _avatar_storage(resolved_settings),
     )
     application.state.community_registry = CommunityRegistryService(
         resolved_database,
-        LocalPackageStorage(resolved_settings.registry_storage_root),
+        _package_storage(resolved_settings),
         application.state.account_profiles,
         require_moderation=resolved_settings.require_moderation,
     )
     application.state.community_plugin_registry = CommunityPluginRegistryService(
         resolved_database,
-        LocalPackageStorage(resolved_settings.registry_storage_root),
+        _package_storage(resolved_settings),
         application.state.account_profiles,
         require_moderation=resolved_settings.require_moderation,
     )

@@ -380,9 +380,9 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 3. Agent conversation 的更丰富可恢复能力；当前已支持持久化多轮 model context、会话切换、消息详情和最近 20 次 Run 回放。
 4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限、基于 Runtime 事件的 stale 信号和显式 stall recovery；Workflow 也已有锁定 Agent 的 Runtime 预检；独立 worktree 和更丰富 reconcile 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 已展示 attempt 详情、WorkItem 依赖和 stale 恢复，仍需更丰富 reconcile。
-6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、路径/依赖/Knowledge 可携带性扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需许可证扫描及长期 moderation 运营工具。
+6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、路径/依赖/Knowledge 可携带性扫描、许可证扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需长期 moderation 运营工具。
 7. macOS arm64 的 GitHub 清洁 runner 已能实际生成并校验 Tauri/PyInstaller 包（Push run `34731290992`、PR run `34731292207`）；后续发布仍需补充 artifact retention、签名/notarization 和安装升级后的真实桌面 UI 证据。
-8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
+8. 新加坡 Caddy、PostgreSQL/MinIO 的可重复部署、worker、备份恢复和公网部署；Community 已具备 PostgreSQL engine、S3-compatible storage adapter 和 CI migration gate，但还没有部署编排与恢复证据。
 9. 完整双账号联网 E2E、真实 SMTP/Kimi live lane 和跨服务同 SHA 发布证据。
 
 ## 9. 推荐下一步顺序
@@ -451,7 +451,7 @@ WorkItem 会先经过 CAS lease 和 attempt 记录，再派发本机 Runtime；�
 
 ### 已完成：Community registry 扫描边界
 
-当前已经有可运行的 Agent YAML publish/browse/download/import/feedback 最小闭环；生产模式还可以把上传置于 quarantine，由 moderator 队列审核后发布或拒绝。发布扫描会保留明显凭据、可疑路径、外部依赖、锁项和不可携带 Knowledge warning；许可证扫描和长期 moderation 运营工具仍未完成。Community 仍不执行远端 Agent。
+当前已经有可运行的 Agent YAML publish/browse/download/import/feedback 最小闭环；生产模式可以把上传置于 quarantine，由 moderator 队列审核后发布或拒绝。发布扫描会保留明显凭据、可疑路径、外部依赖、锁项、许可证和不可携带 Knowledge warning；生产配置现在要求 PostgreSQL 与 S3-compatible object storage，CI 已验证 Community migrations 可连接 PostgreSQL。长期 moderation 运营工具仍未完成。Community 仍不执行远端 Agent。
 
 ### 已完成：Community Plugin Registry
 
@@ -472,7 +472,7 @@ Source/Canvas 草稿，并在 Agent 目录内写入 `import/manifest.json`。外
 
 ### 下一波 C：发行与部署
 
-只有本地闭环和 Community registry 有证据后，才做 Tauri/PyInstaller、新加坡部署、备份和公开 5174 站点。
+Tauri/PyInstaller 已有 macOS arm64 runner 证据；Community 的 PostgreSQL/S3 生产存储边界已落地。下一步继续做可重复的 Caddy、PostgreSQL、MinIO、worker、备份恢复和公网部署，不把本地运行证据当成线上部署证据。
 
 ## 10. 验证和启动命令
 
