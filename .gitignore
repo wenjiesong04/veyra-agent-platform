@@ -43,6 +43,8 @@ apps/desktop/src-tauri/gen/
 
 # Runtime data
 /data/
+deploy/community/.env
+deploy/community/backups/
 /state/
 /runs/
 /logs/

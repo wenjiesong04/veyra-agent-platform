@@ -37,3 +37,12 @@ SQLite test harness.
 The CI backend job runs Community migrations against both SQLite and a clean
 PostgreSQL service. This proves database-dialect migration compatibility, but
 it is not a deployment or backup/restore proof.
+
+## Deployment baseline
+
+`deploy/community/compose.yaml` starts PostgreSQL, MinIO, the Community
+container, and Caddy in that order. `start.sh` upgrades the Community schema
+before opening port 8000; Caddy is the only public-facing service. The
+`backup.sh` and guarded `restore.sh` helpers cover the PostgreSQL metadata
+database. MinIO object backup, image pinning, TLS issuance on the target host,
+and a restore drill remain required before calling a public deployment ready.
