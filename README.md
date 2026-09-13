@@ -55,3 +55,14 @@ Import external Agent. Veyra accepts a generic YAML file, a folder, or a ZIP
 archive. It first shows a compatibility report, then creates an editable
 Veyra Agent draft only after confirmation; ZIP is treated as a transport and
 external code or dependency files are never executed automatically.
+
+## Desktop release candidate
+
+The Desktop shell and macOS arm64 packaging contract are documented in
+[`docs/desktop_packaging.md`](docs/desktop_packaging.md). The static contract
+check does not require Rust or PyInstaller:
+
+```sh
+python3 scripts/build/package/package_smoke.py --static-only \
+  --target aarch64-apple-darwin
+```

@@ -1,0 +1,13 @@
+{
+  "name": "@veyra/desktop-shell",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tauri shell for the Veyra local-first desktop application",
+  "scripts": {
+    "dev": "npx --yes @tauri-apps/cli@2.11.4 dev --config src-tauri/tauri.conf.json",
+    "build:web": "VITE_LOCAL_API_BASE_URL=http://127.0.0.1:8771/api/v1 npm --prefix ../../web run build:desktop",
+    "build:sidecar": "python ../../scripts/build/package/build_sidecar.py --target aarch64-apple-darwin",
+    "package": "python ../../scripts/build/package/package.py --target aarch64-apple-darwin",
+    "package:smoke": "python ../../scripts/build/package/package_smoke.py --static-only --target aarch64-apple-darwin"
+  }
+}
