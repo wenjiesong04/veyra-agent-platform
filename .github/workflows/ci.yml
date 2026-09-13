@@ -96,7 +96,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11.15"
+          # 3.11.9 is the newest CPython 3.11 arm64 build published for the
+          # macOS 14 runner; the Ubuntu job may use the newer patch release.
+          python-version: "3.11.9"
           cache: pip
           cache-dependency-path: requirements/runtime-py311.txt
 
