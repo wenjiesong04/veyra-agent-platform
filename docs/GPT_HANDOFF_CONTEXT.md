@@ -369,7 +369,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 - Knowledge 详情页可以选择 Agent，把当前文档按最新版本/hash 绑定到 Agent 草稿并打开 Studio；Files 详情页可以选择 Agent，把相对路径预填到 Studio 的文件型输入，不会自动读取或运行。
 - Workflow 测试运行面板现在显示锁定子 Agent 的 Runtime 预检；预检失败会指出 Agent 配置、依赖、权限或节点上限问题，但不会阻止用户查看真实 Run 返回的具体错误。
 - Agent version detail 页面已接真实 Agent version API，仍可继续增强源码/依赖证据展示。
-- 已建立 macOS arm64 Tauri/PyInstaller 发行契约、Local sidecar health/端口/退出清理 probe 和 CI package lane；当前 macOS arm64 checkout 已完成真实 sidecar 与 DMG 生成验证，但仍需 GitHub macOS runner 的清洁环境证据。
+- 已建立 macOS arm64 Tauri/PyInstaller 发行契约、Local sidecar health/端口/退出清理 probe 和 CI package lane；当前 macOS arm64 checkout 与 GitHub `macos-14` arm64 runner 均已完成真实 sidecar 与 DMG 生成验证（Push run `34731290992`、PR run `34731292207` 均通过）。
 
 ## 8. 已知缺口和不可宣称的内容
 
@@ -381,7 +381,7 @@ Local Run 的 POST `/run` 会立即返回 `running`。节点事件会在执行�
 4. Orchestrator 已支持 WorkItem 依赖、CAS lease、持久化 attempt、failure class、retry、全局/单 Project 并发上限、基于 Runtime 事件的 stale 信号和显式 stall recovery；Workflow 也已有锁定 Agent 的 Runtime 预检；独立 worktree 和更丰富 reconcile 仍未完成。
 5. Monitor/Runs 已切换到真实 API；Monitor 已展示 attempt 详情、WorkItem 依赖和 stale 恢复，仍需更丰富 reconcile。
 6. Community registry：当前已完成直接 publish、AgentSource 校验、明显凭据标记扫描、路径/依赖/Knowledge 可携带性扫描、内容寻址存储、扫描报告、可配置 quarantine、moderator 队列与决定 receipt、公开版本查询、下载、目标 Project 导入、本地 lineage、Community Fork 边、版本级反馈和 capability/risk 摘要；仍需许可证扫描及长期 moderation 运营工具。
-7. 用 GitHub macOS arm64 runner 在清洁环境实际生成并保留 Tauri/PyInstaller/macOS arm64 包证据；本地真实 DMG 已验证，但不能替代清洁 runner 证据。
+7. macOS arm64 的 GitHub 清洁 runner 已能实际生成并校验 Tauri/PyInstaller 包（Push run `34731290992`、PR run `34731292207`）；后续发布仍需补充 artifact retention、签名/notarization 和安装升级后的真实桌面 UI 证据。
 8. 新加坡 Caddy、PostgreSQL、MinIO、worker、备份和公网部署。
 9. 完整双账号联网 E2E、真实 SMTP/Kimi live lane 和跨服务同 SHA 发布证据。
 
