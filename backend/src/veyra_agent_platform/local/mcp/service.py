@@ -24,6 +24,7 @@ from veyra_agent_platform.local.secrets import (
     secret_environment_name,
 )
 
+from .schema import McpSchemaError, prepare_contract, require_contract
 from .store import McpServerStore
 from .transport import (
     McpTransport,
@@ -439,6 +440,12 @@ class McpService:
             raise McpError(
                 "mcp_tool_server_mismatch", "MCP tool belongs to another server"
             )
+        try:
+            require_contract(spec)
+        except McpSchemaError as exc:
+            raise McpError(
+                exc.code, "MCP schema is unsupported; rediscover a supported contract"
+            ) from None
         target = self._discovered_package(server_id, resource_id, version)
         if target is None:
             raise McpError("mcp_tool_not_found", "MCP tool package was not found")
@@ -669,14 +676,16 @@ class McpService:
             description = f"Discovered MCP tool {name}"
         input_schema = _input_schema(tool.get("inputSchema"))
         input_required = _input_required(tool.get("inputSchema"), input_schema)
+        contract = prepare_contract(tool.get("inputSchema"), tool.get("outputSchema"))
+        supported = contract["schema_status"] == "supported"
         payload = {
             "resource_id": resource_id,
             "kind": "tool",
             "name": name[:120],
             "description": description.strip()[:4_000],
-            "availability": "ready",
+            "availability": "ready" if supported else "unavailable",
             "factory_selectable": False,
-            "runtime_status": "supported",
+            "runtime_status": "supported" if supported else "runtime_not_supported",
             "required_permissions": {
                 "network_hosts": list(network_hosts or []),
                 "tools": [resource_id],
@@ -693,6 +702,7 @@ class McpService:
                 "mcp_tool_name": name,
                 "input_schema": input_schema,
                 "input_required": input_required,
+                **contract,
                 "tool_name": f"mcp.{name}",
                 "ui": {
                     "category": "mcp",
@@ -760,9 +770,12 @@ class McpService:
             spec = payload.get("spec")
             if not isinstance(spec, dict) or spec.get("mcp_server_id") != server_id:
                 continue
-            payload["availability"] = "ready" if enabled else "disabled"
+            supported = spec.get("schema_status") == "supported"
+            payload["availability"] = (
+                ("ready" if supported else "unavailable") if enabled else "disabled"
+            )
             payload["factory_selectable"] = bool(
-                enabled and not spec.get("review_required", False)
+                enabled and supported and not spec.get("review_required", False)
             )
             temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
             try:

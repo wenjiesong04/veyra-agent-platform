@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
+from veyra_agent_platform.local.mcp.schema import prepare_contract
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.runtime.tools import ToolRuntime
 
@@ -164,6 +165,13 @@ def test_discovered_mcp_tool_executes_through_runtime_adapter(tmp_path: Path) ->
                     "mcp_tool_name": "echo",
                     "input_schema": {"text": "string"},
                     "input_required": ["text"],
+                    **prepare_contract(
+                        {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"],
+                        }
+                    ),
                     "tool_name": "mcp.echo",
                     "ui": {"category": "mcp", "icon": "plug", "title": "echo"},
                 },

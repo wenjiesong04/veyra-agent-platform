@@ -405,6 +405,8 @@ Studio 从 Catalog（含 `spec.ui`）投影节点卡片。Tool 在画布上可�
 
 Filesystem、Shell、HTTP、GitHub 和 MCP discovered tools 已有 Runtime adapter、权限校验、审批/receipt 或 secret binding；MCP 使用 newline-delimited JSON-RPC，发现结果需审核后才能进入 Factory/Runtime。
 
+MCP discovered tools 现在还会保留受支持的 input/output JSON Schema，并将完整契约纳入资源 hash。Runtime 调用前校验嵌套对象、数组、枚举和边界约束，调用后校验 `structuredContent`；失败会阻断后续节点并留下 input/output digest、契约 hash 和 schema 校验状态。无法安全解释的 schema 会明确标记为不可运行，旧的无契约发现记录需要重新发现。stdio MCP 只继承最小宿主环境和显式绑定；`tool.started` 会在 adapter 调用前记录，失败调用也保留 `tool.failed` receipt。
+
 ### 已完成：Agent conversation
 
 1. Factory conversation 与 Agent conversation 继续分开。

@@ -18,7 +18,9 @@ import httpx
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
-from veyra_agent_platform.local.mcp.service import McpError, McpService
+from veyra_agent_platform.local.mcp.execution import McpExecutionError, execute_call
+from veyra_agent_platform.local.mcp.schema import McpSchemaError, require_contract
+from veyra_agent_platform.local.mcp.service import McpService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
 
@@ -50,9 +52,12 @@ _SEARCH_MAX_RESULTS = 10
 class ToolRuntimeError(RuntimeError):
     """A typed Tool Runtime failure safe to include in Run evidence."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, *, receipt: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.receipt = receipt
 
 
 @dataclass(frozen=True)
@@ -208,6 +213,17 @@ class ToolRuntime:
                 values,
                 resource,
             )
+        if adapter == _MCP_ADAPTER:
+            try:
+                require_contract(spec)
+            except McpSchemaError as exc:
+                return self._denied(
+                    node.uses,
+                    exc.code,
+                    "MCP requires a supported, reviewed schema contract",
+                    values,
+                    resource,
+                )
         secret_ref = spec.get("secret_ref")
         secret_env = spec.get("secret_env")
         if secret_ref:
@@ -433,12 +449,19 @@ class ToolRuntime:
         approved: bool,
     ) -> ToolExecution:
         del project_root, source, node, approved
-        output, byte_length, relative_path = self._call_mcp(
-            authorization.resource or {}, values
-        )
-        return self._receipt_execution(
-            authorization, output, byte_length, relative_path
-        )
+        if self.mcp is None:
+            raise ToolRuntimeError("tool_runtime_unavailable", "MCP is not configured")
+        receipt = self._receipt_execution(authorization, {}, 0, "").receipt
+        try:
+            output, receipt = execute_call(
+                self.mcp,
+                (authorization.resource or {}).get("spec", {}),
+                values,
+                receipt,
+            )
+        except McpExecutionError as exc:
+            raise ToolRuntimeError(exc.code, str(exc), receipt=exc.receipt) from None
+        return ToolExecution(output=output, receipt=receipt)
 
     def _execute_http(
         self,
@@ -1083,57 +1106,6 @@ class ToolRuntime:
         lowered = name.lower()
         return lowered in _FORBIDDEN_NAMES or lowered.endswith(_FORBIDDEN_SUFFIXES)
 
-    def _call_mcp(
-        self, resource: dict[str, Any], values: dict[str, Any]
-    ) -> tuple[dict[str, Any], int, str]:
-        if self.mcp is None:
-            raise ToolRuntimeError(
-                "tool_runtime_unavailable", "MCP Runtime adapter is not installed"
-            )
-        spec = resource.get("spec") or {}
-        server_id = spec.get("mcp_server_id")
-        tool_name = spec.get("mcp_tool_name")
-        if not isinstance(server_id, str) or not isinstance(tool_name, str):
-            raise ToolRuntimeError(
-                "tool_runtime_unavailable", "MCP tool descriptor is incomplete"
-            )
-        schema = spec.get("input_schema") or {}
-        if not isinstance(schema, dict):
-            raise ToolRuntimeError(
-                "tool_runtime_unavailable", "MCP tool input schema is invalid"
-            )
-        required = spec.get("input_required") or []
-        if not isinstance(required, list) or not all(
-            isinstance(name, str) and name for name in required
-        ):
-            raise ToolRuntimeError(
-                "tool_runtime_unavailable", "MCP tool required input schema is invalid"
-            )
-        for name in required:
-            if name not in schema or name not in values:
-                raise ToolRuntimeError(
-                    "tool_input_missing", f"MCP input {name} is required"
-                )
-        for name, expected in schema.items():
-            if name in values and not _mcp_value_matches(values[name], expected):
-                raise ToolRuntimeError(
-                    "tool_input_invalid", f"MCP input {name} is not a {expected}"
-                )
-        arguments = {name: values[name] for name in schema if name in values}
-        try:
-            result = self.mcp.call(server_id, tool_name, arguments)
-        except McpError as exc:
-            raise ToolRuntimeError(exc.code, str(exc)) from exc
-        if result.get("isError"):
-            raise ToolRuntimeError("mcp_tool_failed", "MCP tool returned an error")
-        output = {"result": result}
-        encoded = json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        if len(encoded) > _MAX_FILE_BYTES:
-            raise ToolRuntimeError(
-                "tool_output_too_large", "MCP tool output exceeds the 1 MiB limit"
-            )
-        return output, len(encoded), ""
-
     @staticmethod
     def _project_target(
         project_root: Path, raw_path: Any, *, create_parents: bool
@@ -1382,7 +1354,10 @@ def _normalize_browser_text(value: str) -> str:
 
 
 def _input_digest(resource: dict[str, Any] | None, values: dict[str, Any]) -> str:
-    schema = (resource or {}).get("spec", {}).get("input_schema") or {"path": "string"}
+    spec = (resource or {}).get("spec", {})
+    if spec.get("adapter") == _MCP_ADAPTER:
+        return sha256_digest(values)
+    schema = spec.get("input_schema") or {"path": "string"}
     material: dict[str, Any] = {}
     for name in schema:
         value = values.get(name)
@@ -1391,26 +1366,6 @@ def _input_digest(resource: dict[str, Any] | None, values: dict[str, Any]) -> st
         else:
             material[name] = value
     return sha256_digest(material)
-
-
-def _mcp_value_matches(value: Any, expected: Any) -> bool:
-    if not isinstance(expected, str):
-        return True
-    if expected == "string":
-        return isinstance(value, str)
-    if expected == "boolean":
-        return isinstance(value, bool)
-    if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected == "number":
-        return isinstance(value, int | float) and not isinstance(value, bool)
-    if expected == "object":
-        return isinstance(value, dict)
-    if expected == "array":
-        return isinstance(value, list)
-    if expected == "null":
-        return value is None
-    return True
 
 
 def _shell_environment() -> dict[str, str]:

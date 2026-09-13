@@ -109,7 +109,11 @@ class _StdioSession:
         self._stdout_buffer = b""
 
     def __enter__(self) -> _StdioSession:
-        merged = os.environ.copy()
+        merged = {
+            name: os.environ[name]
+            for name in ("PATH", "HOME", "SYSTEMROOT")
+            if name in os.environ
+        }
         merged.update(self.env)
         try:
             self._process = subprocess.Popen(

@@ -69,3 +69,30 @@ def test_stdio_transport_rejects_non_object_json() -> None:
         transport.list_tools()
 
     assert error.value.code == "mcp_protocol_invalid"
+
+
+def test_stdio_child_receives_only_minimal_environment_and_explicit_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UNRELATED_CREDENTIAL", "must-not-inherit")
+    monkeypatch.setenv("PYTHONSTARTUP", "/must-not-load")
+    server = _SERVER.replace("import json", "import json\nimport os").replace(
+        'result = {"tools": [{"name": "echo"}]}',
+        'result = {"tools": [{"name": "environment", "keys": sorted(os.environ), '
+        '"bound": os.environ.get("AUTHORIZED_TOKEN")}]}',
+    )
+    transport = StdioMcpTransport(
+        sys.executable, ["-c", server], {"AUTHORIZED_TOKEN": "test-only"}, timeout=2
+    )
+    observed = transport.list_tools()[0]
+    assert observed["bound"] == "test-only"
+    assert "UNRELATED_CREDENTIAL" not in observed["keys"]
+    assert "PYTHONSTARTUP" not in observed["keys"]
+    # CPython may add LC_CTYPE itself during locale coercion.
+    assert set(observed["keys"]) <= {
+        "PATH",
+        "HOME",
+        "SYSTEMROOT",
+        "AUTHORIZED_TOKEN",
+        "LC_CTYPE",
+    }

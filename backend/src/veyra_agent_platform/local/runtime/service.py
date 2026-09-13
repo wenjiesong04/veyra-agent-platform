@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1177,6 +1177,11 @@ class RuntimeService:
                     tool_calls.append(record)
                     if authorization.decision != "allowed":
                         raise RuntimeError(authorization.code, authorization.reason)
+                    emit(
+                        node.id,
+                        "tool.started",
+                        {"tool_reference": authorization.tool_reference},
+                    )
                     execution = self.tools.execute(
                         project_root=self.projects._existing_root(project["root_path"]),
                         source=source,
@@ -1184,11 +1189,6 @@ class RuntimeService:
                         values=tool_values,
                         authorization=authorization,
                         approved=approved,
-                    )
-                    emit(
-                        node.id,
-                        "tool.started",
-                        {"tool_reference": authorization.tool_reference},
                     )
                     emit(node.id, "tool.completed", execution.receipt)
                     tool_calls[-1] = _ToolCallRecord(
@@ -1318,6 +1318,9 @@ class RuntimeService:
                     )
             except (RuntimeProviderError, ToolRuntimeError) as exc:
                 runtime_error = RuntimeError(exc.code, str(exc))
+                if isinstance(exc, ToolRuntimeError) and exc.receipt is not None:
+                    emit(node.id, "tool.failed", exc.receipt)
+                    tool_calls[-1] = replace(tool_calls[-1], receipt=exc.receipt)
                 emit(node.id, "node.failed", {"code": runtime_error.code})
                 runtime_error.events = events
                 runtime_error.tool_calls = tuple(tool_calls)
