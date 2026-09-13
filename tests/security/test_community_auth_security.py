@@ -118,6 +118,11 @@ def test_cookie_names_and_secure_flags_follow_deployment_mode() -> None:
         public_origin="https://community.example.test",
         require_moderation=True,
         moderator_handles="test-moderator",
+        object_storage_backend="s3",
+        s3_endpoint_url="http://minio.example:9000",
+        s3_bucket="veyra-community",
+        s3_access_key_id="test-access",
+        s3_secret_access_key="test-secret-that-is-long-enough",
     )
 
     assert auth_cookie_names(development) == DEVELOPMENT_AUTH_COOKIE_NAMES
