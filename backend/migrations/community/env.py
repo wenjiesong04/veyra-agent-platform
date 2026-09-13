@@ -6,7 +6,7 @@ from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import Connection, engine_from_config, inspect, pool, text
 from sqlalchemy.engine import make_url
 
 from veyra_agent_platform.community.config import CommunitySettings
@@ -28,6 +28,27 @@ def _ensure_sqlite_parent(database_url: str) -> None:
     if parsed_url.database == ":memory:":
         return
     Path(parsed_url.database).expanduser().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_version_table(connection: Connection) -> None:
+    """Keep Alembic revision storage wide enough for named Community heads."""
+    if not inspect(connection).has_table("alembic_version"):
+        connection.execute(
+            text(
+                "CREATE TABLE alembic_version ("
+                "version_num VARCHAR(255) NOT NULL, "
+                "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)"
+                ")"
+            )
+        )
+        return
+    if connection.dialect.name == "postgresql":
+        connection.execute(
+            text(
+                "ALTER TABLE alembic_version "
+                "ALTER COLUMN version_num TYPE VARCHAR(255)"
+            )
+        )
 
 
 def run_migrations_offline() -> None:
@@ -56,6 +77,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=None)
         with context.begin_transaction():
+            _ensure_version_table(connection)
             context.run_migrations()
 
 
