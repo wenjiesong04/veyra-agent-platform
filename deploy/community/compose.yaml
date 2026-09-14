@@ -2,7 +2,7 @@ name: veyra-community
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
     restart: unless-stopped
     env_file: .env
     environment:
@@ -18,7 +18,7 @@ services:
       retries: 12
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     restart: unless-stopped
     env_file: .env
     command: server /data --console-address ":9001"
@@ -31,7 +31,7 @@ services:
       retries: 12
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     env_file: .env
     depends_on:
       minio:
@@ -66,13 +66,13 @@ services:
       minio-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
 
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017
     restart: unless-stopped
     env_file: .env
     depends_on:

@@ -17,6 +17,8 @@ class AvatarStorage(Protocol):
 
     def delete(self, storage_id: str) -> None: ...
 
+    def check_ready(self) -> bool: ...
+
 
 class LocalAvatarStorage:
     """Development object store with generated identifiers and atomic writes."""
@@ -39,6 +41,11 @@ class LocalAvatarStorage:
             if temporary.exists():
                 temporary.unlink()
         return storage_id
+
+    def check_ready(self) -> bool:
+        """Local storage is ready because its root is created on first write."""
+
+        return True
 
     def get(self, storage_id: str) -> bytes | None:
         path = self._path(storage_id)

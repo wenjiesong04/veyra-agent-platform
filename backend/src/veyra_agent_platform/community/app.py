@@ -131,20 +131,24 @@ def create_app(
     application.state.settings = resolved_settings
     application.state.community_database = resolved_database
     application.state.auth_workflows = auth_workflows
+    avatar_storage = _avatar_storage(resolved_settings)
+    package_storage = _package_storage(resolved_settings)
+    application.state.avatar_storage = avatar_storage
+    application.state.package_storage = package_storage
     application.state.account_profiles = AccountProfileService(resolved_database)
     application.state.account_avatars = AccountAvatarService(
         resolved_database,
-        _avatar_storage(resolved_settings),
+        avatar_storage,
     )
     application.state.community_registry = CommunityRegistryService(
         resolved_database,
-        _package_storage(resolved_settings),
+        package_storage,
         application.state.account_profiles,
         require_moderation=resolved_settings.require_moderation,
     )
     application.state.community_plugin_registry = CommunityPluginRegistryService(
         resolved_database,
-        _package_storage(resolved_settings),
+        package_storage,
         application.state.account_profiles,
         require_moderation=resolved_settings.require_moderation,
     )

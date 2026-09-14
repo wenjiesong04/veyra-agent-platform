@@ -55,6 +55,20 @@ def test_health_is_ready_at_the_required_alembic_head(
             "database_ready": True,
         }
 
+        readiness = client.get("/api/v1/ready")
+        assert readiness.status_code == 200
+        assert readiness.json() == {
+            "schema_version": "readiness.v1",
+            "status": "ready",
+            "ready": True,
+            "service": "community",
+            "app_version": "0.2.0",
+            "build_sha": "community-health-test",
+            "database_revision": COMMUNITY_DATABASE_HEAD,
+            "database_ready": True,
+            "object_storage_ready": True,
+        }
+
     assert application.state.database_ready is False
 
 
@@ -71,6 +85,11 @@ def test_health_is_not_ready_and_does_not_create_an_unmigrated_schema(
         assert response.json()["status"] == "starting"
         assert response.json()["database_revision"] is None
         assert response.json()["database_ready"] is False
+        readiness = client.get("/api/v1/ready")
+        assert readiness.status_code == 503
+        assert readiness.json()["ready"] is False
+        assert readiness.json()["database_ready"] is False
+        assert readiness.json()["object_storage_ready"] is True
         table_names = inspect(
             application.state.community_database.engine
         ).get_table_names()
@@ -92,3 +111,27 @@ def test_health_reports_an_older_revision_as_not_ready(
         assert response.json()["status"] == "starting"
         assert response.json()["database_revision"] == previous_revision
         assert response.json()["database_ready"] is False
+
+
+def test_ready_fails_closed_when_object_storage_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    database_path = tmp_path / "migrated.sqlite3"
+    _upgrade(monkeypatch, database_path, "head")
+    application = create_app(_settings(database_path))
+
+    class UnavailableStorage:
+        def check_ready(self) -> bool:
+            return False
+
+    application.state.package_storage = UnavailableStorage()
+    application.state.avatar_storage = UnavailableStorage()
+
+    with TestClient(application) as client:
+        response = client.get("/api/v1/ready")
+
+        assert response.status_code == 503
+        assert response.json()["status"] == "starting"
+        assert response.json()["ready"] is False
+        assert response.json()["database_ready"] is True
+        assert response.json()["object_storage_ready"] is False

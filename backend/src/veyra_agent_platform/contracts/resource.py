@@ -49,6 +49,173 @@ class ResourceKind(StrEnum):
     ASSET = "asset"
 
 
+class CommunityShareKind(StrEnum):
+    """Kinds that Community may catalogue without executing their contents."""
+
+    AGENT = "agent"
+    WORKFLOW = "workflow"
+    PROJECT = "project"
+    COMPONENT = "component"
+    TOOL = "tool"
+
+
+class CommunityImportMode(StrEnum):
+    """How a downloaded Community object can cross back into the local app."""
+
+    LOCAL_AGENT = "local_agent"
+    LOCAL_WORKFLOW = "local_workflow"
+    LOCAL_PROJECT = "local_project"
+    LOCAL_RESOURCE = "local_resource"
+    REVIEW_REQUIRED = "review_required"
+
+
+@dataclass(frozen=True)
+class CommunityShareManifest:
+    """Public, non-executable metadata for one Community-published object.
+
+    The manifest intentionally describes provenance and import boundaries only.
+    It never contains source bytes, credentials, local paths, or runtime grants.
+    """
+
+    schema_version: str
+    kind: CommunityShareKind
+    resource_id: str
+    version: str
+    name: str
+    description: str
+    content_hash: str
+    dependencies: tuple[ResourceRef, ...]
+    import_mode: CommunityImportMode
+    source_scope: str = "public"
+    agent_version_refs: tuple[str, ...] = ()
+    included_kinds: tuple[CommunityShareKind, ...] = ()
+
+    @classmethod
+    def from_dict(cls, data: Any) -> CommunityShareManifest:
+        item = require_mapping(data, "community share manifest")
+        require_keys(
+            item,
+            allowed={
+                "schema_version",
+                "kind",
+                "resource_id",
+                "version",
+                "name",
+                "description",
+                "content_hash",
+                "dependencies",
+                "import_mode",
+                "source_scope",
+                "agent_version_refs",
+                "included_kinds",
+            },
+            required={
+                "schema_version",
+                "kind",
+                "resource_id",
+                "version",
+                "name",
+                "description",
+                "content_hash",
+                "dependencies",
+                "import_mode",
+            },
+        )
+        require_schema_version(item)
+        try:
+            kind = CommunityShareKind(item["kind"])
+            import_mode = CommunityImportMode(item["import_mode"])
+        except (TypeError, ValueError) as exc:
+            raise ContractValidationError(
+                "community share kind or import mode is invalid"
+            ) from exc
+        expected_modes = {
+            CommunityShareKind.AGENT: CommunityImportMode.LOCAL_AGENT,
+            CommunityShareKind.WORKFLOW: CommunityImportMode.LOCAL_WORKFLOW,
+            CommunityShareKind.PROJECT: CommunityImportMode.LOCAL_PROJECT,
+            CommunityShareKind.COMPONENT: CommunityImportMode.LOCAL_RESOURCE,
+            CommunityShareKind.TOOL: CommunityImportMode.REVIEW_REQUIRED,
+        }
+        if import_mode is not expected_modes[kind]:
+            raise ContractValidationError(
+                "community share import mode does not match kind"
+            )
+        agent_version_refs = tuple(
+            require_string(value, "agent_version_refs")
+            for value in require_list(
+                item.get("agent_version_refs", []), "agent_version_refs"
+            )
+        )
+        for value in agent_version_refs:
+            parts = value.split("@")
+            if len(parts) != 2:
+                raise ContractValidationError(
+                    "agent_version_refs must use agent_id@version_id"
+                )
+            require_uuid7(parts[0], "agent_version_refs.agent_id")
+            require_uuid7(parts[1], "agent_version_refs.version_id")
+        if kind is not CommunityShareKind.WORKFLOW and agent_version_refs:
+            raise ContractValidationError(
+                "agent_version_refs are only valid for workflow shares"
+            )
+        included_kinds = tuple(
+            CommunityShareKind(value)
+            for value in require_list(item.get("included_kinds", []), "included_kinds")
+        )
+        if kind is not CommunityShareKind.PROJECT and included_kinds:
+            raise ContractValidationError(
+                "included_kinds are only valid for project shares"
+            )
+        if len(set(included_kinds)) != len(included_kinds):
+            raise ContractValidationError("included_kinds must be unique")
+        dependencies = tuple(
+            ResourceRef.from_string(value, "dependencies")
+            for value in require_list(item["dependencies"], "dependencies")
+        )
+        if len({value.as_ref() for value in dependencies}) != len(dependencies):
+            raise ContractValidationError("community share dependencies must be unique")
+        content_hash = require_string(item["content_hash"], "content_hash")
+        if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+            raise ContractValidationError(
+                "community share content_hash must be SHA-256"
+            )
+        source_scope = require_string(
+            item.get("source_scope", "public"), "source_scope"
+        )
+        if source_scope != "public":
+            raise ContractValidationError("community share source_scope must be public")
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            kind=kind,
+            resource_id=require_uuid7(item["resource_id"], "resource_id"),
+            version=require_string(item["version"], "version", pattern=_VERSION),
+            name=require_string(item["name"], "name"),
+            description=require_string(item["description"], "description"),
+            content_hash=content_hash,
+            dependencies=dependencies,
+            import_mode=import_mode,
+            source_scope=source_scope,
+            agent_version_refs=agent_version_refs,
+            included_kinds=included_kinds,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "kind": self.kind.value,
+            "resource_id": self.resource_id,
+            "version": self.version,
+            "name": self.name,
+            "description": self.description,
+            "content_hash": self.content_hash,
+            "dependencies": [value.as_ref() for value in self.dependencies],
+            "import_mode": self.import_mode.value,
+            "source_scope": self.source_scope,
+            "agent_version_refs": list(self.agent_version_refs),
+            "included_kinds": [value.value for value in self.included_kinds],
+        }
+
+
 class ComponentClass(StrEnum):
     """Keep marketplace Components from collapsing into one bag of nodes."""
 

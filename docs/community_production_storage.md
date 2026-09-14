@@ -43,6 +43,13 @@ it is not a deployment or backup/restore proof.
 `deploy/community/compose.yaml` starts PostgreSQL, MinIO, the Community
 container, and Caddy in that order. `start.sh` upgrades the Community schema
 before opening port 8000; Caddy is the only public-facing service. The
-`backup.sh` and guarded `restore.sh` helpers cover the PostgreSQL metadata
-database. MinIO object backup, image pinning, TLS issuance on the target host,
-and a restore drill remain required before calling a public deployment ready.
+`/api/v1/ready` endpoint returns 503 until both the required migration head and
+the private object-storage bucket are available, and the container health
+checks use that endpoint. The `backup.sh` and guarded `restore.sh` helpers
+cover the PostgreSQL metadata database. MinIO object backup, TLS issuance on
+the target host, and a restore drill remain required before calling a public
+deployment ready.
+
+The external images in `compose.yaml` are pinned to immutable manifest digests.
+Refresh a pin only after a registry manifest request returns 2xx and a real
+`Docker-Content-Digest`; never hash a failed or empty response.

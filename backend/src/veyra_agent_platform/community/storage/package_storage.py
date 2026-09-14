@@ -16,6 +16,8 @@ class PackageStorage(Protocol):
 
     def get(self, storage_id: str) -> bytes | None: ...
 
+    def check_ready(self) -> bool: ...
+
 
 class LocalPackageStorage:
     """Store validated package bytes outside the Community database."""
@@ -39,6 +41,11 @@ class LocalPackageStorage:
         finally:
             temporary.unlink(missing_ok=True)
         return storage_id
+
+    def check_ready(self) -> bool:
+        """Local storage is ready because its root is created on first write."""
+
+        return True
 
     def get(self, storage_id: str) -> bytes | None:
         if len(storage_id) != 64 or any(

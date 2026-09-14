@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from veyra_agent_platform.community.storage.s3_storage import (
+    S3AvatarStorage,
     S3PackageStorage,
     S3StorageConfig,
     S3StorageError,
@@ -57,3 +58,42 @@ def test_s3_package_storage_rejects_corrupt_content() -> None:
         storage.get(storage_id)
 
     assert error.value.code == "object_storage_corrupt"
+
+
+def test_s3_package_storage_check_ready_probes_the_bucket_without_a_prefix() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    storage = S3PackageStorage(_config(), http_client=client)
+
+    assert storage.check_ready() is True
+    assert [request.method for request in requests] == ["HEAD"]
+    assert requests[0].url.path == "/veyra-community"
+    assert "packages" not in requests[0].url.path
+
+
+@pytest.mark.parametrize("status_code", [403, 404, 500])
+def test_s3_storage_check_ready_rejects_non_success_bucket_responses(
+    status_code: int,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    storage = S3AvatarStorage(_config(), http_client=client)
+
+    assert storage.check_ready() is False
+
+
+def test_s3_storage_check_ready_rejects_transport_failures() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("storage offline", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    storage = S3PackageStorage(_config(), http_client=client)
+
+    assert storage.check_ready() is False

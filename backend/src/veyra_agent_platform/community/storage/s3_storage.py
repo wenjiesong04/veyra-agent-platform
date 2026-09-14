@@ -104,10 +104,19 @@ class _S3ObjectClient:
                 "Object storage rejected the delete",
             )
 
+    def check_bucket(self) -> bool:
+        """Return whether the configured private bucket accepts a signed probe."""
+
+        try:
+            response = self._request("HEAD", None, None, None)
+        except S3StorageError:
+            return False
+        return 200 <= response.status_code < 300
+
     def _request(
         self,
         method: str,
-        key: str,
+        key: str | None,
         content: bytes | None,
         content_type: str | None,
     ) -> httpx.Response:
@@ -118,9 +127,10 @@ class _S3ObjectClient:
         payload_hash = hashlib.sha256(payload).hexdigest()
         parsed = urlsplit(self.endpoint_url)
         host = parsed.netloc
-        canonical_uri = "/" + quote(
-            f"{self.config.bucket}/{self._key(key)}", safe="/-_.~"
-        )
+        object_path = self.config.bucket
+        if key is not None:
+            object_path = f"{object_path}/{self._key(key)}"
+        canonical_uri = "/" + quote(object_path, safe="/-_.~")
         headers = {
             "host": host,
             "x-amz-content-sha256": payload_hash,
@@ -220,6 +230,11 @@ class S3PackageStorage:
             )
         return content
 
+    def check_ready(self) -> bool:
+        """Probe bucket access without creating or deleting an object."""
+
+        return self._objects.check_bucket()
+
 
 class S3AvatarStorage:
     """Private avatar storage with non-content-addressed, deletable identifiers."""
@@ -243,6 +258,11 @@ class S3AvatarStorage:
         if not _STORAGE_ID.fullmatch(storage_id):
             return
         self._objects.delete(storage_id)
+
+    def check_ready(self) -> bool:
+        """Probe bucket access without creating or deleting an object."""
+
+        return self._objects.check_bucket()
 
 
 def _signing_key(secret: str, date_stamp: str, region: str) -> bytes:
