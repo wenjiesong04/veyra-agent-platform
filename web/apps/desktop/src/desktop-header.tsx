@@ -40,7 +40,7 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   if (!projectCrumb) return { title: "Route not found" };
 
   if (route.kind === "project") {
-    return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: projectLabel, href: projectCrumb.href, icon: FolderKanban }) };
+    return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb) };
   }
   if (route.kind === "project-resources") {
     return { title: contextLabels.resourceLibrary, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.resourceLibrary, href: projectRoutePaths.projectResources(route.projectId), icon: Boxes }) };

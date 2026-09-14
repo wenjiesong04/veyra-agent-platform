@@ -631,9 +631,10 @@ describe("desktop Project workspace", () => {
     expect(await screen.findByLabelText("Breadcrumb")).toBeInTheDocument();
     const crumbs = screen.getByLabelText("Breadcrumb");
     expect(within(crumbs).getByRole("link", { name: "Home" })).toHaveAttribute("href", "#/projects");
-    expect(within(crumbs).getByRole("link", { name: "Breadcrumb Project" })).toHaveAttribute("href", projectRoutePaths.project("crumb"));
+    expect(within(crumbs).queryByRole("link", { name: "Breadcrumb Project" })).not.toBeInTheDocument();
     expect(within(crumbs).getByText("Breadcrumb Project", { selector: "[aria-current=page]" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Back" })).not.toBeInTheDocument();
+    expect(within(crumbs).getAllByText("Breadcrumb Project")).toHaveLength(1);
     cleanup();
     window.location.hash = "#/projects";
     await renderApp(apiFor());
@@ -642,6 +643,13 @@ describe("desktop Project workspace", () => {
     const menu = screen.getByRole("button", { name: "Open navigation" });
     await userEvent.click(menu);
     expect(screen.getAllByRole("button", { name: "Close navigation" })).toHaveLength(2);
+  });
+
+  it("deduplicates repeated Project records before rendering the sidebar", async () => {
+    const duplicate = project({ project_id: "duplicate", name: "Duplicate Project" });
+    await renderApp(apiFor([duplicate, duplicate]));
+
+    expect(document.querySelectorAll('.nav-group-projects a[href="#/projects/duplicate"]')).toHaveLength(1);
   });
 
   it("uses Project-context navigation when a Project is opened from the sidebar", async () => {

@@ -22,6 +22,15 @@ function errorMessage(error: unknown): string {
   return "The local Project service is unavailable. Check that the Desktop sidecar is running.";
 }
 
+function uniqueProjects(projects: readonly ProjectSummaryResponse[]): ProjectSummaryResponse[] {
+  const seen = new Set<string>();
+  return projects.filter((project) => {
+    if (seen.has(project.project_id)) return false;
+    seen.add(project.project_id);
+    return true;
+  });
+}
+
 export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ api: LocalProjectApi }>) {
   const [projects, setProjects] = useState<ProjectSummaryResponse[]>([]);
   const [status, setStatus] = useState<ProjectLoadState>("loading");
@@ -32,7 +41,7 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     setError(null);
     try {
       const response = await api.listProjects();
-      setProjects(response.projects);
+      setProjects(uniqueProjects(response.projects));
       setStatus("ready");
     } catch (cause) {
       setStatus("error");
@@ -46,9 +55,9 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
 
   const upsertProject = useCallback((project: ProjectSummaryResponse) => {
     setProjects((current) => {
-      const normalized = project.pinned
-        ? current.map((item) => item.project_id === project.project_id ? project : { ...item, pinned: false, pinned_at: null })
-        : current;
+      const normalized = uniqueProjects(current).map((item) => project.pinned
+        ? item.project_id === project.project_id ? project : { ...item, pinned: false, pinned_at: null }
+        : item);
       const index = normalized.findIndex((item) => item.project_id === project.project_id);
       if (index < 0) return [...normalized, project];
       return normalized.map((item, itemIndex) => itemIndex === index ? project : item);
