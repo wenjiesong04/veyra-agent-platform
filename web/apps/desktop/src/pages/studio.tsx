@@ -14,6 +14,8 @@ import { TestRunPanel } from "../features/studio/TestRunPanel";
 import { StudioRunDock } from "../features/studio/studio-run-dock";
 import { DependencyReport } from "../features/studio/DependencyReport";
 import { NotFoundPage } from "./not-found";
+import { RunDetail } from "../features/runs/RunDetail";
+import { useRunQuery } from "../features/runs/run-location";
 
 type StudioView = "canvas" | "form" | "source";
 
@@ -49,6 +51,10 @@ function adoptStudioSource(source: StudioSource): StudioSource {
 type StudioPageProps = { projectId: string; agentId?: string; workflowId?: string };
 
 export function StudioPage(props: StudioPageProps) {
+  const runId = useRunQuery().get("run_id");
+  const { api } = useProjectWorkspace();
+  const { locale } = useLocale();
+  if (runId) return <Panel><RunDetail api={api} {...props} runId={runId} locale={locale} /></Panel>;
   return <StudioEditor key={`${props.projectId}:${props.agentId ?? props.workflowId}`} {...props} />;
 }
 

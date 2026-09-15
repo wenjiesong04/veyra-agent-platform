@@ -488,6 +488,8 @@ class RuntimeService:
         run_id: str,
         command: str,
         idempotency_key: str,
+        *,
+        checkpoint_id: str | None = None,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         self.library._agent_in_project(project_id, agent_id)
@@ -502,6 +504,12 @@ class RuntimeService:
             raise RuntimeError("command_invalid", "Unsupported run command")
         scope = f"run-command:{run_id}"
         digest = sha256_digest({"command": command})
+        if checkpoint_id is not None:
+            if command != "resume":
+                raise RuntimeError(
+                    "command_invalid", "Only Resume accepts a checkpoint"
+                )
+            digest = sha256_digest({"command": command, "checkpoint_id": checkpoint_id})
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, digest
@@ -517,9 +525,12 @@ class RuntimeService:
                 row, scope=scope, idempotency_key=idempotency_key, digest=digest
             )
         if command == "resume":
-            raise RuntimeError(
-                "command_not_applicable",
-                "Approval waits must be approved or rejected",
+            return self._resume_run(
+                row,
+                checkpoint_id=checkpoint_id,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
             )
         return self._resolve_approval(
             row,
@@ -576,6 +587,12 @@ class RuntimeService:
         payload: dict[str, Any],
     ) -> None:
         with self.repository.transaction() as connection:
+            if kind == "tool.started":
+                row = connection.execute(
+                    "SELECT status FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if row is None or row["status"] != "running":
+                    raise _RunAbandoned()
             self.repository.add_run_events(
                 connection, run_id, [(node_id, kind, payload)]
             )
@@ -608,6 +625,11 @@ class RuntimeService:
                 digest=digest,
             )
         with self.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row["status"] != "running":
+                return self._row_payload(row)
             self.repository.add_run_events(connection, run_id, list(extra_events or []))
             self._store_tool_calls(connection, run_id, outcome.tool_calls)
             final_status = "verified" if outcome.verified else "unverified"
@@ -652,6 +674,11 @@ class RuntimeService:
         if not self._is_running(run_id):
             return self._run_response(run_id)
         with self.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row["status"] != "running":
+                return self._row_payload(row)
             self.repository.add_run_events(
                 connection,
                 run_id,
@@ -686,6 +713,11 @@ class RuntimeService:
     ) -> dict[str, Any]:
         now = _now()
         with self.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row["status"] != "running":
+                return self._row_payload(row)
             self._store_tool_calls(connection, run_id, pause.tool_calls)
             self.repository.insert_approval_request(
                 connection,
@@ -705,6 +737,19 @@ class RuntimeService:
                 created_at=now,
             )
             self.repository.set_run_status(connection, run_id, status="waiting")
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [
+                    (pause.node_id, "node.waiting", {"reason": "approval"}),
+                    (pause.node_id, "approval.requested", {"prompt": pause.prompt}),
+                    (
+                        pause.node_id,
+                        "checkpoint.created",
+                        {"waiting_kind": "approval"},
+                    ),
+                ],
+            )
             return self._stored_run_response(
                 connection,
                 run_id,
@@ -755,6 +800,276 @@ class RuntimeService:
                 created_at=now,
             )
 
+    def _recovery_identity(
+        self, project_id: str, source: AgentSource
+    ) -> dict[str, Any]:
+        project = self.repository.project(project_id)
+        if project is None:
+            raise RuntimeError("project_invalid", "Project is unavailable")
+        model = self._model_for(project_id, source.agent_id)
+        return {
+            "source_hash": source.source_hash,
+            "permissions": source.permissions.to_dict(),
+            "resource_lock": dict(source.lock),
+            "project_root": str(self.projects._existing_root(project["root_path"])),
+            "model_base_url": model.settings.model_base_url,
+            "model_id": model.settings.model_id,
+            "model_api_key_env": model.settings.model_api_key_env,
+        }
+
+    def _checkpoint_execution(
+        self,
+        project_id: str,
+        run_id: str,
+        source: AgentSource,
+        node_id: str,
+        values: dict[str, Any],
+        *,
+        approved: bool,
+        verified: bool,
+        conversation_context: str,
+        tool_calls: tuple[_ToolCallRecord, ...],
+    ) -> None:
+        state = {
+            "values": values,
+            "approved": approved,
+            "verified": verified,
+            "conversation_context": conversation_context,
+            "identity": self._recovery_identity(project_id, source),
+        }
+        checkpoint_id = new_uuid7()
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT status FROM runtime_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None or row["status"] != "running":
+                raise _RunAbandoned()
+            self._store_tool_calls(connection, run_id, tool_calls)
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [
+                    (
+                        node_id,
+                        "checkpoint.created",
+                        {
+                            "checkpoint_id": checkpoint_id,
+                            "waiting_kind": "execution",
+                            "next_node_id": node_id,
+                        },
+                    )
+                ],
+            )
+            state["sequence"] = connection.execute(
+                "SELECT MAX(sequence) FROM runtime_run_events WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+            self.repository.insert_checkpoint(
+                connection,
+                checkpoint_id=checkpoint_id,
+                run_id=run_id,
+                node_id=node_id,
+                waiting_kind="execution",
+                values=state,
+                created_at=_now(),
+            )
+
+    def _resume_run(
+        self,
+        row: Any,
+        *,
+        checkpoint_id: str | None,
+        scope: str,
+        idempotency_key: str,
+        digest: str,
+    ) -> dict[str, Any]:
+        if not checkpoint_id:
+            raise RuntimeError(
+                "command_not_applicable",
+                "Resume requires an explicit execution checkpoint",
+            )
+        version = self.repository.version(row["version_id"])
+        if version is None or version["agent_id"] != row["agent_id"]:
+            raise RuntimeError(
+                "agent_version_not_found", "Committed Agent version not found"
+            )
+        source = AgentSource.from_dict(json.loads(version["source_json"]))
+        if (
+            source.agent_id != row["agent_id"]
+            or source.source_hash != version["source_hash"]
+        ):
+            raise RuntimeError(
+                "agent_version_invalid", "Agent version integrity check failed"
+            )
+        inputs = self.repository.run_inputs(row["run_id"])
+        self._validate_inputs(source, inputs)
+        now, command_id, run_id = _now(), new_uuid7(), new_uuid7()
+        with self.repository.transaction() as connection:
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
+            current = connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (row["run_id"],)
+            ).fetchone()
+            if current["status"] not in {"failed", "interrupted"}:
+                raise RuntimeError(
+                    "command_not_applicable",
+                    "Resume requires a failed or interrupted run; "
+                    "Stop revokes recovery",
+                )
+            checkpoint = self.repository.latest_checkpoint(connection, row["run_id"])
+            if (
+                checkpoint is None
+                or checkpoint["checkpoint_id"] != checkpoint_id
+                or checkpoint["waiting_kind"] != "execution"
+            ):
+                raise RuntimeError(
+                    "resume_checkpoint_invalid",
+                    "Only the latest execution checkpoint is recoverable; "
+                    "approval waits require Approve/Reject",
+                )
+            previous = connection.execute(
+                "SELECT payload_json FROM runtime_run_commands WHERE run_id = ? "
+                "AND command_type = 'resume' AND status = 'applied'",
+                (row["run_id"],),
+            ).fetchone()
+            if previous is not None:
+                child_id = json.loads(previous["payload_json"])["resume_run_id"]
+                response = self._row_payload(
+                    connection.execute(
+                        "SELECT * FROM runtime_runs WHERE run_id = ?", (child_id,)
+                    ).fetchone()
+                )
+                self.repository.remember_response(
+                    connection, scope, idempotency_key, digest, response
+                )
+                return response
+            state = json.loads(checkpoint["values_json"])
+            dispatched = connection.execute(
+                "SELECT 1 FROM runtime_run_events WHERE run_id = ? "
+                "AND sequence > ? AND kind = 'tool.started' LIMIT 1",
+                (row["run_id"], state["sequence"]),
+            ).fetchone()
+            if dispatched is not None:
+                raise RuntimeError(
+                    "resume_effect_unsafe",
+                    "A Tool was dispatched after this checkpoint; "
+                    "reconcile its effects before recovery",
+                )
+            if state["identity"] != self._recovery_identity(row["project_id"], source):
+                raise RuntimeError(
+                    "resume_identity_changed",
+                    "Checkpoint resource, workspace or Runtime "
+                    "profile identity changed",
+                )
+            dependencies = inspect_agent_dependencies(
+                self.projects, self.tools.catalog, row["project_id"], source
+            )
+            if not dependencies["runtime_ready"]:
+                raise RuntimeError(
+                    "resume_dependencies_unavailable",
+                    "Pinned checkpoint dependencies are not available",
+                )
+            self.repository.create_run(
+                connection,
+                run_id=run_id,
+                project_id=row["project_id"],
+                agent_id=row["agent_id"],
+                version_id=row["version_id"],
+                created_at=now,
+                inputs=inputs,
+                conversation_id=row["conversation_id"],
+            )
+            self.repository.insert_run_command(
+                connection,
+                command_id=command_id,
+                run_id=row["run_id"],
+                command_type="resume",
+                payload={"resume_run_id": run_id, "checkpoint_id": checkpoint_id},
+                status="applied",
+                created_at=now,
+                applied_at=now,
+            )
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [
+                    (
+                        None,
+                        "run.created",
+                        {
+                            "resume_of_run_id": row["run_id"],
+                            "resume_command_id": command_id,
+                            "checkpoint_id": checkpoint_id,
+                            "next_node_id": checkpoint["node_id"],
+                            "version_id": row["version_id"],
+                            "inputs": inputs,
+                            "recovery_identity": state["identity"],
+                        },
+                    ),
+                    (None, "run.started", {}),
+                ],
+            )
+            child_checkpoint_id = new_uuid7()
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [
+                    (
+                        checkpoint["node_id"],
+                        "checkpoint.created",
+                        {
+                            "checkpoint_id": child_checkpoint_id,
+                            "waiting_kind": "execution",
+                            "next_node_id": checkpoint["node_id"],
+                        },
+                    )
+                ],
+            )
+            self.repository.insert_checkpoint(
+                connection,
+                checkpoint_id=child_checkpoint_id,
+                run_id=run_id,
+                node_id=checkpoint["node_id"],
+                waiting_kind="execution",
+                values={
+                    **state,
+                    "sequence": connection.execute(
+                        "SELECT MAX(sequence) FROM runtime_run_events WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchone()[0],
+                },
+                created_at=now,
+            )
+            response = self._row_payload(
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            )
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, response
+            )
+        self._schedule_execution(
+            run_id,
+            lambda: self._complete_execution(
+                row["project_id"],
+                run_id,
+                source,
+                state["values"],
+                start_node=checkpoint["node_id"],
+                approved=state["approved"],
+                verified=state["verified"],
+                conversation_context=state["conversation_context"],
+                conversation_id=row["conversation_id"],
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            ),
+        )
+        return response
+
     def _retry_run(
         self,
         row: Any,
@@ -769,37 +1084,133 @@ class RuntimeService:
                 "Retry is only available for terminal unsuccessful runs",
             )
         inputs = self.repository.run_inputs(row["run_id"])
+        version = self.repository.version(row["version_id"])
+        if version is None or version["agent_id"] != row["agent_id"]:
+            raise RuntimeError(
+                "agent_version_not_found", "Committed Agent version not found"
+            )
+        source = AgentSource.from_dict(json.loads(version["source_json"]))
+        if (
+            source.agent_id != row["agent_id"]
+            or source.source_hash != version["source_hash"]
+        ):
+            raise RuntimeError(
+                "agent_version_invalid", "Agent version integrity check failed"
+            )
+        self._validate_inputs(source, inputs)
         now = _now()
         command_id = new_uuid7()
+        run_id = new_uuid7()
+        conversation_id = row["conversation_id"]
+        conversation_context = ""
         with self.repository.transaction() as connection:
-            self.repository.remember_response(
-                connection, scope, idempotency_key, digest, self._row_payload(row)
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
+            # Receipts are stored at outcome/pause; absence cannot prove no effect.
+            # The durable pre-dispatch event also covers cancellation and process loss.
+            ancestor_id = row["run_id"]
+            while ancestor_id:
+                dispatched = connection.execute(
+                    "SELECT 1 FROM runtime_run_events WHERE run_id = ? "
+                    "AND kind = 'tool.started' LIMIT 1",
+                    (ancestor_id,),
+                ).fetchone()
+                if dispatched is not None:
+                    raise RuntimeError(
+                        "retry_effect_unsafe",
+                        "Retry blocked: a Tool may have produced external effects. "
+                        "Inspect the original run and reconcile effects manually "
+                        "before a new run.",
+                    )
+                created = connection.execute(
+                    "SELECT payload_json FROM runtime_run_events WHERE run_id = ? "
+                    "AND kind = 'run.created' ORDER BY sequence LIMIT 1",
+                    (ancestor_id,),
+                ).fetchone()
+                ancestor_id = (
+                    json.loads(created["payload_json"]).get("resume_of_run_id")
+                    if created is not None
+                    else None
+                )
+            if conversation_id and self.conversations is not None:
+                conversation_id, conversation_context = self.conversations.prepare_turn(
+                    connection,
+                    project_id=row["project_id"],
+                    agent_id=row["agent_id"],
+                    conversation_id=conversation_id,
+                    inputs=inputs,
+                    run_id=run_id,
+                    append_user=False,
+                )
+            elif conversation_id:
+                raise RuntimeError(
+                    "conversation_unavailable",
+                    "Agent conversation service is unavailable",
+                )
+            self.repository.create_run(
+                connection,
+                run_id=run_id,
+                project_id=row["project_id"],
+                agent_id=row["agent_id"],
+                version_id=row["version_id"],
+                created_at=now,
+                inputs=inputs,
+                conversation_id=conversation_id,
             )
             self.repository.insert_run_command(
                 connection,
                 command_id=command_id,
                 run_id=row["run_id"],
                 command_type="retry",
-                payload={},
-                status="accepted",
+                payload={"retry_run_id": run_id},
+                status="applied",
                 created_at=now,
+                applied_at=now,
             )
-        child = self.run(
-            row["project_id"],
-            row["agent_id"],
-            inputs,
-            new_uuid7(),
-            conversation_id=row["conversation_id"],
-            append_user=False,
-        )
-        with self.repository.transaction() as connection:
-            self.repository.mark_command_applied(
-                connection, command_id, applied_at=_now()
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [
+                    (
+                        None,
+                        "run.created",
+                        {
+                            "retry_of_run_id": row["run_id"],
+                            "retry_command_id": command_id,
+                            "version_id": row["version_id"],
+                            "inputs": inputs,
+                        },
+                    ),
+                    (None, "run.started", {}),
+                ],
             )
-            response = dict(child)
-            self.repository.replace_idempotent_response(
+            response = self._row_payload(
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            )
+            self.repository.remember_response(
                 connection, scope, idempotency_key, digest, response
             )
+        self._schedule_execution(
+            run_id,
+            lambda: self._complete_execution(
+                row["project_id"],
+                run_id,
+                source,
+                inputs,
+                start_node=None,
+                approved=False,
+                conversation_id=conversation_id,
+                conversation_context=conversation_context,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            ),
+        )
         return response
 
     def _stop_run(
@@ -810,13 +1221,21 @@ class RuntimeService:
         idempotency_key: str,
         digest: str,
     ) -> dict[str, Any]:
-        if row["status"] not in {"waiting", "running"}:
-            raise RuntimeError(
-                "command_not_applicable", "Stop is only available for active runs"
-            )
         now = _now()
         command_id = new_uuid7()
         with self.repository.transaction() as connection:
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
+            row = connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (row["run_id"],)
+            ).fetchone()
+            if row["status"] not in {"waiting", "running"}:
+                raise RuntimeError(
+                    "command_not_applicable", "Stop is only available for active runs"
+                )
             self.repository.remember_response(
                 connection, scope, idempotency_key, digest, self._row_payload(row)
             )
@@ -870,6 +1289,18 @@ class RuntimeService:
         now = _now()
         command_id = new_uuid7()
         with self.repository.transaction() as connection:
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
+            row = connection.execute(
+                "SELECT * FROM runtime_runs WHERE run_id = ?", (row["run_id"],)
+            ).fetchone()
+            if row["status"] != "waiting":
+                raise RuntimeError(
+                    "command_not_applicable", "This run is not waiting for approval"
+                )
             pending = self.repository.pending_approval(connection, row["run_id"])
             checkpoint = self.repository.latest_checkpoint(connection, row["run_id"])
             if pending is None or checkpoint is None:
@@ -995,6 +1426,7 @@ class RuntimeService:
         digest: str | None,
         conversation_id: str | None = None,
         conversation_context: str = "",
+        verified: bool = False,
     ) -> None:
         try:
             outcome = self._execute(
@@ -1006,6 +1438,7 @@ class RuntimeService:
                 start_node=start_node,
                 approved=approved,
                 conversation_context=conversation_context,
+                verified=verified,
             )
             if not self._is_running(run_id):
                 return
@@ -1094,6 +1527,7 @@ class RuntimeService:
         start_node: str | None = None,
         approved: bool = False,
         conversation_context: str = "",
+        verified: bool = False,
     ) -> _ExecutionOutcome:
         nodes = {node.id: node for node in source.nodes}
         edges = {
@@ -1107,7 +1541,7 @@ class RuntimeService:
         )
         values = dict(inputs)
         result: dict[str, Any] = {}
-        verifier_passed = False
+        verifier_passed = verified
         events: list[tuple[str | None, str, dict[str, Any]]] = []
         tool_calls: list[_ToolCallRecord] = []
 
@@ -1119,6 +1553,18 @@ class RuntimeService:
             if not self._is_running(run_id):
                 raise _RunAbandoned()
             node = nodes[current]
+            self._checkpoint_execution(
+                project_id,
+                run_id,
+                source,
+                node.id,
+                values,
+                approved=approved,
+                verified=verifier_passed,
+                conversation_context=conversation_context,
+                tool_calls=tuple(tool_calls),
+            )
+            tool_calls.clear()
             emit(
                 node.id,
                 "node.started",
@@ -1294,9 +1740,6 @@ class RuntimeService:
                     prompt = node.prompt or ""
                     if "{{" in prompt:
                         prompt = _interpolate(prompt, values)
-                    emit(node.id, "node.waiting", {"reason": "approval"})
-                    emit(node.id, "approval.requested", {"prompt": prompt})
-                    emit(node.id, "checkpoint.created", {"waiting_kind": "approval"})
                     return _ExecutionOutcome(
                         events=events,
                         tool_calls=tuple(tool_calls),
@@ -1316,6 +1759,8 @@ class RuntimeService:
                         f"{node.component_type.value} is not supported by "
                         "this local Runtime",
                     )
+            except _RunAbandoned:
+                raise
             except (RuntimeProviderError, ToolRuntimeError) as exc:
                 runtime_error = RuntimeError(exc.code, str(exc))
                 if isinstance(exc, ToolRuntimeError) and exc.receipt is not None:

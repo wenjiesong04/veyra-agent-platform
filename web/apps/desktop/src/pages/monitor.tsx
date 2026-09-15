@@ -3,11 +3,15 @@ import { Button, EmptyState, ErrorState, LoadingState, Panel, SectionHeading, St
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OrchestratorStatus, WorkItem } from "@veyra/api-contracts";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { RunDetail } from "../features/runs/RunDetail";
+import { runDetailHref, useRunQuery } from "../features/runs/run-location";
 
 export function MonitorPage() {
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api, projects, status: workspaceStatus } = useProjectWorkspace();
+  const query = useRunQuery();
+  const selectedRunId = query.get("run_id");
   const [plane, setPlane] = useState<OrchestratorStatus | null>(null);
   const [items, setItems] = useState<WorkItem[]>([]);
   const [error, setError] = useState("");
@@ -173,6 +177,9 @@ export function MonitorPage() {
         <StatusBadge label={copy.local} tone="good" />
       </div>
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
+      {selectedRunId ? <Panel>{query.get("project_id") && (query.get("agent_id") || query.get("workflow_id"))
+        ? <RunDetail api={api} projectId={query.get("project_id")!} agentId={query.get("agent_id") ?? undefined} workflowId={query.get("workflow_id") ?? undefined} runId={selectedRunId} locale={locale} />
+        : <ErrorState message={zh ? "运行链接缺少身份信息。" : "Run link is missing its identity."} />}</Panel> : null}
       {project ? (
         <Panel>
           <SectionHeading eyebrow={zh ? "创建工作" : "Create work"} title={zh ? "新增 WorkItem" : "New WorkItem"} detail={zh ? "创建后会进入本机 Orchestrator；只会派发到你选中的本地 Agent。" : "The item enters the local Orchestrator and can only dispatch to the selected local Agent."} />
@@ -200,7 +207,8 @@ export function MonitorPage() {
                     <small>{item.agent_id} · {item.status}{item.attempt_number ? ` · attempt ${item.attempt_number}` : ""}{item.failure_class ? ` · ${item.failure_class}` : ""}{item.depends_on.length ? ` · ${zh ? "依赖" : "depends on"}: ${item.depends_on.map((dependency) => itemTitles.get(dependency) ?? dependency.slice(0, 8)).join(", ")}` : ""}</small>
                   </span>
                   <Tag>{item.stale ? (zh ? "疑似停滞" : "Stale") : item.status === "backlog" && item.depends_on.length ? (zh ? "等待依赖" : "Blocked") : item.status}</Tag>
-                  {item.attempts?.length ? <details className="work-item-attempts"><summary>{item.attempts.length} {zh ? "次尝试" : "attempts"}</summary>{item.attempts.map((attempt) => <span key={attempt.attempt_id}>#{attempt.attempt_number} · {attempt.status}{attempt.failure_class ? ` · ${attempt.failure_class}` : ""}{attempt.run_id ? ` · ${attempt.run_id}` : ""}</span>)}</details> : null}
+                  {item.run_id ? <a href={runDetailHref({ projectId: item.project_id, agentId: item.agent_id, runId: item.run_id })}>{item.run_id}</a> : null}
+                  {item.attempts?.length ? <details className="work-item-attempts"><summary>{item.attempts.length} {zh ? "次尝试" : "attempts"}</summary>{item.attempts.map((attempt) => <span key={attempt.attempt_id}>#{attempt.attempt_number} · {attempt.status}{attempt.failure_class ? ` · ${attempt.failure_class}` : ""}{attempt.run_id ? <a href={runDetailHref({ projectId: item.project_id, agentId: item.agent_id, runId: attempt.run_id })}>{attempt.run_id}</a> : null}</span>)}</details> : null}
                   {item.status === "ready" || item.status === "backlog" ? (
                     <Button size="sm" icon={Play} disabled={busyId === item.work_item_id} onClick={() => void dispatch(item.work_item_id)}>{copy.dispatch}</Button>
                   ) : null}

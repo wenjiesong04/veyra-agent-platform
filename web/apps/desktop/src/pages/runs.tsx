@@ -4,6 +4,7 @@ import type { AgentRunResponse, RuntimeRunStatus, WorkflowRunResponse } from "@v
 import { projectRoutePaths } from "@veyra/api-contracts";
 import { EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { withRunId } from "../features/runs/run-location";
 
 type RunRow = {
   id: string;
@@ -15,7 +16,7 @@ type RunRow = {
   status: RuntimeRunStatus;
   startedAt: string;
   finishedAt: string | null;
-  eventCount: number;
+  eventCount: number | undefined;
 };
 
 function toneForStatus(status: RuntimeRunStatus) {
@@ -45,11 +46,11 @@ function toAgentRow(run: AgentRunResponse, projectName: string, agentName: strin
     name: agentName,
     projectName,
     projectId: run.project_id,
-    href: projectRoutePaths.agentRun(run.project_id, run.agent_id),
+    href: withRunId(projectRoutePaths.agentRun(run.project_id, run.agent_id), run.run_id),
     status: run.status,
     startedAt: run.created_at,
     finishedAt: run.finished_at,
-    eventCount: run.events?.length ?? 0,
+    eventCount: run.events?.length,
   };
 }
 
@@ -60,11 +61,11 @@ function toWorkflowRow(run: WorkflowRunResponse, projectName: string, workflowNa
     name: workflowName,
     projectName,
     projectId: run.project_id,
-    href: projectRoutePaths.workflow(run.project_id, run.workflow_id),
+    href: withRunId(projectRoutePaths.workflow(run.project_id, run.workflow_id), run.run_id),
     status: run.status,
     startedAt: run.created_at,
     finishedAt: run.finished_at,
-    eventCount: run.events?.length ?? 0,
+    eventCount: run.events?.length,
   };
 }
 
@@ -137,7 +138,7 @@ export function RunsPage({ runId, projectId }: { runId?: string; projectId?: str
     void load();
   }, [copy.retry, load, workspaceError, workspaceStatus]);
 
-  const selected = rows.find((run) => run.id === runId) ?? rows[0];
+  const selected = runId ? rows.find((run) => run.id === runId) : rows[0];
   const stateLabel = (value: RuntimeRunStatus) => copy.state[value];
 
   return (
@@ -146,7 +147,8 @@ export function RunsPage({ runId, projectId }: { runId?: string; projectId?: str
       {status === "loading" || workspaceStatus === "loading" ? <LoadingState label={copy.loading} /> : null}
       {status === "error" ? <ErrorState message={error || copy.retry} onRetry={() => void load()} /> : null}
       {status === "ready" && !rows.length ? <EmptyState icon={Gauge} title={copy.emptyTitle} detail={copy.emptyDetail} /> : null}
-      {status === "ready" && selected ? <div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.history} title={copy.recent} detail={copy.detail} /><div className="run-list">{rows.map((run) => <a className={`run-row ${run.id === selected.id ? "selected" : ""}`} href={run.href} key={`${run.kind}-${run.id}`}><span className="run-state-icon"><Clock3 size={17} /></span><span className="row-copy"><strong>{run.name}</strong><small>{run.projectName} · {formatTime(run.startedAt, locale)} · {run.kind === "workflow" ? copy.workflow : copy.agent}</small><em><Clock3 size={12} /> {formatDuration(run.startedAt, run.finishedAt)} · {run.eventCount} {copy.events}</em></span><StatusBadge label={stateLabel(run.status)} tone={toneForStatus(run.status)} /><ArrowUpRight size={15} className="row-arrow" /></a>)}</div></Panel><Panel><SectionHeading eyebrow={copy.selected} title={selected.id} /><div className="run-detail-header"><StatusBadge label={stateLabel(selected.status)} tone={toneForStatus(selected.status)} /><Tag>{selected.kind === "workflow" ? copy.workflow : copy.agent}</Tag></div><dl className="detail-list"><div><dt>{copy.project}</dt><dd>{selected.projectName}</dd></div><div><dt>{copy.started}</dt><dd>{formatTime(selected.startedAt, locale)}</dd></div><div><dt>{copy.duration}</dt><dd>{formatDuration(selected.startedAt, selected.finishedAt)}</dd></div><div><dt>{copy.evidence}</dt><dd>{selected.eventCount} {copy.ordered}</dd></div></dl><div className="button-row"><LinkButton href={selected.href} icon={Play} size="sm" variant="primary">{copy.openCanvas}</LinkButton></div></Panel></div> : null}
+      {status === "ready" && runId && !selected ? <ErrorState message={zh ? "找不到指定运行。" : "The requested run was not found."} /> : null}
+      {status === "ready" && selected ? <div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.history} title={copy.recent} detail={copy.detail} /><div className="run-list">{rows.map((run) => <a className={`run-row ${run.id === selected.id ? "selected" : ""}`} href={run.href} key={`${run.kind}-${run.id}`}><span className="run-state-icon"><Clock3 size={17} /></span><span className="row-copy"><strong>{run.name}</strong><small>{run.projectName} · {formatTime(run.startedAt, locale)} · {run.kind === "workflow" ? copy.workflow : copy.agent}</small><em><Clock3 size={12} /> {formatDuration(run.startedAt, run.finishedAt)}{run.eventCount !== undefined ? ` · ${run.eventCount} ${copy.events}` : ""}</em></span><StatusBadge label={stateLabel(run.status)} tone={toneForStatus(run.status)} /><ArrowUpRight size={15} className="row-arrow" /></a>)}</div></Panel><Panel><SectionHeading eyebrow={copy.selected} title={selected.id} /><div className="run-detail-header"><StatusBadge label={stateLabel(selected.status)} tone={toneForStatus(selected.status)} /><Tag>{selected.kind === "workflow" ? copy.workflow : copy.agent}</Tag></div><dl className="detail-list"><div><dt>{copy.project}</dt><dd>{selected.projectName}</dd></div><div><dt>{copy.started}</dt><dd>{formatTime(selected.startedAt, locale)}</dd></div><div><dt>{copy.duration}</dt><dd>{formatDuration(selected.startedAt, selected.finishedAt)}</dd></div><div><dt>{copy.evidence}</dt><dd>{selected.eventCount !== undefined ? `${selected.eventCount} ${copy.ordered}` : (zh ? "打开详情查看" : "Open detail to inspect")}</dd></div></dl><div className="button-row"><LinkButton href={selected.href} icon={Play} size="sm" variant="primary">{copy.openCanvas}</LinkButton></div></Panel></div> : null}
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { Alert, Button, Panel, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { nodeRunStates, useLiveRun } from "./live-run";
 import { RunApprovalBar } from "./RunApprovalBar";
-import { RunEventList } from "./RunEventList";
+import { RunEvidence } from "../runs/RunDetail";
 import { useStudioChrome } from "./studio-chrome";
 import {
   initialSourceInputs,
@@ -101,9 +101,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
         </div>
         <div className={`studio-run-result${!run && !live.error ? " is-empty" : ""}`} aria-live="polite">
           {live.error ? <Alert type="error" title={live.error} /> : null}
-          {run?.error ? <Alert type="error" title={run.error.message} description={zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`} /> : null}
           {inFlight && run?.stream_text ? <pre aria-label={zh ? "模型流式输出" : "Streaming model output"}><code>{run.stream_text}</code></pre> : null}
-          {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
           {run ? (
             <ol className="studio-run-nodes" aria-label={zh ? "节点运行状态" : "Node run states"}>
               {nodes.map((node) => (
@@ -114,7 +112,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
               ))}
             </ol>
           ) : null}
-          {run?.events?.length ? <RunEventList events={run.events} locale={locale} /> : !run && !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
+          {run ? <RunEvidence run={run} locale={locale} /> : !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
         </div>
       </div>
       )}

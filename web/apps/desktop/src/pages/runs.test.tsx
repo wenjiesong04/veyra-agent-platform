@@ -64,6 +64,9 @@ describe("RunsPage", () => {
     expect(screen.queryByText("Release Check")).not.toBeInTheDocument();
     expect(screen.queryByText("run-1042")).not.toBeInTheDocument();
     expect(api.listAgentRuns).toHaveBeenCalledWith("project-1", "agent-1");
+    expect(screen.getByText("Review Companion").closest("a")).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/run?run_id=run-live-1");
+    expect(screen.queryByText(/0 events/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 ordered events/)).not.toBeInTheDocument();
   });
 
   it("shows an empty state when the Project has no runs", async () => {

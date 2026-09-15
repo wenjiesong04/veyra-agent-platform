@@ -732,6 +732,7 @@ export type StartAgentRunRequest = {
 
 export type RunCommandRequest = {
   command: "approve" | "reject" | "stop" | "resume" | "retry";
+  checkpoint_id?: string;
 };
 
 export type ComponentRuntimeStatus =
@@ -1052,6 +1053,7 @@ export type RuntimeEventKind =
   | "tool.requested"
   | "tool.started"
   | "tool.completed"
+  | "tool.failed"
   | "model.delta"
   | "approval.requested"
   | "approval.resolved"

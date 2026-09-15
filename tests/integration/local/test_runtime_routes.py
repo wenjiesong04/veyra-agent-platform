@@ -157,16 +157,49 @@ def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
         assert [event["kind"] for event in detail["events"]] == [
             "run.created",
             "run.started",
+            "checkpoint.created",
             "node.started",
             "node.completed",
+            "checkpoint.created",
             "node.started",
             "node.completed",
+            "checkpoint.created",
             "node.started",
             "node.completed",
             "run.completed",
         ]
         assert all(RunEvent.from_dict(event) for event in detail["events"])
     with TestClient(create_app(settings)) as restarted:
+        summaries = restarted.get(url + "s").json()["runs"]
+        assert len(summaries) == 1
+        assert summaries[0]["run_id"] == detail["run_id"]
+        assert "events" not in summaries[0]
+        detail_url = url + "s/" + first.json()["run_id"]
+        assert restarted.get(detail_url).json() == detail
+        events = detail["events"]
+        for after, last_event_id in ((0, "0"), (2, "4"), (4, "2")):
+            replay = restarted.get(
+                detail_url + f"/events?after={after}",
+                headers={"Last-Event-ID": last_event_id},
+            )
+            assert replay.status_code == 200
+            assert replay.headers["content-type"].startswith("text/event-stream")
+            frames = replay.text.strip().split("\n\n")
+            expected = [
+                event
+                for event in events
+                if event["sequence"] > max(after, int(last_event_id))
+            ]
+            assert len(frames) == len(expected) + 1
+            for frame, event in zip(frames[:-1], expected, strict=True):
+                fields = dict(line.split(": ", 1) for line in frame.splitlines())
+                assert fields["event"] == "runtime"
+                assert fields["id"] == str(event["sequence"])
+                assert json.loads(fields["data"]) == event
+            done = dict(line.split(": ", 1) for line in frames[-1].splitlines())
+            assert done["event"] == "done"
+            assert json.loads(done["data"]) == {"status": "unverified"}
+        assert restarted.get(detail_url).json() == detail
         assert len(restarted.get(url + "s").json()["runs"]) == 1
 
 

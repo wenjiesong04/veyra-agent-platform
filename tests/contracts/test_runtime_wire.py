@@ -20,6 +20,35 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeWireContractTests(unittest.TestCase):
+    def test_failed_tool_receipt_matches_wire_schema(self) -> None:
+        from jsonschema import Draft202012Validator, ValidationError
+
+        data = {
+            "schema_version": "1.0",
+            "event_id": "01a03795-a5b0-7b1c-bad0-e07ac7dda22b",
+            "run_id": "01a03795-a5b0-72d3-8204-6f66a60073db",
+            "timestamp": "2026-08-25T00:00:00Z",
+            "sequence": 5,
+            "kind": "tool.failed",
+            "node_id": "lookup",
+            "payload": {
+                "output_digest": None,
+                "schema_validation": {"input": "failed", "output": "not_checked"},
+            },
+        }
+        validator = Draft202012Validator(
+            json.loads(
+                (ROOT / "contracts/schemas/runtime-wire.schema.json").read_text()
+            )
+        )
+        validator.validate(data)
+        self.assertEqual(RunEvent.from_dict(data).to_dict(), data)
+        data["node_id"] = None
+        with self.assertRaises(ContractValidationError):
+            RunEvent.from_dict(data)
+        with self.assertRaises(ValidationError):
+            validator.validate(data)
+
     def test_run_level_event_allows_only_null_node_id(self) -> None:
         data = {
             "schema_version": "1.0",

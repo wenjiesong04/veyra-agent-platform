@@ -1065,7 +1065,7 @@ const runtimeStatuses = new Set<ComponentDefinition["runtime_status"]>([
 const runtimeEventKinds = new Set<NonNullable<AgentRunResponse["events"]>[number]["kind"]>([
   "run.created", "run.state_changed", "run.started", "run.completed", "run.interrupted", "run.failed", "run.cancelled",
   "node.queued", "node.state_changed", "node.started", "node.output", "node.waiting", "node.completed", "node.failed", "node.skipped", "node.cancelled",
-  "tool.requested", "tool.started", "tool.completed", "model.delta", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
+  "tool.requested", "tool.started", "tool.completed", "tool.failed", "model.delta", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
   "artifact.created", "checkpoint.created", "verification.completed", "verifier.result",
 ]);
 

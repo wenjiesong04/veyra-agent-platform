@@ -34,6 +34,7 @@ class CreateAgentConversationRequest(BaseModel):
 class RunCommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str
+    checkpoint_id: str | None = None
 
 
 class SetRuntimeApiProfileRequest(BaseModel):
@@ -246,7 +247,12 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _runtime(request).command(
-                project_id, agent_id, run_id, payload.command, idempotency_key
+                project_id,
+                agent_id,
+                run_id,
+                payload.command,
+                idempotency_key,
+                checkpoint_id=payload.checkpoint_id,
             )
         )
 

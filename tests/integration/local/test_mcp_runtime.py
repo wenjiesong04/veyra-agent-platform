@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.contracts.wire import RunEvent
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.mcp import ScriptedMcpTransport
@@ -167,6 +168,23 @@ def test_nested_input_failure_never_calls_mcp(tmp_path: Path, query: dict) -> No
             "input": "failed",
             "output": "not_checked",
         }
+        assert all(RunEvent.from_dict(event) for event in failed["events"])
+
+    with TestClient(create_app(settings, runtime_transport=model)) as restarted:
+        detail_url = f"{url}s/{waiting['run_id']}"
+        assert restarted.get(detail_url).json() == failed
+        stream = restarted.get(detail_url + "/events")
+        assert stream.status_code == 200
+        replayed = [
+            json.loads(line.removeprefix("data: "))
+            for frame in stream.text.strip().split("\n\n")
+            if frame.startswith("id: ")
+            for line in frame.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert replayed == failed["events"]
+        assert all(RunEvent.from_dict(event) for event in replayed)
+        assert not mcp.arguments and not model.calls
 
 
 @pytest.mark.parametrize("answer", [7, "sensitive-invalid-output"])
@@ -217,6 +235,7 @@ def test_mcp_result_gates_model_and_started_event_precedes_call_return(
         finally:
             mcp.release.set()
         result = _await_run(client, url, run_id)
+        assert all(RunEvent.from_dict(event) for event in result["events"])
         success = isinstance(answer, int)
         assert result["status"] == ("unverified" if success else "failed"), result
         assert bool(model.calls) is success

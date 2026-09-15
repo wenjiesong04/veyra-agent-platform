@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { AgentRunResponse, JsonValue, RuntimeEvent, RuntimeRunStatus } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
+import { persistRunId } from "../runs/run-location";
 
 export type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
 
@@ -106,6 +107,7 @@ function useLiveRunSession({
         inputs,
         ...(conversationId ? { conversation_id: conversationId } : {}),
       });
+      if (window.location.hash.split("?")[0]?.endsWith("/design")) persistRunId(started.run_id);
       const detailed = api.getAgentRun
         ? await api.getAgentRun(projectId, agentId, started.run_id)
         : started;
@@ -137,24 +139,29 @@ function useLiveRunSession({
   const clear = React.useCallback(() => {
     setRun(null);
     setError("");
-  }, []);
+    if (!inactive && window.location.hash.split("?")[0]?.endsWith("/design")) persistRunId(null);
+  }, [inactive]);
 
   React.useEffect(() => {
     if (inactive || !run?.run_id || !api.watchAgentRunEvents) return;
     if (run.status !== "running" && run.status !== "waiting") return;
     const runId = run.run_id;
+    const refresh = () => {
+      if (!api.getAgentRun) return;
+      void api.getAgentRun(projectId, agentId, runId).then((detailed) => {
+        setRun((current) => (current?.run_id === detailed.run_id ? adopt(detailed, current) : current));
+      }).catch((cause) => setError(cause instanceof Error ? cause.message : "Could not refresh run"));
+    };
     return api.watchAgentRunEvents(
       projectId,
       agentId,
       runId,
       {
-        onEvent: (event) => setRun((current) => applyRuntimeEvent(current, event)),
-        onDone: () => {
-          if (!api.getAgentRun) return;
-          void api.getAgentRun(projectId, agentId, runId).then((detailed) => {
-            setRun((current) => (current?.run_id === detailed.run_id ? adopt(detailed, current) : current));
-          });
+        onEvent: (event) => {
+          setRun((current) => applyRuntimeEvent(current, event));
+          if (event.run_id === runId && ["run.completed", "run.failed", "run.cancelled", "run.interrupted"].includes(event.kind)) refresh();
         },
+        onDone: refresh,
       },
       { after: 0 },
     );

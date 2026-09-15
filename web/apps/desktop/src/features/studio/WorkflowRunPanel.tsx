@@ -5,7 +5,8 @@ import { Alert, Button, Panel, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { nodeRunStates, type NodeRunState } from "./live-run";
 import { RunApprovalBar } from "./RunApprovalBar";
-import { RunEventList } from "./RunEventList";
+import { RunEvidence } from "../runs/RunDetail";
+import { persistRunId } from "../runs/run-location";
 import { useStudioChrome } from "./studio-chrome";
 import {
   initialSourceInputs,
@@ -76,6 +77,7 @@ export function WorkflowRunPanel({
     setError("");
     try {
       const started = await api.runWorkflow(projectId, workflowId, { inputs });
+      persistRunId(started.run_id);
       const detailed = api.getWorkflowRun
         ? await api.getWorkflowRun(projectId, workflowId, started.run_id)
         : started;
@@ -136,7 +138,7 @@ export function WorkflowRunPanel({
             <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runWorkflow} onClick={() => void start()}>
               {inFlight ? (zh ? "运行中…" : "Running…") : (zh ? "测试运行" : "Test run")}
             </Button>
-            {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => { setRun(null); setError(""); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
+            {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => { setRun(null); setError(""); persistRunId(null); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
           <RunApprovalBar run={run ? workflowRunAsAgentRun(run) : null} locale={locale} disabled={busy} onCommand={(value) => void command(value)} />
           {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
@@ -145,8 +147,6 @@ export function WorkflowRunPanel({
         </div>
         <div className={`studio-run-result${!run && !error ? " is-empty" : ""}`} aria-live="polite">
           {error ? <Alert type="error" title={error} /> : null}
-          {run?.error ? <Alert type="error" title={run.error.message} description={zh ? `技术代码：${run.error.code}` : `Technical code: ${run.error.code}`} /> : null}
-          {run?.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
           {run ? (
             <ol className="studio-run-nodes" aria-label={zh ? "节点运行状态" : "Node run states"}>
               {nodes.map((node) => (
@@ -167,7 +167,7 @@ export function WorkflowRunPanel({
               ))}
             </ol>
           ) : null}
-          {run?.events?.length ? <RunEventList events={run.events} locale={locale} /> : !run && !error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
+          {run ? <RunEvidence run={run} locale={locale} /> : !error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
         </div>
       </div>
       )}

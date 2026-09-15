@@ -248,6 +248,25 @@ describe("LocalApiClient Project requests", () => {
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { name: "Ada" } });
   });
 
+  it("reads failed Tool receipts without rejecting the entire run detail", async () => {
+    const event = {
+      schema_version: "1.0", event_id: "event-1", run_id: "run-1", sequence: 5,
+      kind: "tool.failed", node_id: "lookup", timestamp: "2026-08-28T10:00:01Z",
+      payload: { input_digest: "a".repeat(64), output_digest: null, schema_validation: { input: "failed", output: "not_checked" } },
+    };
+    const failed = {
+      schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1",
+      version_id: "version-1", status: "failed", result: null,
+      error: { code: "mcp_input_schema_invalid", message: "MCP input validation failed" },
+      created_at: "2026-08-28T10:00:00Z", finished_at: "2026-08-28T10:00:01Z", events: [event],
+    };
+    const fetcher = vi.fn().mockResolvedValue(response(failed));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.getAgentRun("project-1", "agent-1", "run-1")).resolves.toEqual(failed);
+    fetcher.mockResolvedValue(response({ ...failed, events: [{ ...event, kind: "tool.unknown" }] }));
+    await expect(client.getAgentRun("project-1", "agent-1", "run-1")).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
   it("posts a durable run command with an idempotency key", async () => {
     const run = {
       schema_version: "1.0",
@@ -310,13 +329,18 @@ describe("LocalApiClient Project requests", () => {
     const client = new LocalApiClient({ fetcher: vi.fn() });
     const onEvent = vi.fn();
     const onDone = vi.fn();
-    const stop = client.watchAgentRunEvents("project-1", "agent-1", "run-1", { onEvent, onDone }, { after: 2 });
+    const onError = vi.fn();
+    const stop = client.watchAgentRunEvents("project-1", "agent-1", "run-1", { onEvent, onDone, onError }, { after: 2 });
     expect(created?.url).toBe("/api/v1/projects/project-1/agents/agent-1/runs/run-1/events?after=2");
     expect(listeners.runtime).toBeDefined();
     listeners.runtime({ data: JSON.stringify(event) } as MessageEvent);
-    listeners.done({ data: JSON.stringify({ status: "unverified" }) } as MessageEvent);
+    const failed = { ...event, event_id: "event-2", sequence: 3, kind: "tool.failed", node_id: "lookup", payload: { output_digest: null, schema_validation: { input: "failed", output: "not_checked" } } };
+    listeners.runtime({ data: JSON.stringify(failed) } as MessageEvent);
+    expect(onEvent).toHaveBeenCalledWith(failed);
+    expect(onError).not.toHaveBeenCalled();
+    listeners.done({ data: JSON.stringify({ status: "failed" }) } as MessageEvent);
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ kind: "run.created", sequence: 1 }));
-    expect(onDone).toHaveBeenCalledWith("unverified");
+    expect(onDone).toHaveBeenCalledWith("failed");
     stop();
     vi.unstubAllGlobals();
   });

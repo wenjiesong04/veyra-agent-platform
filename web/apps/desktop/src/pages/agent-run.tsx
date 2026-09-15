@@ -4,6 +4,8 @@ import type { AgentRunResponse, AgentVersionSnapshot } from "@veyra/api-contract
 import { projectRoutePaths } from "@veyra/api-contracts";
 import { EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { RunDetail } from "../features/runs/RunDetail";
+import { runDetailHref, useRunQuery } from "../features/runs/run-location";
 
 function toneForStatus(status: AgentRunResponse["status"]) {
   if (status === "verified") return "good" as const;
@@ -15,6 +17,7 @@ export function AgentRunPage({ projectId, agentId }: { projectId: string; agentI
   const { locale } = useLocale();
   const zh = locale === "zh";
   const { api, projects } = useProjectWorkspace();
+  const runId = useRunQuery().get("run_id");
   const cached = projects.find((item) => item.project_id === projectId) ?? null;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -22,6 +25,7 @@ export function AgentRunPage({ projectId, agentId }: { projectId: string; agentI
   const [versions, setVersions] = useState<AgentVersionSnapshot[]>([]);
 
   const load = useCallback(async () => {
+    if (runId) return;
     setLoading(true);
     setError("");
     try {
@@ -39,7 +43,7 @@ export function AgentRunPage({ projectId, agentId }: { projectId: string; agentI
     } finally {
       setLoading(false);
     }
-  }, [agentId, api, cached, projectId, zh]);
+  }, [agentId, api, cached, projectId, zh, runId]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -71,6 +75,7 @@ export function AgentRunPage({ projectId, agentId }: { projectId: string; agentI
     openStudio: "Open design canvas",
   };
 
+  if (runId) return <Panel><RunDetail api={api} projectId={projectId} agentId={agentId} runId={runId} locale={locale} /></Panel>;
   if (loading && !agent) return <LoadingState label={copy.loading} />;
   if (error || !project || !agent) {
     return <div className="project-missing"><ErrorState message={error || copy.missing} onRetry={() => void load()} /><LinkButton href={project ? projectRoutePaths.project(project.project_id) : "#/projects"} icon={ArrowLeft} variant="primary">{copy.back}</LinkButton></div>;
@@ -95,7 +100,7 @@ export function AgentRunPage({ projectId, agentId }: { projectId: string; agentI
       </Panel>
       <Panel>
         <SectionHeading eyebrow={copy.history} title={copy.history} />
-        {runs.length === 0 ? <EmptyState icon={Clock3} title={copy.empty} detail={copy.emptyDetail} /> : <ol className="agent-run-history">{runs.map((run) => <li key={run.run_id}><span><strong>{run.run_id}</strong><small>{run.created_at}</small></span><Tag>{run.version_id}</Tag><StatusBadge label={run.status} tone={toneForStatus(run.status)} /></li>)}</ol>}
+        {runs.length === 0 ? <EmptyState icon={Clock3} title={copy.empty} detail={copy.emptyDetail} /> : <ol className="agent-run-history">{runs.map((run) => <li key={run.run_id}><span><a href={runDetailHref({ projectId, agentId, runId: run.run_id })}><strong>{run.run_id}</strong></a><small>{run.created_at}</small></span><Tag>{run.version_id}</Tag><StatusBadge label={run.status} tone={toneForStatus(run.status)} /></li>)}</ol>}
       </Panel>
     </div>
   );

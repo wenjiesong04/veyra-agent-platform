@@ -51,6 +51,65 @@ commit/push 到 `codex/agent-platform` 并重启核对；维护本文和 `.backb
 
 ## 3. 事实基线
 
+### Runtime V1 complete（2026-09-15，最新验收）
+
+- Runtime V1 complete：持久化 tool.failed/events/receipts、审批与 Stop 原子控制、安全
+  Retry、明确 execution checkpoint Resume descendant、pinned version/inputs/runtime
+  identity、lineage、重启恢复及事务 rollback/idempotency 已形成用户闭环。历史章节的
+  “Retry UI / Resume 未实现”已被本条覆盖；Workflow 不支持通用 Retry/Resume 的边界不变。
+- 用户交接确认 Runtime 窄测 59 passed 与完整 backend/Ruff/mypy/Desktop gates 已通过。
+  本轮未重跑完整 gates；真实浏览器发现 RunDetail 使用 UUIDv4 造成 API 422，最小修复
+  为项目现有 UUIDv7 generator，保留命令 key 重用和 duplicate click protection。
+- UUIDv7 窄回归先 2 failed，再 run-navigation + local-client **37 passed**；Desktop
+  typecheck/build 通过，935.63 kB chunk warning 保留。后端生产代码本 Session 未改变。
+- 真实 Chrome 最终 PASS：`/tmp/veyra-runtime-v1-final-OYcCf9/browser-evidence.json`。
+  Studio 创建 Run→Approval→effect/verifier checkpoint→真实 API 进程重启→interrupted→
+  UI 明确 checkpoint Resume；descendant `01a0a417-f66b-7f88-8699-94d4f8e5e358` 保留
+  parent version/inputs、resume lineage/checkpoint_id/runtime identity，只执行 output，
+  不重复 effect。parent `01a0a417-f284-7641-af7c-8186c9518f86` 历史 detail 完全不变。
+- 已 dispatch Tool 的 Retry 被拒绝；审批前 Stop 的安全 Run Retry 创建子 Run 并 verified。
+  Runs/Monitor/Studio/Run detail 与 reload 始终保留精确 run_id；总 Run=4、创建 POST=2、
+  JS/outbound error=0。全程临时 Project/SQLite/Chrome，fake effect adapter、禁模型/外网/
+  dotenv/凭据；不是外部 Provider 验收，不涉及 Builder 历史 E2E。
+- harness 的 SSE shutdown、health readiness、链接 render 与 reload document 时序错误
+  仅修在 `/tmp`；只有浏览器真实证明的 UUIDv4 产品错误进入生产 diff。
+- 本地发布正在按 focused review→secret scan→commit/push→三服务新 SHA 验证收尾。
+  GitHub Actions Billing 保持 known external blocker，未查询/rerun，不阻塞本地发布。
+  完成后停止 Runtime 修改；下一模块从阶段 C Resource Library / Knowledge 的真实 API、
+  版本/来源/绑定证据范围确认进入，本 Session 不实现。
+
+### Runtime 历史 Run identity 切片（2026-09-15，最新 checkpoint）
+
+- 已保留接管的 Runtime wire/Retry/Pause 与所有测试改动。本轮先红测复现 Runs href
+  丢失 run_id，再最小修复 Runs、Agent history、Monitor current/attempt 和 Studio Run
+  Panel 的历史链接。`features/runs/run-location.ts` 显式编码 run_id，Studio 创建保存
+  query；历史详情与刷新只读取明确 ID，绝不重新创建或猜 latest。
+- `features/runs/RunDetail.tsx` 共享 Runtime GET detail、身份校验、过期请求隔离、active
+  refresh 与原 approve/reject/stop。历史 Studio 使用这个详情而非加载/修改当前 Draft；
+  `RunEvidence` 与两个 Run Panel 统一 status/version/timestamps/error/result 和 persisted
+  events/verifier/receipt payload。Agent SSE 终态补 GET，防状态变化先关闭 SSE 导致终态
+  result/error/finished_at 不完整；新增无 done 的回归测试。
+- Agent summary 无 events 就隐藏计数、提示打开详情，不再显示伪造的 0，也不为计数读取
+  所有历史事件；Workflow 原 list 自带 events 则保留真实计数。无 schema/迁移/API 新增。
+- 本轮证据：后端 contracts + runtime_routes/retry/control_races/workflow_version_boundary/
+  mcp_runtime/runtime_profiles/orchestrator_routes **72 passed**（59 Alembic warnings）；
+  前端 run-navigation/runs/studio/local-client/TestRunPanel/WorkflowRunPanel/live-run
+  **60 passed**；Desktop typecheck、受影响 7 Python 文件 Ruff check/format、mypy 154、
+  make verify-environment、git diff --check 通过。测试 fixture 缺字段已修正并复验。
+- 窄真实 Chrome 验收 **PASS**，临时根 `/tmp/veyra-runtime-nav-EBsQjm`：真实 Local API /
+  SQLite/Project，禁止 dotenv/凭据/外部 provider，Community 仅 account fixture。Studio
+  创建 verified `01a0a3ec-4f35-772a-86be-a39e425b2284`；另建 newer Run 后再从历史
+  打开原 ID，经 Monitor/Studio/Agent detail 导航与刷新仍 GET 同一完整原证据，包含
+  verifier.result。Agent history 同样可达；总 Run=2、浏览器创建 POST=1、JS/outbound
+  error=0，launcher 16471 已停止。首轮 harness 空 inputs 422 修正后通过；不算产品失败，
+  未重跑历史 E2E、未操作用户服务。
+- Focused review 后不继续无界审计。当前只列 **两个 V1 用户控制缺口**：已支持安全
+  Retry 尚无历史详情/Run Panel 用户入口；通用 Resume 仍明确拒绝、重启 interrupted
+  不是 checkpoint Resume（审批通过继续不能冒充 Resume）。Workflow 仅有审批/Stop。
+  因此本轮尚不满足用户给定全部闭环条件，未进入模块最终 commit/push/重启/下个模块。
+  Tool dispatch 后禁止盲 Retry 保持安全限制。Billing 不查询、不 rerun、不改 workflow；
+  详细测试命令与临时浏览器证据见 HANDOFF 最新 checkpoint。
+
 ### 当前已核对的实现（非全项目验收）
 
 仓库结构、主设计、ADR、Community registry/storage、Draft/Factory/Runtime 主要入口
@@ -132,7 +191,21 @@ Restart/Replay 的真实控制语义。
 
 ## 5. 当前待处理项
 
-### Chat-first Builder 第一阶段收尾（2026-09-15，当前优先级）
+### 当前优先级：Runtime 证据与控制闭环（2026-09-15）
+
+- Builder Phase 1 已完成本地发布，运行修订 `9153617`，具体重启/身份/接口证据见第 6 节。
+- GitHub Billing 是 known external blocker，不再阻塞本地开发；不处理 Billing、不 rerun，
+  不为 CI 改代码/workflow。GitHub CI 未执行，不是代码失败，也不是 CI PASS。
+- 已完成失败 Tool receipt 的事件契约补齐：复用既有执行与存储，修复 GET detail / SSE
+  解析 `tool.failed` 失败，具体证据见第 6 节。整体 Runtime 闭环仍未完成。
+- `_retry_run` 最小安全切片已验证：固定原版本与 inputs，保留原证据；已有 Tool dispatch
+  则拒绝 Retry，无 dispatch 的失败终态可创建新 Run，审批重新经过原流程。具体证据见下。
+  下一步仍围绕 Runtime 历史证据入口与控制边界，不扩 Retry UI 或自动 effect reconciliation。
+- Approval Pause 原子边界已补齐：Stop 先提交时不会被迟到 Pause 改回 waiting；审批事件、
+  approval/checkpoint 与 waiting 状态同事务提交。三项竞态/重建回放测试及相关 72 项通过，
+  详见下方与 HANDOFF；通用命令竞态及历史 run_id 导航仍未完成。
+
+### Chat-first Builder 第一阶段完成（2026-09-15）
 
 - 用户已明确修正方向：不再扩 Studio 独立自然语言入口。Factory 保留为创建适配器；
   Project Chat 由只创建 Agent 扩展到已有对象提案；Runtime Agent Conversation 职责不变。
@@ -179,6 +252,138 @@ Restart/Replay 的真实控制语义。
 6. 每一项完成后更新本文和相关设计、运行窄验收并重启受影响服务；Git 操作遵循当前授权。
 
 ## 6. 当前验收记录
+
+### Runtime Retry 安全与 lineage（2026-09-15，9153617 + working tree）
+
+- 实际接管比旧 HANDOFF 更靠后：已有 `runtime/service.py` Retry 实现和未跟踪的
+  `test_runtime_retry.py`。本轮保留生产差异，修正非法 denied fixture、格式化测试，补强
+  原审批 prompt / Draft 不变 / conversation 不重复输入 / 重建后批准与幂等结果证据。
+- 在独立 Python 测试进程内通过 AST 加载 HEAD 的 `_retry_run` / `_persist_event`
+  （不改磁盘、不 checkout）运行三个临时 Project/SQLite 用例，真实复现三项红测：
+  Tool 已写临时 effect 文件但超时后 Retry 仍 HTTP 200、改 Draft 后 version 漂移、
+  Stop 与 dispatch 间隙仍执行 fake Tool。当前工作树对应断言全部通过。
+- 最小生产变化限定 `runtime/service.py`：Retry 从原 immutable version 的 source_json
+  校验身份/hash 并使用原 inputs；不读取最新 Draft，不复用原 approval。新 Run、原 Run
+  上的 retry command、子 Run `run.created` 的 `retry_of_run_id` / `retry_command_id`
+  与幂等响应同事务提交；command payload 保存 `retry_run_id`，原 events/receipts 不改。
+- 安全判断使用持久化 `tool.started`，不是“没有 receipt 即没有 effect”。只放行
+  failed/interrupted/cancelled 且未 dispatch 的 Run；授权拒绝属于未 dispatch，可重试但
+  不会获得新权限。任何已 dispatch Tool 均 HTTP 422 `retry_effect_unsafe`，包括成功
+  receipt 后下游失败、timeout、Stop 和 orphan recovery。dispatch 事件在 SQLite 写事务
+  内检查 running 状态，Stop 先落盘则禁止执行；dispatch 先落盘则后续 Retry 被阻止。
+- 这是保守的整 Run 新尝试，不是安全节点自动重试或 checkpoint resume。当前没有可信
+  的 Tool 幂等/无 effect 分类或 read-back reconciliation，因此只读 Tool 和 dispatch 后
+  的输入校验失败也可能被阻止。人工先核对外部效果再决定是否显式新建 Run；没有新增
+  “确认后绕过”API。模型调用仍可能产生费用；conversation history、主机 profile 和
+  外部数据不是原执行快照，固定 source/inputs 不等于完全可重复的 replay。
+- 验证命令：`env -u MOONSHOT_API_KEY /opt/anaconda3/envs/veyra-agent-platform/bin/python -m pytest tests/contracts tests/integration/local/test_runtime_retry.py tests/integration/local/test_runtime_routes.py tests/integration/local/test_mcp_runtime.py tests/integration/local/test_runtime_profiles.py tests/integration/local/test_workflow_version_boundary.py tests/integration/local/test_orchestrator_routes.py -q --tb=short`
+  **69 passed**（53 条既有 Alembic warning），含 Retry 9 项：四种 effect 结束状态、
+  原版本/inputs/lineage/重建/SSE、并发同 key、Stop/dispatch、denied receipt、事务回滚。
+  两个 Retry 文件 Ruff check/format 通过，专用 Python `-m mypy` **154 files** 通过。
+- 上轮切片 focused review 已补 checkpoint：本轮原后端命令 **51 passed**、原前端
+  五文件 **33 passed**、Desktop typecheck 与环境检查通过。未复跑 Desktop 全量/build、
+  全后端/Community 或真实浏览器/外部 Provider E2E；未提交、推送、重启用户服务。
+  主窗口 review 核对 dispatch 顺序、事务/rollback、幂等、原审批不继承及持久化 lineage；
+  不宣称通用 Stop 中断、未知效果恢复或 Runtime 整体闭环完成。
+
+### Runtime Approval Pause 原子边界（2026-09-15，9153617 + working tree）
+
+- 先以真实 executor + threading.Event + 临时 SQLite 复现：Stop 在 Pause 提交前完成，
+  随后 cancelled 被覆盖为 waiting；另外 waiting/approval/checkpoint 事件在对应记录
+  提交前即可见。新增三项红测均失败，未触碰用户数据或运行中的服务。
+- 最小生产改动只在 `local/runtime/service.py`：事务内核对 running 状态，非 running
+  返回当前结果；原三条事件移动至 approval/checkpoint、Tool records、waiting 状态和
+  幂等响应同一事务。没有新增命令、契约、迁移或改写 Retry，不承诺终止已 dispatch Tool。
+- `test_runtime_control_races.py` 三项通过，覆盖 Stop 不复活、无幽灵 approval/checkpoint、
+  POST key 状态、重建 detail 保真、不自动 effect、显式 Approve/Reject 和 wire/SSE 回放。
+  最终 contracts + control_races/Retry/routes/MCP/profiles/Workflow/Orchestrator 窄测
+  **72 passed**（59 Alembic warnings）；专用环境、修改范围 Ruff check/format、mypy
+  **154 files**、diff check 通过。精确命令见 HANDOFF 顶部。
+- 前端既有五文件 client/TestRunPanel/WorkflowRunPanel/live-run/Runs **33 passed**，
+  Desktop typecheck 通过。主窗口 focused review 核对事务边界、事件消费者、原 diff
+  保留和重建证据。未做 build、全量、真实浏览器/外部 Provider、提交推送或服务重启。
+- 有限审计确认已有 GET detail/SSE、receipt/verifier/Retry lineage 事件及审批控制；
+  不将其等同完整 artifacts/command evidence 展示。Runs summary 缺 events 被计为 0、
+  跳转丢 run_id，Monitor 是 WorkItem 视图；通用 Stop/finish 状态竞态和 approval identity
+  仍需后续专项复现。本切片没有重复实现历史详情 API，也没有扩其它产品模块。
+
+### Runtime 失败回执契约闭环（2026-09-15，9153617 + working tree）
+
+- 真实缺口：Runtime 已发出 `tool.failed`，Python/JSON Schema/TypeScript 与前端白名单
+  却未登记，导致失败 Run 无法通过 wire 或 LocalApiClient 解析。补齐事件枚举与节点
+  分类，复用 Studio 共用事件组件展示中英文失败标签和原始 receipt；不重写 Runtime。
+- 先复现后端 3 项、前端 2 项失败，再修复并通过：Python/JSON Schema 节点身份与
+  payload 保真、未知事件仍拒绝、MCP 输入/输出失败事件、重建后的 GET detail / SSE
+  保持原序列与内容且不重新执行、真实客户端解析到中英文 RTL 的失败证据展示。
+- 专用 Conda 环境验证通过；最终 `env -u MOONSHOT_API_KEY /opt/anaconda3/envs/veyra-agent-platform/bin/python -m pytest tests/contracts tests/integration/local/test_runtime_routes.py tests/integration/local/test_mcp_runtime.py -q --tb=short`
+  **51 passed**（33 条既有 Alembic warning），含此前 23 项 Runtime 回归；修改范围
+  Ruff check/format 通过，mypy **154 files** 通过。
+- `web` 下前端五文件窄测 **33 passed**，Desktop typecheck 通过；最终
+  `npm run test:desktop && npm run build:desktop` **238 passed**、build 通过，保留
+  929.52 kB chunk warning。focused review 已核对生产发出点、持久化、回放及契约消费。
+- 只验临时 Project/SQLite、fake transport、TestClient 和 RTL，未做真实浏览器或外部
+  Provider E2E；未跑全后端/Community 门禁，未提交、推送或重启用户服务。
+  审计另见 Runs summary 将无 events 当 0、历史链接丢 run_id、Monitor 未连接审批详情，
+  均留后续最小切片；不把事件枚举里的 Artifact/Verification 当成完整效果证据。
+  精确工作树、命令和下一入口见 HANDOFF 顶部。
+
+### Builder Phase 1 本地发布通过（2026-09-15，取代历史 CI 门禁）
+
+- 用户授权 Billing 不再阻塞本地发布/下一阶段；**Builder Phase 1 完成，本地验收通过**。
+  保留此前完整验收结果：后端 334、Desktop 235、Community 15，Ruff/mypy、双应用
+  typecheck/build、隔离真实浏览器 PASS。本轮未重复完整测试或浏览器 E2E。
+- GitHub CI 标为 **known external blocker**：最新已有 push/PR attempt 3 的六个 job
+  均在步骤执行前失败，错误仍为 payments failed / spending limit，结束时间分别为
+  `2026-09-15T04:34:46Z` / `04:35:02Z`。**CI 因 Billing 未执行，不是代码失败**；
+  不宣称远端通过，不继续处理 Billing、rerun 或修改 workflow。
+- `make verify-environment` 通过，按已核对原命令/cwd 重启 5173/8771/8772，显式设置
+  `VEYRA_BUILD_SHA=9153617aa5bbe889f1c23984d428cb7cc47bc285`。新 PID 分别为
+  31177/31175/31176；uvicorn 从仓库根启动，Desktop Vite 从 `web/apps/desktop`
+  启动并保留 loopback/strictPort。Local 使用既有自动备份/迁移启动路径升级到 0019。
+- 直连 Local/Community 与 Desktop 两个代理的 health HTTP 200/ok/ready，build SHA
+  全部精确匹配 `9153617`；Local revision `local_0019_edit_proposals`，Community
+  revision `community_0008_plugin_registry`，Community 直连及代理 ready HTTP 200，
+  database/object storage ready。PID/cwd 再核对一致。
+- Builder/Proposal OpenAPI 路由及直连/代理 resolve、create/list、get、commands 的保护
+  响应通过，Factory status 正常且 `executes_drafts=false`。探针使用不存在的 Project，
+  不读取/修改用户项目，不调用模型或 Run；不把负向接口烟测冒充新的正向 E2E。
+  首轮探针错误码预期与实际契约不同，修正为 `project_invalid` 后通过，无产品修改。
+- Desktop 首页和 Builder 实际模块 HTTP 200，模块内容对应未修改的 Git `9153617` 文件；
+  验证时 backend/web/tests 与 HEAD 无差异。前端为 Vite dev server，无独立 SHA 接口，
+  以 cwd、源码一致性及模块响应确认身份。服务日志路径与详细安全边界见 HANDOFF。
+- 本地发布完成后开始阶段 B 的最小 Runtime 证据/控制切片，不扩其它模块；本轮尚未
+  commit/push，现有文档及未跟踪 Backboard 状态保留。
+
+### Chat-first Builder 发布 checkpoint（2026-09-15，历史 CI 外部阻塞）
+
+- 最新查询时间 `2026-09-15T04:26:45Z`：该 SHA 的 push / PR 仍为 attempt 2，最后更新
+  `04:22:13Z` / `04:22:17Z`；六个 job steps 为空，最新可见 annotations 仍为 Billing /
+  spending limit，没有新执行或限制解除证据。旧 run 不会自动反映账单设置变化；本轮
+  未重复 rerun、未改代码或 workflow、未重启，只更新阻塞记录。
+- 发布 commit `9153617aa5bbe889f1c23984d428cb7cc47bc285` 已推送到
+  `codex/agent-platform`，实际远端 SHA 一致；44 个相关文件，暂存区无 `.env`、凭据、
+  runtime data 或 Backboard session/settings；secret pattern 扫描及
+  `git diff --cached --check` 通过。
+- backend/web/tests 449 文件暂存区摘要与最终浏览器验收摘要
+  `0bfd7eada39deb0d01e586665dcea17f1d8c51af7d19326f08893b13add8c32f` 完全一致。
+  本轮无产品代码变化，未重跑此前已通过的完整门禁和浏览器 E2E。
+- 精确 SHA 的 [push CI](https://github.com/wenjiesong04/veyra-agent-platform/actions/runs/34928383874)
+  和 [PR CI](https://github.com/wenjiesong04/veyra-agent-platform/actions/runs/34928386362)
+  均未通过：六个 job 在任何步骤执行前被 GitHub 账单/额度阻止。check annotations 均为
+  recent account payments failed / spending limit needs to be increased，非代码测试失败；
+  无 job 日志。需账号所有者处理 Billing & plans，本轮不绕过 CI 或修改 workflow。
+- 用户确认已处理后，按授权 rerun 两个 run 并 watch push CI；attempt 2 仍全部在启动前
+  failure，steps 为空，GitHub 返回相同账单/额度错误。当前仍非 CI PASS，不能进入重启。
+- 依照“CI 通过后重启”，本次 **未重启**，新 commit 的真实服务/API 验收尚未执行。
+  只读检查：5173 Desktop Vite 首页 HTTP 200、Local/Community proxy health 正确；
+  8771 Local health 200/ok，旧 SHA `249e024b25058d97cca6eeaee5a9e42b2aeda852`、
+  migration 0018；8772 Community health/ready 200，旧 SHA
+  `43837a5cc29bc30c76355e57f0af2330067e8b31`、migration 0008。不能把旧进程 health 当作
+  Builder 发布通过。PID/cwd/启动方式已核对，详见 HANDOFF。
+- 中断入口：解决账单/额度 → 重跑精确 SHA CI → 全通过后设置准确 build SHA 并重启三服务
+  → 核对 0019、服务身份、Builder/Proposal 关键接口和代理 → 完成发布文档提交。
+  本节与 HANDOFF 是发布 commit 之后尚未提交的文档更新。下一阶段仍是 Runtime 证据与
+  控制闭环；本轮不开始实现，不扩 Tool/Skill/Component 或多对象事务。
 
 ### Chat-first Builder 第一阶段最终安全收尾（2026-09-15）
 

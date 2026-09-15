@@ -1,8 +1,9 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResponse, AgentSource } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
+import { LocalApiClient } from "../../api/local-client";
 import { TestRunPanel } from "./TestRunPanel";
 
 const source: AgentSource = {
@@ -84,6 +85,28 @@ describe("TestRunPanel", () => {
     expect(screen.getByText(/Hello Ada/)).toBeInTheDocument();
   });
 
+  it.each(["en", "zh"] as const)("renders a failed Tool receipt through the real client in %s", async (locale) => {
+    const receipt = { input_digest: "a".repeat(64), output_digest: null, schema_validation: { input: "failed", output: "not_checked" } };
+    const failed = {
+      ...run, status: "failed", result: null,
+      error: { code: "mcp_input_schema_invalid", message: "MCP input validation failed" },
+      events: [{ schema_version: "1.0", event_id: "event-failed", run_id: run.run_id, sequence: 5, kind: "tool.failed", node_id: "lookup", payload: receipt, timestamp: run.created_at }],
+    };
+    const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify(failed), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = new LocalApiClient({ fetcher });
+    const api = { runAgent: client.runAgent.bind(client), getAgentRun: client.getAgentRun.bind(client) } as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale={locale} />);
+    await user.click(screen.getByRole("button", { name: locale === "zh" ? "测试运行" : "Test run" }));
+    expect(await screen.findByText(locale === "zh" ? "工具失败" : "Tool failed")).toBeInTheDocument();
+    expect(screen.getByText("tool.failed").closest("li")).toHaveClass("bad");
+    await user.click(screen.getByText(locale === "zh" ? "查看证据" : "View evidence"));
+    expect(screen.getByText(/"schema_validation"/)).toHaveTextContent('"output": "not_checked"');
+    expect(screen.getByText(/"schema_validation"/)).toHaveTextContent('"output_digest": null');
+    expect(screen.getByText("MCP input validation failed")).toBeInTheDocument();
+    expect(screen.queryByText("Hello Ada")).not.toBeInTheDocument();
+  });
+
   it("sends approve when a run is waiting", async () => {
     const waiting: AgentRunResponse = {
       ...run,
@@ -143,5 +166,22 @@ describe("TestRunPanel", () => {
     render(<TestRunPanel api={{} as LocalProjectApi} projectId="project-1" agentId="agent-1" source={fileSource} disabled={false} locale="en" initialFilePath="resources/note.md" />);
 
     expect(screen.getByRole("textbox", { name: /document_path/ })).toHaveValue("resources/note.md");
+  });
+
+  it("refreshes authoritative terminal evidence even when SSE closes before done", async () => {
+    const running = { ...run, status: "running", result: null, finished_at: null, events: [] };
+    const getAgentRun = vi.fn().mockResolvedValueOnce(running).mockResolvedValue({ ...run, status: "failed", result: null, error: { code: "original", message: "Persisted terminal failure" } });
+    let emit!: (event: NonNullable<AgentRunResponse["events"]>[number]) => void;
+    const api = {
+      runAgent: vi.fn().mockResolvedValue(running), getAgentRun,
+      watchAgentRunEvents: vi.fn((_p, _a, _r, handlers) => { emit = handlers.onEvent; return () => undefined; }),
+    } as unknown as LocalProjectApi;
+    render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Test run" }));
+    await waitFor(() => expect(api.watchAgentRunEvents).toHaveBeenCalled());
+    await act(async () => emit({ schema_version: "1.0", run_id: run.run_id, event_id: "terminal", sequence: 10, kind: "run.failed", node_id: null, payload: {}, timestamp: run.finished_at! }));
+    expect(await screen.findByText("Persisted terminal failure")).toBeInTheDocument();
+    expect(screen.getByText(run.finished_at!)).toBeInTheDocument();
+    expect(getAgentRun).toHaveBeenCalledTimes(2);
   });
 });
