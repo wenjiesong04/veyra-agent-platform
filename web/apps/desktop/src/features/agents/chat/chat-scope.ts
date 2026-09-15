@@ -14,7 +14,7 @@ export function folderLabel(rootPath: string): string {
 }
 
 export function chatTargetHref(target: ChatTarget): string {
-  if (target.kind === "agent") return projectRoutePaths.agent(target.projectId, target.agentId);
+  if (target.kind === "agent") return `${projectRoutePaths.projectChat(target.projectId)}?target=agent:${encodeURIComponent(target.agentId)}`;
   if (target.kind === "project") return projectRoutePaths.projectChat(target.projectId);
   return desktopRoutePaths.chat;
 }

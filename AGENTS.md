@@ -1,5 +1,12 @@
 # Veyra Agent Platform contributor contract
 
+Every new session or main development agent must read, in order:
+`AGENTS.md`, `docs/AI_DEVELOPMENT_BRIEF.md`, `docs/PROJECT_DESIGN.md`,
+`docs/DEVELOPMENT.md`, and `.backboard/HANDOFF.md`.
+Then run `git status -sb`, `git diff --stat`, and `git diff --name-status`
+and reconcile the actual working tree before continuing. Historical handoffs
+do not override the latest user scope or grant commit, push, or restart permission.
+
 Read `docs/PROJECT_DESIGN.md` before changing product behavior.
 
 ## Repository boundaries

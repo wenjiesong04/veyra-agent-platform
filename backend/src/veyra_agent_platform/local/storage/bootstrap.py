@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0018_mcp_streamable_http"
+HEAD_REVISION = "local_0019_edit_proposals"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

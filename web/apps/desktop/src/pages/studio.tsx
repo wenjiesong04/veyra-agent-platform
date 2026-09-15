@@ -46,7 +46,13 @@ function adoptStudioSource(source: StudioSource): StudioSource {
   return rewritten.component_type === "Workflow" ? repairAgentCallMappings(rewritten) : rewritten;
 }
 
-export function StudioPage({ projectId, agentId, workflowId }: { projectId: string; agentId?: string; workflowId?: string }) {
+type StudioPageProps = { projectId: string; agentId?: string; workflowId?: string };
+
+export function StudioPage(props: StudioPageProps) {
+  return <StudioEditor key={`${props.projectId}:${props.agentId ?? props.workflowId}`} {...props} />;
+}
+
+function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   const { api, projects } = useProjectWorkspace(); const { locale } = useLocale();
   const copy = studioCopy[locale];
   const isWorkflow = Boolean(workflowId) && !agentId;
@@ -54,11 +60,17 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<StudioSource | null>(null);
   const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null); const [validation, setValidation] = React.useState<ValidateResponse | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
+  const writing = React.useRef(false);
+  const [writeBusy, setWriteBusy] = React.useState(false);
+  const [invalidBuffers, setInvalidBuffers] = React.useState<Set<string>>(new Set());
+  const bufferValidity = React.useCallback((field: string, invalid: boolean) => {
+    setInvalidBuffers((fields) => { const next = new Set(fields); if (invalid) next.add(field); else next.delete(field); return next; });
+  }, []);
   const currentSource = React.useRef<StudioSource | null>(null); currentSource.current = source;
   const cleanSnapshot = React.useRef(""); const [dirty, setDirty] = React.useState(false);
   const project = projects.find((item) => item.project_id === projectId);
-  const adoptDraft = React.useCallback((draft: { source: StudioSource; revision: number; etag: string }) => {
-    const source = adoptStudioSource(draft.source);
+  const adoptDraft = React.useCallback((draft: { source: StudioSource; revision: number; etag: string }, repair = true) => {
+    const source = repair ? adoptStudioSource(draft.source) : draft.source;
     cleanSnapshot.current = JSON.stringify(draft.source);
     setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setRevision(draft.revision); setEtag(draft.etag); setStatus("ready"); setValidation(null);
   }, []);
@@ -81,15 +93,17 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: StudioSource) => {
     const source = adoptStudioSource(next);
-    setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setStatus("ready"); setValidation(null);
+    setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setStatus((status) => status === "conflict" ? status : "ready"); setValidation(null);
   }, []);
-  const canSaveDraft = isWorkflow ? Boolean(api.saveWorkflowDraft) : Boolean(api.saveDraft);
+  const editorBlocked = writeBusy || invalidBuffers.size > 0 || status === "conflict";
+  const canSaveDraft = !editorBlocked && (isWorkflow ? Boolean(api.saveWorkflowDraft) : Boolean(api.saveDraft));
   const canReloadDraft = isWorkflow ? Boolean(api.reloadWorkflowDraft) : Boolean(api.reloadDraft);
-  const canCommit = isWorkflow ? Boolean(api.validateWorkflow && api.commitWorkflow) : Boolean(api.validate && api.commit);
+  const canCommit = !editorBlocked && (isWorkflow ? Boolean(api.validateWorkflow && api.commitWorkflow) : Boolean(api.validate && api.commit));
   const save = React.useCallback(async (mode: "manual" | "auto" = "manual") => {
-    if (!source || diagnostics.length || (isWorkflow ? !api.saveWorkflowDraft : !api.saveDraft)) return false;
+    if (writing.current || invalidBuffers.size || status === "conflict" || !source || diagnostics.length || (isWorkflow ? !api.saveWorkflowDraft : !api.saveDraft)) return false;
+    writing.current = true; setWriteBusy(true);
     const sentSnapshot = JSON.stringify(source);
-    if (mode === "auto") setStatus("saving");
+    setStatus("saving");
     try {
       const saved = isWorkflow && workflowId && api.saveWorkflowDraft && source.component_type === "Workflow"
         ? await api.saveWorkflowDraft(projectId, workflowId, { source, expected_revision: revision }, { etag })
@@ -111,9 +125,9 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
         setStatus("offline");
         setMessage(error instanceof Error ? error.message : (locale === "zh" ? "保存失败。" : "Save failed."));
       }
-    }
+    } finally { writing.current = false; setWriteBusy(false); }
     return false;
-  }, [api, projectId, agentId, workflowId, isWorkflow, source, diagnostics.length, revision, etag, locale]);
+  }, [api, projectId, agentId, workflowId, isWorkflow, source, diagnostics.length, revision, etag, locale, invalidBuffers.size, status]);
   const navigate = async (href: string) => {
     if (status === "saving" || (dirty && !(await save("manual")))) {
       setMessage(locale === "zh" ? "请先完成并保存当前草稿，再打开引用资源。当前修改已保留。" : "Complete and save this draft before opening the resource. Your edits are retained.");
@@ -122,12 +136,14 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
     window.location.hash = href;
   };
   React.useEffect(() => {
-    if (!dirty || diagnostics.length || !canSaveDraft) return;
-    if (status === "conflict" || status === "offline" || status === "loading" || status === "saving") return;
+    if (invalidBuffers.size || !dirty || diagnostics.length || !canSaveDraft) return;
+    if (status === "offline" || status === "loading" || status === "saving") return;
     const timer = window.setTimeout(() => { void save("auto"); }, AUTOSAVE_MS);
     return () => window.clearTimeout(timer);
-  }, [dirty, diagnostics.length, canSaveDraft, status, save]);
+  }, [dirty, diagnostics.length, canSaveDraft, status, save, invalidBuffers.size]);
   const validateAndCommit = async () => {
+    if (writing.current || invalidBuffers.size || status === "conflict") return;
+    writing.current = true; setWriteBusy(true);
     try {
       const result = isWorkflow && workflowId && api.validateWorkflow
         ? await api.validateWorkflow(projectId, workflowId)
@@ -147,7 +163,7 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
       setMessage(locale === "zh" ? `已提交不可变版本 ${committed.version_id}。` : `Immutable version ${committed.version_id} committed.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : (locale === "zh" ? "校验或提交失败。" : "Validation or commit failed."));
-    }
+    } finally { writing.current = false; setWriteBusy(false); }
   };
   if (!project && status !== "loading") return <NotFoundPage backHref="#/projects" backLabel={locale === "zh" ? "返回项目" : "Back to Projects"} />;
   if (status === "loading") return <Panel><SectionHeading eyebrow="Studio" title={copy.loading} /></Panel>;
@@ -157,7 +173,8 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
   return <div className="page-stack studio-page">
     <StudioChromeProvider>
       <LiveRunProvider api={api} projectId={projectId} agentId={agentId ?? ""} locale={locale} inactive={isWorkflow}>
-        <div className="studio-body">
+        <div className="studio-container">
+          <div className="studio-body">
           {message || diagnostics.length || Boolean(validation?.dependencies && validation.dependency_summary) ? (
             <StudioNotice
               message={message}
@@ -165,16 +182,17 @@ export function StudioPage({ projectId, agentId, workflowId }: { projectId: stri
               validation={validation}
               status={status}
               locale={locale}
-              canReloadDraft={canReloadDraft}
+              canReloadDraft={canReloadDraft && !writeBusy}
               onLoadDisk={() => void loadDiskVersion()}
             />
           ) : null}
           <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{copy[item]}</span></button>)}</div>{view === "canvas" ? <div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</div> : null}</div>
           <StudioStage view={view}>
-            {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} /> : <SourceView source={source} onChange={updateSource} />}
+            {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} onBufferValidity={bufferValidity} /> : <SourceView source={source} onChange={updateSource} onBufferValidity={bufferValidity} />}
             {isWorkflow && workflowId && source.component_type === "Workflow" ? <StudioRunDock locale={locale}><WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
             {!isWorkflow && agentId && source.component_type === "Flow" ? <StudioRunDock locale={locale}><TestRunPanel api={api} projectId={projectId} agentId={agentId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} initialFilePath={initialFilePath} /></StudioRunDock> : null}
           </StudioStage>
+          </div>
         </div>
       </LiveRunProvider>
     </StudioChromeProvider>
@@ -235,9 +253,33 @@ function StudioStage({ view, children }: { view: StudioView; children: React.Rea
   );
 }
 
-function FormView({ source, onChange }: { source: StudioSource; onChange: (source: StudioSource) => void }) { const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow"; const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value }); return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} onValid={(inputs) => onChange({ ...source, inputs })} /><JsonField label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} onValid={(outputs) => onChange({ ...source, outputs })} /></div></Panel>; }
-function JsonField({ label, value, onValid }: { label: string; value: Record<string, string>; onValid: (value: Record<string, string>) => void }) { const canonical = JSON.stringify(value, null, 2); const [text, setText] = React.useState(canonical); const [error, setError] = React.useState(""); React.useEffect(() => setText(canonical), [canonical]); return <label><span>{label}</span><textarea rows={5} value={text} onChange={(event) => { const next = event.target.value; setText(next); try { const parsed = JSON.parse(next); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((item) => typeof item !== "string")) throw new Error("Expected a string map."); onValid(parsed as Record<string, string>); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Invalid JSON."); } }} />{error ? <small className="studio-parse-error">{error}</small> : null}</label>; }
-function SourceView({ source, onChange }: { source: StudioSource; onChange: (source: StudioSource) => void }) { const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow"; const canonical = JSON.stringify(source, null, 2); const [text, setText] = React.useState(canonical); const [error, setError] = React.useState(""); React.useEffect(() => setText(canonical), [canonical]); return <Panel className="source-view"><SectionHeading eyebrow={zh ? "源码" : "Source"} title={workflow ? `${source.slug}.vworkflow.yaml` : `${source.slug}.vagent.yaml`} detail={zh ? "规范 JSON 同时是有效 YAML，不引入第二套解析器。" : "Canonical JSON is valid YAML and avoids a second parser dependency."} /><textarea aria-label={workflow ? (zh ? "Workflow 源码" : "Workflow source") : (zh ? "Agent 源码" : "Agent source")} rows={24} value={text} onChange={(event) => { const next = event.target.value; setText(next); try { const parsed: unknown = JSON.parse(next); if (workflow) { if (!isWorkflowSourceCandidate(parsed)) throw new Error(zh ? "结构不完整：需要完整的 WorkflowSource 字段和嵌套映射。" : "Structure is incomplete: a full WorkflowSource and nested maps are required."); onChange(parsed); } else { if (!isAgentSourceCandidate(parsed)) throw new Error(zh ? "结构不完整：需要完整的 AgentSource 字段和嵌套映射。" : "Structure is incomplete: a full AgentSource and nested maps are required."); onChange(parsed); } setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Invalid JSON."); } }} />{error ? <p className="studio-parse-error">{zh ? `源码无法应用：${error}。当前仍使用最后一份有效 ${workflow ? "WorkflowSource" : "AgentSource"}。` : `Source cannot be applied: ${error}. The last valid ${workflow ? "WorkflowSource" : "AgentSource"} remains active.`}</p> : null}</Panel>; }
+type BufferValidity = (field: string, invalid: boolean) => void;
+type EditorProps = { source: StudioSource; onChange: (source: StudioSource) => void; onBufferValidity: BufferValidity };
+
+function FormView({ source, onChange, onBufferValidity }: EditorProps) {
+  const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow";
+  const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value });
+  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} onValid={(inputs) => onChange({ ...source, inputs })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} onValid={(outputs) => onChange({ ...source, outputs })} /></div></Panel>;
+}
+
+function useBufferValidity(field: string, error: string, onBufferValidity: BufferValidity) {
+  React.useEffect(() => { onBufferValidity(field, Boolean(error)); return () => onBufferValidity(field, false); }, [field, error, onBufferValidity]);
+}
+
+function JsonField({ label, value, onValid, field, onBufferValidity }: { label: string; value: Record<string, string>; onValid: (value: Record<string, string>) => void; field: string; onBufferValidity: BufferValidity }) {
+  const canonical = JSON.stringify(value, null, 2); const [text, setText] = React.useState(canonical); const [error, setError] = React.useState("");
+  useBufferValidity(field, error, onBufferValidity);
+  React.useEffect(() => { setText(canonical); setError(""); }, [canonical]);
+  return <label><span>{label}</span><textarea rows={5} value={text} onChange={(event) => { const next = event.target.value; setText(next); try { const parsed = JSON.parse(next); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((item) => typeof item !== "string")) throw new Error("Expected a string map."); onValid(parsed as Record<string, string>); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Invalid JSON."); } }} />{error ? <small className="studio-parse-error">{error}</small> : null}</label>;
+}
+
+function SourceView({ source, onChange, onBufferValidity }: EditorProps) {
+  const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow";
+  const canonical = JSON.stringify(source, null, 2); const [text, setText] = React.useState(canonical); const [error, setError] = React.useState("");
+  useBufferValidity("source", error, onBufferValidity);
+  React.useEffect(() => { setText(canonical); setError(""); }, [canonical]);
+  return <Panel className="source-view"><SectionHeading eyebrow={zh ? "源码" : "Source"} title={workflow ? `${source.slug}.vworkflow.yaml` : `${source.slug}.vagent.yaml`} detail={zh ? "规范 JSON 同时是有效 YAML，不引入第二套解析器。" : "Canonical JSON is valid YAML and avoids a second parser dependency."} /><textarea aria-label={workflow ? (zh ? "Workflow 源码" : "Workflow source") : (zh ? "Agent 源码" : "Agent source")} rows={24} value={text} onChange={(event) => { const next = event.target.value; setText(next); try { const parsed: unknown = JSON.parse(next); if (workflow) { if (!isWorkflowSourceCandidate(parsed)) throw new Error(zh ? "结构不完整：需要完整的 WorkflowSource 字段和嵌套映射。" : "Structure is incomplete: a full WorkflowSource and nested maps are required."); onChange(parsed); } else { if (!isAgentSourceCandidate(parsed)) throw new Error(zh ? "结构不完整：需要完整的 AgentSource 字段和嵌套映射。" : "Structure is incomplete: a full AgentSource and nested maps are required."); onChange(parsed); } setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Invalid JSON."); } }} />{error ? <p className="studio-parse-error">{zh ? `源码无法应用：${error}。当前仍使用最后一份有效 ${workflow ? "WorkflowSource" : "AgentSource"}。` : `Source cannot be applied: ${error}. The last valid ${workflow ? "WorkflowSource" : "AgentSource"} remains active.`}</p> : null}</Panel>;
+}
 
 function graphDiagnosticText(diagnostic: GraphDiagnostic, locale: "zh" | "en"): string {
   const p = diagnostic.params ?? {};

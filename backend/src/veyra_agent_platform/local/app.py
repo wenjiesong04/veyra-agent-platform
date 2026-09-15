@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from .agent_imports import AgentImportService
 from .api.agent_imports import build_router as build_agent_import_router
 from .api.factory import build_router as build_factory_router
+from .api.factory.builder_routes import build_router as build_builder_router
+from .api.factory.edit_routes import build_router as build_edit_proposals_router
 from .api.health import build_router
 from .api.mcp import build_router as build_mcp_router
 from .api.orchestrator import build_router as build_orchestrator_router
@@ -25,9 +27,12 @@ from .api.runtime import build_router as build_runtime_router
 from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
 from .api.workflows import build_router as build_workflow_router
+from .builder.resolution import BuilderResolutionService
 from .config import LocalSettings
 from .factory import FactoryService, FactorySettings, KimiClient
 from .factory.client import KimiTransport
+from .factory.edit_service import EditProposalService
+from .factory.edit_store import EditProposalStore
 from .factory.store import FactorySessionRepository
 from .host_env import load_host_process_env
 from .library import LibraryService
@@ -138,6 +143,15 @@ def create_app(
                 secret_store=resolved_secret_store,
             ),
         )
+        application.state.edit_proposals = EditProposalService(
+            EditProposalStore(repository),
+            application.state.library,
+            catalog,
+            application.state.factory.client,
+        )
+        application.state.builder = BuilderResolutionService(
+            application.state.edit_proposals
+        )
         mcp = McpService(
             McpServerStore(database_path),
             overlay_root,
@@ -206,6 +220,8 @@ def create_app(
     application.include_router(build_runtime_router())
     application.include_router(build_workflow_router())
     application.include_router(build_factory_router())
+    application.include_router(build_edit_proposals_router())
+    application.include_router(build_builder_router())
     application.include_router(build_resources_router())
     application.include_router(build_secrets_router())
     application.include_router(build_mcp_router())

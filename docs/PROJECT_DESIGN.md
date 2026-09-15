@@ -1,12 +1,12 @@
 # Veyra Agent Platform — Canonical Development Design
 
 > Status: **ONLY CURRENT PRODUCT AND ENGINEERING AUTHORITY**
-> Revision: 1.4
-> Date: 2026-09-09
+> Revision: 1.6
+> Date: 2026-09-14
 > Repository: `/Users/spectre/PycharmProjects/veyra-agent-platform`
 > Development branch: `codex/agent-platform`
 > Legacy source: `/Users/spectre/PycharmProjects/veyra @ 1ffb4cdd45c798556390c20e53fc2d265cd56471`
-> Implementation status: W0 environment, contracts, dual web shells, and CI baseline implemented; V1 product services remain in development
+> Implementation status: Local design/runtime and Community registry slices exist; current evidence and remaining user loops are maintained in [DEVELOPMENT.md](DEVELOPMENT.md). This document includes target requirements, not a claim that every described capability exists.
 
 This document starts from a new, independent project. It does not assume that the old Veyra repository will be cleaned, merged, or used as a runtime dependency. The old repository is read-only migration evidence. Every extracted behavior must be re-namespaced, simplified, tested, and recorded in this document or a later migration ledger.
 
@@ -16,7 +16,7 @@ This document starts from a new, independent project. It does not assume that th
 
 Veyra Agent Platform will be a local-first desktop product with six connected surfaces:
 
-1. **Veyra Studio** — generate or manually design an Agent using Form, Canvas, and Source views.
+1. **Veyra Studio** — inspect and manually design Agents/Workflows using Form, Canvas, and Source views; natural-language building starts in Veyra Chat.
 2. **Veyra Runtime** — run an Agent locally with tools, state, approvals, checkpoints, cancellation, and verification.
 3. **Veyra Orchestrator** — a deterministic scheduler for tasks, dependencies, isolated workspaces, retries, and multiple Agent runs.
 4. **Veyra Monitor** — live workflow visualization, run timelines, evidence, failures, and human controls.
@@ -781,7 +781,57 @@ Moving a Canvas node must not change `behavior_hash`. Changing prompt, tool, per
 
 ---
 
-## 6. Kimi Factory Agent
+## 6. Veyra Builder Agent / Harness
+
+### 6.0 Chat-first product decision (2026-09-14)
+
+Veyra Chat is the natural-language construction entrance. Studio is not a second AI
+conversation surface: it owns structure inspection, manual Canvas/Form/Source edits,
+configuration, validation, Run, and inspection of Builder results. The existing
+Factory name/API remains a creation adapter, not a competing product intelligence.
+Runtime Agent conversations remain version-bound executions, not project writers.
+
+| Context | Behavior and authority |
+| --- | --- |
+| Global / New Chat | Collect the goal without assuming a Project; explicitly select/create one before writes. Automatic Project planning/creation proposals remain future work. |
+| Project Chat | Discover the actual Project and library; create via the existing Blueprint adapter or select an existing Agent/Workflow for a source-change proposal. |
+| Agent / Workflow focus | Narrow the same Project Harness to the selected source, identity, revision/ETag, permissions, locks and bindings. Never infer authority over other objects. |
+
+The shared implementation boundary is `local/builder`: a stable system prompt
+owns Veyra semantics and trust rules; a dynamic Harness assembles bounded structured
+context from server-owned Project and Resource Catalog services. Factory interview,
+Blueprint generation and edit-source generation share this boundary with explicit
+output modes. Existing compiler/resolvers, EditProposal storage, Draft writer,
+validation and Runtime preflight remain the authoritative execution boundaries.
+The model has no write, registration, permission-grant or execution tool.
+
+Context includes Project identity/inventory, library bindings, available resource
+descriptors with exact hashes, readiness and permissions, plus the selected saved
+source/revision/ETag when editing. Knowledge and Files are metadata/bindings only;
+file presence does not consent to content ingestion. No secrets, host paths or
+unselected file contents are injected. A size limit fails visibly rather than
+silently dropping unsupported capabilities or source fields. Runtime descriptor
+support is not host configuration readiness or a successful Run.
+
+Resource resolution is reuse-first: prefer already-bound Project resources, then
+registered Catalog resources, then report a missing capability. Never invent refs
+or downgrade requested capabilities silently. Future native resource proposals
+must carry source/type/version, permissions, dependencies, runtime readiness,
+compatibility, validation and provenance; executable/high-privilege resources need
+stricter review and cannot be installed from arbitrary model output. Project-only
+objects belong to the Project; reusable resources require the user's explicit
+Project-only versus Library choice. Community publication is outside this slice.
+
+The safety protocol is User Request → Intent/Plan → Candidate → persisted Proposal
+→ actual Diff/Impact → explicit Confirm → Apply → Validate → Result. Source-edit
+mode returns a complete typed Source; the server builds the Proposal envelope and
+derives impact, never trusting a model claim of success. Confirm applies exactly the
+stored candidate, rechecks revision/ETag and dependencies, and leaves immutable
+versions/Runs untouched. Reject, guarded Undo and conflict recovery are retained.
+The first Chat editing slice targets one existing Agent/Workflow; automatic intent
+routing, multi-object transactions, resource authoring and auto-approval are deferred.
+Legacy Blueprint creation keeps its existing review protocol until it is migrated
+to the same persisted creation-proposal envelope; do not claim that migration done.
 
 ### 6.1 Official API baseline
 
@@ -852,6 +902,16 @@ run availability. Generation is enabled only after the server marks the
 conversation `ready`.
 
 ### 6.3 Generation flow
+
+Existing Agent and Workflow edits also require a review boundary. A natural-language
+request produces a persisted proposal against a specific Draft revision and ETag.
+The server computes the actual source diff, permission changes, dependency checks,
+and affected objects. Only explicit confirmation applies that stored candidate via
+the existing Draft writer. A stale proposal cannot overwrite a newer edit. Reject
+leaves source intact; undo restores the previous source as a new revision only when
+the applied Draft has not changed since. Provider reasoning stays in memory. The
+first editing surface targets one Agent or Workflow at a time; multi-object Project
+transactions remain a subsequent module, tracked in the development document.
 
 ```text
 User requirement

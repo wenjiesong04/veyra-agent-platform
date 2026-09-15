@@ -23,6 +23,9 @@ read-only migration evidence and is never a runtime dependency.
 The canonical product and engineering requirements are in
 `docs/PROJECT_DESIGN.md`.
 
+Current implementation status, module priorities, and acceptance evidence are
+maintained in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
 ## Backend development
 
 Activate the dedicated Conda environment before local work:

@@ -1,0 +1,5 @@
+.builder-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
+.builder-target { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 20px; }
+.builder-target small { flex-basis: 100%; }
+.builder-review { overflow: auto; min-height: 0; padding: 16px; }
+.builder-review .studio-edit-proposals { max-height: none; margin: 12px 0; }

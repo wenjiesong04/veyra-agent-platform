@@ -86,6 +86,7 @@ export function FactoryConversation({
   projectName,
   focusAgent,
   scope,
+  onApplied,
 }: {
   api: LocalProjectApi;
   projectId: string;
@@ -94,6 +95,7 @@ export function FactoryConversation({
   projectName?: string;
   focusAgent?: FactoryFocusAgent;
   scope?: FactoryConversationScope;
+  onApplied?: () => Promise<void>;
 }) {
   const text = copy[locale];
   const [status, setStatus] = React.useState<FactoryStatus | null>(null);
@@ -196,6 +198,7 @@ export function FactoryConversation({
       });
       setSession(result.session);
       setCreatedAgentId(result.agent.agent_id);
+      await onApplied?.();
     } catch (cause) {
       setError(errorText(cause, locale));
     } finally {

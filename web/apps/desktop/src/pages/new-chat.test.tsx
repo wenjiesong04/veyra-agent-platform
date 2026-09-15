@@ -62,6 +62,8 @@ describe("NewChatPage", () => {
     renderLanding(api);
     await user.type(await screen.findByRole("textbox", { name: "Message" }), "Build a researcher");
     await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(api.createProject).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ description: "" }));
     expect(window.location.hash).toBe("#/projects/created-project/chat");
     expect(takePendingFactoryPrompt()).toBe("Build a researcher");
@@ -78,14 +80,14 @@ describe("NewChatPage", () => {
     expect(takePendingFactoryPrompt()).toBeUndefined();
   });
 
-  it("opens an existing Agent conversation as soon as that Agent is chosen", async () => {
+  it("opens Builder with the existing Agent focus, not its Runtime conversation", async () => {
     const api = apiFor([alpha]);
     const user = userEvent.setup();
     renderLanding(api);
     await user.click(await screen.findByRole("button", { name: "Choose project" }));
     await user.click(await screen.findByRole("option", { name: /Reviewer/ }));
     expect(api.createProject).not.toHaveBeenCalled();
-    expect(window.location.hash).toBe("#/projects/project-1/agents/agent-1");
+    expect(window.location.hash).toBe("#/projects/project-1/chat?target=agent:agent-1");
     expect(takePendingFactoryPrompt()).toBeUndefined();
   });
 

@@ -4,7 +4,7 @@ import { chatTargetHref, folderLabel, sameChatTarget } from "./chat-scope";
 describe("chat scope", () => {
   it("routes Project selection to that Project's new chat", () => {
     expect(chatTargetHref({ kind: "project", projectId: "p-one", name: "Alpha" })).toBe("#/projects/p-one/chat");
-    expect(chatTargetHref({ kind: "agent", projectId: "p-one", agentId: "agent-1", name: "Reviewer", projectName: "Alpha" })).toBe("#/projects/p-one/agents/agent-1");
+    expect(chatTargetHref({ kind: "agent", projectId: "p-one", agentId: "agent-1", name: "Reviewer", projectName: "Alpha" })).toBe("#/projects/p-one/chat?target=agent:agent-1");
     expect(chatTargetHref({ kind: "new" })).toBe("#/chat");
   });
 

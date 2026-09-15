@@ -2,7 +2,7 @@ import * as React from "react";
 import { useLocale, LoadingState, ErrorState } from "@veyra/ui";
 import { ChatLanding } from "../features/agents/chat/chat-landing";
 import { useChatScopeNavigation, type ChatTarget } from "../features/agents/chat/chat-scope";
-import { FactoryConversation } from "../features/factory/factory-conversation";
+import { ProjectBuilderConversation } from "../features/builder/ProjectBuilderConversation";
 import { useProjectWorkspace } from "../api/project-workspace";
 
 export function NewChatPage({ projectId }: { projectId?: string } = {}) {
@@ -44,11 +44,10 @@ export function NewChatPage({ projectId }: { projectId?: string } = {}) {
 
   if (projectId && scopedProject) {
     return (
-      <FactoryConversation
-        api={api}
-        projectId={scopedProject.project_id}
+      <ProjectBuilderConversation
+        key={scopedProject.project_id}
+        project={scopedProject}
         locale={locale}
-        projectName={scopedProject.name}
         scope={{
           current,
           projects,

@@ -17,7 +17,7 @@ const statusCopy: Record<AgentDependencyCheck["status"], { zh: string; en: strin
   project_binding_stale: { zh: "项目绑定已过期", en: "Project binding stale" },
 };
 
-export function DependencyReport({ validation, locale }: { validation: ValidateResponse; locale: "zh" | "en" }) {
+export function DependencyReport({ validation, locale }: { validation: Omit<ValidateResponse, "file_hash">; locale: "zh" | "en" }) {
   const dependencies = validation.dependencies;
   const summary = validation.dependency_summary;
   if (!dependencies || !summary) return null;

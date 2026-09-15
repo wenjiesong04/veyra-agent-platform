@@ -8,12 +8,15 @@ from typing import Any, TypeVar, cast
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.factory import (
     FactoryError,
     FactoryProviderError,
     FactoryService,
 )
+from veyra_agent_platform.local.library.service import DraftConflict
+from veyra_agent_platform.local.projects.service import ProjectError
 
 _Result = TypeVar("_Result")
 _PROVIDER_UNAVAILABLE = {
@@ -119,9 +122,20 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
     except FactoryError as exc:
         status_code = (
             404
-            if exc.code in {"factory_session_not_found", "factory_project_not_found"}
+            if exc.code
+            in {
+                "factory_session_not_found",
+                "factory_project_not_found",
+                "edit_proposal_not_found",
+            }
             else 422
         )
         raise TypedApiError(status_code, exc.code, str(exc)) from exc
+    except DraftConflict as exc:
+        raise TypedApiError(409, "draft_conflict", str(exc)) from exc
+    except ProjectError as exc:
+        raise TypedApiError(422, exc.code, str(exc)) from exc
+    except ContractValidationError as exc:
+        raise TypedApiError(422, "contract_invalid", str(exc)) from exc
     except TypedApiError:
         raise

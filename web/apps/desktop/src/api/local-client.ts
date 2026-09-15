@@ -2,6 +2,14 @@ import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersio
 import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
+  type CreateEditProposalRequest,
+  type BuilderResolveRequest,
+  type BuilderResolution,
+  type EditProposal,
+  type EditProposalChange,
+  type EditProposalCommand,
+  type EditTargetKind,
+  type ListEditProposalsResponse,
   type AgentImportApplyRequest,
   type AgentImportApplyResponse,
   type AgentImportRecord,
@@ -211,6 +219,10 @@ export type LocalProjectApi = {
   setProjectRuntimeProfile?(projectId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
   getAgentRuntimeProfile?(projectId: string, agentId: string): Promise<RuntimeProfileResponse>;
   setAgentRuntimeProfile?(projectId: string, agentId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
+  resolveBuilderIntent?(projectId: string, input: BuilderResolveRequest): Promise<BuilderResolution>;
+  createEditProposal?(projectId: string, input: CreateEditProposalRequest): Promise<EditProposal>;
+  listEditProposals?(projectId: string, kind: EditTargetKind, targetId: string): Promise<ListEditProposalsResponse>;
+  commandEditProposal?(projectId: string, proposalId: string, input: { command: EditProposalCommand; confirm: boolean }): Promise<EditProposal>;
   createFactorySession?(projectId: string, input?: { goal?: string }): Promise<FactorySession>;
   getFactorySession?(projectId: string, sessionId: string): Promise<FactorySession>;
   addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
@@ -753,6 +765,11 @@ function workflowVersions(value: unknown, status = 502): ListWorkflowVersionsRes
 
 function validated(value: unknown, status = 502): ValidateResponse {
   const record = schemaRecord(value, status);
+  return { ...sourceValidation(record, status), file_hash: asString(record.file_hash, "file_hash", status) };
+}
+
+function sourceValidation(value: unknown, status = 502): Omit<ValidateResponse, "file_hash"> {
+  const record = schemaRecord(value, status);
   if (record.valid !== true) {
     throw new LocalApiClientError("The local service returned an invalid validation result.", {
       status,
@@ -777,11 +794,63 @@ function validated(value: unknown, status = 502): ValidateResponse {
     source_hash: asString(record.source_hash, "source_hash", status),
     behavior_hash: asString(record.behavior_hash, "behavior_hash", status),
     lock_hash: asString(record.lock_hash, "lock_hash", status),
-    file_hash: asString(record.file_hash, "file_hash", status),
     ...(dependencies === undefined ? {} : { dependencies }),
     ...(dependencySummary === undefined ? {} : { dependency_summary: dependencySummary }),
     ...(record.runtime_ready === undefined ? {} : { runtime_ready: asBoolean(record.runtime_ready, "validation.runtime_ready", status) }),
     ...(runtimeReadyScope === undefined ? {} : { runtime_ready_scope: "agent_dependencies" as const }),
+  };
+}
+
+function builderResolution(value: unknown, status = 502): BuilderResolution {
+  const record = schemaRecord(value, status);
+  if (!["create", "edit", "discuss", "clarify"].includes(String(record.intent)) || !["resolved", "clarification", "unsupported"].includes(String(record.status)) || ![null, "agent", "workflow", "resource"].includes(record.create_kind as string | null)) {
+    throw new LocalApiClientError("Invalid Builder resolution", { status, code: "invalid_response" });
+  }
+  const targets = asArray(record.targets, "targets", status).map((value): BuilderResolution["targets"][number] => {
+    const target = asRecord(value, status);
+    if (target.kind !== "agent" && target.kind !== "workflow") throw new LocalApiClientError("Invalid Builder target", { status, code: "invalid_response" });
+    return { kind: target.kind, target_id: asString(target.target_id, "target_id", status), name: asString(target.name, "name", status), ...(target.revision === undefined ? {} : { revision: asNumber(target.revision, "revision", status), etag: asString(target.etag, "etag", status) }) };
+  });
+  if (record.status === "resolved" && record.intent === "edit" && (targets.length !== 1 || targets[0].revision === undefined)) throw new LocalApiClientError("Missing Builder edit baseline", { status, code: "invalid_response" });
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, intent: record.intent as BuilderResolution["intent"], create_kind: record.create_kind as BuilderResolution["create_kind"], status: record.status as BuilderResolution["status"], message: asString(record.message, "message", status), instruction: asText(record.instruction, "instruction", status), plan: asArray(record.plan, "plan", status).map((item) => asString(item, "plan item", status)), targets };
+}
+
+function editProposal(value: unknown, status = 502): EditProposal {
+  const record = schemaRecord(value, status);
+  const impact = asRecord(record.impact, status);
+  const validation = schemaRecord(record.validation, status);
+  const kind = record.target_kind;
+  const state = record.state;
+  const candidate = kind === "workflow" ? workflowSource(record.candidate_source, status) : source(record.candidate_source, status);
+  if ((kind !== "agent" && kind !== "workflow") || !["review", "applied", "rejected", "undone"].includes(String(state))
+    || impact.scope !== "single_draft" || impact.immutable_versions_changed !== false || impact.runs_started !== false
+    || impact.target_kind !== kind || impact.target_id !== record.target_id
+    || (kind === "agent" ? candidate.component_type !== "Flow" || candidate.agent_id !== record.target_id : candidate.component_type !== "Workflow" || candidate.workflow_id !== record.target_id)) {
+    throw new LocalApiClientError("The local service returned an invalid edit proposal.", { status, code: "invalid_response" });
+  }
+  const changes = (value: unknown): EditProposalChange[] => asArray(value, "proposal changes", status).map((item) => {
+    const change = asRecord(item, status);
+    if (!["add", "remove", "replace"].includes(String(change.operation)) || !("before" in change) || !("after" in change)) {
+      throw new LocalApiClientError("The local service returned an invalid proposal change.", { status, code: "invalid_response" });
+    }
+    return { path: asText(change.path, "change.path", status), operation: change.operation as EditProposalChange["operation"], before: change.before as JsonValue, after: change.after as JsonValue };
+  });
+  const checks = sourceValidation(validation, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    proposal_id: asString(record.proposal_id, "proposal_id", status),
+    project_id: asString(record.project_id, "project_id", status),
+    target_kind: kind, target_id: asString(record.target_id, "target_id", status),
+    instruction: asString(record.instruction, "instruction", status), created_at: asString(record.created_at, "created_at", status),
+    base_revision: asNumber(record.base_revision, "base_revision", status), base_etag: asString(record.base_etag, "base_etag", status),
+    candidate_source: candidate, changes: changes(record.changes), permission_changes: changes(record.permission_changes),
+    impact: { target_kind: kind, target_id: asString(impact.target_id, "impact.target_id", status), scope: "single_draft", immutable_versions_changed: false, runs_started: false },
+    validation: { ...checks, ...(validation.agent_calls === undefined ? {} : { agent_calls: asArray(validation.agent_calls, "agent_calls", status).map((item) => {
+      const call = asRecord(item, status);
+      return { node_id: asString(call.node_id, "node_id", status), agent_id: asString(call.agent_id, "agent_id", status), version_id: asString(call.version_id, "version_id", status) };
+    }) }) },
+    state: state as EditProposal["state"], stale: asBoolean(record.stale, "stale", status),
+    applied_revision: record.applied_revision === null ? null : asNumber(record.applied_revision, "applied_revision", status),
   };
 }
 
@@ -2444,6 +2513,26 @@ export class LocalApiClient {
         body: { profile },
       },
     );
+  }
+
+  resolveBuilderIntent(projectId: string, input: BuilderResolveRequest): Promise<BuilderResolution> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/builder/resolve`, builderResolution, { method: "POST", body: input });
+  }
+
+  createEditProposal(projectId: string, input: CreateEditProposalRequest): Promise<EditProposal> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals`, editProposal, { method: "POST", body: input });
+  }
+
+  listEditProposals(projectId: string, kind: EditTargetKind, targetId: string): Promise<ListEditProposalsResponse> {
+    const query = new URLSearchParams({ target_kind: kind, target_id: targetId });
+    return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals?${query}`, (value, status) => {
+      const record = schemaRecord(value, status);
+      return { schema_version: LOCAL_API_SCHEMA_VERSION, proposals: asArray(record.proposals, "proposals", status).map((item) => editProposal(item, status)) };
+    });
+  }
+
+  commandEditProposal(projectId: string, proposalId: string, input: { command: EditProposalCommand; confirm: boolean }): Promise<EditProposal> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals/${encodeURIComponent(proposalId)}/commands`, editProposal, { method: "POST", body: input });
   }
 
   createFactorySession(projectId: string, input: { goal?: string } = {}): Promise<FactorySession> {

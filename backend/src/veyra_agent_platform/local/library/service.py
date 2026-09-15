@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
@@ -30,6 +32,22 @@ from .workflow_dependencies import resolve_workflow_calls
 
 class DraftConflict(ProjectError):
     """The source on disk changed or a second Studio window won the edit."""
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _serialized(
+    operation: Callable[Concatenate[LibraryService, _P], _R],
+) -> Callable[Concatenate[LibraryService, _P], _R]:
+    @wraps(operation)
+    def guarded(self: LibraryService, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        # Cover both file replacement and its SQLite commit, including other editors.
+        with self.projects._writer_lock:
+            return operation(self, *args, **kwargs)
+
+    return guarded
 
 
 class LibraryService:
@@ -71,6 +89,7 @@ class LibraryService:
                     connection, intent["intent_id"]
                 )
 
+    @_serialized
     def draft(self, project_id: str, agent_id: str) -> dict[str, Any]:
         self._agent_in_project(project_id, agent_id)
         draft = self.repository.draft(agent_id)
@@ -79,6 +98,7 @@ class LibraryService:
         self._ensure_disk_matches_draft(project_id, agent_id, draft["source_file_hash"])
         return self._draft_payload(draft)
 
+    @_serialized
     def reload_from_disk(self, project_id: str, agent_id: str) -> dict[str, Any]:
         """Explicitly accept an external source edit as the next mutable draft."""
         agent = self._agent_in_project(project_id, agent_id)
@@ -123,6 +143,7 @@ class LibraryService:
             )
         return self.draft(project_id, agent_id)
 
+    @_serialized
     def replace_draft(
         self,
         *,
@@ -240,6 +261,7 @@ class LibraryService:
             )
         return result
 
+    @_serialized
     def commit(
         self,
         *,
@@ -327,6 +349,7 @@ class LibraryService:
             )
             return result
 
+    @_serialized
     def workflow_draft(self, project_id: str, workflow_id: str) -> dict[str, Any]:
         self._workflow_in_project(project_id, workflow_id)
         draft = self.repository.workflow_draft(workflow_id)
@@ -337,6 +360,7 @@ class LibraryService:
         )
         return self._draft_payload(draft)
 
+    @_serialized
     def reload_workflow_from_disk(
         self, project_id: str, workflow_id: str
     ) -> dict[str, Any]:
@@ -384,6 +408,7 @@ class LibraryService:
             )
         return self.workflow_draft(project_id, workflow_id)
 
+    @_serialized
     def replace_workflow_draft(
         self,
         *,
@@ -496,6 +521,7 @@ class LibraryService:
             "file_hash": draft["source_file_hash"],
         }
 
+    @_serialized
     def commit_workflow(
         self,
         *,

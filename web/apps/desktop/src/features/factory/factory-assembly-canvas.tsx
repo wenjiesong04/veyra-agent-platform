@@ -189,9 +189,9 @@ export function FactoryAssemblyCanvas({
   drafted: boolean;
   focusChild: boolean;
   onClose: () => void;
-  onGenerate: () => void;
+  onGenerate?: () => void;
   onApply: () => void;
-  onQuarantine: () => void;
+  onQuarantine?: () => void;
   testRun?: ReactNode;
 }) {
   const text = copy[locale];
@@ -246,15 +246,15 @@ export function FactoryAssemblyCanvas({
           </div>
         ) : null}
         <div className="factory-canvas-actions">
-          <Button variant="primary" disabled={!canGenerate || Boolean(busy)} onClick={onGenerate}>
+          {onGenerate ? <Button variant="primary" disabled={!canGenerate || Boolean(busy)} onClick={onGenerate}>
             {busy === "generate" ? text.generatingBtn : text.generate}
-          </Button>
+          </Button> : null}
           <Button disabled={!canApply || Boolean(busy)} onClick={onApply}>
             {busy === "apply" ? text.applying : text.apply}
           </Button>
-          <Button disabled={!session?.missing_capabilities.length || Boolean(busy)} onClick={onQuarantine}>
+          {onQuarantine ? <Button disabled={!session?.missing_capabilities.length || Boolean(busy)} onClick={onQuarantine}>
             {busy === "draft" ? text.quarantining : text.quarantine}
-          </Button>
+          </Button> : null}
           {studioHref ? <LinkButton href={studioHref}>{text.studio}</LinkButton> : null}
         </div>
         {focusChild && canApply ? <p className="factory-canvas-kicker">{text.child}</p> : null}

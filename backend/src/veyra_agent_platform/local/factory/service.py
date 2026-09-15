@@ -11,6 +11,7 @@ from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.local.builder.harness import BuilderHarness
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
@@ -67,6 +68,7 @@ class FactoryService:
         self.projects = projects
         self.catalog = catalog
         self.client = client
+        self.harness = BuilderHarness(projects, catalog)
         self._writer_lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
@@ -187,7 +189,7 @@ class FactoryService:
                 self._recover_generation(session_id)
                 raise
             messages: list[dict[str, Any]] = [
-                {"role": "system", "content": _generation_prompt(self.catalog)},
+                *self.harness.messages(project_id, "create_agent"),
                 *[
                     {"role": row["role"], "content": row["content"]}
                     for row in self.store.messages(session_id)
@@ -370,8 +372,10 @@ class FactoryService:
     def _interview_reply(self, session_id: str) -> str:
         if not self.client.configured:
             return _CANNED_FOLLOW_UP
+        session = self.store.session(session_id)
+        assert session is not None
         messages = [
-            {"role": "system", "content": _interview_prompt(self.catalog)},
+            *self.harness.messages(session["project_id"], "interview"),
             *[
                 {"role": row["role"], "content": row["content"]}
                 for row in self.store.messages(session_id)
@@ -497,29 +501,6 @@ def _repair_prompt(diagnostics: list[str]) -> str:
     return (
         "Repair only the invalid Blueprint fields. Do not add capabilities or "
         "permissions. Diagnostics: " + "; ".join(diagnostics)
-    )
-
-
-def _interview_prompt(catalog: ResourceCatalog) -> str:
-    kinds = sorted({resource["kind"] for resource in catalog.factory_snapshot()})
-    return (
-        "You are Veyra Agent. Ask one concise follow-up question "
-        "at a time about goal, inputs, outputs, environment, risks, approvals, "
-        "and success criteria. Never execute tools or invent resources. "
-        "Available resource kinds: " + ", ".join(kinds)
-    )
-
-
-def _generation_prompt(catalog: ResourceCatalog) -> str:
-    return (
-        "You are Veyra Agent. Return only an AgentBlueprint JSON "
-        "object matching the supplied schema. Use only the registered Component, "
-        "Tool, Skill, and Policy references in this catalog snapshot. Keep "
-        "permissions minimal, require verification for consequential results, and "
-        "never emit arbitrary code, secret values, or unknown resources. The "
-        "server will validate every field and will not execute this Blueprint. "
-        "Catalog snapshot:\n"
-        + json.dumps(catalog.factory_snapshot(), ensure_ascii=False, sort_keys=True)
     )
 
 

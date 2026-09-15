@@ -44,6 +44,8 @@ describe("ChatLanding", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Message" }), "Write a brief");
     await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onStart).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     expect(onStart).toHaveBeenCalledWith({ kind: "new" }, "Write a brief");
   });
 
@@ -78,6 +80,8 @@ describe("ChatLanding", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Message" }), "Hello");
     await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onStart).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     expect(onStart).toHaveBeenCalledWith({ kind: "new" }, "Hello");
   });
 
@@ -98,6 +102,8 @@ describe("ChatLanding", () => {
     await user.upload(input, new File(["Quarterly notes"], "notes.txt", { type: "text/plain" }));
     expect(await screen.findByText("notes.txt")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onStart).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     expect(onStart).toHaveBeenCalledWith({ kind: "new" }, expect.stringContaining("Quarterly notes"));
   });
 });

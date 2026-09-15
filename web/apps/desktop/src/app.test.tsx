@@ -936,6 +936,8 @@ describe("desktop Project workspace", () => {
     await renderApp(api);
     await user.type(await screen.findByRole("textbox", { name: "Message" }), "Write a brief");
     await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(api.createProject).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ description: "" }));
     expect(window.location.hash).toBe("#/projects/created-project/chat");
     expect(await screen.findByRole("heading", { name: "What do you want to achieve in Created Project?", level: 2 })).toBeInTheDocument();
@@ -964,7 +966,7 @@ describe("desktop Project workspace", () => {
     expect(within(sidebar).getByRole("link", { name: "Project resources" })).toHaveAttribute("href", projectRoutePaths.projectResources("p-one"));
   });
 
-  it("opens the selected Agent conversation from the composer picker", async () => {
+  it("opens the selected Agent Builder context from the composer picker", async () => {
     const first = project({
       project_id: "p-one",
       name: "Alpha Project",
@@ -978,14 +980,15 @@ describe("desktop Project workspace", () => {
     await renderApp(api);
     await user.click(await screen.findByRole("button", { name: "Choose project" }));
     await user.click(await screen.findByRole("option", { name: /Reviewer/ }));
-    expect(window.location.hash).toBe("#/projects/p-one/agents/agent-1");
-    expect(await screen.findByRole("heading", { name: "What can I help with?", level: 2 })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/projects/p-one/chat?target=agent:agent-1");
+    expect(await screen.findByRole("complementary", { name: "Edit proposal" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Build target" })).not.toBeInTheDocument();
     const sidebar = document.querySelector(".nav-group-fixed") as HTMLElement;
     expect(within(sidebar).getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "#/projects");
     expect(within(sidebar).getByRole("link", { name: "New chat" })).toHaveAttribute("href", projectRoutePaths.projectChat("p-one"));
     expect(within(sidebar).getByRole("link", { name: "Project resources" })).toHaveAttribute("href", projectRoutePaths.projectResources("p-one"));
     const agentTreeLink = document.querySelector(`.nav-group-projects a[href="${projectRoutePaths.agentDesign("p-one", "agent-1")}"]`);
-    expect(agentTreeLink).toHaveAttribute("aria-current", "page");
+    expect(agentTreeLink).not.toHaveAttribute("aria-current");
   });
 
   it.each([

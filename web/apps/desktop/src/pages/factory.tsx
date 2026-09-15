@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { useChatScopeNavigation } from "../features/agents/chat/chat-scope";
-import { FactoryConversation } from "../features/factory/factory-conversation";
+import { ProjectBuilderConversation } from "../features/builder/ProjectBuilderConversation";
 
 export function FactoryPage({ projectId }: { projectId: string }) {
   const { locale } = useLocale();
@@ -30,11 +30,10 @@ export function FactoryPage({ projectId }: { projectId: string }) {
   if (loading) return <LoadingState label={copy.loading} />;
   if (error || !project) return <ErrorState message={error ?? copy.unavailable} />;
   return (
-    <FactoryConversation
-      api={api}
-      projectId={projectId}
+    <ProjectBuilderConversation
+      key={projectId}
+      project={project}
       locale={locale}
-      projectName={project.name}
       scope={{
         current: { kind: "project", projectId, name: project.name },
         projects,

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Button } from "@veyra/ui";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
 import { ConversationComposer, ConversationStage } from "./conversation-stage";
 import { assembleGreeting, ConversationGreetingTitle, ConversationHeroMark } from "./conversation-greeting";
@@ -51,12 +52,14 @@ export function ChatLanding({
   const [draft, setDraft] = React.useState("");
   const [hint, setHint] = React.useState("");
   const [starting, setStarting] = React.useState(false);
+  const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
   const [attachments, setAttachments] = React.useState<ConversationAttachment[]>([]);
   const attachmentSeq = React.useRef(0);
 
-  const send = async () => {
-    const prompt = composeFactoryPrompt(draft, attachments, locale);
+  const send = async (confirmedPrompt?: string) => {
+    const prompt = confirmedPrompt ?? composeFactoryPrompt(draft, attachments, locale);
     if (!prompt || starting) return;
+    if (target.kind === "new" && !confirmedPrompt) { setPendingPrompt(prompt); return; }
     setStarting(true);
     setHint("");
     try {
@@ -91,6 +94,12 @@ export function ChatLanding({
       suggestions={(
         <>
           <ConversationGuides locale={locale} onPick={setDraft} />
+          {pendingPrompt ? <section aria-label={locale === "zh" ? "确认项目上下文" : "Confirm Project context"}>
+            <p>{locale === "zh" ? "当前未绑定项目。确认后创建空项目并将以下需求交给同一个 Veyra Builder；Agent 仍需另行预览和确认。也可以先选择已有项目。" : "No Project is bound. Confirm to create an empty Project and pass this goal to the same Veyra Builder. Agent creation still needs separate review and confirmation. You can choose an existing Project instead."}</p>
+            <pre>{pendingPrompt}</pre>
+            <Button disabled={starting} onClick={() => void send(pendingPrompt)}>{locale === "zh" ? "确认创建项目并继续" : "Confirm Project and continue"}</Button>
+            <Button disabled={starting} onClick={() => setPendingPrompt(null)}>{locale === "zh" ? "取消" : "Cancel"}</Button>
+          </section> : null}
           {hint ? <p className="agent-convo-hint" role="status">{hint}</p> : null}
         </>
       )}

@@ -186,6 +186,69 @@ export type WorkflowSource = {
 
 export type StudioSource = AgentSource | WorkflowSource;
 
+export type EditTargetKind = "agent" | "workflow";
+export type BuilderResolveRequest = {
+  content: string;
+  history: { role: "user" | "assistant"; content: string }[];
+  focus: { kind: EditTargetKind; target_id: string } | null;
+  locale: "zh" | "en";
+};
+export type BuilderResolution = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  intent: "create" | "edit" | "discuss" | "clarify";
+  create_kind: "agent" | "workflow" | "resource" | null;
+  status: "resolved" | "clarification" | "unsupported";
+  message: string;
+  instruction: string;
+  plan: string[];
+  targets: { kind: EditTargetKind; target_id: string; name: string; revision?: number; etag?: string }[];
+};
+export type EditProposalCommand = "apply" | "reject" | "undo";
+export type CreateEditProposalRequest = {
+  target_kind: EditTargetKind;
+  target_id: string;
+  instruction: string;
+  expected_revision: number;
+  expected_etag: string;
+};
+export type EditProposalChange = {
+  path: string;
+  operation: "add" | "remove" | "replace";
+  before: JsonValue;
+  after: JsonValue;
+};
+export type EditProposal = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  proposal_id: string;
+  project_id: string;
+  target_kind: EditTargetKind;
+  target_id: string;
+  instruction: string;
+  created_at: string;
+  base_revision: number;
+  base_etag: string;
+  candidate_source: StudioSource;
+  changes: EditProposalChange[];
+  permission_changes: EditProposalChange[];
+  impact: {
+    target_kind: EditTargetKind;
+    target_id: string;
+    scope: "single_draft";
+    immutable_versions_changed: false;
+    runs_started: false;
+  };
+  validation: Omit<ValidateResponse, "file_hash"> & {
+    agent_calls?: { node_id: string; agent_id: string; version_id: string }[];
+  };
+  state: "review" | "applied" | "rejected" | "undone";
+  stale: boolean;
+  applied_revision: number | null;
+};
+export type ListEditProposalsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  proposals: EditProposal[];
+};
+
 export type AgentVersionSnapshot = {
   version_id: string;
   agent_id: string;

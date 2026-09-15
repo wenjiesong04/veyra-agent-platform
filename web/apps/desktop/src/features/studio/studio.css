@@ -112,6 +112,56 @@
   line-height: 1.45;
 }
 
+.studio-container {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.studio-edit-entry {
+  padding: 4px 14px;
+}
+
+.studio-edit-proposals {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 8px 14px;
+}
+
+.studio-edit-proposals article {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.studio-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.studio-edit-diff {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 12px;
+}
+
+.studio-edit-proposals pre {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.studio-body[hidden] {
+  display: none;
+}
+
 .studio-body {
   --studio-chrome-top: 52px;
   position: relative;
