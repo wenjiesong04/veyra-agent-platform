@@ -1,5 +1,29 @@
 # Veyra Development Handoff
 
+## Runtime V1 released — 发布闭环完成（2026-09-15，最新 checkpoint）
+
+- Runtime V1 = complete / closed。发布 commit `ea94b649a3fe9dd24d2883d5b0e6bc3a0ae4f3dd`
+  （`ea94b64`），push successful；接管 HEAD 与 origin/codex/agent-platform 均为此 SHA，
+  tracked 工作树干净。本轮仅发布 smoke，不重新开发、跑 Runtime 测试或 browser E2E。
+- 5173 / 8771 / 8772 restarted：PID 分别为 `65876` / `65874` / `65875`。两个 API cwd
+  为当前仓库根，Desktop 为 `web/apps/desktop`；专用 Conda Python、原 uvicorn 命令与
+  Vite loopback/strictPort，显式 `VEYRA_BUILD_SHA=ea94b649a3fe9dd24d2883d5b0e6bc3a0ae4f3dd`。
+- 接管发现旧用户 LaunchAgent 自动拉起 API 并注入历史 SHA；已临时 bootout 三个
+  `com.veyra.agent-platform.{desktop,local,community}` 任务，未修改 plist，随后按原命令
+  独立启动。登录后的旧 LaunchAgent 配置仍可能恢复历史 SHA；本轮不更改持久系统配置。
+- Desktop 首页/实际 Runtime module、Local health、Community health/ready 及 Desktop
+  两个代理均 HTTP 200；database ready、object storage ready，API build SHA 全部精确匹配
+  `ea94b64`。PID/cwd 和启动日志已核对，无立即启动错误。日志目录：
+  `/var/folders/qv/3k0ngr893x5g_msd79c6dtfw0000gn/T/veyra-ea94b64-release-3sunpgh9`。
+- Runtime command contract verified：live OpenAPI 确认 Agent/Workflow Run detail GET、
+  command POST、Idempotency-Key 和 Agent checkpoint_id；发布源码字节匹配并确认 Retry /
+  Resume 分支及显式 execution checkpoint 要求，Desktop 实际模块含相应入口与 UUIDv7。
+  未 POST 控制命令或新建 Run/外部调用；无已知生产 Run ID，且项目列表 GET 会 reconcile
+  存储，故跳过已有 Run 发现与 detail 实例读取，不将其记为已验证。
+- GitHub Billing remains external blocker：未查询、处理或 rerun CI。下一阶段停止修改
+  Runtime；本 Session 不开始任何下一个大模块。仅本文作为最小 docs-only 提交推送，
+  运行服务继续标记产品发布 SHA `ea94b64`；未跟踪 Backboard settings/sessions 原样保留。
+
 ## Runtime V1 complete — 最终发布验收（2026-09-15，优先于下方历史）
 
 - Runtime V1 complete：功能与隔离真实浏览器验收完成。下方“Retry UI / Resume 未实现”
