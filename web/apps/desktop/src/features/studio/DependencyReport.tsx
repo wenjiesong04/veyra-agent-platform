@@ -15,6 +15,7 @@ const statusCopy: Record<AgentDependencyCheck["status"], { zh: string; en: strin
   context_not_declared: { zh: "未声明上下文", en: "Context not declared" },
   context_too_large: { zh: "上下文过大", en: "Context too large" },
   project_binding_stale: { zh: "项目绑定已过期", en: "Project binding stale" },
+  resource_unbound: { zh: "项目未绑定", en: "Not bound to Project" },
 };
 
 export function DependencyReport({ validation, locale }: { validation: Omit<ValidateResponse, "file_hash">; locale: "zh" | "en" }) {

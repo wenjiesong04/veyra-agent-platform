@@ -179,9 +179,13 @@ def create_app(
             ),
             runtime_profiles,
             application.state.conversations,
+            project_resources=application.state.project_resources,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime
+        )
+        application.state.resource_readiness = (
+            application.state.runtime.resource_readiness
         )
         application.state.orchestrator = OrchestratorService(
             OrchestratorStore(database_path),

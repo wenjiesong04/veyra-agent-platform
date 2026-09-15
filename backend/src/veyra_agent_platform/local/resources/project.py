@@ -27,6 +27,37 @@ class ProjectResourceService:
         self.projects = projects
         self.catalog = catalog
 
+    def resolve_pin(
+        self, project_id: str, reference: str, locked_hash: str | None
+    ) -> dict[str, Any]:
+        """Resolve only the locally available artifact matching both portable pins."""
+        try:
+            bindings = self.projects.project_resource_bindings(project_id)
+        except ProjectError as exc:
+            raise ProjectResourceError(exc.code, str(exc)) from exc
+        binding = next((item for item in bindings if item.reference == reference), None)
+        if binding is None:
+            raise ProjectResourceError(
+                "resource_unbound", "Tool resource is not bound to this Project"
+            )
+        if locked_hash != binding.content_hash:
+            raise ProjectResourceError(
+                "resource_lock_mismatch", "Agent lock does not match the Project pin"
+            )
+        try:
+            resource = self.catalog.by_reference(reference)
+        except ResourceCatalogError as exc:
+            raise ProjectResourceError(
+                "tool_not_registered",
+                "Pinned Tool is not available in the local Catalog",
+            ) from exc
+        if resource["content_hash"] != binding.content_hash:
+            raise ProjectResourceError(
+                "project_binding_stale", "Local Catalog cannot resolve the Project pin"
+            )
+        resource["bound_content_hash"] = binding.content_hash
+        return resource
+
     def list(self, project_id: str) -> dict[str, Any]:
         try:
             bindings = self.projects.project_resource_bindings(project_id)
@@ -38,11 +69,19 @@ class ProjectResourceService:
         references = set(binding_by_reference) | set(usage)
         resources: list[dict[str, Any]] = []
         missing: list[str] = []
+        missing_bindings: list[dict[str, Any]] = []
         for reference in sorted(references):
             try:
                 descriptor = self.catalog.by_reference(reference)
             except ResourceCatalogError:
                 missing.append(reference)
+                if reference in binding_by_reference:
+                    missing_bindings.append(
+                        {
+                            **binding_by_reference[reference].to_dict(),
+                            "used_by": usage.get(reference, []),
+                        }
+                    )
                 continue
             binding = binding_by_reference.get(reference)
             resources.append(
@@ -78,7 +117,8 @@ class ProjectResourceService:
             "project_id": project_id,
             "resources": resources,
             "missing_references": missing,
-            "project_count": sum(item["scope"] == "project" for item in resources),
+            "missing_bindings": missing_bindings,
+            "project_count": len(bindings),
             "used_count": sum(bool(item["used_by"]) for item in resources),
             "unbound_count": sum(item["scope"] == "used_unbound" for item in resources),
             "builtin_count": sum(item["scope"] == "builtin" for item in resources),
@@ -86,12 +126,48 @@ class ProjectResourceService:
         }
 
     def add(
-        self, project_id: str, reference: str, *, source: str = "manual"
+        self,
+        project_id: str,
+        reference: str,
+        *,
+        source: str = "manual",
+        content_hash: str | None = None,
     ) -> dict[str, Any]:
+        with self.projects._writer_lock:
+            return self._add(
+                project_id, reference, source=source, content_hash=content_hash
+            )
+
+    def _add(
+        self,
+        project_id: str,
+        reference: str,
+        *,
+        source: str,
+        content_hash: str | None,
+    ) -> dict[str, Any]:
+        try:
+            current = self.projects.project_resource_bindings(project_id)
+        except ProjectError as exc:
+            raise ProjectResourceError(exc.code, str(exc)) from exc
+        existing = next((item for item in current if item.reference == reference), None)
+        if existing is not None:
+            if content_hash is not None and content_hash != existing.content_hash:
+                raise ProjectResourceError(
+                    "resource_binding_conflict",
+                    "Project already pins different content; "
+                    "remove the unused binding before rebinding.",
+                )
+            return self.list(project_id)
         try:
             descriptor = self.catalog.by_reference(reference)
         except ResourceCatalogError as exc:
             raise ProjectResourceError(exc.code, str(exc)) from exc
+        if content_hash is not None and content_hash != descriptor["content_hash"]:
+            raise ProjectResourceError(
+                "resource_identity_conflict",
+                "Catalog content changed; reload the resource before adding it.",
+            )
         if (
             descriptor["kind"] == "component"
             and descriptor.get("component_class", "primitive") == "primitive"
@@ -101,9 +177,6 @@ class ProjectResourceService:
                 "platform primitive components are always available",
             )
         try:
-            current = self.projects.project_resource_bindings(project_id)
-            if any(binding.reference == reference for binding in current):
-                return self.list(project_id)
             binding = ProjectResourceBinding.from_dict(
                 {
                     "reference": reference,
@@ -116,9 +189,15 @@ class ProjectResourceService:
             raise ProjectResourceError(exc.code, str(exc)) from exc
 
     def remove(self, project_id: str, reference: str) -> dict[str, Any]:
+        with self.projects._writer_lock:
+            return self._remove(project_id, reference)
+
+    def _remove(self, project_id: str, reference: str) -> dict[str, Any]:
         try:
             current = self.projects.project_resource_bindings(project_id)
-            usage = self.projects.project_resource_usage(project_id)
+            usage = self.projects.project_resource_usage(
+                project_id, include_versions=True
+            )
         except ProjectError as exc:
             raise ProjectResourceError(exc.code, str(exc)) from exc
         if reference not in {binding.reference for binding in current}:
@@ -128,7 +207,8 @@ class ProjectResourceService:
         if usage.get(reference):
             raise ProjectResourceError(
                 "resource_in_use",
-                "resource is still used by an Agent or Workflow",
+                "resource is still used by an Agent or Workflow "
+                "source or saved version",
             )
         return self._replace(
             project_id,

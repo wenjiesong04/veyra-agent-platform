@@ -669,7 +669,8 @@ export type AgentDependencyStatus =
   | "secret_declaration_missing"
   | "context_not_declared"
   | "context_too_large"
-  | "project_binding_stale";
+  | "project_binding_stale"
+  | "resource_unbound";
 
 export type AgentDependencyCheck = {
   reference: string;
@@ -678,6 +679,8 @@ export type AgentDependencyCheck = {
   status: AgentDependencyStatus;
   detail: string;
   locked_hash?: string;
+  bound_content_hash?: string;
+  blocking_reasons?: Array<{ code: string; message: string }>;
   content_hash?: string;
   version?: string;
   availability?: ResourceAvailability;
@@ -752,7 +755,7 @@ export type ListComponentsResponse = {
   components: ComponentDefinition[];
 };
 
-/** Server-owned, immutable capability descriptor exposed by the Resource Catalog. */
+/** Catalog identity is immutable; API availability/runtime_status are live host projections. */
 export type ResourceKind =
   | "component"
   | "tool"
@@ -801,6 +804,10 @@ export type ResourceDescriptor = {
   required_permissions: ResourcePermissions;
   tags: string[];
   spec: JsonObject;
+  configuration_requirements?: Array<{ code: string; message: string; satisfied: boolean }>;
+  blocking_reasons?: Array<{ code: string; message: string }>;
+  dependencies?: JsonValue[];
+  compatibility?: { scope: string; execution: string; network_verified: boolean };
 };
 
 export type ResourceKindCount = {
@@ -836,6 +843,7 @@ export type ProjectResourcesResponse = {
   project_id: string;
   resources: ProjectResourceDescriptor[];
   missing_references: string[];
+  missing_bindings?: { reference: string; content_hash: string; source: string; used_by: ProjectResourceUsage[] }[];
   project_count: number;
   used_count: number;
   unbound_count: number;
@@ -845,6 +853,7 @@ export type ProjectResourcesResponse = {
 
 export type AddProjectResourceRequest = {
   reference: string;
+  content_hash?: string;
   source?: "manual" | "factory" | "imported" | "reconciled";
 };
 

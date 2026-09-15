@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
+from veyra_agent_platform.contracts.agent import AgentSource, ComponentType, FlowNode
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import (
     SCHEMA_VERSION,
@@ -26,13 +26,18 @@ from veyra_agent_platform.local.library.knowledge_context import read_knowledge_
 from veyra_agent_platform.local.library.service import LibraryService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
+from veyra_agent_platform.local.resources.project import (
+    ProjectResourceError,
+    ProjectResourceService,
+)
+from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 from .client import RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
 from .conversations import AgentConversationService
 from .profiles import RuntimeApiProfile, RuntimeProfileStore
-from .tools import ToolRuntime, ToolRuntimeError
+from .tools import ToolAuthorization, ToolRuntime, ToolRuntimeError
 
 _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 _COMPARE = re.compile(
@@ -93,10 +98,18 @@ class RuntimeService:
         tools: ToolRuntime | None = None,
         profiles: RuntimeProfileStore | None = None,
         conversations: AgentConversationService | None = None,
+        project_resources: ProjectResourceService | None = None,
+        resource_readiness: ResourceReadiness | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
         self.tools = tools or ToolRuntime(ResourceCatalog())
+        self.project_resources = project_resources or ProjectResourceService(
+            projects, self.tools.catalog
+        )
+        self.resource_readiness = resource_readiness or ResourceReadiness(
+            self.tools.catalog, self.model, self.tools._adapters.keys(), self.tools.mcp
+        )
         self.profiles = profiles or RuntimeProfileStore(repository)
         self.conversations = conversations
         self.repository.interrupt_orphan_runs()
@@ -193,7 +206,7 @@ class RuntimeService:
             )
         )
         _, profile_source = self.profiles.effective(project_id, agent_id)
-        tool_checks = self._tool_readiness(source)
+        tool_checks = self._tool_readiness(project_id, source)
         tools_ready = all(item["ready"] for item in tool_checks)
         checks = [
             {
@@ -244,24 +257,39 @@ class RuntimeService:
             "checks": checks,
         }
 
-    def _tool_readiness(self, source: AgentSource) -> list[dict[str, Any]]:
+    def _authorize_tool(
+        self,
+        project_id: str,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+    ) -> ToolAuthorization:
+        if node.uses is None:
+            return self.tools.authorize(source=source, node=node, values=values)
+        try:
+            resource = self.project_resources.resolve_pin(
+                project_id, node.uses, source.lock.get(node.uses)
+            )
+        except ProjectResourceError as exc:
+            return self.tools._denied(node.uses, exc.code, str(exc), values)
+        return self.tools.authorize(
+            source=source,
+            node=node,
+            values=values,
+            resource=self.resource_readiness.project(resource),
+        )
+
+    def _tool_readiness(
+        self, project_id: str, source: AgentSource
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         for node in source.nodes:
             if node.component_type is not ComponentType.TOOL:
                 continue
-            authorization = self.tools.authorize(source=source, node=node, values={})
+            authorization = self._authorize_tool(project_id, source, node, {})
             ready = authorization.decision == "allowed"
             code = authorization.code
             detail = authorization.reason
-            resource = authorization.resource or {}
-            spec = resource.get("spec")
-            if ready and isinstance(spec, Mapping):
-                server_id = spec.get("mcp_server_id")
-                if isinstance(server_id, str) and self.tools.mcp is not None:
-                    mcp_status = self.tools.mcp.readiness(server_id)
-                    ready = bool(mcp_status["ready"])
-                    code = str(mcp_status["code"])
-                    detail = str(mcp_status["detail"])
             checks.append(
                 {
                     "node_id": node.id,
@@ -1598,8 +1626,22 @@ class RuntimeService:
                     if project is None:
                         raise RuntimeError("project_invalid", "Project is unavailable")
                     tool_values = self._tool_input_values(node, values)
-                    authorization = self.tools.authorize(
-                        source=source, node=node, values=tool_values
+                    authorization = self._authorize_tool(
+                        project_id, source, node, tool_values
+                    )
+                    resource = authorization.resource
+                    identity = (
+                        {
+                            "resource_identity": {
+                                "reference": resource["reference"],
+                                "version": resource["version"],
+                                "content_hash": resource["content_hash"],
+                                "bound_content_hash": resource["bound_content_hash"],
+                                "locked_content_hash": source.lock.get(node.uses or ""),
+                            }
+                        }
+                        if resource is not None
+                        else {}
                     )
                     emit(
                         node.id,
@@ -1609,6 +1651,7 @@ class RuntimeService:
                             "input_digest": authorization.input_digest,
                             "permission": authorization.decision,
                             "code": authorization.code,
+                            **identity,
                         },
                     )
                     record = _ToolCallRecord(
@@ -1626,7 +1669,7 @@ class RuntimeService:
                     emit(
                         node.id,
                         "tool.started",
-                        {"tool_reference": authorization.tool_reference},
+                        {"tool_reference": authorization.tool_reference, **identity},
                     )
                     execution = self.tools.execute(
                         project_root=self.projects._existing_root(project["root_path"]),
@@ -1636,7 +1679,8 @@ class RuntimeService:
                         authorization=authorization,
                         approved=approved,
                     )
-                    emit(node.id, "tool.completed", execution.receipt)
+                    receipt = {**execution.receipt, **identity}
+                    emit(node.id, "tool.completed", receipt)
                     tool_calls[-1] = _ToolCallRecord(
                         node_id=record.node_id,
                         tool_reference=record.tool_reference,
@@ -1644,7 +1688,7 @@ class RuntimeService:
                         decision_code=record.decision_code,
                         decision_reason=record.decision_reason,
                         input_digest=record.input_digest,
-                        receipt=execution.receipt,
+                        receipt=receipt,
                     )
                     values.update(self._tool_output_values(node, execution.output))
                     port = "next"

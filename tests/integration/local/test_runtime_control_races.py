@@ -13,7 +13,11 @@ from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.runtime.tools import ToolExecution
 
-from .test_runtime_routes import _command_until_settled, _write_source
+from .test_runtime_routes import (
+    _bind_write_resource,
+    _command_until_settled,
+    _write_source,
+)
 
 
 @pytest.mark.parametrize("command", ["stop", "approve", "reject"])
@@ -34,6 +38,7 @@ def test_approval_pause_commits_state_and_evidence_together(
         project = client.post(
             "/api/v1/projects", json={"agents": [_write_source(client)]}
         ).json()
+        _bind_write_resource(client, project)
         p, a = project["project_id"], project["agents"][0]["agent_id"]
         url = f"/api/v1/projects/{p}/agents/{a}/run"
         runtime = client.app.state.runtime

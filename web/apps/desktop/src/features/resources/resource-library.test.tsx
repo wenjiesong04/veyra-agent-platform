@@ -1,13 +1,13 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ListResourcesResponse } from "@veyra/api-contracts";
+import type { ListResourcesResponse, ProjectResourcesResponse, ResourceDescriptor } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { ProjectWorkspaceProvider } from "../../api/project-workspace";
-import type { LocalProjectApi } from "../../api/local-client";
+import { LocalApiClientError, type LocalProjectApi } from "../../api/local-client";
 import { ResourceLibraryPage } from "./resource-library";
 
-function descriptor(kind: "component" | "tool" | "mcp_tool" | "skill" | "policy" | "template", name: string, id: string, availability: "ready" | "design_only" | "unavailable" | "requires_configuration" = "ready") {
+function descriptor(kind: "component" | "tool" | "mcp_tool" | "skill" | "policy" | "template", name: string, id: string, availability: "ready" | "design_only" | "unavailable" | "requires_configuration" = "ready"): ResourceDescriptor {
   return {
     schema_version: "1.0",
     resource_id: `veyra.${kind}.${id}`,
@@ -62,6 +62,46 @@ afterEach(() => {
 });
 
 describe("ResourceLibraryPage", () => {
+  it("adds an exact identity once and reloads server-owned bindings with a Project link", async () => {
+    const api = apiFor();
+    const empty: ProjectResourcesResponse = { schema_version: "1.0", project_id: "project-1", resources: [], missing_references: [], project_count: 0, used_count: 0, unbound_count: 0, builtin_count: 0 };
+    const bound: ProjectResourcesResponse = { ...empty, project_count: 1, resources: [{ ...skills[0]!, scope: "project", binding_status: "current", binding_source: "manual", bound_content_hash: "a".repeat(64), used_by: [] }] };
+    api.listProjects = vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [{ project_id: "project-1", name: "Target" }] });
+    api.listProjectResources = vi.fn().mockResolvedValue(empty);
+    let complete!: (value: ProjectResourcesResponse) => void;
+    api.addProjectResource = vi.fn().mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    const user = userEvent.setup();
+    const view = render(<ThemeProvider><ProjectWorkspaceProvider api={api}><ResourceLibraryPage resourceId={skills[0]!.reference} /></ProjectWorkspaceProvider></ThemeProvider>);
+    const add = await screen.findByRole("button", { name: "Add to Project" });
+    await waitFor(() => expect(add).toBeEnabled());
+    await user.dblClick(add);
+    expect(api.addProjectResource).toHaveBeenCalledTimes(1);
+    expect(api.addProjectResource).toHaveBeenCalledWith("project-1", { reference: skills[0]!.reference, content_hash: "a".repeat(64) });
+    expect(add).toBeDisabled();
+    await act(async () => complete(bound));
+    expect(await screen.findByRole("button", { name: "Added to Project" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "Open Project Resources" })).toHaveAttribute("href", "#/projects/project-1/resources");
+    expect(screen.getAllByText("Needs configuration").length).toBeGreaterThan(0);
+    view.unmount();
+    api.listProjectResources = vi.fn().mockResolvedValue(bound);
+    render(<ThemeProvider><ProjectWorkspaceProvider api={api}><ResourceLibraryPage resourceId={skills[0]!.reference} /></ProjectWorkspaceProvider></ThemeProvider>);
+    expect(await screen.findByRole("button", { name: "Added to Project" })).toBeDisabled();
+    expect(api.addProjectResource).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count used-unbound resources as ownership and shows typed add errors", async () => {
+    const api = apiFor();
+    api.listProjects = vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [{ project_id: "project-1", name: "Target" }] });
+    api.listProjectResources = vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", resources: [{ ...skills[0], scope: "used_unbound", used_by: [] }], missing_references: [], project_count: 0, used_count: 1, unbound_count: 1, builtin_count: 0 });
+    api.addProjectResource = vi.fn().mockRejectedValue(new LocalApiClientError("Reload Catalog identity", { status: 409, code: "resource_identity_conflict" }));
+    render(<ThemeProvider><ProjectWorkspaceProvider api={api}><ResourceLibraryPage resourceId={skills[0]!.reference} /></ProjectWorkspaceProvider></ThemeProvider>);
+    const add = await screen.findByRole("button", { name: "Add to Project" });
+    await waitFor(() => expect(add).toBeEnabled());
+    await userEvent.click(add);
+    expect(await screen.findByText("resource_identity_conflict: Reload Catalog identity")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Added to Project" })).not.toBeInTheDocument();
+  });
+
   it("opens on the full catalog and filters to Skills and Policies", async () => {
     const api = apiFor();
     const user = userEvent.setup();
@@ -111,6 +151,17 @@ describe("ResourceLibraryPage", () => {
     expect(await screen.findByText("Research Brief description")).toBeInTheDocument();
     expect(await screen.findByText("a".repeat(64))).toBeInTheDocument();
     expect(api.getResource).toHaveBeenCalledWith("veyra.skill.research-brief", "1.0.0");
+  });
+
+  it("fetches Project inline detail and displays server readiness instead of the list snapshot", async () => {
+    const api = apiFor();
+    api.getResource.mockResolvedValue({ ...skills[0], availability: "unavailable", runtime_status: "runtime_not_supported", blocking_reasons: [{ code: "host_missing", message: "Host capability is unavailable." }] });
+    render(<ThemeProvider><ProjectWorkspaceProvider api={api}><ResourceLibraryPage catalogHref="#/projects/library-project" /></ProjectWorkspaceProvider></ThemeProvider>);
+    await userEvent.click(await screen.findByText("Research Brief"));
+    expect(await screen.findByText("Host capability is unavailable.")).toBeInTheDocument();
+    expect(api.getResource).toHaveBeenCalledWith("veyra.skill.research-brief", "1.0.0");
+    expect(screen.getAllByText("Unavailable")).toHaveLength(2);
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
   });
 
   it("reloads discovered MCP tools after the Resource Library is reopened", async () => {

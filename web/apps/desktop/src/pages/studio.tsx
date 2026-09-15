@@ -66,6 +66,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   const [view, setView] = React.useState<StudioView>("canvas"); const [source, setSource] = React.useState<StudioSource | null>(null);
   const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null); const [validation, setValidation] = React.useState<ValidateResponse | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
+  const [resourceMessage, setResourceMessage] = React.useState("");
   const writing = React.useRef(false);
   const [writeBusy, setWriteBusy] = React.useState(false);
   const [invalidBuffers, setInvalidBuffers] = React.useState<Set<string>>(new Set());
@@ -90,12 +91,18 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   }, [api, projectId, agentId, workflowId, isWorkflow, locale, adoptDraft]);
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
+    let active = true;
     if (api.listProjectResources) {
-      void api.listProjectResources(projectId).then((response) => setCatalog(response.resources.filter((item) => item.scope !== "used_unbound"))).catch(() => setCatalog([]));
-      return;
+      void api.listProjectResources(projectId).then((response) => {
+        if (!active) return;
+        setCatalog(response.resources.filter((item) => item.scope === "project" || item.scope === "builtin"));
+        setResourceMessage(response.missing_references.length ? `Missing Project resources: ${response.missing_references.join(", ")}` : "");
+      }).catch(() => { if (active) { setCatalog([]); setResourceMessage(locale === "zh" ? "Project 资源加载失败，请刷新重试。" : "Project resources unavailable. Refresh to retry."); } });
+      return () => { active = false; };
     }
-    if (api.listResources) void api.listResources().then((response) => setCatalog(response.resources)).catch(() => setCatalog([]));
-  }, [api, projectId]);
+    if (isWorkflow && api.listResources) void api.listResources().then((response) => { if (active) setCatalog(response.resources); }).catch(() => { if (active) setCatalog([]); });
+    return () => { active = false; };
+  }, [api, projectId, isWorkflow, locale]);
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: StudioSource) => {
     const source = adoptStudioSource(next);
@@ -181,6 +188,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
       <LiveRunProvider api={api} projectId={projectId} agentId={agentId ?? ""} locale={locale} inactive={isWorkflow}>
         <div className="studio-container">
           <div className="studio-body">
+          {!isWorkflow && resourceMessage ? <p role="status">{resourceMessage}</p> : null}
           {message || diagnostics.length || Boolean(validation?.dependencies && validation.dependency_summary) ? (
             <StudioNotice
               message={message}
@@ -265,7 +273,9 @@ type EditorProps = { source: StudioSource; onChange: (source: StudioSource) => v
 function FormView({ source, onChange, onBufferValidity }: EditorProps) {
   const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow";
   const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value });
-  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} onValid={(inputs) => onChange({ ...source, inputs })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} onValid={(outputs) => onChange({ ...source, outputs })} /></div></Panel>;
+  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} onValid={(inputs) => onChange({ ...source, inputs })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} onValid={(outputs) => onChange({ ...source, outputs })} /></div>
+    {!workflow ? source.nodes.filter((node) => node.component_type === "Tool").map((node) => <fieldset key={node.id}><legend>Tool · {node.id}</legend><label>{zh ? "资源引用" : "Resource reference"}<input readOnly value={node.uses ?? ""} /></label><label>{zh ? "固定哈希" : "Pinned hash"}<input readOnly value={source.lock[node.uses ?? ""] ?? ""} /></label>{(["input_mapping", "output_mapping"] as const).map((field) => <JsonField key={field} field={`${node.id}:${field}`} onBufferValidity={onBufferValidity} label={`${node.id} ${field}`} value={node[field] ?? {}} onValid={(mapping) => onChange({ ...source, nodes: source.nodes.map((item) => item.id === node.id ? { ...item, [field]: mapping } : item) })} />)}</fieldset>) : null}
+  </Panel>;
 }
 
 function useBufferValidity(field: string, error: string, onBufferValidity: BufferValidity) {

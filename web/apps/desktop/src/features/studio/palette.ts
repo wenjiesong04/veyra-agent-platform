@@ -27,7 +27,7 @@ const COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
 ]);
 
 const AGENT_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
-  "Start", "Model", "Tool", "HumanApproval", "Verifier", "Output",
+  "Start", "Model", "HumanApproval", "Verifier", "Output",
 ]);
 
 const WORKFLOW_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
@@ -79,6 +79,7 @@ export function catalogToolRequiresApproval(resource: ResourceDescriptor): boole
 }
 
 function canDrag(resource: ResourceDescriptor): boolean {
+  if ("binding_status" in resource && resource.binding_status === "stale") return false;
   if (resource.availability === "unavailable" || resource.availability === "quarantined" || resource.availability === "disabled") {
     return false;
   }
@@ -169,7 +170,7 @@ export function grantCatalogResource(source: AgentSource, resource: ResourceDesc
   const permissions = source.extensions.veyra.permissions;
   const required = resource.required_permissions;
   const lock = resource.kind === "tool" || resource.kind === "mcp_tool"
-    ? { ...source.lock, [resource.reference]: resource.content_hash }
+    ? { ...source.lock, [resource.reference]: projectToolHash(resource) }
     : source.lock;
   return {
     ...source,
@@ -189,6 +190,13 @@ export function grantCatalogResource(source: AgentSource, resource: ResourceDesc
     },
     lock,
   };
+}
+
+export function projectToolHash(resource: ResourceDescriptor): string {
+  if (!("scope" in resource) || resource.scope !== "project" || !("bound_content_hash" in resource) || typeof resource.bound_content_hash !== "string") {
+    throw new Error("Tool must be bound to this Project before use.");
+  }
+  return resource.bound_content_hash;
 }
 
 export function attachCatalogResource(

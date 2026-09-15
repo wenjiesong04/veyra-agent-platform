@@ -457,7 +457,7 @@ class ProjectService:
         return manifest.resources
 
     def project_resource_usage(
-        self, project_id: str
+        self, project_id: str, *, include_versions: bool = False
     ) -> dict[str, list[dict[str, str]]]:
         """Find Catalog references used by Agent and Workflow source definitions."""
         _, root, _, _, manifest = self._project_manifest_state(project_id)
@@ -479,12 +479,28 @@ class ProjectService:
 
         for agent_entry in manifest.agents:
             record(self._agent_source(root, agent_entry), "agent", agent_entry.agent_id)
+        if include_versions:
+            for version in self.repository.project_agent_versions(project_id):
+                record(
+                    AgentSource.from_dict(json.loads(version["source_json"])),
+                    "agent",
+                    version["agent_id"],
+                )
         for workflow_entry in manifest.workflows:
             record(
                 self._workflow_source(root, workflow_entry),
                 "workflow",
                 workflow_entry.resource_id,
             )
+            if include_versions:
+                for version in self.repository.workflow_versions(
+                    workflow_entry.resource_id
+                ):
+                    record(
+                        WorkflowSource.from_dict(json.loads(version["source_json"])),
+                        "workflow",
+                        workflow_entry.resource_id,
+                    )
         return usage
 
     def replace_project_resource_bindings(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
+import type { AgentSource, ProjectResourceDescriptor, ResourceDescriptor } from "@veyra/api-contracts";
 import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, grantCatalogResource, knowledgePalette, notePalette, paletteForMode, paletteFromCatalog, paletteItemBlocked, workflowAgentPalette } from "./palette";
 
 const source: AgentSource = {
@@ -44,16 +44,18 @@ describe("Studio catalog palette", () => {
   });
 
   it("writes uses, lock, and permission roots when a Catalog tool is attached", () => {
-    const resource = tool("Read File", "filesystem.read", "ready");
+    const resource: ProjectResourceDescriptor = { ...tool("Read File", "filesystem.read", "ready"), scope: "project", binding_source: "manual", bound_content_hash: "a".repeat(64), used_by: [] };
     const next = attachCatalogResource(source, resource, { id: "read-1", component_type: "Tool", uses: resource.reference }, { x: 40.4, y: 80.8 });
     expect(next.nodes).toContainEqual({ id: "read-1", component_type: "Tool", uses: "veyra.tool.filesystem.read@1.0.0" });
-    expect(next.lock[resource.reference]).toBe(resource.content_hash);
+    expect(next.lock[resource.reference]).toBe(resource.bound_content_hash);
     expect(next.extensions.veyra.permissions.tools).toEqual(["veyra.tool.filesystem.read"]);
     expect(next.extensions.veyra.permissions.filesystem_read_roots).toEqual(["project"]);
     expect(next.ui.positions["read-1"]).toEqual({ x: 40, y: 81 });
     const granted = grantCatalogResource(source, resource);
     expect(granted.nodes).toEqual(source.nodes);
-    expect(granted.lock[resource.reference]).toBe(resource.content_hash);
+    expect(granted.lock[resource.reference]).toBe(resource.bound_content_hash);
+    expect(() => grantCatalogResource(source, tool("Global", "global", "ready"))).toThrow(/bound to this Project/);
+    expect(paletteFromCatalog([{ ...resource, binding_status: "stale" } as ProjectResourceDescriptor])[0]?.draggable).toBe(false);
   });
 
   it("attaches Skills as catalog bindings without adding a Flow node", () => {

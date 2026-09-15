@@ -28,6 +28,13 @@ function response(payload: unknown, status = 200): Response {
 }
 
 describe("LocalApiClient Project requests", () => {
+  it.each(["resource_unbound", "project_binding_stale", "configuration_required"])("preserves %s Agent dependency evidence", async (status) => {
+    const dependency = { reference: "veyra.tool.filesystem.read@1.0.0", kind: "tool", name: "Read File", status, detail: "Check the Project binding", locked_hash: "a".repeat(64), bound_content_hash: "a".repeat(64), content_hash: "b".repeat(64), blocking_reasons: [{ code: "secret_not_configured", message: "Configure host credential." }], used_by: ["read"], bound_by: [] };
+    const payload = { schema_version: "1.0", valid: true, source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file", runtime_ready: false, runtime_ready_scope: "agent_dependencies", dependency_summary: { total: 1, ready: 0, attention: 1 }, dependencies: [dependency] };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(payload)) });
+    await expect(client.validate("project-1", "agent-1")).resolves.toMatchObject(payload);
+  });
+
   it("lists and validates real Project summaries", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", projects: [summary({ agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" }], agent_count: 1 })] }));
     const client = new LocalApiClient({ fetcher });
@@ -102,18 +109,20 @@ describe("LocalApiClient Project requests", () => {
       bound_content_hash: "a".repeat(64),
       used_by: [],
     };
-    const payload = { schema_version: "1.0", project_id: "project-1", resources: [descriptor], missing_references: [], project_count: 1, used_count: 0, unbound_count: 0, builtin_count: 9 };
+    const missing = { reference: "veyra.skill.missing@1.0.0", content_hash: "b".repeat(64), source: "manual", used_by: [] };
+    const payload = { schema_version: "1.0", project_id: "project-1", resources: [descriptor], missing_references: [missing.reference], missing_bindings: [missing], project_count: 2, used_count: 0, unbound_count: 0, builtin_count: 9 };
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response(payload))
       .mockResolvedValueOnce(response(payload, 201))
       .mockResolvedValueOnce(response(payload));
     const client = new LocalApiClient({ fetcher });
 
-    await expect(client.listProjectResources("project-1")).resolves.toMatchObject({ project_count: 1, resources: [{ reference: descriptor.reference, scope: "project" }] });
-    await client.addProjectResource("project-1", { reference: descriptor.reference });
+    await expect(client.listProjectResources("project-1")).resolves.toMatchObject({ project_count: 2, resources: [{ reference: descriptor.reference, scope: "project" }], missing_bindings: [missing] });
+    await client.addProjectResource("project-1", { reference: descriptor.reference, content_hash: descriptor.content_hash });
     await client.removeProjectResource("project-1", "veyra.filesystem.read", "1.0.0");
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/resources");
     expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/resources");
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ reference: descriptor.reference, content_hash: descriptor.content_hash });
     expect(fetcher.mock.calls[2]?.[0]).toBe("/api/v1/projects/project-1/resources/veyra.filesystem.read/versions/1.0.0");
   });
 
@@ -356,12 +365,16 @@ describe("LocalApiClient Project requests", () => {
       description: "Structure a bounded research brief.",
       origin: "builtin",
       content_hash: "a".repeat(64),
-      availability: "ready",
+      availability: "requires_configuration",
       factory_selectable: true,
       runtime_status: "runtime_not_configured",
       required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
       tags: ["research", "instruction"],
       spec: { instruction: "State scope and evidence." },
+      blocking_reasons: [{ code: "model_configuration", message: "Configure Runtime provider." }],
+      configuration_requirements: [{ code: "model_configuration", message: "Configure Runtime provider.", satisfied: false }],
+      dependencies: [],
+      compatibility: { scope: "host", execution: "Requires permissions.", network_verified: false },
     } satisfies ResourceDescriptor;
     const kinds = ["component", "tool", "mcp_tool", "skill", "policy", "template"].map((kind) => ({ kind, count: kind === "skill" ? 1 : 0 }));
     const fetcher = vi.fn().mockResolvedValueOnce(response({ schema_version: "1.0", resources: [resource], kinds })).mockResolvedValueOnce(response(resource));

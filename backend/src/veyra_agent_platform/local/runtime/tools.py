@@ -129,7 +129,12 @@ class ToolRuntime:
             self._adapters.update(adapters)
 
     def authorize(
-        self, *, source: AgentSource, node: FlowNode, values: dict[str, Any]
+        self,
+        *,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        resource: dict[str, Any] | None = None,
     ) -> ToolAuthorization:
         if node.uses is None:
             return self._denied(
@@ -139,8 +144,9 @@ class ToolRuntime:
                 values,
             )
         try:
-            resource_id, version = node.uses.rsplit("@", 1)
-            resource = self.catalog.detail(resource_id, version)
+            if resource is None:
+                resource_id, version = node.uses.rsplit("@", 1)
+                resource = self.catalog.detail(resource_id, version)
         except (ValueError, ResourceCatalogError):
             return self._denied(
                 node.uses,
@@ -157,9 +163,15 @@ class ToolRuntime:
                 resource,
             )
         if resource["availability"] != "ready":
+            reasons = resource.get("blocking_reasons", [])
+            code = (
+                reasons[0]["code"]
+                if resource["availability"] == "requires_configuration" and reasons
+                else "tool_unavailable"
+            )
             return self._denied(
                 node.uses,
-                "tool_unavailable",
+                code,
                 "Tool is not ready for local execution",
                 values,
                 resource,
@@ -172,7 +184,10 @@ class ToolRuntime:
                 values,
                 resource,
             )
-        if source.lock.get(node.uses) != resource["content_hash"]:
+        if (
+            resource["reference"] != node.uses
+            or source.lock.get(node.uses) != resource["content_hash"]
+        ):
             return self._denied(
                 node.uses,
                 "tool_lock_invalid",

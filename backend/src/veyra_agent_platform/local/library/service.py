@@ -192,6 +192,7 @@ class LibraryService:
                 raise DraftConflict("draft ETag does not match")
             if draft["revision"] != expected_revision:
                 raise DraftConflict("draft revision does not match")
+            self._validate_tool_bindings(project_id, parsed)
             intent_id = self.repository.create_write_intent(
                 connection,
                 agent_id=agent_id,
@@ -242,7 +243,33 @@ class LibraryService:
                 self.repository.remove_write_intent(connection, intent_id)
             raise
 
-    def validate(self, project_id: str, agent_id: str) -> dict[str, Any]:
+    def _validate_tool_bindings(self, project_id: str, source: AgentSource) -> None:
+        references = {node.uses for node in source.nodes if node.uses}
+        if not references:
+            return
+        bindings = {
+            binding.reference: binding.content_hash
+            for binding in self.projects.project_resource_bindings(project_id)
+        }
+        for reference in sorted(references):
+            if reference not in bindings:
+                raise ProjectError(
+                    f"Tool {reference} is not bound to this Project.",
+                    "resource_unbound",
+                )
+            if source.lock[reference] != bindings[reference]:
+                raise ProjectError(
+                    f"Tool {reference} must lock the Project pinned content hash.",
+                    "resource_lock_mismatch",
+                )
+
+    def validate(
+        self,
+        project_id: str,
+        agent_id: str,
+        *,
+        resource_projection: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         draft = self.draft(project_id, agent_id)
         source = AgentSource.from_dict(draft["source"])
         result = {
@@ -256,7 +283,11 @@ class LibraryService:
         if self.catalog is not None:
             result.update(
                 inspect_agent_dependencies(
-                    self.projects, self.catalog, project_id, source
+                    self.projects,
+                    self.catalog,
+                    project_id,
+                    source,
+                    resource_projection=resource_projection,
                 )
             )
         return result
@@ -302,6 +333,7 @@ class LibraryService:
             source = AgentSource.from_dict(
                 self.projects._parse_yaml(source_text, agent["slug"])
             )
+            self._validate_tool_bindings(project_id, source)
             existing = self.repository.version_by_fingerprint(
                 connection, agent_id, current_file_hash
             )

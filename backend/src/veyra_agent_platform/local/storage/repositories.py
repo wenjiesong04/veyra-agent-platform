@@ -899,6 +899,17 @@ class LocalRepository:
                 (agent_id,),
             ).fetchall()
 
+    def project_agent_versions(self, project_id: str) -> list[sqlite3.Row]:
+        """Include retained versions of soft-removed Agents for dependency checks."""
+        with self._connect() as connection:
+            return connection.execute(
+                """SELECT v.* FROM agent_versions AS v
+                   JOIN agents AS a ON a.agent_id = v.agent_id
+                   WHERE a.project_id = ?
+                   ORDER BY v.created_at DESC, v.version_id DESC""",
+                (project_id,),
+            ).fetchall()
+
     def workflow_versions(self, workflow_id: str) -> list[sqlite3.Row]:
         with self._connect() as connection:
             return connection.execute(

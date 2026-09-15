@@ -859,7 +859,7 @@ function validationDependency(value: unknown, status = 502): AgentDependencyChec
   const kind = asString(record.kind, "validation dependency kind", status);
   const dependencyStatus = asString(record.status, "validation dependency status", status);
   const kinds = new Set(["component", "tool", "mcp_tool", "skill", "policy", "template", "knowledge"]);
-  const statuses = new Set<AgentDependencyStatus>(["ready", "missing", "lock_missing", "lock_mismatch", "kind_mismatch", "configuration_required", "runtime_unavailable", "review_required", "permission_denied", "secret_declaration_missing", "context_not_declared", "context_too_large", "project_binding_stale"]);
+  const statuses = new Set<AgentDependencyStatus>(["ready", "missing", "lock_missing", "lock_mismatch", "kind_mismatch", "configuration_required", "runtime_unavailable", "review_required", "permission_denied", "secret_declaration_missing", "context_not_declared", "context_too_large", "project_binding_stale", "resource_unbound"]);
   if (!kinds.has(kind) || !statuses.has(dependencyStatus as AgentDependencyStatus)) {
     throw new LocalApiClientError("The local service returned an invalid Agent dependency check.", { status, code: "invalid_response" });
   }
@@ -886,6 +886,8 @@ function validationDependency(value: unknown, status = 502): AgentDependencyChec
     status: dependencyStatus as AgentDependencyStatus,
     detail: asText(record.detail, "validation dependency detail", status),
     ...(record.locked_hash === undefined ? {} : { locked_hash: asString(record.locked_hash, "validation dependency locked_hash", status) }),
+    ...(record.bound_content_hash === undefined ? {} : { bound_content_hash: asString(record.bound_content_hash, "validation dependency bound_content_hash", status) }),
+    ...(record.blocking_reasons === undefined ? {} : { blocking_reasons: asArray(record.blocking_reasons, "validation dependency blocking_reasons", status).map((value) => { const reason = asRecord(value, status); return { code: asString(reason.code, "blocking reason code", status), message: asString(reason.message, "blocking reason message", status) }; }) }),
     ...(record.content_hash === undefined ? {} : { content_hash: asString(record.content_hash, "validation dependency content_hash", status) }),
     ...(record.version === undefined ? {} : { version: asString(record.version, "validation dependency version", status) }),
     ...(availability === undefined ? {} : { availability }),
@@ -1132,7 +1134,24 @@ function resource(value: unknown, status = 502): ResourceDescriptor {
     required_permissions: resourcePermissions(record.required_permissions, status),
     tags: asArray(record.tags, "resource.tags", status).map((item) => asString(item, "resource tag", status)),
     spec: asRecord(record.spec, status) as ResourceDescriptor["spec"],
+    ...(record.configuration_requirements === undefined ? {} : { configuration_requirements: asArray(record.configuration_requirements, "resource.configuration_requirements", status).map((value) => {
+      const item = asRecord(value, status);
+      if (typeof item.satisfied !== "boolean") throw new LocalApiClientError("Invalid resource requirement.", { status, code: "invalid_response" });
+      return { code: asString(item.code, "requirement.code", status), message: asString(item.message, "requirement.message", status), satisfied: item.satisfied };
+    }) }),
+    ...(record.blocking_reasons === undefined ? {} : { blocking_reasons: asArray(record.blocking_reasons, "resource.blocking_reasons", status).map((value) => {
+      const item = asRecord(value, status);
+      return { code: asString(item.code, "reason.code", status), message: asString(item.message, "reason.message", status) };
+    }) }),
+    ...(record.dependencies === undefined ? {} : { dependencies: asArray(record.dependencies, "resource.dependencies", status) as NonNullable<ResourceDescriptor["dependencies"]> }),
+    ...(record.compatibility === undefined ? {} : { compatibility: resourceCompatibility(record.compatibility, status) }),
   };
+}
+
+function resourceCompatibility(value: unknown, status: number): NonNullable<ResourceDescriptor["compatibility"]> {
+  const item = asRecord(value, status);
+  if (typeof item.network_verified !== "boolean") throw new LocalApiClientError("Invalid resource compatibility.", { status, code: "invalid_response" });
+  return { scope: asString(item.scope, "compatibility.scope", status), execution: asString(item.execution, "compatibility.execution", status), network_verified: item.network_verified };
 }
 
 function listedResources(value: unknown, status = 502): ListResourcesResponse {
@@ -1181,6 +1200,20 @@ function projectResources(value: unknown, status = 502): ProjectResourcesRespons
     project_id: asString(record.project_id, "project_resources.project_id", status),
     resources: asArray(record.resources, "project_resources.resources", status).map((item) => projectResource(item, status)),
     missing_references: asArray(record.missing_references, "project_resources.missing_references", status).map((item) => asString(item, "project resource reference", status)),
+    missing_bindings: record.missing_bindings === undefined ? [] : asArray(record.missing_bindings, "missing_bindings", status).map((item) => {
+      const binding = asRecord(item, status);
+      return {
+        reference: asString(binding.reference, "binding.reference", status),
+        content_hash: asString(binding.content_hash, "binding.content_hash", status),
+        source: asString(binding.source, "binding.source", status),
+        used_by: asArray(binding.used_by, "binding.used_by", status).map((usage) => {
+          const value = asRecord(usage, status);
+          const kind = asString(value.kind, "usage.kind", status);
+          if (kind !== "agent" && kind !== "workflow") throw new LocalApiClientError("Invalid resource usage kind", { status, code: "invalid_response" });
+          return { kind, resource_id: asString(value.resource_id, "usage.resource_id", status), name: asString(value.name, "usage.name", status) };
+        }),
+      };
+    }),
     project_count: asNumber(record.project_count, "project_resources.project_count", status),
     used_count: asNumber(record.used_count, "project_resources.used_count", status),
     unbound_count: asNumber(record.unbound_count, "project_resources.unbound_count", status),

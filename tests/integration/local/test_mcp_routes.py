@@ -4,11 +4,20 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.mcp import ScriptedMcpTransport
+from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
+
+
+@pytest.fixture(autouse=True)
+def isolated_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(MacOSKeychainSecretStore, "get", lambda self, ref: None)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
 
 
 def _factory(
@@ -85,7 +94,8 @@ def test_mcp_configure_and_discover_writes_overlay_catalog(tmp_path: Path) -> No
         assert discovered.status_code == 200
         tools = discovered.json()["tools"]
         assert tools[0]["origin"] == "discovered"
-        assert tools[0]["availability"] == "ready"
+        assert tools[0]["availability"] == "unavailable"
+        assert tools[0]["blocking_reasons"][0]["code"] == "mcp_review_required"
         assert tools[0]["factory_selectable"] is False
         assert tools[0]["spec"]["approval_required"] is True
         assert tools[0]["spec"]["review_required"] is True

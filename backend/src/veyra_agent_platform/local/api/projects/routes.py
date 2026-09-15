@@ -32,6 +32,7 @@ from veyra_agent_platform.local.resources.project import (
     ProjectResourceError,
     ProjectResourceService,
 )
+from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 from veyra_agent_platform.local.runtime.profiles import (
     RuntimeApiProfile,
     RuntimeApiProfileInput,
@@ -66,6 +67,7 @@ class ImportProjectPathRequest(_ClosedModel):
 
 class AddProjectResourceRequest(_ClosedModel):
     reference: str = Field(min_length=3, max_length=200)
+    content_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     source: Literal["manual", "factory", "imported", "reconciled"] = "manual"
 
 
@@ -232,15 +234,25 @@ def build_router() -> APIRouter:
 
     @router.get("/{project_id}/resources")
     def list_project_resources(project_id: str, request: Request) -> dict[str, Any]:
-        return _translate(lambda: _project_resources(request).list(project_id))
+        return _translate(
+            lambda: _resource_projection(
+                request, _project_resources(request).list(project_id)
+            )
+        )
 
     @router.post("/{project_id}/resources", status_code=status.HTTP_201_CREATED)
     def add_project_resource(
         project_id: str, payload: AddProjectResourceRequest, request: Request
     ) -> dict[str, Any]:
         return _translate(
-            lambda: _project_resources(request).add(
-                project_id, payload.reference, source=payload.source
+            lambda: _resource_projection(
+                request,
+                _project_resources(request).add(
+                    project_id,
+                    payload.reference,
+                    source=payload.source,
+                    content_hash=payload.content_hash,
+                ),
             )
         )
 
@@ -249,8 +261,11 @@ def build_router() -> APIRouter:
         project_id: str, resource_id: str, version: str, request: Request
     ) -> dict[str, Any]:
         return _translate(
-            lambda: _project_resources(request).remove(
-                project_id, f"{resource_id}@{version}"
+            lambda: _resource_projection(
+                request,
+                _project_resources(request).remove(
+                    project_id, f"{resource_id}@{version}"
+                ),
             )
         )
 
@@ -487,7 +502,13 @@ def build_router() -> APIRouter:
         project_id: str, agent_id: str, request: Request
     ) -> dict[str, Any]:
         _, library = _services(request)
-        return _translate(lambda: library.validate(project_id, agent_id))
+        return _translate(
+            lambda: library.validate(
+                project_id,
+                agent_id,
+                resource_projection=request.app.state.resource_readiness.project,
+            )
+        )
 
     @router.post("/{project_id}/agents/{agent_id}/commit")
     def commit_agent(
@@ -756,6 +777,12 @@ def _profiles(request: Request) -> RuntimeProfileStore:
     return cast(RuntimeProfileStore, request.app.state.runtime_profiles)
 
 
+def _resource_projection(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    return cast(ResourceReadiness, request.app.state.resource_readiness).response(
+        payload
+    )
+
+
 def _project_resources(request: Request) -> ProjectResourceService:
     if not bool(getattr(request.app.state, "database_ready", False)):
         raise TypedApiError(503, "database_unavailable", "local database is starting")
@@ -822,7 +849,16 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
             raise TypedApiError(422, code, str(exc)) from exc
         raise TypedApiError(422, "project_invalid", str(exc)) from exc
     except ProjectResourceError as exc:
-        status_code = 409 if exc.code == "resource_in_use" else 422
+        status_code = (
+            409
+            if exc.code
+            in {
+                "resource_in_use",
+                "resource_binding_conflict",
+                "resource_identity_conflict",
+            }
+            else 422
+        )
         raise TypedApiError(status_code, exc.code, str(exc)) from exc
     except ContractValidationError as exc:
         raise TypedApiError(422, "contract_invalid", str(exc)) from exc

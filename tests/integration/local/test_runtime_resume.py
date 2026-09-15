@@ -17,6 +17,7 @@ from veyra_agent_platform.local.runtime.tools import ToolExecution, ToolRuntimeE
 
 from .test_runtime_routes import (
     _await_run,
+    _bind_write_resource,
     _command_until_settled,
     _run_until_settled,
     _write_source,
@@ -45,6 +46,7 @@ def _project(client: TestClient) -> str:
     response = client.post("/api/v1/projects", json={"agents": [source]})
     assert response.status_code == 201, response.text
     project = response.json()
+    _bind_write_resource(client, project)
     return (
         f"/api/v1/projects/{project['project_id']}/agents/"
         f"{project['agents'][0]['agent_id']}/run"

@@ -177,6 +177,9 @@ function StudioRail({
 
 function runtimeBadge(item: PaletteItem, locale: "zh" | "en"): { label: string; className: string } {
   const zh = locale === "zh";
+  if (item.resource && "binding_status" in item.resource && item.resource.binding_status === "stale") {
+    return { label: zh ? "固定版本已漂移" : "Project pin stale", className: "unavailable" };
+  }
   if (item.group === "note") {
     return { label: zh ? "仅画布" : "Canvas only", className: "runtime_not_supported" };
   }
@@ -184,7 +187,7 @@ function runtimeBadge(item: PaletteItem, locale: "zh" | "en"): { label: string; 
     return { label: zh ? "不可用" : "Unavailable", className: "unavailable" };
   }
   if (item.runtimeStatus === "supported" && item.availability === "ready") {
-    return { label: zh ? "可运行" : "Runnable", className: "supported" };
+    return { label: zh ? "就绪" : "Ready", className: "supported" };
   }
   if (item.runtimeStatus === "runtime_not_configured" || item.availability === "requires_configuration") {
     return { label: zh ? "待配置" : "Configure", className: "runtime_not_configured" };
@@ -251,7 +254,7 @@ export function StudioWorkbench({
   selectedEdgeIdsRef.current = selectedEdgeIds;
   const sourceKey = source.component_type === "Workflow" ? source.workflow_id : source.agent_id;
   const palette = React.useMemo(() => [
-    ...paletteForMode(catalog.length ? paletteFromCatalog(catalog) : fallbackPalette(), mode),
+    ...paletteForMode(catalog.length ? paletteFromCatalog(catalog).filter((item) => mode !== "agent" || item.group === "component" || (item.resource && "scope" in item.resource && item.resource.scope === "project")) : fallbackPalette(), mode),
     ...(mode === "workflow" ? workflowAgentPalette(agents) : []),
     ...(mode === "agent" ? knowledgePalette(knowledge) : []),
     ...notePalette(),
@@ -269,7 +272,7 @@ export function StudioWorkbench({
       }));
       const unchanged = current.length === next.length && current.every((node, index) => {
         const mapped = next[index];
-        return mapped && node.id === mapped.id && node.selected === mapped.selected && node.position.x === mapped.position.x && node.position.y === mapped.position.y;
+        return mapped && node.id === mapped.id && node.selected === mapped.selected && node.position.x === mapped.position.x && node.position.y === mapped.position.y && JSON.stringify(node.data.flow) === JSON.stringify(mapped.data.flow);
       });
       return unchanged ? current : next;
     });
@@ -312,6 +315,7 @@ export function StudioWorkbench({
     const recorded = recordCanvasChange(historyRef.current, sourceRef.current, next);
     historyRef.current = recorded;
     setHistory(recorded);
+    sourceRef.current = next;
     onChange(next);
   }, [onChange]);
   const emit = React.useCallback((nextNodes: Node<CanvasNodeData>[], nextEdges: Edge[]) => applySource(sourceWithGraph(sourceRef.current, nextNodes, nextEdges)), [applySource]);
@@ -350,7 +354,7 @@ export function StudioWorkbench({
     });
   };
   const insertOnEdge = (edgeId: string, item: PaletteItem) => {
-    if (!item.draggable || item.group === "note" || paletteItemBlocked(item, source.nodes)) return;
+    if (!item.draggable || item.group === "note" || paletteItemBlocked(item, sourceRef.current.nodes)) return;
     const id = newFlowNodeId(item.componentType);
     const flow = newCatalogNode(item, id);
     const outgoing = flowNodeOutgoingPort(flow.component_type);
@@ -371,7 +375,7 @@ export function StudioWorkbench({
     if (item.group === "agent" && item.agent) void bindLatestCommittedVersion(id, item.agent.agent_id, nextSource);
   };
   const addItem = (item: PaletteItem, position?: { x: number; y: number }) => {
-    if (!item.draggable || paletteItemBlocked(item, source.nodes)) return;
+    if (!item.draggable || paletteItemBlocked(item, sourceRef.current.nodes)) return;
     const nextPosition = position ?? { x: 120 + (source.nodes.length % 3) * 220, y: 100 + Math.floor(source.nodes.length / 3) * 160 };
     if (item.group === "note") {
       const id = `note_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
@@ -732,7 +736,7 @@ export function StudioWorkbench({
         {projectAgents.length ? <><p className="rail-section-label">{locale === "zh" ? "项目 Agent" : "Project Agents"}</p><PaletteList items={projectAgents} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
         <p className="rail-section-label">{locale === "zh" ? "组件" : "Components"}</p>
         <PaletteList items={components} locale={locale} nodes={source.nodes} onAdd={addItem} />
-        {tools.length || mcp.length ? <><p className="rail-section-label">{locale === "zh" ? "工具" : "Tools"}</p><PaletteList items={[...tools, ...mcp]} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
+        {mode === "agent" ? <><p className="rail-section-label">{locale === "zh" ? "项目资源 · 工具" : "Project Resources · Tools"}</p><p className="rail-note">{locale === "zh" ? "选择将声明资源所需的 Agent 权限；不配置主机凭据，也不代表可运行。" : "Selecting declares the resource's Agent permissions; it does not configure host credentials or make it runnable."}</p>{tools.length || mcp.length ? <PaletteList items={[...tools, ...mcp]} locale={locale} nodes={source.nodes} onAdd={addItem} /> : <p>{locale === "zh" ? "请先在 Project 资源库中添加 Tool。" : "Add a Tool in Project Resources first."}</p>}</> : null}
         {skills.length ? <><p className="rail-section-label">{locale === "zh" ? "技能" : "Skills"}</p><PaletteList items={skills} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
         {policies.length ? <><p className="rail-section-label">{locale === "zh" ? "策略" : "Policies"}</p><PaletteList items={policies} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
         {templates.length ? <><p className="rail-section-label">{locale === "zh" ? "模板" : "Templates"}</p><PaletteList items={templates} locale={locale} nodes={source.nodes} onAdd={addItem} /></> : null}
@@ -789,12 +793,14 @@ function PaletteList({ items, locale, nodes, onAdd }: { items: PaletteItem[]; lo
               if (!item.draggable || blocked) return;
               event.dataTransfer.setData(PALETTE_MIME, item.key);
             }}
-            onClick={() => onAdd(item)}
+            onClick={(event) => { if (event.detail < 2) onAdd(item); }}
           >
             <PaletteIcon name={item.icon} />
             <span>
               <strong>{locale === "zh" ? item.titleZh : item.title}</strong>
               <small>{locale === "zh" ? item.detailZh : item.detail}</small>
+              {item.resource && "bound_content_hash" in item.resource ? <small>{item.resource.version} · {String(item.resource.bound_content_hash)}{item.resource.content_hash !== item.resource.bound_content_hash ? (locale === "zh" ? " · 固定版本已漂移" : " · Project pin stale") : ""}</small> : null}
+              {item.resource?.blocking_reasons?.map((reason) => <small key={reason.code}>{reason.message}</small>)}
             </span>
             <em className={`component-runtime-status ${badge.className}`}>{badge.label}</em>
           </button>
@@ -808,5 +814,5 @@ function fieldFor(node: FlowNode, update: (field: keyof FlowNode, value: string)
   const field: (keyof FlowNode)[] = node.component_type === "Agent" || node.component_type === "Model" ? ["model_ref", "system_prompt"] : node.component_type === "AgentCall" ? ["agent_ref"] : node.component_type === "Tool" ? ["uses", "network_hosts", "input_mapping", "output_mapping"] : node.component_type === "Condition" ? ["expression"] : node.component_type === "Transform" ? ["mapping"] : node.component_type === "HumanApproval" ? ["prompt"] : node.component_type === "Verifier" ? ["checks"] : node.component_type === "Output" ? ["output_name"] : [];
   const zhLabels: Partial<Record<keyof FlowNode, string>> = { model_ref: "模型引用", system_prompt: "系统提示词", agent_ref: "Agent 引用", uses: "工具引用", network_hosts: "允许的网络主机（逗号分隔）", input_mapping: "工具输入映射（工具字段 → Agent 字段）", output_mapping: "工具输出映射（工具字段 → Agent 字段）", expression: "条件表达式", mapping: "字段映射", prompt: "审批提示", checks: "验证规则", output_name: "输出名称" };
   const selectedAgentId = agentIdFromRef(node.agent_ref) ?? "";
-  return field.map((key) => key === "agent_ref" && agents.length ? <label key={key}>{locale === "zh" ? zhLabels[key] ?? key : key}<select value={selectedAgentId} onChange={(event) => onBindAgent?.(event.target.value)}><option value="">{locale === "zh" ? "选择 Agent" : "Select Agent"}</option>{agents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.slug}</option>)}</select></label> : <label key={key}>{locale === "zh" ? zhLabels[key] ?? key : key}<textarea rows={key === "system_prompt" ? 4 : key === "mapping" || key === "input_mapping" || key === "output_mapping" ? 4 : 2} value={key === "checks" ? (node.checks ?? []).join("\n") : key === "network_hosts" ? (node.network_hosts ?? []).join(", ") : key === "mapping" ? JSON.stringify(node.mapping ?? {}, null, 2) : key === "input_mapping" ? JSON.stringify(node.input_mapping ?? {}, null, 2) : key === "output_mapping" ? JSON.stringify(node.output_mapping ?? {}, null, 2) : String(node[key] ?? "")} onChange={(event) => { try { update(key, event.target.value); } catch { /* preserve invalid mapping text until corrected */ } }} /></label>);
+  return field.map((key) => key === "agent_ref" && agents.length ? <label key={key}>{locale === "zh" ? zhLabels[key] ?? key : key}<select value={selectedAgentId} onChange={(event) => onBindAgent?.(event.target.value)}><option value="">{locale === "zh" ? "选择 Agent" : "Select Agent"}</option>{agents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.slug}</option>)}</select></label> : <label key={key}>{locale === "zh" ? zhLabels[key] ?? key : key}<textarea readOnly={key === "uses"} rows={key === "system_prompt" ? 4 : key === "mapping" || key === "input_mapping" || key === "output_mapping" ? 4 : 2} value={key === "checks" ? (node.checks ?? []).join("\n") : key === "network_hosts" ? (node.network_hosts ?? []).join(", ") : key === "mapping" ? JSON.stringify(node.mapping ?? {}, null, 2) : key === "input_mapping" ? JSON.stringify(node.input_mapping ?? {}, null, 2) : key === "output_mapping" ? JSON.stringify(node.output_mapping ?? {}, null, 2) : String(node[key] ?? "")} onChange={(event) => { try { update(key, event.target.value); } catch { /* preserve invalid mapping text until corrected */ } }} /></label>);
 }

@@ -16,6 +16,7 @@ from veyra_agent_platform.local.runtime.tools import ToolExecution, ToolRuntimeE
 
 from .test_runtime_routes import (
     _await_run,
+    _bind_write_resource,
     _command_until_settled,
     _run_until_settled,
     _write_source,
@@ -56,6 +57,7 @@ def test_retry_blocks_dispatched_tool_even_without_receipt(
         source = _write_source(client)
         # The completed fake omits the output: execution fails after the effect receipt.
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        _bind_write_resource(client, project)
         url = (
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{project['agents'][0]['agent_id']}/run"
@@ -93,8 +95,17 @@ def test_retry_blocks_dispatched_tool_even_without_receipt(
                     ).fetchall()
                 ]
             if ending == "completed":
-                assert json.loads(original_receipts[0]["receipt_json"]) == {
-                    "outcome": "succeeded"
+                receipt = json.loads(original_receipts[0]["receipt_json"])
+                assert receipt["outcome"] == "succeeded"
+                resource = client.app.state.runtime.tools.catalog.by_reference(
+                    "veyra.tool.filesystem.write@1.0.0"
+                )
+                assert receipt["resource_identity"] == {
+                    "reference": resource["reference"],
+                    "version": resource["version"],
+                    "content_hash": resource["content_hash"],
+                    "bound_content_hash": resource["content_hash"],
+                    "locked_content_hash": source["lock"][resource["reference"]],
                 }
             if ending in {"cancelled", "interrupted"}:
                 with client.app.state.runtime.repository.transaction() as connection:
@@ -157,6 +168,7 @@ def test_retry_pins_version_inputs_and_lineage_across_restart(tmp_path: Path) ->
         project = client.post(
             "/api/v1/projects", json={"agents": [_write_source(client)]}
         ).json()
+        _bind_write_resource(client, project)
         url = (
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{project['agents'][0]['agent_id']}"
@@ -265,6 +277,7 @@ def test_concurrent_retry_key_creates_one_child(tmp_path: Path) -> None:
         project = client.post(
             "/api/v1/projects", json={"agents": [_write_source(client)]}
         ).json()
+        _bind_write_resource(client, project)
         url = (
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{project['agents'][0]['agent_id']}/run"
@@ -314,6 +327,7 @@ def test_stop_before_dispatch_cannot_execute_after_safe_retry(
         project = client.post(
             "/api/v1/projects", json={"agents": [_write_source(client)]}
         ).json()
+        _bind_write_resource(client, project)
         p, a = project["project_id"], project["agents"][0]["agent_id"]
         url = f"/api/v1/projects/{p}/agents/{a}/run"
         waiting = _run_until_settled(client, url, {"path": "out.txt", "content": "one"})
@@ -358,6 +372,7 @@ def test_retry_after_denied_tool_retains_original_receipt(tmp_path: Path) -> Non
         created = client.post("/api/v1/projects", json={"agents": [source]})
         assert created.status_code == 201, created.text
         project = created.json()
+        _bind_write_resource(client, project)
         url = (
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{project['agents'][0]['agent_id']}/run"
@@ -403,6 +418,7 @@ def test_retry_transaction_failure_leaves_no_partial_child(
         project = client.post(
             "/api/v1/projects", json={"agents": [_write_source(client)]}
         ).json()
+        _bind_write_resource(client, project)
         p, a = project["project_id"], project["agents"][0]["agent_id"]
         url = f"/api/v1/projects/{p}/agents/{a}/run"
         waiting = _run_until_settled(client, url, {"path": "out.txt", "content": "one"})

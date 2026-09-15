@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.mcp import McpError, McpService
+from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 
 _Result = TypeVar("_Result")
 
@@ -87,7 +88,11 @@ def build_router() -> APIRouter:
 
     @router.post("/servers/{server_id}/discover")
     def discover(server_id: str, request: Request) -> dict[str, Any]:
-        return _translate(lambda: _mcp(request).discover(server_id))
+        return _translate(
+            lambda: cast(
+                ResourceReadiness, request.app.state.resource_readiness
+            ).response(_mcp(request).discover(server_id))
+        )
 
     @router.get("/servers/{server_id}/readiness")
     def readiness(server_id: str, request: Request) -> dict[str, Any]:
@@ -126,7 +131,9 @@ def build_router() -> APIRouter:
         server_id: str, resource_id: str, version: str, request: Request
     ) -> dict[str, Any]:
         return _translate(
-            lambda: _mcp(request).approve_tool(server_id, resource_id, version)
+            lambda: cast(
+                ResourceReadiness, request.app.state.resource_readiness
+            ).response(_mcp(request).approve_tool(server_id, resource_id, version))
         )
 
     @router.delete("/servers/{server_id}")

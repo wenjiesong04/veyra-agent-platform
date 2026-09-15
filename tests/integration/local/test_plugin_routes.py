@@ -6,11 +6,20 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
+
+
+@pytest.fixture(autouse=True)
+def isolate_model_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(MacOSKeychainSecretStore, "get", lambda self, ref: None)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.setenv("VEYRA_RUNTIME_ALLOW_PROCESS_ENVIRONMENT_KEY", "false")
 
 
 def _plugin_archive(version: str = "1.0.0") -> bytes:
@@ -101,7 +110,8 @@ def test_plugin_pack_import_is_quarantined_then_activates_skill_and_disabled_mcp
             "resources"
         ]
         installed = next(item for item in skills if item["origin"] == "workshop")
-        assert installed["availability"] == "ready"
+        assert installed["availability"] == "requires_configuration"
+        assert installed["blocking_reasons"][0]["code"] == "model_configuration"
         assert installed["factory_selectable"] is True
         assert "Always separate claims" in installed["spec"]["instruction"]
 
@@ -134,7 +144,7 @@ def test_plugin_pack_import_is_quarantined_then_activates_skill_and_disabled_mcp
         reactivated_skill = client.get(
             f"/api/v1/resources/{installed['resource_id']}/versions/{installed['version']}"
         ).json()
-        assert reactivated_skill["availability"] == "ready"
+        assert reactivated_skill["availability"] == "requires_configuration"
         assert reactivated_skill["factory_selectable"] is True
         assert client.get("/api/v1/mcp/servers").json()["servers"][0]["enabled"] is True
 
@@ -232,7 +242,8 @@ def test_plugin_pack_activation_switches_versions_and_supports_rollback(
             == "disabled"
         )
         assert (
-            by_reference["veyra.skill.research-pack@2.0.0"]["availability"] == "ready"
+            by_reference["veyra.skill.research-pack@2.0.0"]["availability"]
+            == "requires_configuration"
         )
 
         rolled_back = client.post(

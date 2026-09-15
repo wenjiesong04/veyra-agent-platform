@@ -1,5 +1,279 @@
 # Veyra Development Handoff
 
+## Resource Library V1 = complete（2026-09-15，最终模块验收）
+
+本条覆盖下方 Slice 1–4 的历史状态及旧 no commit/push 限制。当前用户已授权最终
+focused review → secret/staged safety scan → commit/push → 三服务重启 → 发布 smoke。
+本 Session 不重新开发、不重跑已通过的 gate/Desktop build/browser E2E，不再审计 Slice 1–4。
+
+- **Resource Library V1 = complete**，Slice 1–4 全部 complete。完整闭环：
+  Catalog → truthful readiness → Project immutable resource binding → Agent Project-owned
+  binding → immutable source.lock → Runtime Project pin resolution → readiness gate →
+  permission gate → typed pre-effect failure → filesystem.read real execution → persisted evidence。
+- 最终验收沿用当前用户交接的已通过结果，本 Session 未重复执行：
+  `env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check`：**396 passed**；Ruff check / format
+  check passed；mypy **155 source files passed**；dependency / lock checks passed。
+  Desktop full tests / typecheck / build passed；isolated Chrome E2E passed。
+- Chrome 已证明 Catalog 真实 Ready，Project Add filesystem.read 后 reload 保留 exact pin；
+  Studio 仅选 Project-owned Tool，global unbound Tool 不进入可选范围；绑定、Save 保留
+  source.lock，Commit immutable Agent version 成功；真实读取 Project 内文件，Run detail
+  展示 persisted resource identity，refresh 仅 GET、不重新执行 Run。
+  GitHub requires_configuration / secret_not_configured passed；stale 不自动升级、Runtime
+  pre-effect 拒绝 passed；in-use remove UI 禁用 / API 409 resource_in_use passed。
+  **No external traffic / JavaScript error / secret credential leak**。
+  隔离证据根 `/tmp/veyra-resource-v1-final-g5t9PZ` 仅为本地引用，不提交 harness 或附件。
+- 最终 focused diff review：ResourceReadiness 是 API/Runtime 共用的 host truth，adapter
+  exists 不等于 ready；global Catalog 不等于 ownership；Project reference/content_hash
+  固定，duplicate add 不改 pin，remove 继续保护 retained immutable Agent versions。
+  Tool.uses + source.lock 是 Agent 唯一执行绑定；Project pin == Agent lock == resolved
+  Catalog artifact，missing/unbound/mismatch/stale 在 effect 前拒绝。readiness 不替代
+  permission，filesystem sandbox、Runtime V1 Retry/Resume/Stop contract 均未改变。
+  persisted resource_identity 仅 reference/version/content_hash/bound_content_hash/
+  locked_content_hash；resolution failure 不伪造 tool.started/completed，无凭据值。
+  Workflow 仍通过 immutable child Agent version 的 source.lock 使用 Tool，无直接 Tool
+  binding；未扩 Knowledge/Builder/MCP/Tool adapter 或 artifact registry。本轮无需生产修复。
+- **Persistent historical Resource artifact/version store 仍是未来能力**。旧 pinned artifact
+  已不在本地 Catalog 时，V1 返回 typed stale/missing，绝不自动升级到最新版本；这不是
+  Resource Library V1 blocker，不因此重新打开模块。
+- 发布提交消息：`feat: complete project-bound resource capability lifecycle`，目标分支
+  `codex/agent-platform`。完整 commit SHA、push、三服务 PID/health/build SHA 与最终工作树
+  状态以本 Session 发布 smoke 结果记录；只有 push + restart + smoke 全部通过才标 released。
+  使用现有 Conda uvicorn / Desktop Vite loopback + strictPort，不新增 LaunchAgent/daemon。
+  仅无副作用 GET/API route smoke，不创建外部 Tool Run；GitHub Actions Billing 保持 known
+  external blocker，不查询、不 rerun、不阻塞发布。
+- 安全边界：仅暂存本模块 implementation/tests/必要 web 和两份文档；不提交 `.env`、真实
+  API key/token/credential、`/tmp`、logs/screenshots/harness、`.backboard/sessions/`、
+  `.backboard/settings.json` 或本地 `.backboard/.gitignore`；保留全部当前修改。
+- **下一个大模块入口：Knowledge 的版本、来源、content hash、Project/Agent 绑定与可引用
+  evidence 范围确认**，先沿 DEVELOPMENT 阶段 C 核对真实 API/现有契约，另开 Session 后
+  再确定一个最小闭环。本 Session 不开始 Knowledge 实现；发布 smoke 通过后停止修改
+  Resource Library，Runtime/Tool/MCP/Builder 亦不扩展。
+
+## Resource Library V1 — Slice 4 complete（2026-09-15，模块验收待完成）
+
+- ProjectResourceService.resolve_pin 在 Tool authorization 前检查 Project binding → Agent lock
+  → 当前本地 Catalog hash；unbound / resource_lock_mismatch / project_binding_stale /
+  tool_not_registered 均 pre-effect 拒绝。不 rebind、升级或改写 lock。无历史 artifact store；
+  未来执行已从本地 Catalog 消失的历史 resource artifact 需要 persistent artifact/version store，
+  不作为 filesystem.read V1 blocker。
+- RuntimeService preflight 与 dispatch 共用 _authorize_tool；app 的 ResourceReadiness 与 Runtime
+  是同一对象。已解析 descriptor 投影传入 ToolRuntime，不二次查询新 hash。配置不足取 readiness
+  typed code，design_only/unavailable/quarantined/unsupported 拒绝；非 Tool kind 不执行。
+  原 permission subset、secret declaration、MCP contract、approval 和 filesystem adapter 不变。
+- tool.requested/started/completed 与持久 receipt 新增 resource_identity：reference/version/
+  content_hash/bound_content_hash/locked_content_hash；Run version 关联 immutable source。
+  拒绝保留 requested(code/denied) + node.failed + run.failed，绝不伪造 started/completed。
+  不扩 wire schema，不改 Runtime V1 commands、Resume/Retry、Orchestrator 或 Workflow binding。
+- 真实临时 Project filesystem.read 成功并重建 app 后证据一致；参数测试覆盖 removed/unbound、
+  Agent/Project mismatch、Catalog stale/missing、配置不足、不可用/隔离/不支持、非 Tool、文件
+  permission。缺 Tool permission/lock 在既有 Agent schema 更早拒绝，另有直接边界断言。
+  synthetic host secret 不进入 events/receipt。Workflow 真实 AgentCall → immutable child version
+  → 同一 resolver 已证明成功；移除 portable pin 后 child resource_unbound 且无 dispatch。
+  Catalog → Add → Agent Draft save/commit → Workflow read → persisted identity 与 remove protection
+  已由隔离 TestClient 证明，但不是浏览器验收。
+- 最终窄检查：runtime_routes + runtime_tools + tool_adapter_registry + resource_routes +
+  mcp_routes **51 passed**（50 既有 Alembic warnings）；6 文件 Ruff check/format、5 production
+  文件 mypy、git diff --check 通过。初始红测、fixture schema/import/root 问题和 readiness 缩进
+  已修复复验。旧 Runtime fixture 显式添加 Project binding，不放宽生产 ownership gate。
+- focused diff review：单一 Project/host truth，binding 不授权、adapter 存在不绕过 readiness，
+  stale 不升级、错误先于 effect，identity 白名单不含 spec/config/secret 值；未新增 Tool。
+- **Resource Library V1 Slice 4 = complete**。下一步仅模块最终 backend/Desktop/browser 验收，
+  不扩大工具或控制功能。保留全部 Slice 1–3 改动；未处理 sessions/settings；无 commit/push，
+  无用户服务重启。当前明确 no commit/push 优先，模块发布与正式关闭尚未完成。
+
+## Resource Library V1 — Slice 4 Runtime resolution（2026-09-15，in progress）
+
+- 已读取当前 checkpoint 并执行四项 Git 检查，diff check 通过；保留 Slice 1–3 全部修改。
+  本轮不 commit/push，不处理 sessions/settings，不改 Runtime V1 控制或新增 Tool adapter。
+- 窄审计真实断点：RuntimeService.run 将当前 source 固定为 immutable version 后执行；
+  run_version 从 source_json 加载并验证 Agent source_hash，Workflow AgentCall 已调用此入口。
+  ToolRuntime.authorize 按 uses 的精确 reference/version 查 Catalog 当前 descriptor，并检查
+  source.lock == descriptor hash；不是隐式 latest，但不查 Project binding，故缺 ownership /
+  Agent lock == Project pin gate。Catalog 只保存当前本地 reference/version descriptor，无旧
+  hash artifact 历史；同 reference 漂移必须明确 stale，不建设新 artifact registry。
+- 当前 binding stale 若 Catalog hash 变化会 tool_lock_invalid；仅 Project pin 变化或 binding
+  被移除则 Runtime 没有对应 gate。Catalog descriptor 缺失为 tool_not_registered。
+- ResourceReadiness 目前只接 API/UI，Runtime 使用原始 availability/runtime_status，adapter
+  exists 之外另有 secret / MCP 局部检查，但没有统一投影 gate。GitHub credential 缺失在 Run
+  创建后的 Tool authorization 阶段失败（secret_not_configured；缺声明先 secret_ref_missing），
+  不是 Run 创建前。requires_configuration 原始状态目前只得到 tool_unavailable。
+- 权限来自 Agent source.permissions 与 descriptor.required_permissions 的子集检查；Tool
+  secret_ref 需 Agent 声明，secret 值来自 host store。Project binding 不授权；Runtime profile
+  仅模型/provider 配置，不存在另一个 Tool permission profile。approval_required 仍由既有
+  HumanApproval 路径约束。filesystem 的 Project boundary/UTF-8/路径/secret suffix/size 保护保留。
+- evidence 已持久化 tool.requested/started/completed，Run 行关联 Agent version；普通 filesystem
+  receipt 无 Resource hash / Project pin，授权拒绝只有 requested + node.failed + Run error，
+  没有 tool.failed；部分 adapter 错误有 failed receipt。因此尚不能解释完整 pinned identity。
+- 第一个实现缺口：在现有 Tool authorization 入口增加 Project ownership/pin 校验、复用同一
+  ResourceReadiness，在 effect 前拒绝；沿现有 event/receipt JSON 附 identity 和 typed failed
+  evidence。不改 wire enum，不重复 Workflow Tool resolution。随后以真实 filesystem.read
+  和失败无 dispatch 窄测验证；当前尚未宣称 Slice 4 通过。
+
+## Resource Library V1 — Slice 3 complete（2026-09-15，P2 最终收尾）
+
+- **Resource Library V1 Slice 3 = complete**。Agent Tool binding 主体成立；后续 focused review
+  发现的 retained Agent version remove protection P2 已复现、修复并验证。以下最终结论替代
+  之前“Project remove 已完整覆盖 committed versions / focused review 无核心问题”的过早结论。
+- P2：旧查询只遍历活动 Agent，软删除后漏掉 retained immutable versions。本轮未改工作区
+  文件，以进程内替换查询为旧 active-only 范围隔离复现：**1 failed / 1 passed**，有 committed
+  version 错误返回 200（预期 409），无 version 可正常移除。当前接管补丁最窄先 **2 passed**，
+  扩展 current/stale/missing × committed=False/True 后 **6 passed**。
+- 最小生产修复为 LocalRepository.project_agent_versions(project_id)：通过 agents JOIN
+  agent_versions，严格 WHERE a.project_id = ?，不筛 removed_at；include_versions=True 时
+  读取真实 source_json 的 lock/uses evidence。包括同 Project soft-removed Agent 的 retained
+  versions，不跨 Project、不更新版本、不创建 dependency graph。生产补丁本轮无需再改。
+- 最终 remove 边界：同 Project 活动 source 或 retained Agent committed version 使用即
+  409 resource_in_use；无其它 source/version 使用则可移除。current/stale/missing 一致，
+  descriptor drift/loss 不解除历史保护。应用重建后旧 snapshot/lock/uses 与 Project pin 不变；
+  另一个 Project 的历史引用不阻止当前移除。普通 agents 列表、默认 source-only usage 和
+  Agent trash/delete contract 不变。Workflow 既有版本扫描保留，证据仍是 AgentCall ref/hash，
+  本轮未给 Workflow 发明直接 Tool binding，也未扩大 Workflow 生命周期扫描范围。
+- 本轮最终窄回归：完整 test_agent_tool_bindings.py、test_project_resource_bindings.py，
+  加 Project resource remove / Agent recoverable delete 两条、Workflow historical usage /
+  repairable-draft validate/commit 两条，共 **20 passed**（27 条既有 Alembic warning）。
+  新 Workflow 测试证明 source 移除 AgentCall 后历史 ref evidence 仍在、snapshot 不变。
+  6 Python 文件 Ruff check / format --check、repositories.py / projects/service.py /
+  resources/project.py 三 production files mypy、git diff --check 通过。新增测试格式首轮失败
+  已经格式化并复验；旧行为的预期红测不作为未解决失败。
+- focused review：查询是 Project 隔离的只读 SELECT；remove 在既有 writer lock 内消费真实
+  历史证据；未改 Agent delete、普通 agents 列表、Runtime 或 Workflow 生产代码。未发现本
+  Slice 范围内其它核心设计 blocker。证据为隔离 TestClient/SQLite，不是浏览器/Provider 验收。
+- 保留下方 Agent binding 主体的上 Session 25 backend / 70 Desktop / typecheck 证据，本轮
+  未重跑前端、Slice 1/2 全量或 make check。全部已有修改保留；无 commit/push、reset/checkout/
+  clean、服务重启，未处理 sessions/settings。Resource Library V1 整体尚未模块验收发布。
+- 下一步 Slice 4：Project/Agent pinned Resource → Runtime capability resolution →
+  readiness / permissions / version → typed failure / evidence。本 Session 停在 Slice 3 checkpoint，
+  没有开始 Runtime 修改。
+
+### Agent Tool binding 主体（上 Session 证据，P2 结论以上方为准）
+
+- Project-owned Tool → Agent Draft/source.lock 已完成；复用 Tool.uses、permissions、
+  Project manifest resources 和既有 LibraryService，无第二套 Agent binding storage。
+  Project binding 是 Tool 唯一可选范围；global Catalog 存在或加载 fallback 不能绕过 ownership。
+- backend Draft replace/commit 在既有 Project writer lock 内校验 ownership 和 Project pin，
+  返回 resource_unbound/resource_lock_mismatch；保留 revision/ETag、幂等、write intent 和
+  draft_conflict contract。没有绕过 LibraryService 直接写 agent.vagent.yaml。
+- source.lock 固定 Project bound_content_hash，不取当前 Catalog hash 自动覆盖；stale/missing
+  已有 pin 仍可设计保存，DependencyReport 展示 drift/missing/configuration 等证据；immutable
+  committed version 保留旧 lock。新选 stale Tool 禁用，不能用当前 descriptor 权限冒充旧 pin。
+- Canvas/Form/Source 共用 Tool reference、mapping 和 lock；保存/刷新一致，Project 加载失败
+  不回退全局 Tool。Ready 不写 Runnable，需配置显示待配置和 blockers，不授予 host credential。
+  活动 Agent source 去掉引用也不能删在用旧 pin；soft-removed Agent 的遗漏已由上方 P2 补齐。
+- 上 Session 重新执行：4 Python 文件 Ruff check/format --check 通过；dependencies.py、
+  library/service.py、api/projects/routes.py 三个 production files mypy 通过；git diff --check
+  通过；当时格式检查通过，未重跑 Slice 1/2 全量门禁。
+- 上 Session 后端：test_agent_tool_bindings.py + test_project_library.py + test_project_routes.py
+  **25 passed**（29 条已有 Alembic warning）。前端 studio/palette/local-client/graph 四文件
+  **70 passed**，Desktop typecheck 通过；补 7 项 dependency UI/client 状态断言，扩已有 Studio
+  测试验证 stale Draft 保留 pin 可编辑保存；更早的 63 passed 已由该次 70 passed 替代。
+- 主体证据为隔离 TestClient/RTL/jsdom，不是浏览器 E2E/外部 Provider 验收；后续 focused
+  review 发现的 P2 及修复结果见上方，不能沿用早先“无核心问题”作为最终审计结论。
+
+### Workflow binding — 只读评估最终结论（不新增开发任务）
+
+- 真实 contract：contracts/workflow.py 明确拒绝 Tool/Model node；仅 AgentCall 的 agent_ref
+  引用 agent_id@version_id。lock 必须与所用 AgentCall 集合一致，值为 immutable Agent
+  source_hash；不是 Tool Catalog hash，也不是 Project manifest resources 的 Tool pin。
+  Workflow 无直接 Tool 执行绑定；共享 ui.bindings 元数据不等于 Tool node 或能力解析，
+  既有 usage 扫描保持，不新增对称 Tool binding。
+- 已有 local/library/workflow_dependencies.py::resolve_workflow_calls：校验目标 Agent 属于
+  当前 Project、version 属于该 Agent、lock/source snapshot 完整性，以及 input/output/dataflow。
+  validate_workflow 和 commit_workflow 已调用；不从 Agent Draft 或隐式 latest 解析调用目标。
+- Studio workflow palette：Project resources/builtin（API 缺失时保留既有 Catalog fallback）
+  仅提供 Workflow primitive，Agent 选项来自当前 Project summary.agents；Tool/Skill 等过滤掉。
+  用户新选 Agent 可绑定其最新 committed version；已有 agent_ref 刷新不会自动升级，显式切换
+  才更新该 node 的 immutable ref/lock。没有第二套通用 Project Resource resolver 缺口。
+- 既有 repairable-draft 语义（不是 Resource Library V1 blocker）：replace_workflow_draft
+  只做 WorkflowSource 结构与 revision/ETag 校验，不检查 AgentCall 的 Project ownership；
+  跨 Project ref 可作为可修复 Draft 保存，
+  但 validate/commit 会拒绝。既有 test_workflow_version_boundary.py 明确允许 missing version/
+  错误 hash/mapping Draft 保存后再 validate 拒绝，不能把整个 resolver 直接塞进 Draft 写入。
+- Workflow 不直接绑定 Tool，所以 Slice 3 不需要再实现 Workflow Tool binding；不把上述
+  Draft 语义改成 Slice 3b 开发任务。本轮未收紧 Draft contract，已有 missing version/hash/
+  mapping Draft 可暂存、validate/commit 拒绝的窄测试通过；未执行 Workflow Runtime 验收。
+
+## Resource Library V1 — Slice 2 checkpoint（2026-09-15）
+
+- Catalog → Project 已形成真实闭环：复用 manifest `resources` 和既有 GET/POST/DELETE，
+  Library 与 Project chooser 发送 reference + content_hash；兼容旧 reference-only 调用。
+  后端验证 Catalog hash，identity/binding conflict 为 typed 409；同 reference 重复添加
+  返回既有列表，不更新 pin。读改写共用 Project writer lock，避免并发丢失其它 binding。
+- Library 读取目标 Project ownership，不把 Catalog/used_unbound 当已拥有；禁重复提交，
+  消费写入响应，重开仍显示已加入，提供 Project Resources 链接和 typed 错误。
+  Project 页展示 fixed/current hash、既有 current/stale、host readiness/blockers，支持真实刷新。
+- 缺失 descriptor 不伪造资源：沿用 missing_references，并返回 manifest 的 missing_bindings
+  身份/哈希/usage；计入 ownership，可明确移除。Catalog 对比限定同一 reference，不推断 latest。
+- Remove 只删 Project binding，沿用 source usage 检查并补已保存 Agent/Workflow version
+  检查；与 source writer 共锁。source 无法解析时拒绝写入。没有新建 dependency graph，
+  也未实现 Agent/Workflow binding 或 Runtime resolution。仍需按实际架构继续 Slice 3 评估。
+- 原 contract 允许保存 requires_configuration/design_only/quarantined/unavailable 引用；
+  UI 明示仅保存引用、不授予权限、不等于可运行，继续显示服务器 blocking reasons。
+- 验证：专用 Conda `pytest test_project_resource_bindings.py test_resource_routes.py` **10 passed**
+  （12 条已有 Alembic warning）；Desktop Library/Project resources/client **33 passed**；
+  Desktop typecheck、4 Python Ruff check/format、3 production files mypy、diff check 通过。
+  新测试覆盖并发重复/不同引用、应用重建、hash conflict、quarantine→stale→missing、source/
+  immutable version in-use、无权限提升、UI double-click/重开/refresh/错误/缺失身份。
+- focused review：ownership 仅取 scope=project；无自动升级；服务端去重；remove 非 Catalog
+  删除且 in-use 拒绝；配置不足未标 runnable；未修改 Runtime/Agent/Workflow schema。
+  首轮两处 fixture 查错 workshop 属性/Agent source 路径及误把 index 当 commit 已修正复验；
+  Ruff 行宽和 TS readonly fixture 已修正。证据为隔离 TestClient/RTL，不是浏览器 E2E。
+- 完整保留 Slice 1 与本地 untracked，未读 credentials/sessions/settings，未 reset/checkout/
+  clean、commit/push 或重启用户服务。下一步只评估一个最小 Project → Agent Tool binding
+  场景，先核对现有 Studio/Library source lock；不同时进入 Workflow 或 Runtime capability resolution。
+
+## Resource Library V1 — Slice 1 已验证（2026-09-15）
+
+- 接管实际只有下方窄审计 checkpoint 的 tracked 修改；原文完整保留，本地未跟踪
+  settings/sessions 不处理，无 reset/checkout/clean、提交、推送或服务重启。
+- 新增 `local/resources/readiness.py`，仅 API 输出副本更新既有 availability/runtime_status，
+  附配置要求、blocking reasons、dependencies、compatibility。Catalog/detail/Project 列表及
+  写入响应、Workshop/MCP 返回统一投影，过滤按投影后的状态；无第二套状态 enum。
+- filesystem.read ready；GitHub 缺 host secret 为 requires_configuration；Skill/Model 结合
+  现有 model.configured；Template design_only；MCP 需发现、审核、启用、配置与 host command。
+  disabled/quarantined/unavailable/unsupported 优先阻止；未调用 authorize/execute 或网络探针。
+- readiness 明确 scope=host：不是某 Agent 的权限授权或成功执行证明，也不验证远端 token、
+  endpoint/model 存活；Project/Agent effective profile 与 Runtime resolution 不在本切片。
+  原包 resource_id/version/hash/spec、Catalog 和 Runtime 控制实现全部未改。
+- Library/detail/MCP/Project 消费服务器状态和原因；Project 内嵌详情补真实 GET、旧响应取消、
+  identity 检查和错误重试。共享 TS/client 支持新增投影事实，兼容既有 descriptor 消费方。
+- 验证：专用 Conda pytest resource contracts/catalog/routes + mcp_routes **19 passed**
+  （10 条既有 Alembic warning）；前端 Library/Project resources/LocalApiClient **28 passed**；
+  Desktop typecheck、受影响 7 Python Ruff check/format、5 production files mypy、diff check 通过。
+  测试隔离 Keychain/env，验证动态 credential 不改包/hash/Project manifest、MCP review/command。
+- focused review 已核对上述六项边界；不扩 Runtime、Knowledge、Community、Builder。
+  下一步按授权继续 Slice 2，仅 Project resource binding；不做 Agent/Workflow binding/resolution。
+
+## Resource Library V1 — 窄审计 / Slice 1 入口（2026-09-15）
+
+- 接管 `86b2d80`；已按顺序读取五份入口文档并执行 status/log/stat/name-status/diff check。
+  tracked 工作树干净，Backboard 本地未跟踪文件保留。Runtime V1 保持 complete/closed；
+  本阶段不重测控制能力，不处理 Billing 或旧 LaunchAgent 持久配置。
+- A 可执行实现：ToolRuntime 的实际 adapter registry 包含 filesystem.read/list/search/write、
+  shell.exec、HTTP、网页提取、web search、GitHub read/write、MCP；这只是实现存在，
+  不代表主机已配置或外部 Provider 已验收。Skill 由 Model prompt 消费，Policy 由 source
+  权限/verification 约束消费，primitive 是图执行语义；Workflow 通过固定 AgentCall 间接用 Tool。
+- B design_only：workshop 未推广能力不执行，Template 是创建/设计入口而非直接执行的 Tool；
+  当前内建清单无 composite 包，不能以支持 schema 宣称已有可用 composite 资源。
+- C requires_configuration：Model/Skill 需要有效模型配置；GitHub 需要 host secret；MCP
+  需要 server/discovery/review/configuration。Catalog 当前不检查这些，GitHub 包硬标 ready，
+  Skill/Template 同时标 ready 与 runtime_not_configured，用户可见状态不统一。
+- D unavailable：disabled/quarantined/unavailable overlays、未安装 adapter、未审核的发现
+  Tool 应被明确阻止；ToolRuntime 已有授权、lock、adapter、secret 与 MCP review 检查。
+  Catalog readiness 未连接这些运行前条件，不能把卡片 ready 当一次执行成功。
+- E ResourceLibraryPage 已调用 listResources/getResource，ProjectResourcesPage 也是真实 API；
+  本轮 scoped 搜索未找到 communityEntries。MCP 表单的 demo 是默认名称，不是运行证据。
+  页面仍直接显示静态 descriptor.availability；Project 内嵌详情直接用列表对象且不重新 GET。
+- F 最早断点是 Catalog→真实 detail/readiness，而非缺少 Catalog API。后续已确认缺口：
+  Project add 保存 reference/hash 且重复添加 no-op、in-use remove 拒绝；stale 无显式更新。
+  inspect_agent_dependencies 报 unbound 却不阻断（只拒 stale），不能满足只用 Project 资源。
+  Workflow 固定 AgentCall 已有版本/hash 检查，本阶段不将 Tool 直接塞入 Workflow。
+- G 首个用户可感知修复：分离不可变 descriptor 与实时 readiness，后端给出一致状态、配置
+  要求、支持范围与原因，Catalog/detail/Project 使用同一投影；不因 host 配置改变内容 hash，
+  不触发网络调用或授予权限。随后处理显式 Project 绑定和 Studio 权限确认。
+- 已查窄测试：test_resource_catalog.py、test_resource_routes.py、test_resource_contracts.py、
+  Resource Library / Project resources / palette 前端测试；此审计尚不是测试 PASS。
+  当前开始 Slice 1，实现→窄测→focused review→checkpoint，不声明模块完成。
+
 ## Runtime V1 released — 发布闭环完成（2026-09-15，最新 checkpoint）
 
 - Runtime V1 = complete / closed。发布 commit `ea94b649a3fe9dd24d2883d5b0e6bc3a0ae4f3dd`

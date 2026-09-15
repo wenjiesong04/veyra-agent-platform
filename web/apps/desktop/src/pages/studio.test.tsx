@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSource, DraftResponse, ProjectSummaryResponse, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
+import type { AgentSource, DraftResponse, ProjectResourceDescriptor, ProjectSummaryResponse, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
 import { STUDIO_RAILS_STORAGE_KEY } from "../features/studio/StudioWorkbench";
+import { DependencyReport } from "../features/studio/DependencyReport";
 import { fluidRunHeight } from "../features/studio/studio-chrome";
 import { StudioPage } from "./studio";
 
@@ -127,7 +128,7 @@ describe("StudioPage source and conflict safety", () => {
     expect(await screen.findByText("必须且只能有一个输入节点。")).toBeInTheDocument();
   });
 
-  it("loads Catalog tools into the palette and attaches Read File uses, lock, and permissions", async () => {
+  it("binds only Project Tools and preserves pins through Canvas/Form/Source, save and refresh", async () => {
     const read: ResourceDescriptor = {
       schema_version: "1.0",
       resource_id: "veyra.tool.filesystem.read",
@@ -150,9 +151,10 @@ describe("StudioPage source and conflict safety", () => {
       resource_id: "veyra.tool.github.read",
       reference: "veyra.tool.github.read@1.0.0",
       name: "GitHub Read",
-      availability: "unavailable",
-      factory_selectable: false,
-      runtime_status: "runtime_not_supported",
+      availability: "requires_configuration",
+      blocking_reasons: [{ code: "secret_not_configured", message: "Configure host credential github.token." }],
+      factory_selectable: true,
+      runtime_status: "runtime_not_configured",
       required_permissions: { network_hosts: ["api.github.com"], tools: ["veyra.tool.github.read"], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
       spec: { ui: { category: "git", icon: "github", title: "GitHub Read" } },
     };
@@ -170,14 +172,76 @@ describe("StudioPage source and conflict safety", () => {
       resources: kind === "tool" ? [read, github] : kind === "component" ? [start] : [start, read, github],
       kinds: [],
     }));
-    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), listResources } as unknown as LocalProjectApi;
+    const owned = (resource: ResourceDescriptor): ProjectResourceDescriptor => ({ ...resource, scope: "project", binding_status: "current", binding_source: "manual", bound_content_hash: resource.content_hash, used_by: [] });
+    const listProjectResources = vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: project.project_id, resources: [owned(read), owned(github), { ...owned(read), reference: "unbound@1.0.0", name: "Unbound tool", scope: "used_unbound", spec: {} }, { ...owned(read), reference: "stale@1.0.0", name: "Stale tool", bound_content_hash: "a".repeat(64), binding_status: "stale", spec: {} }, { ...owned(read), reference: "missing-adapter@1.0.0", name: "Unavailable tool", availability: "unavailable", spec: {} }, { ...owned(start), scope: "builtin" }], missing_references: ["missing@1.0.0"] });
+    let disk = draft();
+    const getDraft = vi.fn(async () => disk);
+    const saveDraft = vi.fn(async (_projectId, _agentId, request) => { disk = draft({ source: request.source, revision: disk.revision + 1, etag: `"etag-${disk.revision + 1}"` }); return disk; });
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft, listProjectResources, listResources, saveDraft } as unknown as LocalProjectApi;
     const user = userEvent.setup();
-    renderPage(api);
+    const page = renderPage(api);
     expect(await screen.findByRole("button", { name: /Read File/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /GitHub Read/ })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: /Read File/ }));
+    expect(listProjectResources).toHaveBeenCalledWith("project-1");
+    expect(listResources).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Unbound tool/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Stale tool/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Unavailable tool/ })).toBeDisabled();
+    expect(screen.getByText(/Missing Project resources: missing@1.0.0/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /GitHub Read/ })).toHaveTextContent("Configure");
+    expect(screen.getByRole("button", { name: /GitHub Read/ })).toHaveTextContent("Configure host credential github.token.");
+    expect(screen.getByRole("button", { name: /GitHub Read/ })).not.toHaveTextContent("Runnable");
+    await user.dblClick(screen.getByRole("button", { name: /Read File/ }));
     expect((await screen.findAllByDisplayValue("veyra.tool.filesystem.read@1.0.0")).length).toBeGreaterThan(1);
     expect(screen.getByDisplayValue("veyra.tool.filesystem.read")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    expect(screen.getByRole("textbox", { name: "Resource reference" })).toHaveValue(read.reference);
+    expect(screen.getByRole("textbox", { name: "Pinned hash" })).toHaveValue(read.content_hash);
+    fireEvent.change(screen.getByRole("textbox", { name: /input_mapping/ }), { target: { value: '{"path":"request"}' } });
+    await user.click(screen.getByRole("tab", { name: "Source" }));
+    const boundSource = JSON.parse((screen.getByRole("textbox", { name: "Agent source" }) as HTMLTextAreaElement).value) as AgentSource;
+    expect(boundSource.nodes.filter((node) => node.component_type === "Tool")).toHaveLength(1);
+    expect(boundSource.nodes.find((node) => node.component_type === "Tool")?.input_mapping).toEqual({ path: "request" });
+    expect(boundSource.lock[read.reference]).toBe(read.content_hash);
+    expect(boundSource.ui.bindings).toBeUndefined();
+    await user.click(screen.getByRole("tab", { name: "Canvas" }));
+    await user.dblClick(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1));
+    expect(saveDraft).toHaveBeenCalledWith("project-1", "agent-1", { source: boundSource, expected_revision: 1 }, { etag: '"etag-1"' });
+    page.unmount();
+    listProjectResources.mockResolvedValue({ schema_version: "1.0", project_id: project.project_id, resources: [{ ...owned(read), content_hash: "b".repeat(64), binding_status: "stale" }], missing_references: [] });
+    renderPage(api);
+    await user.click(await screen.findByRole("tab", { name: "Source" }));
+    expect(JSON.parse((screen.getByRole("textbox", { name: "Agent source" }) as HTMLTextAreaElement).value)).toEqual(boundSource);
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    expect(screen.getByRole("textbox", { name: "Pinned hash" })).toHaveValue(read.content_hash);
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Stale draft edit" } });
+    await user.click(screen.getByRole("tab", { name: "Canvas" }));
+    expect(screen.getByRole("button", { name: /Read File/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Read File/ })).toHaveTextContent("Project pin stale");
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(2));
+    expect(disk.source).toEqual({ ...boundSource, name: "Stale draft edit" });
+  });
+
+  it.each([
+    ["resource_unbound", "Not bound to Project"],
+    ["project_binding_stale", "Project binding stale"],
+    ["configuration_required", "Needs configuration"],
+    ["ready", "Ready"],
+  ] as const)("renders the %s dependency status without claiming Runnable", (status, label) => {
+    render(<DependencyReport locale="en" validation={{ schema_version: "1.0", valid: true, source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", runtime_ready: status === "ready", dependency_summary: { total: 1, ready: status === "ready" ? 1 : 0, attention: status === "ready" ? 0 : 1 }, dependencies: [{ reference: "veyra.tool.filesystem.read@1.0.0", name: "Read File", kind: "tool", status, detail: "Dependency evidence", used_by: ["read"], bound_by: [] }] }} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText(/Runnable/)).not.toBeInTheDocument();
+  });
+
+  it("never falls back to global Tools when Project resource loading fails", async () => {
+    const listResources = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), listProjectResources: vi.fn().mockRejectedValue(new Error("offline")), listResources } as unknown as LocalProjectApi;
+    renderPage(api);
+    expect(await screen.findByText("Project resources unavailable. Refresh to retry.")).toBeInTheDocument();
+    expect(listResources).not.toHaveBeenCalled();
+    expect(screen.getByText("Add a Tool in Project Resources first.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Tool / })).not.toBeInTheDocument();
   });
 
   it("collapses catalog and inspector rails and restores them from the edge strips", async () => {

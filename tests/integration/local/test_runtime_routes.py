@@ -3,23 +3,29 @@ from __future__ import annotations
 import json
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.contracts.resource import ProjectResourceBinding
 from veyra_agent_platform.contracts.wire import RunEvent
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.runtime.client import RuntimeCompletion
+from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture(autouse=True)
 def isolate_runtime_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(MacOSKeychainSecretStore, "get", lambda self, ref: None)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
     monkeypatch.delenv("VEYRA_RUNTIME_MODEL_BASE_URL", raising=False)
     monkeypatch.delenv("VEYRA_RUNTIME_MODEL_ID", raising=False)
@@ -264,6 +270,18 @@ def test_runtime_rejects_unregistered_tool(tmp_path: Path) -> None:
     source["lock"]["demo.tool@1.0.0"] = "b" * 64
     with TestClient(create_app(settings)) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        client.app.state.projects.replace_project_resource_bindings(
+            project["project_id"],
+            (
+                ProjectResourceBinding.from_dict(
+                    {
+                        "reference": "demo.tool@1.0.0",
+                        "content_hash": "b" * 64,
+                        "source": "manual",
+                    }
+                ),
+            ),
+        )
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         response = _run_until_settled(client, url, {"issue": "one"})
@@ -732,7 +750,10 @@ def test_production_mode_does_not_use_host_process_key(
 
 def test_catalogued_filesystem_read_tool_runs_inside_project_and_records_receipt(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    secret_value = "synthetic-host-secret-not-for-evidence"
+    monkeypatch.setattr(MacOSKeychainSecretStore, "get", lambda self, ref: secret_value)
     source = _source(
         [
             {"id": "start", "component_type": "Start"},
@@ -768,6 +789,14 @@ def test_catalogued_filesystem_read_tool_runs_inside_project_and_records_receipt
             )["content_hash"]
         )
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        resource = client.app.state.resource_catalog.by_reference(
+            "veyra.tool.filesystem.read@1.0.0"
+        )
+        binding = client.post(
+            f"/api/v1/projects/{project['project_id']}/resources",
+            json={key: resource[key] for key in ("reference", "content_hash")},
+        )
+        assert binding.status_code == 201
         Path(project["root_path"], "resources", "note.txt").write_text(
             "hello from the Project", encoding="utf-8"
         )
@@ -794,6 +823,303 @@ def test_catalogued_filesystem_read_tool_runs_inside_project_and_records_receipt
         assert receipt["permission"] == "allowed"
         assert receipt["relative_path"] == "resources/note.txt"
         assert receipt["output_digest"]
+        identity = {
+            "reference": resource["reference"],
+            "version": resource["version"],
+            "content_hash": resource["content_hash"],
+            "bound_content_hash": resource["content_hash"],
+            "locked_content_hash": resource["content_hash"],
+        }
+        for event in detail["events"]:
+            if event["kind"].startswith("tool."):
+                assert event["payload"]["resource_identity"] == identity
+        with client.app.state.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT receipt_json FROM runtime_tool_calls WHERE run_id = ?",
+                (response["run_id"],),
+            ).fetchone()
+        assert json.loads(row["receipt_json"])["resource_identity"] == identity
+        assert secret_value not in json.dumps(detail)
+        assert secret_value not in row["receipt_json"]
+        snapshot = client.app.state.repository.version(response["version_id"])
+        assert (
+            json.loads(snapshot["source_json"])["lock"][resource["reference"]]
+            == (identity["locked_content_hash"])
+        )
+    with TestClient(create_app(settings)) as restarted:
+        assert restarted.get(url + "s/" + response["run_id"]).json() == detail
+
+
+@pytest.mark.parametrize(
+    ("state", "code"),
+    [
+        ("unbound", "resource_unbound"),
+        ("removed", "resource_unbound"),
+        ("lock_mismatch", "resource_lock_mismatch"),
+        ("stale", "project_binding_stale"),
+        ("missing", "tool_not_registered"),
+        ("requires_configuration", "secret_not_configured"),
+        ("unavailable", "tool_unavailable"),
+        ("quarantined", "tool_unavailable"),
+        ("design_only", "tool_unavailable"),
+        ("unsupported", "tool_unavailable"),
+        ("file_permission", "tool_permission_denied"),
+        ("template", "tool_not_executable"),
+        ("skill", "tool_not_executable"),
+    ],
+)
+def test_runtime_resource_resolution_fails_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, code: str
+) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        app = client.app.state
+        resource = app.resource_catalog.by_reference("veyra.tool.filesystem.read@1.0.0")
+        reference = resource["reference"]
+        source = _source(
+            [
+                {"id": "start", "component_type": "Start"},
+                {"id": "read", "component_type": "Tool", "uses": reference},
+                {"id": "output", "component_type": "Output", "output_name": "content"},
+            ],
+            [
+                {"from": "start", "port": "next", "to": "read"},
+                {"from": "read", "port": "next", "to": "output"},
+            ],
+            {"path": "string"},
+        )
+        source["outputs"] = {"content": "string"}
+        source["extensions"]["veyra"]["permissions"] = deepcopy(
+            resource["required_permissions"]
+        )
+        source["lock"] = {reference: resource["content_hash"]}
+        if state == "lock_mismatch":
+            source["lock"][reference] = "0" * 64
+        elif state == "file_permission":
+            source["extensions"]["veyra"]["permissions"]["filesystem_read_roots"] = []
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        project_id = project["project_id"]
+        if state != "unbound":
+            app.project_resources.add(project_id, reference)
+        if state == "removed":
+            # Simulate a portable manifest edited outside the protected remove API.
+            app.projects.replace_project_resource_bindings(project_id, ())
+        if state == "missing":
+            app.resource_catalog._by_reference.pop(
+                (resource["resource_id"], resource["version"])
+            )
+        elif state == "stale":
+            changed = deepcopy(resource)
+            changed["content_hash"] = "f" * 64
+            app.resource_catalog._by_reference[
+                (resource["resource_id"], resource["version"])
+            ] = changed
+        elif state in {
+            "unavailable",
+            "quarantined",
+            "design_only",
+            "unsupported",
+            "template",
+            "skill",
+        }:
+            project_readiness = app.resource_readiness.project
+
+            def readiness(descriptor):
+                descriptor = deepcopy(descriptor)
+                if state == "unsupported":
+                    descriptor["runtime_status"] = "runtime_not_supported"
+                elif state in {"template", "skill"}:
+                    descriptor["kind"] = state
+                else:
+                    descriptor["availability"] = state
+                return project_readiness(descriptor)
+
+            monkeypatch.setattr(app.resource_readiness, "project", readiness)
+        elif state == "requires_configuration":
+            project_readiness = app.resource_readiness.project
+
+            def needs_configuration(descriptor):
+                descriptor = deepcopy(descriptor)
+                descriptor["spec"].update(
+                    secret_ref="github_token", secret_env="GITHUB_TOKEN"
+                )
+                return project_readiness(descriptor)
+
+            monkeypatch.setattr(app.resource_readiness, "project", needs_configuration)
+        dispatch = Mock(side_effect=AssertionError("resolution must precede dispatch"))
+        monkeypatch.setitem(
+            app.runtime.tools._adapters, resource["spec"]["adapter"], dispatch
+        )
+        manifest = Path(project["root_path"], "project.vproject.yaml").read_bytes()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project_id}/agents/{agent['agent_id']}/run"
+        detail = _run_until_settled(client, url, {"path": "resources/note.txt"})
+        assert detail["status"] == "failed"
+        assert detail["error"]["code"] == code
+        dispatch.assert_not_called()
+        kinds = [event["kind"] for event in detail["events"]]
+        assert "tool.started" not in kinds
+        assert "tool.completed" not in kinds
+        requested = next(
+            event for event in detail["events"] if event["kind"] == "tool.requested"
+        )
+        assert requested["payload"]["code"] == code
+        assert (
+            Path(project["root_path"], "project.vproject.yaml").read_bytes() == manifest
+        )
+        snapshot = app.repository.version(detail["version_id"])
+        assert json.loads(snapshot["source_json"])["lock"] == source["lock"]
+
+
+@pytest.mark.parametrize("missing", ["lock", "permission"])
+def test_runtime_tool_source_requires_lock_and_permission(
+    tmp_path: Path, missing: str
+) -> None:
+    from veyra_agent_platform.contracts.agent import AgentSource
+    from veyra_agent_platform.contracts.common import ContractValidationError
+
+    resource = ResourceCatalog().by_reference("veyra.tool.filesystem.read@1.0.0")
+    source = _source(
+        [
+            {"id": "start", "component_type": "Start"},
+            {"id": "read", "component_type": "Tool", "uses": resource["reference"]},
+            {"id": "output", "component_type": "Output", "output_name": "content"},
+        ],
+        [
+            {"from": "start", "port": "next", "to": "read"},
+            {"from": "read", "port": "next", "to": "output"},
+        ],
+        {"path": "string"},
+    )
+    source["outputs"] = {"content": "string"}
+    source["extensions"]["veyra"]["permissions"] = resource["required_permissions"]
+    source["lock"] = {resource["reference"]: resource["content_hash"]}
+    if missing == "lock":
+        source["lock"] = {}
+    else:
+        source["extensions"]["veyra"]["permissions"]["tools"] = []
+    with pytest.raises(ContractValidationError):
+        AgentSource.from_dict(source)
+
+
+def test_resource_library_saved_pin_runs_in_workflow_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from .test_agent_tool_bindings import bind, client_for, save, setup_agent
+
+    with client_for(tmp_path) as client:
+        project_url, agent_url, draft, resource, source = setup_agent(client)
+        assert resource["availability"] == "ready"
+        bind(client, project_url, resource)
+        source["inputs"] = {"path": "string"}
+        source["outputs"] = {"content": "string"}
+        source["nodes"] = [
+            {"id": "start", "component_type": "Start"},
+            {"id": "read", "component_type": "Tool", "uses": resource["reference"]},
+            {"id": "output", "component_type": "Output", "output_name": "content"},
+        ]
+        source["transitions"] = [
+            {"from": "start", "port": "next", "to": "read"},
+            {"from": "read", "port": "next", "to": "output"},
+        ]
+        source["ui"] = {"positions": {}}
+        saved = save(client, agent_url, draft, source)
+        assert saved.status_code == 200, saved.text
+        saved = saved.json()
+        committed = client.post(
+            agent_url + "/commit",
+            json={"expected_revision": saved["revision"]},
+            headers={"If-Match": saved["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert committed.status_code == 200, committed.text
+        version = committed.json()
+        project_id = project_url.rsplit("/", 1)[1]
+        root = client.app.state.projects._existing_root(
+            client.app.state.repository.project(project_id)["root_path"]
+        )
+        (root / "resources" / "note.txt").write_text(
+            "pinned child read", encoding="utf-8"
+        )
+        agent_id = source["agent_id"]
+        workflow = client.post(
+            project_url + "/workflows", json={"name": "Read pin"}
+        ).json()
+        url = project_url + "/workflows/" + workflow["workflow_id"]
+        draft = client.get(url + "/draft").json()
+        ref = f"{agent_id}@{version['version_id']}"
+        workflow_source = draft["source"]
+        workflow_source.update(
+            inputs={"path": "string"},
+            outputs={"content": "string"},
+            nodes=[
+                {"id": "start", "component_type": "Start"},
+                {
+                    "id": "call",
+                    "component_type": "AgentCall",
+                    "agent_ref": ref,
+                    "input_mapping": {"path": "path"},
+                    "output_mapping": {"content": "content"},
+                },
+                {"id": "output", "component_type": "Output", "output_name": "content"},
+            ],
+            transitions=[
+                {"from": "start", "port": "next", "to": "call"},
+                {"from": "call", "port": "next", "to": "output"},
+            ],
+            lock={ref: version["source_hash"]},
+            ui={"positions": {}},
+        )
+        workflow_source["extensions"]["veyra"]["permissions"] = resource[
+            "required_permissions"
+        ]
+        assert save(client, url, draft, workflow_source).status_code == 200
+        run = _run_until_settled(client, url + "/run", {"path": "resources/note.txt"})
+        assert run["status"] == "unverified", run
+        assert run["result"] == {"content": "pinned child read"}
+        with client.app.state.repository.transaction() as connection:
+            child = connection.execute(
+                "SELECT child_run_id FROM workflow_run_calls WHERE run_id = ?",
+                (run["run_id"],),
+            ).fetchone()
+        detail = client.get(agent_url + "/runs/" + child["child_run_id"]).json()
+        assert detail["version_id"] == version["version_id"]
+        receipt = next(
+            e["payload"] for e in detail["events"] if e["kind"] == "tool.completed"
+        )
+        assert (
+            receipt["resource_identity"]["bound_content_hash"]
+            == resource["content_hash"]
+        )
+        assert (
+            client.delete(
+                project_url + "/resources/veyra.tool.filesystem.read/versions/1.0.0"
+            ).json()["code"]
+            == "resource_in_use"
+        )
+        app = client.app.state
+        app.projects.replace_project_resource_bindings(project_id, ())
+        dispatch = Mock(side_effect=AssertionError("removed pin must not dispatch"))
+        monkeypatch.setitem(
+            app.runtime.tools._adapters, resource["spec"]["adapter"], dispatch
+        )
+        denied = _run_until_settled(
+            client, url + "/run", {"path": "resources/note.txt"}
+        )
+        assert denied["status"] == "failed"
+        dispatch.assert_not_called()
+        with app.repository.transaction() as connection:
+            child = connection.execute(
+                "SELECT child_run_id FROM workflow_run_calls WHERE run_id = ?",
+                (denied["run_id"],),
+            ).fetchone()
+        detail = client.get(agent_url + "/runs/" + child["child_run_id"]).json()
+        assert detail["error"]["code"] == "resource_unbound"
+        assert not {"tool.started", "tool.completed"} & {
+            e["kind"] for e in detail["events"]
+        }
 
 
 def test_filesystem_read_tool_rejects_project_escape(tmp_path: Path) -> None:
@@ -834,9 +1160,20 @@ def test_filesystem_read_tool_rejects_project_escape(tmp_path: Path) -> None:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        client.app.state.project_resources.add(
+            project["project_id"], "veyra.tool.filesystem.read@1.0.0"
+        )
         response = _run_until_settled(client, url, {"path": "../outside.txt"})
         assert response["status"] == "failed"
         assert response["error"]["code"] == "tool_path_denied"
+
+
+def _bind_write_resource(client: TestClient, project: dict) -> None:
+    response = client.post(
+        f"/api/v1/projects/{project['project_id']}/resources",
+        json={"reference": "veyra.tool.filesystem.write@1.0.0"},
+    )
+    assert response.status_code == 201, response.text
 
 
 def _write_source(client: TestClient) -> dict[str, object]:
@@ -888,6 +1225,9 @@ def test_filesystem_write_pauses_for_approval_then_writes(
     with TestClient(create_app(settings)) as client:
         source = _write_source(client)
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        client.app.state.project_resources.add(
+            project["project_id"], "veyra.tool.filesystem.write@1.0.0"
+        )
         agent = project["agents"][0]
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -932,6 +1272,9 @@ def test_filesystem_write_stop_and_reject_do_not_write(tmp_path: Path) -> None:
     with TestClient(create_app(settings)) as client:
         source = _write_source(client)
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        client.app.state.project_resources.add(
+            project["project_id"], "veyra.tool.filesystem.write@1.0.0"
+        )
         agent = project["agents"][0]
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -1008,6 +1351,9 @@ def test_filesystem_write_without_approval_is_denied(tmp_path: Path) -> None:
             )["content_hash"]
         )
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        client.app.state.project_resources.add(
+            project["project_id"], "veyra.tool.filesystem.write@1.0.0"
+        )
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         response = _run_until_settled(
@@ -1068,6 +1414,9 @@ def test_runtime_event_stream_follows_approval_then_completes(
     with TestClient(create_app(settings)) as client:
         source = _write_source(client)
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        client.app.state.project_resources.add(
+            project["project_id"], "veyra.tool.filesystem.write@1.0.0"
+        )
         agent = project["agents"][0]
         run_url = (
             f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"

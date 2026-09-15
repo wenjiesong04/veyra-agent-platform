@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from pathlib import Path
 
@@ -144,13 +145,16 @@ def test_nested_input_failure_never_calls_mcp(tmp_path: Path, query: dict) -> No
             "/api/v1/mcp/servers",
             json={
                 "name": "demo",
-                "command": "explicit-test-server",
+                "command": sys.executable,
             },
         ).json()["server"]["server_id"]
         source = _agent(_discover(client, server))
         created = client.post("/api/v1/projects", json={"agents": [source]})
         assert created.status_code == 201, created.text
         project = created.json()
+        client.app.state.project_resources.add(
+            project["project_id"], source["nodes"][2]["uses"]
+        )
         url = (
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{project['agents'][0]['agent_id']}/run"
@@ -207,7 +211,7 @@ def test_mcp_result_gates_model_and_started_event_precedes_call_return(
             "/api/v1/mcp/servers",
             json={
                 "name": "demo",
-                "command": "explicit-test-server",
+                "command": sys.executable,
             },
         ).json()["server"]["server_id"]
         tool = _discover(client, server)
@@ -215,6 +219,7 @@ def test_mcp_result_gates_model_and_started_event_precedes_call_return(
         created = client.post("/api/v1/projects", json={"agents": [source]})
         assert created.status_code == 201, created.text
         project = created.json()
+        client.app.state.project_resources.add(project["project_id"], tool["reference"])
         url = (
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{project['agents'][0]['agent_id']}/run"

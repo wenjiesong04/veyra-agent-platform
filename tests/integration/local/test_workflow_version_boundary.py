@@ -155,6 +155,37 @@ def test_workflow_rejects_missing_version_wrong_digest_and_invalid_mapping(
         assert client.get(f"{url}/versions").json()["versions"] == []
 
 
+def test_workflow_version_usage_retains_pinned_agent_evidence(client: TestClient):
+    p, _, _, url, draft = setup_call(client)
+    saved = save(client, url, draft)
+    committed = client.post(
+        f"{url}/commit",
+        json={"expected_revision": saved["revision"]},
+        headers={"If-Match": saved["etag"], "Idempotency-Key": new_uuid7()},
+    )
+    assert committed.status_code == 200
+    version_id = committed.json()["version_id"]
+    repository = client.app.state.library.repository
+    original_snapshot = dict(repository.workflow_version(version_id))
+    ref = saved["source"]["nodes"][1]["agent_ref"]
+    saved["source"]["nodes"].pop(1)
+    saved["source"]["transitions"] = [{"from": "start", "port": "next", "to": "output"}]
+    saved["source"]["inputs"] = {"result": "string"}
+    saved["source"]["lock"] = {}
+    saved["source"]["ui"]["positions"].pop("call")
+    save(client, url, saved)
+    projects = client.app.state.projects
+    assert ref not in projects.project_resource_usage(p)
+    assert projects.project_resource_usage(p, include_versions=True)[ref] == [
+        {
+            "kind": "workflow",
+            "resource_id": saved["source"]["workflow_id"],
+            "name": saved["source"]["name"],
+        }
+    ]
+    assert dict(repository.workflow_version(version_id)) == original_snapshot
+
+
 def test_package_retains_resources_and_remaps_pinned_agent_version(client: TestClient):
     p, a, version, url, draft = setup_call(client)
     save(client, url, draft)

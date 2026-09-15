@@ -1,7 +1,7 @@
 import { CheckCircle2, CircleAlert, Plus, Trash2 } from "lucide-react";
 import type { ProjectResourceDescriptor, ProjectResourcesResponse, ResourceDescriptor } from "@veyra/api-contracts";
 import { Button, EmptyState, ErrorState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 
@@ -25,10 +25,12 @@ function ProjectResourceRow({
   resource,
   zh,
   onRemove,
+  pending,
 }: {
   resource: ProjectResourceDescriptor;
   zh: boolean;
   onRemove: (resource: ProjectResourceDescriptor) => void;
+  pending: boolean;
 }) {
   const inUse = resource.used_by.length > 0;
   const bindingStale = resource.binding_status === "stale";
@@ -38,10 +40,14 @@ function ProjectResourceRow({
       <div className="project-resource-row-main">
         <div className="project-resource-row-title"><strong>{resource.name}</strong><Tag>{kindLabel(resource.kind, zh)}</Tag><Tag>v{resource.version}</Tag></div>
         <small>{resource.reference} · {inUse ? resource.used_by.map((item) => `${item.kind === "agent" ? "Agent" : "Workflow"}: ${item.name}`).join("、") : zh ? "尚未被 Agent 或 Workflow 引用" : "Not referenced by an Agent or Workflow"}{bindingStale ? ` · ${zh ? "Catalog 内容已变化，请重新绑定" : "Catalog content changed; rebind it"}` : ""}</small>
+        <small>{zh ? "绑定状态" : "Binding status"}: {resource.binding_status ?? resource.scope} · {resource.resource_id}</small>
+        <small>{zh ? "固定版本 / 哈希" : "Pinned version / hash"}: {resource.version} / {resource.bound_content_hash ?? "—"}</small>
+        <small>{zh ? "当前 Catalog 版本 / 哈希" : "Current Catalog version / hash"}: {resource.version} / {resource.content_hash}</small>
       </div>
       <StatusBadge label={availabilityLabel(resource.availability, zh)} tone={tone(resource.availability)} />
+      {resource.blocking_reasons?.map((reason) => <small key={reason.code}>{reason.message}</small>)}
       {bindingStale ? <StatusBadge label={zh ? "版本已漂移" : "Version drift"} tone="warn" /> : null}
-      <button className="project-resource-remove" type="button" disabled={inUse || resource.scope !== "project"} title={inUse ? (zh ? "资源正在使用中" : "Resource is in use") : (zh ? "移除资源" : "Remove resource")} onClick={() => onRemove(resource)} aria-label={`${zh ? "移除" : "Remove"} ${resource.name}`}><Trash2 size={15} aria-hidden="true" /></button>
+      <button className="project-resource-remove" type="button" disabled={pending || inUse || resource.scope !== "project"} title={inUse ? (zh ? "资源正在使用中" : "Resource is in use") : (zh ? "只移除 Project 绑定" : "Remove Project binding only")} onClick={() => onRemove(resource)} aria-label={`${zh ? "移除" : "Remove"} ${resource.name}`}><Trash2 size={15} aria-hidden="true" /></button>
     </div>
   );
 }
@@ -56,9 +62,13 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const busy = useRef(false);
+  const generation = useRef(0);
 
   const load = useCallback(async () => {
     if (!api.listProjectResources) return;
+    const request = ++generation.current;
     setLoading(true);
     setError(null);
     try {
@@ -66,41 +76,61 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         api.listProjectResources(projectId),
         api.listResources ? api.listResources() : Promise.resolve({ schema_version: "1.0" as const, resources: [], kinds: [] }),
       ]);
+      if (request !== generation.current) return;
+      if (projectResources.project_id !== projectId) throw new Error("Project identity mismatch");
       setData(projectResources);
       setCatalog(globalResources.resources);
     } catch (cause) {
+      if (request !== generation.current) return;
       setError(cause instanceof Error ? cause.message : (zh ? "无法加载项目资源。" : "Project resources could not be loaded."));
     } finally {
-      setLoading(false);
+      if (request === generation.current) setLoading(false);
     }
   }, [api, projectId, zh]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setData(null); void load(); return () => { generation.current++; }; }, [load]);
 
   const addable = useMemo(() => {
-    const selected = new Set((data?.resources ?? []).map((item) => item.reference));
+    const selected = new Set((data?.resources ?? []).filter((item) => item.scope !== "used_unbound").map((item) => item.reference));
     return catalog.filter((item) => !selected.has(item.reference) && !(item.kind === "component" && item.component_class === "primitive"));
   }, [catalog, data]);
 
   const addResource = async (resource: ResourceDescriptor) => {
-    if (!api.addProjectResource) return;
+    if (!api.addProjectResource || busy.current || loading) return;
+    busy.current = true;
+    setPending(true);
+    const request = ++generation.current;
     setActionError(null);
     try {
-      const next = await api.addProjectResource(projectId, { reference: resource.reference });
+      const next = await api.addProjectResource(projectId, { reference: resource.reference, content_hash: resource.content_hash });
+      if (request !== generation.current) return;
+      if (next.project_id !== projectId) throw new Error("Project identity mismatch");
       setData(next);
       setShowCatalog(false);
     } catch (cause) {
-      setActionError(cause instanceof LocalApiClientError ? cause.message : (zh ? "无法加入项目资源。" : "Could not add the Project resource."));
+      if (request === generation.current) setActionError(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : (zh ? "无法加入项目资源。" : "Could not add the Project resource."));
+    } finally {
+      busy.current = false;
+      setPending(false);
     }
   };
 
-  const removeResource = async (resource: ProjectResourceDescriptor) => {
-    if (!api.removeProjectResource) return;
+  const removeResource = async (resource: Pick<ResourceDescriptor, "resource_id" | "version">) => {
+    if (!api.removeProjectResource || busy.current || loading) return;
+    busy.current = true;
+    setPending(true);
+    const request = ++generation.current;
     setActionError(null);
     try {
-      setData(await api.removeProjectResource(projectId, resource.resource_id, resource.version));
+      const next = await api.removeProjectResource(projectId, resource.resource_id, resource.version);
+      if (request !== generation.current) return;
+      if (next.project_id !== projectId) throw new Error("Project identity mismatch");
+      setData(next);
     } catch (cause) {
-      setActionError(cause instanceof LocalApiClientError ? cause.message : (zh ? "无法移除项目资源。" : "Could not remove the Project resource."));
+      if (request === generation.current) setActionError(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : (zh ? "无法移除项目资源。" : "Could not remove the Project resource."));
+    } finally {
+      busy.current = false;
+      setPending(false);
     }
   };
 
@@ -115,6 +145,9 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         <Button icon={Plus} variant="primary" onClick={() => setShowCatalog((value) => !value)}>{zh ? "从总目录添加" : "Add from Catalog"}</Button>
       </div>
       {actionError ? <ErrorState message={actionError} onRetry={() => setActionError(null)} /> : null}
+      <Button disabled={pending || loading} onClick={() => void load()}>{zh ? "刷新绑定" : "Refresh bindings"}</Button>
+      {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
+      <p>{zh ? "移除仅删除 Project 绑定，不删除 Catalog 资源。服务器会检查 source 和已保存版本引用。加入不授予权限，也不代表可运行。" : "Remove deletes only the Project binding, not the Catalog resource. The server checks source and saved-version usage. Adding grants no permissions and does not imply runnability."}</p>
       <div className="project-resource-stats">
         <div><strong>{data?.project_count ?? 0}</strong><span>{zh ? "已锁定资源" : "Bound resources"}</span></div>
         <div><strong>{data?.used_count ?? 0}</strong><span>{zh ? "正在使用" : "In use"}</span></div>
@@ -122,8 +155,16 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         <div className={data?.stale_count ? "is-warning" : ""}><strong>{data?.stale_count ?? 0}</strong><span>{zh ? "版本已漂移" : "Stale bindings"}</span></div>
         <div><strong>{data?.builtin_count ?? 0}</strong><span>{zh ? "平台内置" : "Built-in primitives"}</span></div>
       </div>
-      {showCatalog ? <Panel className="project-resource-catalog-panel"><SectionHeading eyebrow={zh ? "总资源目录" : "Resource Catalog"} title={zh ? "选择要加入 Project 的资源" : "Choose resources to add"} detail={zh ? "平台内置 Primitive 无需加入。" : "Platform primitives are always available."} />{addable.length ? <div className="project-resource-catalog-list">{addable.map((resource) => <div className="project-resource-catalog-item" key={resource.reference}><div><strong>{resource.name}</strong><small>{kindLabel(resource.kind, zh)} · v{resource.version} · {resource.description}</small></div><Button size="sm" variant="secondary" onClick={() => void addResource(resource)}>{zh ? "加入" : "Add"}</Button></div>)}</div> : <EmptyState icon={CheckCircle2} title={zh ? "没有可加入的新资源" : "No new resources to add"} detail={zh ? "当前项目已经包含目录中的可选资源。" : "This Project already contains the optional Catalog resources."} />}</Panel> : null}
-      <Panel><SectionHeading eyebrow={zh ? "绑定与使用" : "Bindings and usage"} title={`${resources.length} ${zh ? "项资源" : "resources"}`} detail={zh ? "版本和内容哈希来自总资源目录。" : "Versions and content hashes come from the global Catalog."} />{resources.length ? <div className="project-resource-list">{resources.map((resource) => <ProjectResourceRow key={resource.reference} resource={resource} zh={zh} onRemove={(item) => void removeResource(item)} />)}</div> : <EmptyState icon={CircleAlert} title={zh ? "这个 Project 还没有可选资源" : "No optional resources yet"} detail={zh ? "从总目录加入 Tool、MCP、Skill、Policy 或 Composite Component。" : "Add a Tool, MCP, Skill, Policy, or Composite Component from the Catalog."} />}</Panel>
+      {showCatalog ? <Panel className="project-resource-catalog-panel"><SectionHeading eyebrow={zh ? "总资源目录" : "Resource Catalog"} title={zh ? "选择要加入 Project 的资源" : "Choose resources to add"} detail={zh ? "平台内置 Primitive 无需加入。" : "Platform primitives are always available."} />{addable.length ? <div className="project-resource-catalog-list">{addable.map((resource) => <div className="project-resource-catalog-item" key={resource.reference}><div><strong>{resource.name}</strong><small>{kindLabel(resource.kind, zh)} · v{resource.version} · {resource.description}</small><StatusBadge label={availabilityLabel(resource.availability, zh)} tone={tone(resource.availability)} />{resource.blocking_reasons?.map((reason) => <small key={reason.code}>{reason.message}</small>)}</div><Button size="sm" variant="secondary" disabled={pending || loading} onClick={() => void addResource(resource)}>{zh ? "加入" : "Add"}</Button></div>)}</div> : <EmptyState icon={CheckCircle2} title={zh ? "没有可加入的新资源" : "No new resources to add"} detail={zh ? "当前项目已经包含目录中的可选资源。" : "This Project already contains the optional Catalog resources."} />}</Panel> : null}
+      <Panel><SectionHeading eyebrow={zh ? "绑定与使用" : "Bindings and usage"} title={`${resources.length} ${zh ? "项资源" : "resources"}`} detail={zh ? "Project 固定版本不会自动升级；Catalog 身份按同一引用核对。" : "Project pins never auto-upgrade; Catalog identity is compared at the same reference."} />{resources.length ? <div className="project-resource-list">{resources.map((resource) => <ProjectResourceRow key={resource.reference} resource={resource} zh={zh} pending={pending} onRemove={(item) => void removeResource(item)} />)}</div> : <EmptyState icon={CircleAlert} title={zh ? "这个 Project 还没有可选资源" : "No optional resources yet"} detail={zh ? "从总目录加入 Tool、MCP、Skill、Policy 或 Composite Component。" : "Add a Tool, MCP, Skill, Policy, or Composite Component from the Catalog."} />}</Panel>
+      {data?.missing_bindings?.map((binding) => <Panel key={binding.reference}>
+        <strong>{binding.reference}</strong><p>{zh ? "已绑定；Catalog 版本缺失，不可用" : "Bound; Catalog version missing, unavailable"}</p>
+        <code>{binding.content_hash}</code>
+        <Button disabled={pending || Boolean(binding.used_by.length)} onClick={() => {
+          const separator = binding.reference.lastIndexOf("@");
+          void removeResource({ resource_id: binding.reference.slice(0, separator), version: binding.reference.slice(separator + 1) });
+        }}>{zh ? "移除缺失绑定" : "Remove missing binding"}</Button>
+      </Panel>)}
       {data?.missing_references.length ? <Panel><SectionHeading eyebrow={zh ? "依赖问题" : "Dependency issues"} title={zh ? `${data.missing_references.length} 个资源无法解析` : `${data.missing_references.length} unresolved resources`} /><div className="project-resource-missing-list">{data.missing_references.map((reference) => <code key={reference}>{reference}</code>)}</div></Panel> : null}
     </div>
   );

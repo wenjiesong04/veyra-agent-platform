@@ -19,6 +19,7 @@ import {
   type ResourceDescriptor,
   type ResourceKind,
   type ResourceRuntimeStatus,
+  type ProjectResourcesResponse,
 } from "@veyra/api-contracts";
 import {
   EmptyState,
@@ -34,7 +35,7 @@ import {
 } from "@veyra/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useProjectWorkspace } from "../../api/project-workspace";
-import type { LocalProjectApi } from "../../api/local-client";
+import { LocalApiClientError, type LocalProjectApi } from "../../api/local-client";
 import { resourceLibraryCatalogHref, resourceLibraryTabFromHash, type ResourceLibraryTab } from "./library-navigation";
 import { McpConfigError, parseMcpConfig } from "./mcp-config";
 import { PluginPackPanel } from "./plugin-pack-panel";
@@ -78,8 +79,8 @@ function availabilityLabel(value: ResourceDescriptor["availability"], zh: boolea
 
 function runtimeLabel(value: ResourceRuntimeStatus, zh: boolean): string {
   return zh
-    ? { supported: "可运行", runtime_not_configured: "等待配置", runtime_not_supported: "暂不支持" }[value]
-    : { supported: "Runnable", runtime_not_configured: "Needs setup", runtime_not_supported: "Not supported" }[value];
+    ? { supported: "Runtime 支持", runtime_not_configured: "等待配置", runtime_not_supported: "不可直接运行" }[value]
+    : { supported: "Runtime supported", runtime_not_configured: "Needs setup", runtime_not_supported: "Not directly executable" }[value];
 }
 
 function statusTone(value: ResourceDescriptor["availability"]): "good" | "warn" | "bad" | "neutral" {
@@ -100,9 +101,16 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   const [query, setQuery] = useState("");
   const [resources, setResources] = useState<ResourceDescriptor[]>([]);
   const [selected, setSelected] = useState<ResourceDescriptor | null>(null);
+  const [inlineReference, setInlineReference] = useState<string>();
   const [detailMissing, setDetailMissing] = useState(false);
+  const [detailRetry, setDetailRetry] = useState(0);
   const [targetProjectId, setTargetProjectId] = useState("");
-  const [addState, setAddState] = useState<"idle" | "adding" | "added" | "error">("idle");
+  const [addState, setAddState] = useState<"idle" | "adding" | "error">("idle");
+  const [bindings, setBindings] = useState<ProjectResourcesResponse | null>(null);
+  const [bindingError, setBindingError] = useState<string | null>(null);
+  const [bindingRetry, setBindingRetry] = useState(0);
+  const adding = useRef(false);
+  const bindingGeneration = useRef(0);
   const [workshopInstruction, setWorkshopInstruction] = useState("");
   const [workshopState, setWorkshopState] = useState<"idle" | "approving" | "approved" | "error">("idle");
   const [skillDraftName, setSkillDraftName] = useState("");
@@ -148,24 +156,47 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   }, []);
 
   useEffect(() => {
-    if (!resourceId || !api.getResource) return;
-    const separator = resourceId.lastIndexOf("@");
-    if (separator < 1) return;
+    const reference = resourceId ?? inlineReference;
+    if (!reference) return;
+    const separator = reference.lastIndexOf("@");
+    if (separator < 1 || !api.getResource) { setDetailMissing(true); return; }
+    let active = true;
+    setSelected(null);
     setDetailMissing(false);
-    void api.getResource(resourceId.slice(0, separator), resourceId.slice(separator + 1))
+    void api.getResource(reference.slice(0, separator), reference.slice(separator + 1))
       .then((item) => {
+        if (!active) return;
+        if (item.reference !== reference) throw new Error("Resource identity mismatch");
         setSelected(item);
         setDetailMissing(false);
       })
       .catch(() => {
+        if (!active) return;
         setSelected(null);
         setDetailMissing(true);
       });
-  }, [api, resourceId]);
+    return () => { active = false; };
+  }, [api, resourceId, inlineReference, detailRetry]);
 
   useEffect(() => {
     if (!targetProjectId && projects[0]) setTargetProjectId(projects[0].project_id);
   }, [projects, targetProjectId]);
+
+  useEffect(() => {
+    const generation = ++bindingGeneration.current;
+    setBindings(null);
+    setBindingError(null);
+    setAddState("idle");
+    if (!targetProjectId || !api.listProjectResources) return;
+    void api.listProjectResources(targetProjectId).then((result) => {
+      if (generation !== bindingGeneration.current) return;
+      if (result.project_id !== targetProjectId) throw new Error("Project identity mismatch");
+      setBindings(result);
+    }).catch((cause) => {
+      if (generation === bindingGeneration.current) setBindingError(cause instanceof Error ? cause.message : "Could not load Project bindings");
+    });
+    return () => { bindingGeneration.current++; };
+  }, [api, targetProjectId, selected?.reference, selected?.content_hash, bindingRetry]);
 
   const changeTab = (next: ResourceLibraryTab) => {
     if (next === tab) return;
@@ -175,13 +206,23 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   };
 
   const addToProject = async () => {
-    if (!selectedResource || !targetProjectId || !api.addProjectResource) return;
+    if (!selectedResource || !targetProjectId || !api.addProjectResource || adding.current || !bindings) return;
+    adding.current = true;
+    const generation = bindingGeneration.current;
     setAddState("adding");
+    setBindingError(null);
     try {
-      await api.addProjectResource(targetProjectId, { reference: selectedResource.reference });
-      setAddState("added");
-    } catch {
+      const result = await api.addProjectResource(targetProjectId, { reference: selectedResource.reference, content_hash: selectedResource.content_hash });
+      if (generation !== bindingGeneration.current) return;
+      if (result.project_id !== targetProjectId) throw new Error("Project identity mismatch");
+      setBindings(result);
+      setAddState("idle");
+    } catch (cause) {
+      if (generation !== bindingGeneration.current) return;
       setAddState("error");
+      setBindingError(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : cause instanceof Error ? cause.message : "Could not add resource");
+    } finally {
+      adding.current = false;
     }
   };
 
@@ -202,32 +243,38 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
   }, [currentKinds, query, resources]);
 
   const selectedResource = selected;
+  const boundResource = bindings?.resources.find((item) => item.scope === "project" && item.reference === selectedResource?.reference);
+  const isBound = Boolean(boundResource || bindings?.missing_bindings?.some((item) => item.reference === selectedResource?.reference));
+  const isPrimitive = selectedResource?.kind === "component" && (selectedResource.component_class ?? "primitive") === "primitive";
   useEffect(() => {
     const spec = (selectedResource?.spec ?? {}) as Record<string, unknown>;
     setWorkshopInstruction(typeof spec.instruction === "string" ? spec.instruction : "");
     setWorkshopState("idle");
   }, [selectedResource?.reference]);
 
-  if (resourceId && detailMissing) {
+  const closeDetail = (event?: { preventDefault: () => void }) => {
+    if (!resourceId) {
+      event?.preventDefault();
+      setSelected(null);
+      setInlineReference(undefined);
+      setDetailMissing(false);
+    }
+  };
+
+  if ((resourceId || inlineReference) && detailMissing) {
     return (
       <div className="page-stack resource-library-page">
-        <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2></div><LinkButton href={catalogHref} icon={ArrowLeft} variant="ghost">{copy.back}</LinkButton></div>
-        <ErrorState message={copy.unavailable} />
+        <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2></div><LinkButton href={catalogHref} icon={ArrowLeft} variant="ghost" onClick={closeDetail}>{copy.back}</LinkButton></div>
+        <ErrorState message={copy.unavailable} onRetry={() => setDetailRetry((value) => value + 1)} />
       </div>
     );
   }
-  if (resourceId && !selected) {
+  if ((resourceId || inlineReference) && !selected) {
     return <div className="page-stack resource-library-page"><Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel></div>;
   }
 
   const DetailIcon = selectedResource ? iconForKind[selectedResource.kind] : LayoutGrid;
   const inProjectCatalog = catalogHref.startsWith("#/projects/");
-  const closeDetail = (event?: { preventDefault: () => void }) => {
-    if (!resourceId) {
-      event?.preventDefault();
-      setSelected(null);
-    }
-  };
 
   const approveSkill = async () => {
     if (!selectedResource || selectedResource.origin !== "workshop" || selectedResource.kind !== "skill" || !api.approveResourceDraft) return;
@@ -306,20 +353,28 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
             </div>
           </div>
           <div className="resource-detail-actions">
-            {projects.length ? <select value={targetProjectId} onChange={(event) => { setTargetProjectId(event.target.value); setAddState("idle"); }} aria-label={zh ? "选择目标 Project" : "Choose target Project"}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}</select> : <span className="resource-detail-muted">{copy.noProject}</span>}
-            <Button size="sm" variant="primary" disabled={!targetProjectId || addState === "adding" || !api.addProjectResource} onClick={() => void addToProject()}>{addState === "adding" ? "…" : addState === "added" ? copy.added : copy.addToProject}</Button>
-            {addState === "error" ? <span className="resource-detail-error">{copy.addFailed}</span> : null}
+            {projects.length ? <select disabled={addState === "adding"} value={targetProjectId} onChange={(event) => { setBindings(null); setTargetProjectId(event.target.value); }} aria-label={zh ? "选择目标 Project" : "Choose target Project"}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}</select> : <span className="resource-detail-muted">{copy.noProject}</span>}
+            <Button size="sm" variant="primary" disabled={!targetProjectId || !bindings || isBound || isPrimitive || addState === "adding" || !api.addProjectResource} onClick={() => void addToProject()}>{addState === "adding" ? "…" : isPrimitive ? (zh ? "平台内置" : "Built-in primitive") : isBound ? copy.added : copy.addToProject}</Button>
+            {targetProjectId ? <LinkButton href={`#/projects/${encodeURIComponent(targetProjectId)}/resources`} variant="ghost">{zh ? "进入 Project Resources" : "Open Project Resources"}</LinkButton> : null}
+            {bindingError ? <ErrorState message={bindingError} onRetry={() => setBindingRetry((value) => value + 1)} /> : null}
+            {boundResource?.binding_status === "stale" ? <StatusBadge label={zh ? "版本已漂移" : "Version drift"} tone="warn" /> : null}
           </div>
+          <p>{zh ? "加入只保存 Project 引用，不授予权限，也不代表可运行；下方阻止原因仍然适用。" : "Adding saves a Project reference only. It grants no permissions and does not make the resource runnable; blocking reasons still apply."}</p>
           {selectedResource.origin === "workshop" && selectedResource.kind === "skill" ? <div className="resource-detail-block">
             <strong>{copy.skillInstruction}</strong>
             <textarea value={workshopInstruction} onChange={(event) => setWorkshopInstruction(event.target.value)} placeholder={copy.skillInstructionHint} rows={6} />
             <div className="button-row"><Button variant="primary" disabled={!api.approveResourceDraft || workshopState === "approving" || !workshopInstruction.trim()} onClick={() => void approveSkill()}>{workshopState === "approving" ? "…" : workshopState === "approved" ? copy.skillApproved : copy.approveSkill}</Button>{workshopState === "error" ? <span className="resource-detail-error">{copy.skillApprovalFailed}</span> : null}</div>
           </div> : null}
           <div className="resource-detail-facts">
+            <div><span>{zh ? "来源" : "Source"}</span><strong>{selectedResource.origin}</strong></div>
             <div><span>{copy.availability}</span><StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} /></div>
             <div><span>{copy.runtime}</span><strong>{runtimeLabel(selectedResource.runtime_status, zh)}</strong></div>
             <div><span>{copy.factorySelectable}</span><strong>{selectedResource.factory_selectable ? copy.selectable : copy.notSelectable}</strong></div>
             <div><span>{copy.hash}</span><strong>{selectedResource.content_hash}</strong></div>
+            {selectedResource.blocking_reasons?.map((reason) => <div key={reason.code}><span>{reason.code}</span><strong>{reason.message}</strong></div>)}
+            {selectedResource.configuration_requirements?.map((item) => <div key={item.code}><span>{zh ? "配置要求" : "Configuration requirement"}</span><strong>{item.message} — {item.satisfied ? "Configured" : "Missing"}</strong></div>)}
+            {selectedResource.dependencies ? <div><span>{zh ? "依赖" : "Dependencies"}</span><strong>{JSON.stringify(selectedResource.dependencies)}</strong></div> : null}
+            {selectedResource.compatibility ? <div><span>{zh ? "兼容性" : "Compatibility"}</span><strong>{selectedResource.compatibility.scope}: {selectedResource.compatibility.execution}</strong></div> : null}
           </div>
           <div className="resource-detail-block"><strong>{copy.tags}</strong><div className="resource-tags">{selectedResource.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}</div></div>
           <div className="resource-detail-block"><strong>{copy.permissions}</strong>{Object.values(selectedResource.required_permissions).some((value) => Array.isArray(value) ? value.length : value) ? <ul className="resource-permission-list">{selectedResource.required_permissions.network_hosts.map((host) => <li key={`host-${host}`}>Network: {host}</li>)}{selectedResource.required_permissions.tools.map((tool) => <li key={`tool-${tool}`}>Tool: {tool}</li>)}{selectedResource.required_permissions.filesystem_read_roots.map((path) => <li key={`read-${path}`}>Read: {path}</li>)}{selectedResource.required_permissions.filesystem_write_roots.map((path) => <li key={`write-${path}`}>Write: {path}</li>)}{selectedResource.required_permissions.shell_workspace_only ? <li>Workspace shell only</li> : null}</ul> : <p className="resource-detail-muted">{copy.noPermissions}</p>}</div>
@@ -372,7 +427,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
                 onClick={(event) => {
                   if (!inProjectCatalog) return;
                   event.preventDefault();
-                  setSelected(item);
+                  setInlineReference(item.reference);
                 }}
               >
                 <div className="resource-card-top">
@@ -381,6 +436,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
                 </div>
                 <h3>{item.name}</h3>
                 <p>{item.description}</p>
+                {item.blocking_reasons?.map((reason) => <p key={reason.code}>{reason.message}</p>)}
                 <div className="resource-card-meta">
                   <Tag>{resourceKindLabel(item.kind, zh)}</Tag>
                   <Tag>v{item.version}</Tag>
@@ -652,6 +708,8 @@ function McpServerPanel({ api, zh, onChanged, importCopy }: { api: LocalProjectA
         return (
           <div className="resource-row" key={tool.reference}>
             <span className="row-copy"><strong>{tool.name}</strong><small>{tool.reference} · {reviewRequired ? (zh ? "等待审核" : "Review required") : (zh ? "已审核" : "Reviewed")}</small></span>
+            <StatusBadge label={availabilityLabel(tool.availability, zh)} tone={statusTone(tool.availability)} />
+            {tool.blocking_reasons?.map((reason) => <small key={reason.code}>{reason.message}</small>)}
             {reviewRequired ? <Button size="sm" disabled={!serverId || !api.approveMcpTool} onClick={() => void approve(serverId, tool)}>{zh ? "审核并启用" : "Review and enable"}</Button> : <StatusBadge label={zh ? "已审核" : "Reviewed"} tone="good" />}
           </div>
         );

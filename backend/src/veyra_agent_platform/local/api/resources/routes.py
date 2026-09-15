@@ -15,6 +15,7 @@ from veyra_agent_platform.local.resources import (
     ResourceWorkshop,
     ResourceWorkshopError,
 )
+from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 
 _Result = TypeVar("_Result")
 
@@ -46,21 +47,23 @@ def build_router() -> APIRouter:
         availability: str | None = None,
     ) -> dict[str, Any]:
         return _translate(
-            lambda: _catalog(request).resources(kind=kind, availability=availability)
+            lambda: _readiness(request).resources(kind=kind, availability=availability)
         )
 
     @router.post("/drafts", status_code=status.HTTP_201_CREATED)
     def create_draft(
         payload: CreateResourceDraftRequest, request: Request
     ) -> dict[str, Any]:
-        return _workshop_translate(
-            lambda: _workshop(request).create_draft(
-                confirm=payload.confirm,
-                kind=payload.kind,
-                requested_reference=payload.requested_reference,
-                name=payload.name,
-                description=payload.description,
-                instruction=payload.instruction,
+        return _readiness(request).response(
+            _workshop_translate(
+                lambda: _workshop(request).create_draft(
+                    confirm=payload.confirm,
+                    kind=payload.kind,
+                    requested_reference=payload.requested_reference,
+                    name=payload.name,
+                    description=payload.description,
+                    instruction=payload.instruction,
+                )
             )
         )
 
@@ -71,9 +74,11 @@ def build_router() -> APIRouter:
         payload: ApproveResourceDraftRequest,
         request: Request,
     ) -> dict[str, Any]:
-        return _workshop_translate(
-            lambda: _workshop(request).approve_skill(
-                resource_id, version, payload.instruction
+        return _readiness(request).response(
+            _workshop_translate(
+                lambda: _workshop(request).approve_skill(
+                    resource_id, version, payload.instruction
+                )
             )
         )
 
@@ -81,13 +86,23 @@ def build_router() -> APIRouter:
     def resource_detail(
         resource_id: str, version: str, request: Request
     ) -> dict[str, Any]:
-        return _translate(lambda: _catalog(request).detail(resource_id, version))
+        return _translate(
+            lambda: _readiness(request).project(
+                _catalog(request).detail(resource_id, version)
+            )
+        )
 
     return router
 
 
 def _catalog(request: Request) -> ResourceCatalog:
     return cast(ResourceCatalog, request.app.state.resource_catalog)
+
+
+def _readiness(request: Request) -> ResourceReadiness:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(ResourceReadiness, request.app.state.resource_readiness)
 
 
 def _workshop(request: Request) -> ResourceWorkshop:
