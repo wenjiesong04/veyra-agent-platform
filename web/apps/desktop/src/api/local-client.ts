@@ -55,6 +55,8 @@ import {
   type JsonObject,
   type JsonValue,
   type KnowledgeDocumentResponse,
+  type KnowledgeChunkResponse,
+  type KnowledgeProcessing,
   type ListAgentRunsResponse,
   type ListAgentConversationsResponse,
   type ListAgentsResponse,
@@ -173,7 +175,10 @@ export type LocalProjectApi = {
   createWorkflow?(projectId: string, input?: CreateWorkflowRequest): Promise<CreatedWorkflowResponse>;
   deleteWorkflow?(projectId: string, workflowId: string): Promise<DeleteWorkflowResponse>;
   createKnowledge?(projectId: string, input?: CreateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
+  ingestKnowledge?(projectId: string, file: File): Promise<KnowledgeDocumentResponse>;
+  buildKnowledgeIndex?(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse>;
   getKnowledge?(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse>;
+  getKnowledgeChunk?(projectId: string, knowledgeId: string, chunkId: string, sourceFileHash: string): Promise<KnowledgeChunkResponse>;
   updateKnowledge?(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
   deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; community_origin?: CommunityAgentOrigin }): Promise<CreatedAgentResponse>;
@@ -494,10 +499,32 @@ function projectWorkflow(value: unknown, status = 502): ProjectWorkflowRecord {
   };
 }
 
+function knowledgeProcessing(value: unknown, status: number): KnowledgeProcessing {
+  const record = asRecord(value, status);
+  if (!(record.origin === "upload" || record.origin === "project_document") ||
+      !(record.media_type === "text/plain" || record.media_type === "text/markdown") ||
+      record.ingest_status !== "ingested" || record.parse_status !== "parsed" ||
+      !(record.index_status === "not_indexed" || record.index_status === "indexed" || record.index_status === "stale" || record.index_status === "failed") ||
+      (record.chunk_count != null && !(typeof record.chunk_count === "number" && Number.isSafeInteger(record.chunk_count) && record.chunk_count >= 0))) {
+    throw new LocalApiClientError("Invalid Knowledge processing state", { status, code: "invalid_response" });
+  }
+  return {
+    origin: record.origin, media_type: record.media_type,
+    filename: asString(record.filename, "filename", status),
+    content_hash: asString(record.content_hash, "content_hash", status),
+    uploaded_content_hash: record.uploaded_content_hash === null ? null : asString(record.uploaded_content_hash, "uploaded_content_hash", status),
+    ingest_status: record.ingest_status, parse_status: record.parse_status, index_status: record.index_status,
+    ...(record.chunk_count === undefined ? {} : { chunk_count: record.chunk_count === null ? null : asNumber(record.chunk_count, "chunk_count", status) }),
+    failure_reason: record.failure_reason === null ? null : asString(record.failure_reason, "failure_reason", status),
+    updated_at: asString(record.updated_at, "updated_at", status),
+  };
+}
+
 function projectKnowledge(value: unknown, status = 502): ProjectKnowledgeRecord {
   const record = asRecord(value, status);
   return {
     knowledge_id: asString(record.knowledge_id, "knowledge_id", status),
+    ...(record.processing === undefined ? {} : { processing: knowledgeProcessing(record.processing, status) }),
     slug: asString(record.slug, "slug", status),
     name: asString(record.name, "name", status),
     description: asText(record.description, "description", status),
@@ -1011,6 +1038,7 @@ function knowledgeDocument(value: unknown, status = 502): KnowledgeDocumentRespo
   const record = schemaRecord(value, status);
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
+    ...(record.processing === undefined ? {} : { processing: knowledgeProcessing(record.processing, status) }),
     project_id: asString(record.project_id, "project_id", status),
     knowledge_id: asString(record.knowledge_id, "knowledge_id", status),
     slug: asString(record.slug, "slug", status),
@@ -2164,10 +2192,43 @@ export class LocalApiClient {
     });
   }
 
+  ingestKnowledge(projectId: string, file: File): Promise<KnowledgeDocumentResponse> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request(`projects/${encodeURIComponent(projectId)}/knowledge/ingest`, knowledgeDocument, { method: "POST", formData });
+  }
+
   getKnowledge(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse> {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}`,
       knowledgeDocument,
+    );
+  }
+
+  getKnowledgeChunk(projectId: string, knowledgeId: string, chunkId: string, sourceFileHash: string): Promise<KnowledgeChunkResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}/chunks/${encodeURIComponent(chunkId)}?source_file_hash=${encodeURIComponent(sourceFileHash)}`,
+      (value, status) => {
+        const record = schemaRecord(value, status);
+        return {
+          schema_version: LOCAL_API_SCHEMA_VERSION,
+          project_id: asString(record.project_id, "project_id", status),
+          reference: asString(record.reference, "reference", status),
+          source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
+          chunk_id: asString(record.chunk_id, "chunk_id", status),
+          line_start: asNumber(record.line_start, "line_start", status),
+          line_end: asNumber(record.line_end, "line_end", status),
+          text: asText(record.text, "text", status),
+        };
+      },
+    );
+  }
+
+  buildKnowledgeIndex(projectId: string, knowledgeId: string): Promise<KnowledgeDocumentResponse> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}/index`,
+      knowledgeDocument,
+      { method: "POST" },
     );
   }
 

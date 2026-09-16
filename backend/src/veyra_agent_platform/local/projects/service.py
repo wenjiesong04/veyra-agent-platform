@@ -30,6 +30,15 @@ from veyra_agent_platform.contracts.resource import (
     ResourceManifest,
 )
 from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.projects.knowledge_index import (
+    KnowledgeIndex,
+    build_index,
+)
+from veyra_agent_platform.local.projects.knowledge_ingest import (
+    KnowledgeIntakeError,
+    KnowledgeOrigin,
+    parse_upload,
+)
 from veyra_agent_platform.local.projects.layout import (
     INDEXED_ROOT_DIRECTORIES,
     agent_resource_manifest,
@@ -68,9 +77,16 @@ _UNSAFE_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 class ProjectError(ValueError):
     """A selected Project is unsafe, invalid, or unavailable."""
 
-    def __init__(self, message: str, code: str = "project_invalid") -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str = "project_invalid",
+        *,
+        details: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 class ProjectService:
@@ -1794,6 +1810,7 @@ class ProjectService:
         name: str | None = None,
         description: str | None = None,
         text: str | None = None,
+        origin: KnowledgeOrigin | None = None,
     ) -> dict[str, Any]:
         """Create a Knowledge document inside an existing Project."""
         with self._writer_lock:
@@ -1812,7 +1829,7 @@ class ProjectService:
             )
             document = (
                 text
-                if isinstance(text, str) and text
+                if isinstance(text, str)
                 else blank_knowledge_document(allocated_name)
             )
             return self._install_knowledge(
@@ -1827,7 +1844,19 @@ class ProjectService:
                 description=_nonblank_optional_text(description)
                 or "A Knowledge document.",
                 text=document,
+                origin=origin,
             )
+
+    def ingest_knowledge(
+        self, project_id: str, filename: str | None, contents: bytes
+    ) -> dict[str, Any]:
+        try:
+            text, origin = parse_upload(filename, contents)
+        except KnowledgeIntakeError as exc:
+            raise ProjectError(str(exc), exc.code) from exc
+        return self.create_knowledge(
+            project_id=project_id, name=origin.filename, text=text, origin=origin
+        )
 
     def _install_knowledge(
         self,
@@ -1842,6 +1871,7 @@ class ProjectService:
         name: str,
         description: str,
         text: str,
+        origin: KnowledgeOrigin | None = None,
     ) -> dict[str, Any]:
         existing_ids = {entry.resource_id for entry in manifest.knowledge}
         existing_slugs = {entry.slug for entry in manifest.knowledge}
@@ -1882,6 +1912,8 @@ class ProjectService:
                 ),
             )
             self.atomic_write(staging / "document.md", document_text(text))
+            if origin is not None:
+                self.atomic_write(staging / "source.json", origin.model_dump_json())
             self.atomic_write(staging / "README.md", f"# {name}\n")
             self._fsync_tree(staging)
             if target.exists():
@@ -1889,8 +1921,8 @@ class ProjectService:
             os.replace(staging, target)
             installed = True
             self._fsync_directory(knowledge_root)
-            self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
             manifest_replaced = True
+            self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
             self.index(root)
             return self.knowledge_summary(project_id, resource_id)
         except BaseException as exc:
@@ -1991,6 +2023,194 @@ class ProjectService:
             self.index(root)
             return self.knowledge_summary(project_id, knowledge_id)
 
+    def build_knowledge_index(
+        self, project_id: str, knowledge_id: str
+    ) -> dict[str, Any]:
+        with self._writer_lock:
+            _, root, _, _, manifest = self._project_manifest_state(project_id)
+            entry = next(
+                (
+                    item
+                    for item in manifest.knowledge
+                    if item.resource_id == knowledge_id
+                ),
+                None,
+            )
+            if entry is None:
+                raise ProjectError("unknown Knowledge in Project")
+            resource = self._knowledge_manifest(root, entry)
+            document = self._safe_file(root, Path(entry.path) / "document.md")
+            with document.open("rb") as stream:
+                contents = stream.read(MAX_INDEXED_FILE_BYTES + 1)
+            if len(contents) > MAX_INDEXED_FILE_BYTES:
+                raise ProjectError(
+                    "Knowledge exceeds index size limit", "knowledge_index_too_large"
+                )
+            try:
+                index = build_index(
+                    f"{resource.resource_id}@{resource.version}",
+                    contents.decode("utf-8"),
+                )
+            except UnicodeError as exc:
+                raise ProjectError(
+                    "Knowledge must be UTF-8", "knowledge_index_invalid"
+                ) from exc
+            target = document.parent / "index.json"
+            if target.exists() or target.is_symlink():
+                self._safe_file(root, target.relative_to(root))
+            serialized = index.model_dump_json()
+            if len(serialized.encode("utf-8")) > MAX_INDEXED_TOTAL_BYTES:
+                raise ProjectError(
+                    "Knowledge index exceeds artifact size limit",
+                    "knowledge_index_too_large",
+                )
+            self.atomic_write(target, serialized)
+            return self.knowledge_summary(project_id, knowledge_id)
+
+    def knowledge_chunk(
+        self, project_id: str, knowledge_id: str, chunk_id: str, source_file_hash: str
+    ) -> dict[str, Any]:
+        """Preview only a current, hash-matched indexed chunk; never rebuild."""
+        with self._writer_lock:
+            try:
+                _, root, _, _, manifest = self._project_manifest_state(project_id)
+                entry = next(
+                    (
+                        item
+                        for item in manifest.knowledge
+                        if item.resource_id == knowledge_id
+                    ),
+                    None,
+                )
+                if entry is None:
+                    raise ProjectError(
+                        "Knowledge source unavailable", "knowledge_source_missing"
+                    )
+                document = self._safe_file(root, Path(entry.path) / "document.md")
+                with document.open("rb") as stream:
+                    contents = stream.read(MAX_INDEXED_FILE_BYTES + 1)
+                if len(contents) > MAX_INDEXED_FILE_BYTES:
+                    raise ProjectError(
+                        "Knowledge source exceeds preview limit",
+                        "knowledge_index_too_large",
+                    )
+                if file_hash(contents.decode("utf-8")) != source_file_hash:
+                    raise ProjectError(
+                        "Historical source has changed", "knowledge_source_mismatch"
+                    )
+                index = self._load_knowledge_index(root, entry)
+                if index is None:
+                    raise ProjectError(
+                        "Knowledge index unavailable", "knowledge_not_indexed"
+                    )
+                if index.source_file_hash != source_file_hash:
+                    raise ProjectError(
+                        "Historical index has changed", "knowledge_index_stale"
+                    )
+                chunk = next(
+                    (item for item in index.chunks if item.chunk_id == chunk_id), None
+                )
+                if chunk is None:
+                    raise ProjectError(
+                        "Knowledge chunk unavailable", "knowledge_chunk_missing"
+                    )
+                return {
+                    "schema_version": "1.0",
+                    "project_id": project_id,
+                    "reference": chunk.knowledge_ref,
+                    "source_file_hash": chunk.source_file_hash,
+                    "chunk_id": chunk.chunk_id,
+                    "line_start": chunk.line_start,
+                    "line_end": chunk.line_end,
+                    "text": chunk.text,
+                }
+            except ProjectError as exc:
+                if exc.code != "project_invalid":
+                    raise
+                raise ProjectError(
+                    "Knowledge source unavailable", "knowledge_source_missing"
+                ) from exc
+            except (OSError, ValueError) as exc:
+                raise ProjectError(
+                    "Knowledge source unavailable or invalid",
+                    "knowledge_source_invalid",
+                ) from exc
+
+    def read_knowledge_index(
+        self, project_id: str, knowledge_id: str
+    ) -> KnowledgeIndex:
+        _, root, _, _, manifest = self._project_manifest_state(project_id)
+        entry = next(
+            (item for item in manifest.knowledge if item.resource_id == knowledge_id),
+            None,
+        )
+        if entry is None:
+            raise ProjectError("unknown Knowledge in Project")
+        index = self._load_knowledge_index(root, entry)
+        if index is None:
+            raise ProjectError(
+                "Knowledge index has not been built", "knowledge_not_indexed"
+            )
+        return index
+
+    def _load_knowledge_index(self, root: Path, entry: Any) -> KnowledgeIndex | None:
+        directory = self._safe_directory(root, Path(entry.path))
+        path = directory / "index.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        try:
+            path = self._safe_file(root, path.relative_to(root))
+            with path.open("rb") as stream:
+                contents = stream.read(MAX_INDEXED_TOTAL_BYTES + 1)
+            if len(contents) > MAX_INDEXED_TOTAL_BYTES:
+                raise ValueError("index exceeds size limit")
+            index = KnowledgeIndex.model_validate_json(contents)
+            if index.knowledge_ref != f"{entry.resource_id}@{entry.version}":
+                raise ValueError("index reference mismatch")
+            return index
+        except (ValueError, OSError) as exc:
+            raise ProjectError(
+                "Knowledge index is invalid", "knowledge_index_invalid"
+            ) from exc
+
+    def _knowledge_usage(
+        self, project_id: str, knowledge_id: str, root: Path, manifest: ProjectManifest
+    ) -> list[dict[str, str]]:
+        usage: list[dict[str, str]] = []
+
+        def record(
+            source: AgentSource, kind: str, version_id: str | None = None
+        ) -> None:
+            for reference in source.knowledge_refs:
+                if reference.rsplit("@", 1)[0] != knowledge_id:
+                    continue
+                evidence = {
+                    "kind": kind,
+                    "agent_id": source.agent_id,
+                    "name": source.name,
+                    "reference": reference,
+                }
+                if version_id is not None:
+                    evidence["version_id"] = version_id
+                usage.append(evidence)
+
+        for entry in manifest.agents:
+            source = self._agent_source(root, entry)
+            record(source, "agent_source")
+            draft = self.repository.draft(entry.agent_id)
+            # Saved Draft and source share one definition; external edits can diverge.
+            if draft is not None:
+                draft_source = AgentSource.from_dict(json.loads(draft["source_json"]))
+                if draft_source.knowledge_refs != source.knowledge_refs:
+                    record(draft_source, "agent_draft")
+        for version in self.repository.project_agent_versions(project_id):
+            record(
+                AgentSource.from_dict(json.loads(version["source_json"])),
+                "agent_version",
+                version["version_id"],
+            )
+        return usage
+
     def remove_knowledge(self, project_id: str, knowledge_id: str) -> dict[str, Any]:
         """Move a Knowledge directory to application trash."""
         with self._writer_lock:
@@ -2007,6 +2227,19 @@ class ProjectService:
             )
             if selected is None:
                 raise ProjectError("unknown Knowledge in Project")
+            usage = self._knowledge_usage(project_id, knowledge_id, root, manifest)
+            if usage:
+                raise ProjectError(
+                    "Knowledge is still used by an Agent source, Draft "
+                    "or saved version.",
+                    "knowledge_in_use",
+                    details={
+                        "knowledge_id": knowledge_id,
+                        "reason": "Agent binding must be explicitly removed; retained "
+                        "immutable versions continue to protect this Knowledge.",
+                        **usage[0],
+                    },
+                )
             remaining = [
                 entry
                 for entry in manifest.knowledge
@@ -2059,6 +2292,43 @@ class ProjectService:
             raise ProjectError("Project Knowledge identity does not match source")
         document_path = self._safe_file(root, Path(entry.path) / "document.md")
         document_text_value = self._read_text(document_path)
+        source_file_hash = file_hash(document_text_value)
+        index_status = "not_indexed"
+        failure_reason = None
+        chunk_count = None
+        try:
+            index = self._load_knowledge_index(root, entry)
+            if index is not None:
+                chunk_count = index.chunk_count
+                index_status = (
+                    "indexed" if index.source_file_hash == source_file_hash else "stale"
+                )
+                if index_status == "stale":
+                    failure_reason = (
+                        "Knowledge content changed; explicitly rebuild the index."
+                    )
+        except ProjectError:
+            index_status = "failed"
+            failure_reason = "Knowledge index is invalid; explicitly rebuild the index."
+        origin_path = document_path.parent / "source.json"
+        origin = (
+            KnowledgeOrigin.model_validate_json(
+                self._read_text(self._safe_file(root, origin_path.relative_to(root)))
+            )
+            if origin_path.exists() or origin_path.is_symlink()
+            else None
+        )
+        updated_at = (
+            datetime.fromtimestamp(
+                max(
+                    document_path.stat().st_mtime,
+                    (document_path.parent / "resource.yaml").stat().st_mtime,
+                ),
+                UTC,
+            )
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         return {
             "knowledge_id": resource.resource_id,
             "slug": resource.slug,
@@ -2066,7 +2336,22 @@ class ProjectService:
             "description": resource.description,
             "version": resource.version,
             "source_path": document_path.relative_to(root).as_posix(),
-            "source_file_hash": file_hash(document_text_value),
+            "source_file_hash": source_file_hash,
+            "processing": {
+                "origin": origin.kind if origin else "project_document",
+                "filename": origin.filename if origin else "document.md",
+                "media_type": origin.media_type if origin else "text/markdown",
+                "uploaded_content_hash": origin.uploaded_content_hash
+                if origin
+                else None,
+                "content_hash": hashlib.sha256(document_path.read_bytes()).hexdigest(),
+                "ingest_status": "ingested",
+                "parse_status": "parsed",
+                "index_status": index_status,
+                "chunk_count": chunk_count,
+                "failure_reason": failure_reason,
+                "updated_at": updated_at,
+            },
         }
 
     def _knowledge_manifest(self, root: Path, entry: Any) -> ResourceManifest:
@@ -2252,12 +2537,20 @@ class ProjectService:
         for relative in INDEXED_ROOT_DIRECTORIES:
             files.extend(self._files_below(self._safe_directory(root, relative)))
         unique = sorted(set(files))
+        knowledge_indexes = {
+            root / entry.path / "index.json" for entry in manifest.knowledge
+        }
         total = 0
         for path in unique:
             if path.is_symlink():
                 raise ProjectError("Project files may not be symlinks")
             size = path.stat().st_size
-            if size > MAX_INDEXED_FILE_BYTES:
+            limit = (
+                MAX_INDEXED_TOTAL_BYTES
+                if path in knowledge_indexes
+                else MAX_INDEXED_FILE_BYTES
+            )
+            if size > limit:
                 raise ProjectError("Project file exceeds the indexing size limit")
             total += size
         if total > MAX_INDEXED_TOTAL_BYTES:

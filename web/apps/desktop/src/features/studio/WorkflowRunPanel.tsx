@@ -167,7 +167,7 @@ export function WorkflowRunPanel({
               ))}
             </ol>
           ) : null}
-          {run ? <RunEvidence run={run} locale={locale} /> : !error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
+          {run ? <RunEvidence run={run} locale={locale} api={api} /> : !error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
         </div>
       </div>
       )}

@@ -1472,6 +1472,12 @@ def test_knowledge_binding_sends_locked_context_and_rejects_changed_document(
             },
         ).json()
         ref = f"{knowledge['knowledge_id']}@{knowledge['version']}"
+        assert (
+            client.post(
+                f"/api/v1/projects/{p}/knowledge/{knowledge['knowledge_id']}/index"
+            ).status_code
+            == 200
+        )
         url = f"/api/v1/projects/{p}/agents/{a}"
         draft = client.get(f"{url}/draft").json()
         draft["source"]["extensions"]["veyra"]["knowledge_refs"] = [ref]
@@ -1483,7 +1489,7 @@ def test_knowledge_binding_sends_locked_context_and_rejects_changed_document(
         )
         assert saved.status_code == 200, saved.text
         result = _run_until_settled(
-            client, f"{url}/run", {"request": "Design packaging"}
+            client, f"{url}/run", {"request": "Use recyclable paper for packaging"}
         )
         assert result["status"] == "unverified", result
         assert "BRAND_REFERENCE_742" in json.dumps(transport.calls)

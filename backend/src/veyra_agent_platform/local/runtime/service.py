@@ -1751,8 +1751,20 @@ class RuntimeService:
                             },
                         )
                         try:
+                            query = json.dumps(
+                                [
+                                    values[name]
+                                    for name in sorted(source.inputs)
+                                    if name in values
+                                ],
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
                             context_text, receipts = read_knowledge_context(
-                                self.projects, project_id, source
+                                self.projects,
+                                project_id,
+                                source,
+                                query,
                             )
                         except ProjectError as exc:
                             raise RuntimeError(exc.code, str(exc)) from exc
@@ -1762,6 +1774,8 @@ class RuntimeService:
                             {
                                 "tool_reference": "knowledge.context",
                                 "receipts": receipts,
+                                "query_hash": file_hash(query),
+                                "hit_count": len(receipts),
                             },
                         )
 

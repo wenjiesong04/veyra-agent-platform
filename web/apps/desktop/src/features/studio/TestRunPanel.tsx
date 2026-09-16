@@ -112,7 +112,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
               ))}
             </ol>
           ) : null}
-          {run ? <RunEvidence run={run} locale={locale} /> : !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
+          {run ? <RunEvidence run={run} locale={locale} api={api} /> : !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
         </div>
       </div>
       )}

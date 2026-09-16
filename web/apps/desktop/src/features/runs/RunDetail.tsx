@@ -7,8 +7,9 @@ import { RunEventList } from "../studio/RunEventList";
 import { runStatusLabel, runTone, workflowRunAsAgentRun } from "../studio/studio-run-ui";
 import { RunApprovalBar } from "../studio/RunApprovalBar";
 import { runDetailHref, runMonitorHref, runStudioHref, type RunIdentity } from "./run-location";
+import { KnowledgeEvidence } from "./KnowledgeEvidence";
 
-export function RunEvidence({ run, locale }: { run: AgentRunResponse | WorkflowRunResponse; locale: "zh" | "en" }) {
+export function RunEvidence({ run, locale, api }: { run: AgentRunResponse | WorkflowRunResponse; locale: "zh" | "en"; api?: LocalProjectApi }) {
   const identity: RunIdentity = { projectId: run.project_id, runId: run.run_id, ...("agent_id" in run ? { agentId: run.agent_id } : { workflowId: run.workflow_id }) };
   const lineage = run.events?.find((event) => event.kind === "run.created")?.payload;
   const origin = lineage?.retry_of_run_id ?? lineage?.resume_of_run_id;
@@ -28,6 +29,7 @@ export function RunEvidence({ run, locale }: { run: AgentRunResponse | WorkflowR
     </div>
     {run.error ? <Alert type="error" title={run.error.message} description={run.error.code} /> : null}
     {run.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
+    <KnowledgeEvidence key={run.run_id} events={run.events ?? []} api={api} projectId={run.project_id} locale={locale} />
     {run.events ? <RunEventList events={run.events} locale={locale} /> : null}
   </>;
 }
@@ -104,6 +106,6 @@ export function RunDetail({ api, projectId, agentId, workflowId, runId, locale }
     {!workflowId && canCommand && ["failed", "interrupted", "cancelled"].includes(run.status) ? <Button disabled={busy} onClick={() => void command("retry")}>{locale === "zh" ? "安全重试" : "Retry safely"}</Button> : null}
     {!workflowId && canCommand && ["failed", "interrupted"].includes(run.status) && checkpointId && !dispatchedAfterCheckpoint ? <Button disabled={busy} onClick={() => void command("resume")}>{locale === "zh" ? "从检查点恢复" : "Resume from checkpoint"}</Button> : null}
     {workflowId && ["failed", "interrupted"].includes(run.status) ? <p>{locale === "zh" ? "此 Workflow 没有可安全恢复的执行检查点；不支持 Retry / Resume。" : "This Workflow has no safely recoverable execution checkpoint; Retry / Resume are unsupported."}</p> : null}
-    <RunEvidence run={run} locale={locale} />
+    <RunEvidence run={run} locale={locale} api={api} />
   </>;
 }

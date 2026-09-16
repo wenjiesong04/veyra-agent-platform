@@ -324,8 +324,23 @@ export type ProjectWorkflowRecord = {
   source_file_hash: string;
 };
 
+export type KnowledgeProcessing = {
+  origin: "upload" | "project_document";
+  filename: string;
+  media_type: "text/plain" | "text/markdown";
+  uploaded_content_hash: string | null;
+  content_hash: string;
+  ingest_status: "ingested";
+  parse_status: "parsed";
+  index_status: "not_indexed" | "indexed" | "stale" | "failed";
+  chunk_count?: number | null;
+  failure_reason: string | null;
+  updated_at: string;
+};
+
 export type ProjectKnowledgeRecord = {
   knowledge_id: string;
+  processing?: KnowledgeProcessing;
   slug: string;
   name: string;
   description: string;
@@ -628,6 +643,7 @@ export type UpdateKnowledgeRequest = {
 export type KnowledgeDocumentResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   project_id: string;
+  processing?: KnowledgeProcessing;
   knowledge_id: string;
   slug: string;
   name: string;
@@ -1072,6 +1088,34 @@ export type RuntimeEventKind =
   | "checkpoint.created"
   | "verification.completed"
   | "verifier.result";
+
+export type KnowledgeRetrievalHit = {
+  reference: string;
+  source_file_hash: string;
+  chunk_id: string;
+  chunk_index: number;
+  line_start: number;
+  line_end: number;
+  rank: number;
+  score: number;
+};
+
+export type KnowledgeRetrievalEvidence = {
+  query_hash: string;
+  hit_count: number;
+  receipts: KnowledgeRetrievalHit[];
+};
+
+export type KnowledgeChunkResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  reference: string;
+  source_file_hash: string;
+  chunk_id: string;
+  line_start: number;
+  line_end: number;
+  text: string;
+};
 
 export type RuntimeEvent = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;

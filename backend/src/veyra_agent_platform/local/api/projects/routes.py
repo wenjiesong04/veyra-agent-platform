@@ -21,6 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
+from veyra_agent_platform.local.projects.knowledge_ingest import (
+    MAX_KNOWLEDGE_UPLOAD_BYTES,
+)
 from veyra_agent_platform.local.projects.origins import CommunityAgentOrigin
 from veyra_agent_platform.local.projects.packaging import MAX_PROJECT_ARCHIVE_BYTES
 from veyra_agent_platform.local.projects.service import (
@@ -145,10 +148,18 @@ class UpdateAgentRequest(_ClosedModel):
 
 
 class TypedApiError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.details = details
 
 
 def typed_error_response(_: Request, error: Exception) -> JSONResponse:
@@ -160,6 +171,11 @@ def typed_error_response(_: Request, error: Exception) -> JSONResponse:
             "code": typed_error.code,
             "message": typed_error.message,
             "request_id": new_uuid7(),
+            **(
+                {"details": typed_error.details}
+                if typed_error.details is not None
+                else {}
+            ),
         },
     )
 
@@ -690,12 +706,57 @@ def build_router() -> APIRouter:
             )
         )
 
+    @router.post("/{project_id}/knowledge/ingest", status_code=status.HTTP_201_CREATED)
+    async def ingest_knowledge(
+        project_id: str, request: Request, file: Annotated[UploadFile, File()]
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        try:
+            contents = await file.read(MAX_KNOWLEDGE_UPLOAD_BYTES + 1)
+            return _translate(
+                lambda: projects.ingest_knowledge(project_id, file.filename, contents)
+            )
+        finally:
+            await file.close()
+
     @router.get("/{project_id}/knowledge/{knowledge_id}")
     def get_knowledge(
         project_id: str, knowledge_id: str, request: Request
     ) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(lambda: projects.knowledge_summary(project_id, knowledge_id))
+
+    @router.get("/{project_id}/knowledge/{knowledge_id}/chunks/{chunk_id}")
+    def get_knowledge_chunk(
+        project_id: str,
+        knowledge_id: str,
+        chunk_id: str,
+        request: Request,
+        source_file_hash: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.knowledge_chunk(
+                project_id, knowledge_id, chunk_id, source_file_hash
+            )
+        )
+
+    @router.post("/{project_id}/knowledge/{knowledge_id}/index")
+    def build_knowledge_index(
+        project_id: str, knowledge_id: str, request: Request
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+
+        def build() -> dict[str, Any]:
+            try:
+                return projects.build_knowledge_index(project_id, knowledge_id)
+            except OSError as exc:
+                raise ProjectError(
+                    "Knowledge index build failed; explicitly retry the build.",
+                    "knowledge_index_build_failed",
+                ) from exc
+
+        return _translate(build)
 
     @router.patch("/{project_id}/knowledge/{knowledge_id}")
     def patch_knowledge(
@@ -844,10 +905,10 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         status_code = 404 if exc.code.endswith("_not_found") else 422
         raise TypedApiError(status_code, exc.code, str(exc)) from exc
     except ProjectError as exc:
-        code = getattr(exc, "code", "project_invalid")
-        if code != "project_invalid":
-            raise TypedApiError(422, code, str(exc)) from exc
-        raise TypedApiError(422, "project_invalid", str(exc)) from exc
+        status_code = 409 if exc.code == "knowledge_in_use" else 422
+        raise TypedApiError(
+            status_code, exc.code, str(exc), details=exc.details
+        ) from exc
     except ProjectResourceError as exc:
         status_code = (
             409

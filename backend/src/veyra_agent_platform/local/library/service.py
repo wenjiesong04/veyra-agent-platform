@@ -16,6 +16,7 @@ from veyra_agent_platform.contracts.common import (
     IdempotencyKey,
     new_uuid7,
 )
+from veyra_agent_platform.contracts.resource import ResourceRef
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.projects.service import (
     ProjectError,
@@ -193,6 +194,7 @@ class LibraryService:
             if draft["revision"] != expected_revision:
                 raise DraftConflict("draft revision does not match")
             self._validate_tool_bindings(project_id, parsed)
+            self._validate_knowledge_ownership(project_id, parsed)
             intent_id = self.repository.create_write_intent(
                 connection,
                 agent_id=agent_id,
@@ -242,6 +244,20 @@ class LibraryService:
             with self.repository.transaction() as connection:
                 self.repository.remove_write_intent(connection, intent_id)
             raise
+
+    def _validate_knowledge_ownership(
+        self, project_id: str, source: AgentSource
+    ) -> None:
+        if not source.knowledge_refs:
+            return
+        _, _, _, _, manifest = self.projects._project_manifest_state(project_id)
+        owned_ids = {entry.resource_id for entry in manifest.knowledge}
+        for reference in source.knowledge_refs:
+            if ResourceRef.from_string(reference).resource_id not in owned_ids:
+                raise ProjectError(
+                    f"Knowledge {reference} does not belong to this Project.",
+                    "knowledge_unbound",
+                )
 
     def _validate_tool_bindings(self, project_id: str, source: AgentSource) -> None:
         references = {node.uses for node in source.nodes if node.uses}
@@ -334,6 +350,7 @@ class LibraryService:
                 self.projects._parse_yaml(source_text, agent["slug"])
             )
             self._validate_tool_bindings(project_id, source)
+            self._validate_knowledge_ownership(project_id, source)
             existing = self.repository.version_by_fingerprint(
                 connection, agent_id, current_file_hash
             )
