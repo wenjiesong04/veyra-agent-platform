@@ -24,6 +24,7 @@
 | Chat-first Builder Phase 1 | `9153617` | Project Chat 修改已有 Agent/Workflow：提案 → 确认 → Draft；不是全 Project 事务 |
 | Runtime V1 | `ea94b64` | 事件/回执、审批、Stop、安全 Retry、checkpoint Resume、run_id 历史证据 |
 | Resource Library V1 | `ee814e2` | Catalog 真实 readiness → Project pin → Agent lock → Runtime 按 pin 执行 |
+| Knowledge V1 | `8351806` | 本地 txt/md ingest → 显式索引 → 绑定检索 → Run 引用证据 → Resource-Library 风格工作台 |
 
 GitHub Actions Billing 仍是外部阻塞，不把未执行的 CI 写成代码失败或 CI PASS。
 
@@ -53,7 +54,7 @@ GitHub Actions Billing 仍是外部阻塞，不把未执行的 CI 写成代码�
 
 ```text
 模块：Knowledge V1
-修订：ee814e2 + 本工作树（发布 SHA 以 commit 为准）
+修订：`83518068937271c4a0372674284782b56500e47c`（`8351806`）
 代码范围：Knowledge ingest/index/retrieval/evidence、Project API、Desktop 知识工作台
 用户可操作路径：上传 → 构建索引 → 绑定 Agent → Run 查看引用 → 使用中无法删除
 后端证据：env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check → 452 passed；
