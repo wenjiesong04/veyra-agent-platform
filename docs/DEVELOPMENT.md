@@ -24,7 +24,7 @@
 | Chat-first Builder Phase 1 | `9153617` | Project Chat 修改已有 Agent/Workflow：提案 → 确认 → Draft；不是全 Project 事务 |
 | Runtime V1 | `ea94b64` | 事件/回执、审批、Stop、安全 Retry、checkpoint Resume、run_id 历史证据 |
 | Resource Library V1 | `ee814e2` | Catalog 真实 readiness → Project pin → Agent lock → Runtime 按 pin 执行 |
-| Knowledge V1 | `8351806` | 本地 txt/md ingest → 显式索引 → 绑定检索 → Run 引用证据 → Resource-Library 风格工作台 |
+| Knowledge V1 | `8351806` | 本地 txt/md ingest → 显式索引 → 绑定检索 → Run 引用证据 → Resource-Library 风格工作台；浏览器闭环在 `560a912` 上验收 |
 
 GitHub Actions Billing 仍是外部阻塞，不把未执行的 CI 写成代码失败或 CI PASS。
 
@@ -68,7 +68,45 @@ GitHub Actions Billing 仍是外部阻塞，不把未执行的 CI 写成代码�
 `~/Library/Application Support/Veyra Agent Platform/.../community/registry` 失败；
 在未沙箱环境复跑后 plugin registry 用例通过。这不是产品回归。
 
-本轮没有隔离 Chrome E2E，不把它写成浏览器验收通过。
+### 发布验收（2026-09-17，`560a912`，隔离浏览器 E2E 补齐）
+
+`8351806` 收口时未跑浏览器 E2E。本轮在**同一修订**上补完模块门禁和真实浏览器闭环，
+Knowledge V1 由此记为 released。
+
+```text
+模块：Knowledge V1 = complete / released
+修订：`560a912609c1b2e658a2b62b3ad22d9212bfbb20`（代码与 `8351806` 一致，`560a912` 仅文档）
+Focused review：按 24 项边界逐条核对 Knowledge diff，未发现真实 bug，未改产品代码
+后端门禁：env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check → 452 passed；
+        Ruff format/check、mypy、dependency/lock checks 通过
+前端门禁：web npm test → Desktop 309 passed（41 文件），Community 15 passed；
+        npm run typecheck 通过；npm run build 通过（Desktop 主 chunk warning 保留）
+浏览器 E2E：Chrome + playwright-core，隔离栈 27 checks / 0 failed
+```
+
+E2E 隔离方式（harness 在仓库外的临时目录，不入库）：临时 SQLite、临时 Project 根
+`/private/tmp/.../projects`、loopback 脚本 provider `127.0.0.1:8899`，以及临时 Community
+库中的一次性账号。脚本内断言 `root_path` 与 `runtime/status.model_base_url`，确保没有
+触碰真实工作区、也没有调用外部模型。
+
+真实浏览器覆盖的闭环：
+
+- 上传 `knowledge.txt` → `ingested / parsed / not_indexed`，徽章 `Not indexed`
+- 点击 Build index → `ingested / parsed / indexed`，`chunk_count = 1`
+- Studio 绑定 → Draft 记录 `knowledge_refs` 且 `lock` 固定 source hash
+- Validate & commit → 一个不可变版本携带 Knowledge pin
+- Run（脚本 provider）→ `Chunk index 0 · Lines 1–1 · Rank 1 · Score 5`，证据带 reference
+  与运行时 source hash；脚本 provider 收到的 prompt 只含绑定片段
+- 展开片段 → 显示 `ORBIT-731`
+- 按精确 `run_id` 刷新 → 不新建 Run（1 → 1），证据逐字节不变
+- 空检索 → Run 合法，显示 `No relevant Knowledge chunks retrieved.`，无伪造引用
+- 显式改内容 → 索引转 `stale` / 徽章 `Needs rebuild`；旧 Run 证据身份不变；
+  旧片段预览被 422 拒绝（`Historical source changed`），不泄漏新 marker
+- 使用中删除 → 409 `knowledge_in_use`，Knowledge 仍在 Project 中
+
+未验收边界不变：PDF/Office、embedding/向量检索、reranker、GraphRAG、逐句归因、
+历史 Knowledge artifact 仓库、真实外部 Provider、Community 知识依赖重建。
+GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地发布阻塞。
 
 ## 4. 对照原六模块判断（已核对）
 
@@ -106,7 +144,7 @@ Knowledge V1 发布后停止扩展 PDF、embedding、标签收藏或 Builder Pha
 
 ## 6. 仍不能宣称完成
 
-- 没有真实浏览器 E2E，就不能宣称 Knowledge 工作台的操作体验已验收
+- Knowledge 工作台已有一条隔离浏览器闭环证据；其余页面仍没有浏览器 E2E
 - 没有 PostgreSQL + 对象存储演练，就不能宣称 Community production ready
 - 没有真实外部 Provider，就不能宣称 Runtime 已在生产网络下验证
 - Builder 不能一次修改多个对象，也不是全 Project 操作入口
