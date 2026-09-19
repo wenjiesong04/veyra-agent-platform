@@ -211,7 +211,8 @@ compatibility、validation 和 provenance；可执行代码/高权限 Tool 必�
 候选，不能确认后再偷偷生成另一份；拒绝不改变 source；Undo 通过受冲突保护的新 revision
 恢复，不能覆盖确认之后用户的其它编辑。影响范围必须来自真实差异，而非模型口头描述。
 
-Factory 只提出受限蓝图/候选，由服务端解析已登记资源、精确版本、权限、Policy 和锁，
+Factory 只提出受限语义计划/候选，由服务端编译为 canonical AgentBlueprint，
+并解析已登记资源、精确版本、权限、Policy 和锁，
 校验后才能写入 Draft。模型输出不可信，不能自行注册未知 Tool、授权、执行、发布或宣称验证成功。
 缺失能力应成为显式提案；修复循环有界，不不断试到绕过约束。
 

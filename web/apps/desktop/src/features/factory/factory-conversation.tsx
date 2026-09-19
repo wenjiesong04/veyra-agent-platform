@@ -28,7 +28,7 @@ const copy = {
   zh: {
     placeholder: "随心输入",
     send: "发送",
-    sending: "正在回复…",
+    sending: "正在思考…",
     message: "消息",
     unconfigured: "尚未配置 Veyra Agent。仍可收集需求；可在设置中保存模型 API Key，或在无界面运行时设置 MOONSHOT_API_KEY。",
     configured: "Veyra Agent 已配置，只组装 Draft。",
@@ -41,7 +41,7 @@ const copy = {
   en: {
     placeholder: "Type freely",
     send: "Send",
-    sending: "Replying…",
+    sending: "Thinking…",
     message: "Message",
     unconfigured: "Veyra Agent is not configured. You can still collect requirements; save a model API key in Settings or set MOONSHOT_API_KEY for headless runs.",
     configured: "Veyra Agent is configured for Draft generation only.",
@@ -109,6 +109,7 @@ export function FactoryConversation({
   const [canvasDismissed, setCanvasDismissed] = React.useState(false);
   const [attachments, setAttachments] = React.useState<ConversationAttachment[]>([]);
   const [attachHint, setAttachHint] = React.useState("");
+  const [pendingUser, setPendingUser] = React.useState("");
   const attachmentSeq = React.useRef(0);
 
   React.useEffect(() => {
@@ -131,6 +132,10 @@ export function FactoryConversation({
     }
     setBusy("message");
     setError("");
+    setDraft("");
+    setAttachments([]);
+    setAttachHint("");
+    setPendingUser(trimmed);
     try {
       const goal = goalFor(trimmed, focusAgent, locale);
       const next = session && addMessage
@@ -140,9 +145,7 @@ export function FactoryConversation({
           : null;
       if (!next) return;
       setSession(next);
-      setDraft("");
-      setAttachments([]);
-      setAttachHint("");
+      setPendingUser("");
       if (!canvasDismissed) setCanvasOpen(true);
     } catch (cause) {
       setError(errorText(cause, locale));
@@ -228,7 +231,7 @@ export function FactoryConversation({
 
   const canGenerate = Boolean(api.generateFactoryBlueprint && session?.ready && status?.configured && session.state !== "completed" && session.state !== "generating");
   const canApply = Boolean(api.applyFactoryDraft && session?.state === "review" && session.blueprint);
-  const empty = !session && !error;
+  const empty = !session && !error && !pendingUser;
   const studioHref = createdAgentId ? projectRoutePaths.agentDesign(projectId, createdAgentId) : null;
   const modelNote = status ? (status.configured ? text.configured : text.unconfigured) : null;
   const attach = async (files: File[]) => {
@@ -325,6 +328,12 @@ export function FactoryConversation({
           <p>{message.content}</p>
         </article>
       ))}
+      {pendingUser ? (
+        <article className="agent-chat-bubble user agent-convo-enter">
+          <span>{text.you}</span>
+          <p>{pendingUser}</p>
+        </article>
+      ) : null}
       {error ? <ErrorState message={error} /> : null}
       {busy === "message" ? <ConversationTyping label={text.sending} /> : null}
       {session && !canvasOpen ? (

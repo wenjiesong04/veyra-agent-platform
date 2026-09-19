@@ -23,8 +23,8 @@
 
 .agent-conversation-main {
   display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: 16rem;
   min-height: 0;
   flex-direction: column;
 }
@@ -322,6 +322,11 @@
   .agent-convo-guide:active {
     transition: none;
     transform: none;
+  }
+
+  .agent-convo-canvas,
+  .agent-convo-canvas-slot {
+    animation: none;
   }
 }
 
@@ -742,6 +747,48 @@
   animation: agent-convo-rise 360ms ease both;
 }
 
+.agent-convo-turn {
+  display: grid;
+  gap: 4px;
+  max-width: min(680px, 100%);
+}
+
+.agent-convo-turn.is-user {
+  justify-self: end;
+}
+
+.agent-convo-turn .agent-chat-bubble {
+  max-width: none;
+}
+
+.agent-convo-turn .agent-chat-bubble.user {
+  justify-self: stretch;
+}
+
+.agent-convo-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+}
+
+.agent-convo-turn.is-user .agent-convo-actions {
+  justify-content: flex-end;
+}
+
+.agent-convo-actions .ui-icon-button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+}
+
+.agent-convo-time {
+  margin-left: 6px;
+  color: var(--subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .agent-convo-typing {
   display: flex;
   align-items: center;
@@ -811,15 +858,71 @@
   text-align: center;
 }
 
+.agent-convo-canvas-slot {
+  position: relative;
+  display: flex;
+  flex: 0 0 var(--agent-convo-canvas-width, 520px);
+  width: var(--agent-convo-canvas-width, 520px);
+  min-width: 0;
+  min-height: 0;
+  max-width: min(720px, calc(100% - 16rem));
+}
+
+.agent-convo-canvas-slot-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.agent-convo-canvas-slot-body[hidden] {
+  display: none;
+}
+
+.agent-convo-canvas-slot .agent-convo-canvas {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 auto;
+}
+
+.agent-convo-canvas-slot .pane-resize-handle {
+  display: block;
+}
+
+.agent-convo-canvas-fold {
+  position: absolute;
+  z-index: 7;
+  top: 8px;
+  left: 12px;
+}
+
+.agent-convo-canvas-slot.is-collapsed {
+  flex: 0 0 44px;
+  width: 44px;
+  max-width: 44px;
+  align-items: stretch;
+  justify-content: center;
+  border-left: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, var(--paper));
+}
+
+.agent-convo-canvas-slot.is-collapsed .agent-convo-canvas-fold {
+  position: static;
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+  border-radius: 0;
+}
+
 .agent-convo-canvas {
   display: flex;
-  width: min(52%, 640px);
-  min-width: 320px;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
   border-left: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 92%, var(--paper));
-  animation: agent-convo-canvas-in 360ms ease both;
+  animation: agent-convo-canvas-in 520ms ease both;
 }
 
 .agent-convo-canvas-head {
@@ -827,7 +930,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 14px 10px;
+  padding: 14px 14px 10px 52px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -879,11 +982,13 @@
 .agent-convo-flow-block {
   display: grid;
   gap: 12px;
+  max-width: 100%;
+  overflow: auto;
 }
 
 .agent-convo-flow {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--line);
   border-radius: 16px;
   background:
@@ -1005,21 +1110,94 @@
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
 }
 
+.agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas-fold {
+  top: 16px;
+  left: 8px;
+}
+
+.agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas {
+  animation-name: agent-convo-rise;
+}
+
+.agent-conversation[data-canvas-layout="stack"] {
+  flex-direction: column;
+}
+
+.agent-conversation[data-canvas-layout="stack"] .agent-conversation-main,
+.agent-conversation[data-canvas-collapsed="true"] .agent-conversation-main {
+  min-width: 0;
+}
+
+.agent-conversation[data-canvas-layout="stack"] .agent-conversation-main {
+  min-height: 12rem;
+}
+
+.agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas-slot:not(.is-collapsed) {
+  flex: 0 0 var(--agent-convo-canvas-height, 46%);
+  width: 100%;
+  max-width: none;
+  height: var(--agent-convo-canvas-height, 46%);
+  min-height: 220px;
+  max-height: 68%;
+}
+
+.agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas,
+.agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas-slot.is-collapsed {
+  border-left: 0;
+  border-top: 1px solid var(--line);
+}
+
+.agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas-slot.is-collapsed {
+  flex: 0 0 44px;
+  width: 100%;
+  max-width: none;
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+}
+
 @media (max-width: 900px) {
-  .agent-conversation.is-canvas {
+  .agent-conversation.is-canvas:not([data-canvas-layout="split"]) {
     flex-direction: column;
   }
 
-  .agent-convo-canvas {
-    width: 100%;
+  .agent-conversation.is-canvas:not([data-canvas-layout="split"]) .agent-conversation-main {
     min-width: 0;
-    min-height: 42%;
+  }
+
+  .agent-conversation.is-canvas:not([data-canvas-layout="split"]) .agent-convo-canvas-slot:not(.is-collapsed) {
+    flex: 0 0 var(--agent-convo-canvas-height, 46%);
+    width: 100%;
+    max-width: none;
+    height: var(--agent-convo-canvas-height, 46%);
+    min-height: 220px;
+    max-height: 68%;
+  }
+
+  .agent-conversation.is-canvas:not([data-canvas-layout="split"]) .agent-convo-canvas {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
 }
 
 @media (max-width: 540px) {
+  .agent-conversation[data-canvas-layout="stack"] .agent-convo-canvas-slot:not(.is-collapsed),
+  .agent-conversation.is-canvas:not([data-canvas-layout="split"]) .agent-convo-canvas-slot:not(.is-collapsed) {
+    flex-basis: var(--agent-convo-canvas-height, 52%);
+    height: var(--agent-convo-canvas-height, 52%);
+    min-height: 200px;
+    max-height: 62%;
+  }
+
+  .agent-convo-canvas-head {
+    padding: 10px 12px 8px 40px;
+  }
+
+  .agent-convo-canvas-body {
+    padding: 12px;
+    gap: 12px;
+  }
+
   .agent-chat-input-grid { grid-template-columns: 1fr; }
   .agent-chat-bubble { max-width: 100%; }
   .agent-convo-composer-meta > span:last-child { display: none; }

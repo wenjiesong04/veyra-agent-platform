@@ -1,5 +1,9 @@
 """Project-scoped conversational Factory and Kimi provider boundary."""
 
+from .capability_profile import (
+    ProviderCapabilityProfile,
+    derive_provider_capability_profile,
+)
 from .client import (
     FactoryProviderError,
     FactoryProviderNotConfigured,
@@ -19,4 +23,6 @@ __all__ = [
     "KimiClient",
     "KimiCompletion",
     "KimiTransport",
+    "ProviderCapabilityProfile",
+    "derive_provider_capability_profile",
 ]

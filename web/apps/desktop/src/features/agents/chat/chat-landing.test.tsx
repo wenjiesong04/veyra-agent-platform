@@ -2,6 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
+import { ThemeProvider } from "@veyra/ui";
 import { ChatLanding } from "./chat-landing";
 
 const project: ProjectSummaryResponse = {
@@ -21,14 +22,16 @@ const project: ProjectSummaryResponse = {
 
 function renderLanding(overrides: Partial<Parameters<typeof ChatLanding>[0]> = {}) {
   return render(
-    <ChatLanding
-      locale="en"
-      projects={[project]}
-      onSelect={vi.fn()}
-      onCreateProject={vi.fn()}
-      onStart={vi.fn()}
-      {...overrides}
-    />,
+    <ThemeProvider storageKey="chat-landing-test">
+      <ChatLanding
+        locale="en"
+        projects={[project]}
+        onSelect={vi.fn()}
+        onCreateProject={vi.fn()}
+        onStart={vi.fn()}
+        {...overrides}
+      />
+    </ThemeProvider>,
   );
 }
 

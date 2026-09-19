@@ -1,9 +1,64 @@
 import * as React from "react";
-import { ArrowUp, Plus, RotateCcw } from "lucide-react";
-import { IconButton } from "@veyra/ui";
+import { ArrowUp, ChevronsDown, ChevronsLeft, ChevronsRight, ChevronsUp, Copy, Plus, RotateCcw } from "lucide-react";
+import { IconButton, PaneResizeHandle, useLocale } from "@veyra/ui";
 import type { JsonValue } from "@veyra/api-contracts";
+import {
+  measureConversationCanvas,
+  readConversationCanvasLayout,
+  writeConversationCanvasLayout,
+  type ConversationCanvasSizes,
+} from "./conversation-canvas-layout";
 
 type Locale = "zh" | "en";
+
+function conversationCanvasCopy(locale: Locale) {
+  return locale === "zh"
+    ? {
+        collapse: "折叠画布",
+        expand: "展开画布",
+        resizeWidth: "调整画布宽度",
+        resizeHeight: "调整画布高度",
+      }
+    : {
+        collapse: "Collapse canvas",
+        expand: "Expand canvas",
+        resizeWidth: "Resize canvas",
+        resizeHeight: "Resize canvas height",
+      };
+}
+
+function useConversationCanvasFrame(open: boolean) {
+  const stageRef = React.useRef<HTMLDivElement>(null);
+  const [stored, setStored] = React.useState(readConversationCanvasLayout);
+  const [box, setBox] = React.useState({ width: 0, height: 0 });
+  const [collapsed, setCollapsed] = React.useState(false);
+  const layout = measureConversationCanvas(box.width, box.height, stored.width, stored.height);
+
+  React.useEffect(() => {
+    if (!open) {
+      setCollapsed(false);
+      return;
+    }
+    const node = stageRef.current;
+    if (!node) return;
+    const sync = () => setBox({ width: node.clientWidth, height: node.clientHeight });
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [open]);
+
+  const persist = React.useCallback((patch: Partial<ConversationCanvasSizes>) => {
+    setStored((current) => {
+      const next = { ...current, ...patch };
+      writeConversationCanvasLayout(next);
+      return next;
+    });
+  }, []);
+
+  return { stageRef, layout, collapsed, setCollapsed, persist };
+}
 
 export function ConversationStage({
   empty,
@@ -31,7 +86,10 @@ export function ConversationStage({
   canvas?: React.ReactNode;
   children?: React.ReactNode;
 } & React.HTMLAttributes<HTMLDivElement>) {
+  const { locale } = useLocale();
+  const labels = conversationCanvasCopy(locale);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const { stageRef, layout, collapsed, setCollapsed, persist } = useConversationCanvasFrame(canvasOpen);
   React.useEffect(() => {
     if (empty) return;
     const node = scrollRef.current;
@@ -39,9 +97,26 @@ export function ConversationStage({
     if (typeof node.scrollTo === "function") node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
     else node.scrollTop = node.scrollHeight;
   }, [empty, children]);
+  const canvasLayout = canvasOpen ? (layout.stacked ? "stack" : "split") : undefined;
+  const FoldIcon = layout.stacked ? (collapsed ? ChevronsUp : ChevronsDown) : (collapsed ? ChevronsLeft : ChevronsRight);
 
   return (
-    <div {...props} className={`agent-conversation ${empty ? "is-empty" : "is-active"} ${canvasOpen ? "is-canvas" : ""} ${props.className ?? ""}`.trim()}>
+    <div
+      {...props}
+      ref={stageRef}
+      className={`agent-conversation ${empty ? "is-empty" : "is-active"} ${canvasOpen ? "is-canvas" : ""} ${props.className ?? ""}`.trim()}
+      data-canvas-layout={canvasLayout}
+      data-canvas-collapsed={collapsed ? "true" : undefined}
+      style={{
+        ...props.style,
+        ...(canvasOpen
+          ? {
+              "--agent-convo-canvas-width": `${layout.width}px`,
+              "--agent-convo-canvas-height": `${layout.height}px`,
+            } as React.CSSProperties
+          : undefined),
+      }}
+    >
       <div className="agent-conversation-main">
         {empty ? (
           <div className="agent-convo-hero">
@@ -62,7 +137,37 @@ export function ConversationStage({
           {composer}
         </div>
       </div>
-      {canvasOpen ? canvas : null}
+      {canvasOpen && canvas ? (
+        <div className={`agent-convo-canvas-slot${collapsed ? " is-collapsed" : ""}`}>
+          {collapsed ? null : layout.stacked ? (
+            <PaneResizeHandle
+              label={labels.resizeHeight}
+              edge="top"
+              value={layout.height}
+              min={layout.minHeight}
+              max={() => measureConversationCanvas(stageRef.current?.clientWidth ?? 0, stageRef.current?.clientHeight ?? 0, layout.width, layout.height).maxHeight}
+              onChange={(height) => persist({ height })}
+            />
+          ) : (
+            <PaneResizeHandle
+              label={labels.resizeWidth}
+              edge="left"
+              value={layout.width}
+              min={layout.minWidth}
+              max={() => measureConversationCanvas(stageRef.current?.clientWidth ?? 0, stageRef.current?.clientHeight ?? 0, layout.width, layout.height).maxWidth}
+              onChange={(width) => persist({ width })}
+            />
+          )}
+          <IconButton
+            className="agent-convo-canvas-fold"
+            icon={FoldIcon}
+            label={collapsed ? labels.expand : labels.collapse}
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((current) => !current)}
+          />
+          <div className="agent-convo-canvas-slot-body" hidden={collapsed}>{canvas}</div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -176,6 +281,46 @@ export function ConversationTyping({ label }: { label: string }) {
     <div className="agent-convo-typing" role="status">
       <span className="agent-convo-dots" aria-hidden="true"><i /><i /><i /></span>
       <span>{label}</span>
+    </div>
+  );
+}
+
+function messageClock(createdAt: string, locale: Locale): string {
+  if (!createdAt) return "";
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+export function ConversationMessageActions({
+  locale,
+  content,
+  createdAt,
+  onRetry,
+}: {
+  locale: Locale;
+  content: string;
+  createdAt?: string;
+  onRetry?: () => void;
+}) {
+  const [copied, setCopied] = React.useState(false);
+  const copy = async () => {
+    const text = content.trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+  const time = messageClock(createdAt ?? "", locale);
+  return (
+    <div className="agent-convo-actions">
+      <IconButton icon={Copy} label={copied ? (locale === "zh" ? "已复制" : "Copied") : (locale === "zh" ? "复制" : "Copy")} onClick={() => void copy()} />
+      {onRetry ? <IconButton icon={RotateCcw} label={locale === "zh" ? "重试" : "Retry"} onClick={onRetry} /> : null}
+      {time ? <time className="agent-convo-time" dateTime={createdAt}>{time}</time> : null}
     </div>
   );
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,13 +12,33 @@ from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
 from veyra_agent_platform.local.builder.harness import BuilderHarness
+from veyra_agent_platform.local.builder.operation_events import (
+    CAPABILITIES_RESOLVED,
+    CAPABILITIES_STARTED,
+    COMPILE_COMPLETED,
+    COMPILE_STARTED,
+    SEMANTIC_PLAN_COMPLETED,
+    SEMANTIC_PLAN_STARTED,
+    VALIDATION_COMPLETED,
+    VALIDATION_STARTED,
+)
+from veyra_agent_platform.local.builder.semantic_compiler import (
+    BuilderProjectContext,
+    builder_project_context,
+    compile_semantic_plan,
+    finalize_compiled_source,
+)
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
+from veyra_agent_platform.local.resources.project import ProjectResourceService
 
+from .capability_profile import ProviderCapabilityProfile, structured_response_format
 from .client import FactoryProviderError, KimiClient
 from .compiler import (
     BlueprintCompileError,
+    agent_candidate_identity,
     compile_blueprint,
     resource_plan,
     run_availability,
@@ -73,6 +94,7 @@ class FactoryService:
 
     def status(self) -> dict[str, Any]:
         settings = self.client.settings
+        profile = self.client.capability_profile()
         return {
             "schema_version": "1.0",
             "configured": self.client.configured,
@@ -82,6 +104,7 @@ class FactoryService:
             "reasoning_effort": settings.reasoning_effort,
             "repair_attempts": settings.repair_attempts,
             "executes_drafts": False,
+            "capability_profile": profile.to_dict(),
         }
 
     def create_session(
@@ -170,7 +193,17 @@ class FactoryService:
             self._append_interview(session_id)
             return self.get_session(project_id, session_id)
 
-    def generate(self, project_id: str, session_id: str) -> dict[str, Any]:
+    def generate(
+        self,
+        project_id: str,
+        session_id: str,
+        *,
+        on_stage: Callable[[str, dict[str, str]], None] | None = None,
+    ) -> dict[str, Any]:
+        def stage(kind: str, facts: dict[str, str] | None = None) -> None:
+            if on_stage is not None:
+                on_stage(kind, facts or {})
+
         with self._writer_lock:
             session = self._row(project_id, session_id)
             if not bool(session["ready"]):
@@ -196,46 +229,112 @@ class FactoryService:
                 ],
                 {
                     "role": "user",
-                    "content": "Generate the AgentBlueprint JSON for this requirement.",
+                    "content": (
+                        "Generate the AgentSemanticPlanV1 JSON for this requirement."
+                    ),
                 },
             ]
-            response_format = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "agent_blueprint",
-                    "strict": True,
-                    "schema": _generation_schema(),
-                },
-            }
+            response_format: dict[str, Any] = _plan_response_format(
+                self.client.capability_profile()
+            )
+            used_object_fallback = False
             diagnostics: list[str] = []
             attempts = self.client.settings.repair_attempts
-            for attempt in range(1, attempts + 1):
+            attempt = 1
+            stage(SEMANTIC_PLAN_STARTED)
+            while attempt <= attempts:
                 self._set_state(session_id, "generating", diagnostics=diagnostics)
                 try:
                     completion = self.client.complete(
                         messages, response_format=response_format
                     )
-                except FactoryProviderError:
+                except FactoryProviderError as exc:
+                    if (
+                        not used_object_fallback
+                        and self.client.capability_profile().json_object_fallback
+                        and _schema_compatibility_failure(exc)
+                    ):
+                        used_object_fallback = True
+                        response_format = {"type": "json_object"}
+                        diagnostics.append(
+                            f"attempt {attempt}: semantic plan schema rejected; "
+                            "retrying as json_object"
+                        )
+                        continue
                     self._recover_generation(session_id)
                     raise
                 try:
                     parsed = json.loads(completion.content)
-                    blueprint = AgentBlueprint.from_dict(parsed)
+                    plan = AgentSemanticPlanV1.from_dict(parsed)
                 except (
                     json.JSONDecodeError,
                     TypeError,
                     ValueError,
                     ContractValidationError,
                 ) as exc:
-                    diagnostics.append(
-                        f"attempt {attempt}: invalid AgentBlueprint "
-                        f"({type(exc).__name__})"
-                    )
+                    diagnostics.append(_generation_failure(attempt, exc))
                     messages.append(completion.assistant_message)
                     messages.append(
                         {"role": "user", "content": _repair_prompt(diagnostics)}
                     )
+                    attempt += 1
                     continue
+                display, slug = agent_candidate_identity(plan.suggested_name)
+                self._set_state(
+                    session_id,
+                    "generating",
+                    identity={"name": display, "slug": slug},
+                    diagnostics=diagnostics,
+                )
+                stage(
+                    SEMANTIC_PLAN_COMPLETED,
+                    {
+                        "suggested_name": display,
+                        "suggested_slug": slug,
+                        "input_count": str(len(plan.inputs)),
+                        "output_count": str(len(plan.outputs)),
+                    },
+                )
+                stage(CAPABILITIES_STARTED)
+                compiled = compile_semantic_plan(
+                    plan, self._project_context(project_id)
+                )
+                if compiled.status == "clarification":
+                    self._set_state(
+                        session_id,
+                        "ready",
+                        ready=True,
+                        next_prompt=compiled.question or _READY_PROMPT,
+                        diagnostics=[],
+                        missing_capabilities=[],
+                        identity={"name": display, "slug": slug},
+                    )
+                    return self.get_session(project_id, session_id)
+                stage(
+                    CAPABILITIES_RESOLVED,
+                    {
+                        "tool_count": str(len(compiled.tools)),
+                        "knowledge_count": str(len(compiled.documents)),
+                        "missing_count": str(len(compiled.missing)),
+                        "extra_permission_count": str(
+                            len(compiled.blueprint.requested_permissions.tools)
+                            if compiled.blueprint is not None
+                            else 0
+                        ),
+                    },
+                )
+                if compiled.status == "missing_capability":
+                    self._set_state(
+                        session_id,
+                        "missing_capability",
+                        diagnostics=[],
+                        missing_capabilities=list(compiled.missing),
+                        resource_plan=[],
+                        identity={"name": display, "slug": slug},
+                    )
+                    return self.get_session(project_id, session_id)
+                blueprint = compiled.blueprint
+                assert blueprint is not None
                 missing = self._missing_capabilities(blueprint)
                 if missing:
                     self._set_state(
@@ -245,10 +344,14 @@ class FactoryService:
                         diagnostics=[],
                         missing_capabilities=missing,
                         resource_plan=resource_plan(blueprint, self.catalog),
+                        identity={"name": display, "slug": slug},
                     )
                     return self.get_session(project_id, session_id)
+                stage(COMPILE_STARTED)
+                stage(COMPILE_COMPLETED)
+                stage(VALIDATION_STARTED)
                 try:
-                    compile_blueprint(blueprint, self.catalog)
+                    compile_blueprint(blueprint, self.catalog, name=display, slug=slug)
                 except BlueprintCompileError as exc:
                     diagnostics.extend(
                         f"attempt {attempt}: {item}" for item in exc.diagnostics
@@ -257,19 +360,22 @@ class FactoryService:
                     messages.append(
                         {"role": "user", "content": _repair_prompt(diagnostics)}
                     )
+                    attempt += 1
                     continue
+                stage(VALIDATION_COMPLETED)
                 self._set_state(
                     session_id,
                     "review",
                     ready=True,
                     next_prompt=(
-                        "Review the Blueprint and Resource Plan. Apply it only "
-                        "when you explicitly confirm. Factory will not run it."
+                        "Review the compiled Blueprint and Resource Plan. Apply "
+                        "it only when you explicitly confirm. Factory will not run it."
                     ),
                     blueprint=blueprint.to_dict(),
                     diagnostics=[],
                     missing_capabilities=[],
                     resource_plan=resource_plan(blueprint, self.catalog),
+                    identity={"name": display, "slug": slug},
                 )
                 return self.get_session(project_id, session_id)
             self._set_state(
@@ -281,7 +387,7 @@ class FactoryService:
             )
             raise FactoryError(
                 "factory_generation_invalid",
-                "Factory could not produce a valid Blueprint after three attempts",
+                "Factory could not produce a valid Semantic Plan after three attempts",
             )
 
     def apply_draft(
@@ -323,9 +429,19 @@ class FactoryService:
                     "factory_missing_capability",
                     "The Blueprint references resources that are not available",
                 )
+            identity = _session_identity(session)
+            applied_name = (name or "").strip() or identity.get("name")
+            applied_slug = identity.get("slug")
             try:
                 source, _, _ = compile_blueprint(
-                    blueprint, self.catalog, name=name, description=description
+                    blueprint,
+                    self.catalog,
+                    name=applied_name,
+                    slug=applied_slug,
+                    description=description,
+                )
+                source = finalize_compiled_source(
+                    source, self._project_context(project_id)
                 )
             except BlueprintCompileError as exc:
                 raise FactoryError(
@@ -432,6 +548,16 @@ class FactoryService:
             return _missing_item(kind, reference, "resource is not selectable")
         return None
 
+    def _project_context(self, project_id: str) -> BuilderProjectContext:
+        listed = ProjectResourceService(self.projects, self.catalog).list(project_id)
+        summary = self.projects.project_summary(project_id)
+        return builder_project_context(
+            project_id=project_id,
+            knowledge=list(summary.get("knowledge") or []),
+            project_resources=list(listed.get("resources") or []),
+            catalog_resources=list(self.catalog.resources().get("resources") or []),
+        )
+
     def _run_availability(self, payload: dict[str, Any]) -> str:
         plan = payload.get("resource_plan")
         if isinstance(plan, list) and plan:
@@ -478,6 +604,26 @@ class FactoryService:
             )
 
 
+def _session_identity(row: Any) -> dict[str, str]:
+    try:
+        raw = row["identity_json"]
+    except (KeyError, IndexError):
+        raw = "{}"
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in parsed.items()
+        if isinstance(key, str) and value is not None and str(value).strip()
+    }
+
+
 def _missing_item(kind: str, reference: str, reason: str) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -497,10 +643,77 @@ def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _prepare_blueprint_payload(parsed: Any) -> Any:
+    """Fill only safe, contract-default verification keys omitted by MFJS $ref."""
+
+    if not isinstance(parsed, dict):
+        return parsed
+    payload = deepcopy(parsed)
+    verification = payload.get("verification")
+    if (
+        isinstance(verification, dict)
+        and "required" not in verification
+        and "checks" not in verification
+    ):
+        payload["verification"] = {"required": False, "checks": []}
+    return payload
+
+
+def _generation_failure(attempt: int, exc: BaseException) -> str:
+    detail = " ".join(str(exc).split())[:180]
+    name = type(exc).__name__
+    if detail:
+        return f"attempt {attempt}: invalid AgentSemanticPlan ({name}: {detail})"
+    return f"attempt {attempt}: invalid AgentSemanticPlan ({name})"
+
+
 def _repair_prompt(diagnostics: list[str]) -> str:
     return (
-        "Repair only the invalid Blueprint fields. Do not add capabilities or "
+        "Repair only the invalid AgentSemanticPlanV1 fields. Do not add resource "
+        "hashes, Knowledge UUIDs, node IDs, canvas positions, source.lock, or "
         "permissions. Diagnostics: " + "; ".join(diagnostics)
+    )
+
+
+def _schema_compatibility_failure(exc: FactoryProviderError) -> bool:
+    if exc.code != "factory_request_invalid":
+        return False
+    details = exc.details or {}
+    blob = " ".join(
+        [
+            str(exc),
+            str(details.get("rejected_field") or ""),
+            str(details.get("bounded_message") or ""),
+            str(details.get("provider_error_type") or ""),
+        ]
+    ).casefold()
+    return any(
+        hint in blob
+        for hint in (
+            "json_schema",
+            "flavored json schema",
+            "response_format",
+            "moonshot flavored",
+            "mfjs",
+        )
+    )
+
+
+def _plan_response_format(profile: ProviderCapabilityProfile) -> dict[str, Any]:
+    return structured_response_format(
+        profile,
+        name="agent_semantic_plan",
+        schema=_plan_schema(),
+    )
+
+
+def _blueprint_response_format(profile: ProviderCapabilityProfile) -> dict[str, Any]:
+    """Compatibility bridge: project a full AgentBlueprint schema for MFJS probes."""
+
+    return structured_response_format(
+        profile,
+        name="agent_blueprint",
+        schema=_generation_schema(),
     )
 
 
@@ -513,7 +726,39 @@ def _generation_schema() -> dict[str, Any]:
         "skill_refs",
         "policy_refs",
     ]
+    schema["$defs"]["typed_fields"]["description"] = (
+        "Non-empty map from slug keys to type names. Keys must match "
+        "[a-z][a-z0-9-]{0,62} and use hyphens, not underscores. Values are "
+        "type names such as string."
+    )
+    schema["$defs"]["verification"]["description"] = (
+        "Always include required as a boolean and checks as an array of "
+        "strings. If required is true, checks must contain at least one item."
+    )
     return schema
+
+
+def _plan_schema() -> dict[str, Any]:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        path = parent / "contracts" / "schemas" / "agent-semantic-plan.schema.json"
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise FactoryError(
+                    "factory_schema_unavailable",
+                    "The AgentSemanticPlan schema is unavailable",
+                ) from exc
+            if not isinstance(loaded, dict):
+                raise FactoryError(
+                    "factory_schema_unavailable",
+                    "The AgentSemanticPlan schema is unavailable",
+                )
+            return loaded
+    raise FactoryError(
+        "factory_schema_unavailable", "The AgentSemanticPlan schema is unavailable"
+    )
 
 
 def _blueprint_schema() -> dict[str, Any]:

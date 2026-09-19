@@ -5,7 +5,7 @@ import { useChatScopeNavigation, type ChatTarget } from "../features/agents/chat
 import { ProjectBuilderConversation } from "../features/builder/ProjectBuilderConversation";
 import { useProjectWorkspace } from "../api/project-workspace";
 
-export function NewChatPage({ projectId }: { projectId?: string } = {}) {
+export function NewChatPage({ projectId, conversationId }: { projectId?: string; conversationId?: string } = {}) {
   const { locale } = useLocale();
   const { api, projects, upsertProject } = useProjectWorkspace();
   const { select, createProject, start } = useChatScopeNavigation();
@@ -45,9 +45,10 @@ export function NewChatPage({ projectId }: { projectId?: string } = {}) {
   if (projectId && scopedProject) {
     return (
       <ProjectBuilderConversation
-        key={scopedProject.project_id}
+        key={`${scopedProject.project_id}:${conversationId ?? "new"}`}
         project={scopedProject}
         locale={locale}
+        conversationId={conversationId}
         scope={{
           current,
           projects,

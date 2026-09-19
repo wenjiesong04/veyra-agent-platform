@@ -35,6 +35,17 @@ describe("LocalApiClient Project requests", () => {
     await expect(client.validate("project-1", "agent-1")).resolves.toMatchObject(payload);
   });
 
+  it("accepts a structurally parsed validation failure as a business result", async () => {
+    const payload = { schema_version: "1.0", valid: false, source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file", runtime_ready: false, runtime_ready_scope: "agent_dependencies", dependency_summary: { total: 0, ready: 0, attention: 0 }, dependencies: [] };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(payload)) });
+    await expect(client.validate("project-1", "agent-1")).resolves.toMatchObject(payload);
+  });
+
+  it("still treats a corrupted validation envelope as invalid_response", async () => {
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response({ schema_version: "1.0", valid: "false", source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file" })) });
+    await expect(client.validate("project-1", "agent-1")).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
   it("lists and validates real Project summaries", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", projects: [summary({ agents: [{ agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "", pinned: false, source_path: "agents/reviewer/agent.vagent.yaml", source_file_hash: "file-hash" }], agent_count: 1 })] }));
     const client = new LocalApiClient({ fetcher });
@@ -409,6 +420,17 @@ describe("LocalApiClient Project requests", () => {
       .mockResolvedValueOnce(response({
         schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
         model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
+        capability_profile: {
+          schema_version: "1.0",
+          provider_family: "moonshot",
+          structured_output: "json_schema",
+          schema_flavor: "moonshot_mfjs",
+          strict_json_schema: true,
+          json_object_fallback: true,
+          reasoning_effort: true,
+          source: "host_defaults",
+          probed: false,
+        },
       }))
       .mockResolvedValueOnce(response({
         schema_version: "1.0",
@@ -417,7 +439,17 @@ describe("LocalApiClient Project requests", () => {
       }));
     const client = new LocalApiClient({ fetcher });
 
-    await expect(client.factoryStatus()).resolves.toMatchObject({ model_id: "kimi-k3", executes_drafts: false, configured: true });
+    await expect(client.factoryStatus()).resolves.toMatchObject({
+      model_id: "kimi-k3",
+      executes_drafts: false,
+      configured: true,
+      capability_profile: {
+        provider_family: "moonshot",
+        structured_output: "json_schema",
+        schema_flavor: "moonshot_mfjs",
+        probed: false,
+      },
+    });
     await expect(client.applyFactoryDraft("project-1", "session-1", { confirm: true })).resolves.toMatchObject({
       session: { state: "completed", executes_drafts: false },
       agent: { agent_id: "agent-1" },
@@ -425,6 +457,220 @@ describe("LocalApiClient Project requests", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/factory/status");
     expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/factory/sessions/session-1/apply-draft");
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ confirm: true });
+  });
+
+  it("rejects Factory status without a host capability profile", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
+      model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.factoryStatus()).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  it("rejects an inconsistent Moonshot capability profile", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
+      model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
+      capability_profile: {
+        schema_version: "1.0",
+        provider_family: "moonshot",
+        structured_output: "json_object",
+        schema_flavor: "none",
+        strict_json_schema: false,
+        json_object_fallback: false,
+        reasoning_effort: false,
+        source: "host_defaults",
+        probed: false,
+      },
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.factoryStatus()).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  it("parses an OpenAI-compatible Factory capability profile", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0", configured: true, model_id: "gpt-test", model_base_url: "https://llm.example.test/v1",
+      model_api_key_env: "EXAMPLE_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
+      capability_profile: {
+        schema_version: "1.0",
+        provider_family: "openai_compatible",
+        structured_output: "json_object",
+        schema_flavor: "none",
+        strict_json_schema: false,
+        json_object_fallback: false,
+        reasoning_effort: false,
+        source: "host_defaults",
+        probed: false,
+      },
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.factoryStatus()).resolves.toMatchObject({
+      model_id: "gpt-test",
+      capability_profile: {
+        provider_family: "openai_compatible",
+        structured_output: "json_object",
+        schema_flavor: "none",
+        probed: false,
+      },
+    });
+  });
+
+  it("posts Builder turns without treating client history as canonical truth", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "Wrap a gift",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        last_activity_at: "2026-09-18T00:00:01Z",
+        last_operation_status: "failed",
+      },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Wrap a gift", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+      ],
+      operations: [
+        { operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_request_invalid", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true },
+      ],
+      resolution: null,
+      factory_session: null,
+    };
+    const fetcher = vi.fn().mockResolvedValue(response(snapshot));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.submitBuilderTurn("project-1", { content: "Wrap a gift", focus: null, locale: "en" })).resolves.toMatchObject({
+      conversation: { conversation_id: "conv-1" },
+      operations: [{ status: "failed" }],
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/builder/turns");
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ content: "Wrap a gift", focus: null, locale: "en" });
+  });
+
+  it("keeps Builder conversation messages when Factory missing-capability payload is invalid", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "Wrap a gift",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        last_activity_at: "2026-09-18T00:00:01Z",
+        last_operation_status: "failed",
+      },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Wrap a gift", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+      ],
+      operations: [
+        { operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_missing_capability", proposal_id: null, run_id: null, factory_session_id: "session-1", created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true },
+      ],
+      resolution: null,
+      factory_session: {
+        schema_version: "1.0",
+        session_id: "session-1",
+        project_id: "project-1",
+        state: "missing_capability",
+        ready: true,
+        next_prompt: "",
+        resource_plan: [],
+        blueprint: null,
+        diagnostics: [],
+        missing_capabilities: [{
+          kind: "tool",
+          reference: "veyra.tool.filesystem.read",
+          reason: "Tool is not bound to this Project",
+          proposal: { action: "missing_capability", executable: false },
+        }],
+        run_availability: "unavailable",
+        executes_drafts: false,
+        revision: 1,
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        messages: [],
+      },
+    };
+    const fetcher = vi.fn().mockResolvedValue(response(snapshot));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.submitBuilderTurn("project-1", { content: "Wrap a gift", focus: null, locale: "en" })).resolves.toMatchObject({
+      conversation: { conversation_id: "conv-1" },
+      messages: [{ kind: "user", content: "Wrap a gift" }],
+      factory_session: { state: "missing_capability" },
+    });
+  });
+
+  it("keeps Builder conversation messages when a missing-capability proposal is executable", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "Wrap a gift",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        last_activity_at: "2026-09-18T00:00:01Z",
+        last_operation_status: "failed",
+      },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Wrap a gift", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+      ],
+      operations: [
+        { operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_missing_capability", proposal_id: null, run_id: null, factory_session_id: "session-1", created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true },
+      ],
+      resolution: null,
+      factory_session: {
+        schema_version: "1.0",
+        session_id: "session-1",
+        project_id: "project-1",
+        state: "missing_capability",
+        ready: true,
+        next_prompt: "",
+        resource_plan: [],
+        blueprint: null,
+        diagnostics: [],
+        missing_capabilities: [{
+          kind: "tool",
+          reference: "veyra.tool.filesystem.read",
+          reason: "Tool is not bound to this Project",
+          proposal: { action: "quarantined_resource_draft", executable: true },
+        }],
+        run_availability: "unavailable",
+        executes_drafts: false,
+        revision: 1,
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        messages: [],
+      },
+    };
+    const fetcher = vi.fn().mockResolvedValue(response(snapshot));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.submitBuilderTurn("project-1", { content: "Wrap a gift", focus: null, locale: "en" })).resolves.toMatchObject({
+      conversation: { conversation_id: "conv-1" },
+      messages: [{ kind: "user", content: "Wrap a gift" }],
+      factory_session: null,
+    });
+  });
+
+  it("drops Runtime runs from Builder Recent activity", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0",
+      project_id: "dddd",
+      items: [
+        { kind: "conversation", id: "conv-1", conversation_id: "conv-1", title: "礼物包装 Agent", status: "failed", operation_kind: "create_agent", occurred_at: "2026-09-18T00:00:01Z" },
+        { kind: "run", id: "run-1", run_id: "run-1", title: "translation", status: "unverified", run_kind: "agent", occurred_at: "2026-09-12T00:00:00Z", agent_id: "agent-1" },
+      ],
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.listBuilderActivity("dddd")).resolves.toEqual({
+      schema_version: "1.0",
+      project_id: "dddd",
+      items: [
+        { kind: "conversation", id: "conv-1", conversation_id: "conv-1", title: "礼物包装 Agent", status: "failed", operation_kind: "create_agent", occurred_at: "2026-09-18T00:00:01Z" },
+      ],
+    });
   });
 
   it("parses Runtime status without treating a host key as a user-owned Agent secret", async () => {

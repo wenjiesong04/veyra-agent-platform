@@ -5,6 +5,7 @@ import pytest
 from veyra_agent_platform.contracts.agent import AgentBlueprint
 from veyra_agent_platform.local.factory.compiler import (
     BlueprintCompileError,
+    agent_candidate_identity,
     compile_blueprint,
 )
 from veyra_agent_platform.local.resources import ResourceCatalog
@@ -164,3 +165,26 @@ def test_compile_accepts_supported_github_tool() -> None:
     assert source.secret_refs == ("github.main",)
     assert "veyra.tool.github.read@1.0.0" in source.lock
     assert any(item["reference"] == "veyra.tool.github.read@1.0.0" for item in plan)
+
+
+def test_compile_uses_suggested_name_instead_of_generated_agent() -> None:
+    source, _, _ = compile_blueprint(
+        AgentBlueprint.from_dict(_blueprint()),
+        ResourceCatalog(),
+        name="礼物包装顾问",
+    )
+    assert source.name == "礼物包装顾问"
+    assert source.slug.startswith("agent-")
+    assert source.slug != "generated-agent"
+
+
+def test_agent_candidate_identity_keeps_latin_slug_and_hashes_cjk() -> None:
+    name, slug = agent_candidate_identity("Gift Wrapping Advisor")
+    assert name == "Gift Wrapping Advisor"
+    assert slug == "gift-wrapping-advisor"
+    display, hashed = agent_candidate_identity("礼物包装顾问")
+    assert display == "礼物包装顾问"
+    assert hashed.startswith("agent-")
+    fallback_name, fallback_slug = agent_candidate_identity(None)
+    assert fallback_name == "Generated Agent"
+    assert fallback_slug == "generated-agent"

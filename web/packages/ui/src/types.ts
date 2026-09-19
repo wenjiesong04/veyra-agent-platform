@@ -33,6 +33,8 @@ export type NavigationItem = {
   contextual?: boolean;
   tone?: NavigationTone;
   resourceKind?: NavigationResourceKind;
+  detail?: string;
+  meta?: string;
   onClick?: () => void;
   trailingAction?: ReactNode;
   leadingAction?: ReactNode;

@@ -112,6 +112,10 @@ function shellText(value: string, translate: (key: string, fallback?: string) =>
   return translate(shellLabelKeys[value] ?? "", value);
 }
 
+function navigationItemAriaLabel(item: NavigationItem, label: string): string {
+  return [label, item.detail, item.meta].filter(Boolean).join(". ");
+}
+
 function isNavigationItemActive(item: NavigationItem, activeHref: string): boolean {
   return item.active !== undefined ? item.active : item.href === activeHref;
 }
@@ -158,6 +162,17 @@ function NavLinkLabel({ text }: { text: string }) {
   return <span ref={ref} onMouseEnter={onMouseEnter}>{text}</span>;
 }
 
+function NavLinkCopy({ item, label }: { item: NavigationItem; label: string }) {
+  if (!item.detail && !item.meta) return <NavLinkLabel text={label} />;
+  return (
+    <span className="sidebar-nav-copy">
+      <strong>{label}</strong>
+      {item.detail ? <small>{item.detail}</small> : null}
+      {item.meta ? <small>{item.meta}</small> : null}
+    </span>
+  );
+}
+
 function renderSidebarChildren(
   items: NavigationItem[],
   activeHref: string,
@@ -172,7 +187,7 @@ function renderSidebarChildren(
     return (
       <div className={navigationRowClassName(child, "sidebar-nav-child")} key={`${child.href}-${childLabel}`}>
         <div className={navigationRowClassName(child, `sidebar-nav-child-row ${child.trailingAction ? "has-action" : ""}`)}>
-          <a className={navigationLinkClassName(child, childActive, childContextual)} href={child.href} aria-label={childLabel} title={collapsed ? childLabel : undefined} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><NavigationGlyph item={child} size={16} /><NavLinkLabel text={childLabel} /></a>
+          <a className={navigationLinkClassName(child, childActive, childContextual)} href={child.href} aria-label={navigationItemAriaLabel(child, childLabel)} title={collapsed ? navigationItemAriaLabel(child, childLabel) : undefined} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><NavigationGlyph item={child} size={16} /><NavLinkCopy item={child} label={childLabel} /></a>
           {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
         </div>
         {child.children && child.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(child.children, activeHref, closeMobile, translate, collapsed)}</div> : null}
@@ -403,7 +418,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
                 return <div className={navigationRowClassName(item, `sidebar-nav-item ${item.children ? "has-children" : ""}`)} key={`${item.href}-${label}`}>
                   <div className={navigationRowClassName(item, "sidebar-nav-item-row")}>
                     {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
-                    <a className={navigationLinkClassName(item, active, contextual)} href={item.href} aria-label={label} title={collapsed ? label : undefined} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><NavigationGlyph item={item} size={16} /><NavLinkLabel text={label} /></a>
+                    <a className={navigationLinkClassName(item, active, contextual)} href={item.href} aria-label={navigationItemAriaLabel(item, label)} title={collapsed ? navigationItemAriaLabel(item, label) : undefined} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><NavigationGlyph item={item} size={16} /><NavLinkCopy item={item} label={label} /></a>
                     {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
                   </div>
                   {item.children && item.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(item.children, activeHref, closeMobile, t, collapsed)}</div> : null}

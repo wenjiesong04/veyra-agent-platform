@@ -60,6 +60,7 @@ function session(overrides: Partial<FactorySession> = {}): FactorySession {
     },
     diagnostics: [],
     missing_capabilities: [],
+    candidate: null,
     run_availability: "requires_configuration",
     executes_drafts: false,
     revision: 2,
@@ -82,6 +83,17 @@ const status: FactoryStatus = {
   reasoning_effort: "high",
   repair_attempts: 3,
   executes_drafts: false,
+  capability_profile: {
+    schema_version: "1.0",
+    provider_family: "moonshot",
+    structured_output: "json_schema",
+    schema_flavor: "moonshot_mfjs",
+    strict_json_schema: true,
+    json_object_fallback: true,
+    reasoning_effort: true,
+    source: "host_defaults",
+    probed: false,
+  },
 };
 
 function apiFor(overrides: Partial<LocalProjectApi> = {}): LocalProjectApi {
@@ -139,6 +151,37 @@ afterEach(() => {
 });
 
 describe("FactoryConversation", () => {
+  it("shows the sent requirement immediately while creating the Factory session", async () => {
+    let finish!: (value: FactorySession) => void;
+    const api = apiFor({
+      createFactorySession: vi.fn().mockImplementation(() => new Promise((resolve) => { finish = resolve; })),
+    });
+    const user = userEvent.setup();
+    render(<ThemeProvider><FactoryConversation api={api} projectId="project-1" locale="en" /></ThemeProvider>);
+    await user.type(await screen.findByRole("textbox", { name: "Message" }), "Write a research brief");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByText("Write a research brief")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
+    expect(document.querySelector(".agent-conversation.is-empty")).not.toBeInTheDocument();
+    finish(session({ state: "ready", blueprint: null, resource_plan: [] }));
+    expect(await screen.findByLabelText("Workbench")).toBeInTheDocument();
+    expect(screen.getByRole("separator", { name: "Resize canvas" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse canvas" })).toBeInTheDocument();
+  });
+
+  it("labels the waiting state as 正在思考 in Chinese", async () => {
+    const api = apiFor({
+      createFactorySession: vi.fn().mockImplementation(() => new Promise(() => {})),
+    });
+    const user = userEvent.setup();
+    render(<ThemeProvider><FactoryConversation api={api} projectId="project-1" locale="zh" /></ThemeProvider>);
+    await user.type(await screen.findByRole("textbox", { name: "消息" }), "写一份研究简报");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(screen.getByText("写一份研究简报")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在思考…");
+  });
+
   it("collects a requirement, generates a Blueprint, and creates a Draft without running", async () => {
     const api = apiFor();
     const user = userEvent.setup();
@@ -148,7 +191,8 @@ describe("FactoryConversation", () => {
     await user.type(screen.getByRole("textbox"), "Write a research brief");
     await user.click(screen.getByRole("button", { name: "Send" }));
     expect(api.createFactorySession).toHaveBeenCalledWith("project-1", { goal: "Write a research brief" });
-    expect(await screen.findByLabelText("Assembly canvas")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Workbench")).toBeInTheDocument();
+    expect(screen.getByRole("separator", { name: "Resize canvas" })).toBeInTheDocument();
 
     await user.click(await screen.findByRole("button", { name: "Generate Blueprint" }));
     expect(api.generateFactoryBlueprint).toHaveBeenCalledWith("project-1", "session-1");

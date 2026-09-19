@@ -27,6 +27,8 @@ from .api.runtime import build_router as build_runtime_router
 from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
 from .api.workflows import build_router as build_workflow_router
+from .builder.conversation_service import BuilderConversationService
+from .builder.conversation_store import BuilderConversationStore
 from .builder.resolution import BuilderResolutionService
 from .config import LocalSettings
 from .factory import FactoryService, FactorySettings, KimiClient
@@ -143,15 +145,6 @@ def create_app(
                 secret_store=resolved_secret_store,
             ),
         )
-        application.state.edit_proposals = EditProposalService(
-            EditProposalStore(repository),
-            application.state.library,
-            catalog,
-            application.state.factory.client,
-        )
-        application.state.builder = BuilderResolutionService(
-            application.state.edit_proposals
-        )
         mcp = McpService(
             McpServerStore(database_path),
             overlay_root,
@@ -186,6 +179,23 @@ def create_app(
         )
         application.state.resource_readiness = (
             application.state.runtime.resource_readiness
+        )
+        application.state.edit_proposals = EditProposalService(
+            EditProposalStore(repository),
+            application.state.library,
+            catalog,
+            application.state.factory.client,
+            project_resources=application.state.project_resources,
+            resource_readiness=application.state.resource_readiness,
+        )
+        application.state.builder = BuilderResolutionService(
+            application.state.edit_proposals
+        )
+        application.state.builder_conversations = BuilderConversationService(
+            BuilderConversationStore(repository),
+            projects,
+            application.state.builder,
+            application.state.factory,
         )
         application.state.orchestrator = OrchestratorService(
             OrchestratorStore(database_path),

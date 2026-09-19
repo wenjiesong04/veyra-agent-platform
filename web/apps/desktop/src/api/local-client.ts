@@ -3,8 +3,27 @@ import {
   LOCAL_API_SCHEMA_VERSION,
   type AgentSource,
   type CreateEditProposalRequest,
+  type CreateKnowledgeBindingRequest,
+  type CreateResourceBindingRequest,
+  type CreateValidationRepairRequest,
+  type KnowledgeBindingPlan,
+  type ResourceBindingPlan,
+  type ValidationRepairPlan,
   type BuilderResolveRequest,
   type BuilderResolution,
+  type BuilderTurnRequest,
+  type BuilderConversationSnapshot,
+  type BuilderConversationRecordRequest,
+  type BuilderActivityResponse,
+  type BuilderConversationMessage,
+  type BuilderConversationOperation,
+  type BuilderConversationSummary,
+  type BuilderMessageKind,
+  type BuilderOperationEvent,
+  type BuilderOperationEventKind,
+  type BuilderOperationStatus,
+  type BuilderTargetKind,
+  type BuilderActivityItem,
   type EditProposal,
   type EditProposalChange,
   type EditProposalCommand,
@@ -39,6 +58,7 @@ import {
   type FactorySession,
   type FactorySessionState,
   type FactoryStatus,
+  type ProviderCapabilityProfile,
   type RuntimeStatus,
   type SecretStatus,
   type RuntimeApiProfileInput,
@@ -225,7 +245,14 @@ export type LocalProjectApi = {
   getAgentRuntimeProfile?(projectId: string, agentId: string): Promise<RuntimeProfileResponse>;
   setAgentRuntimeProfile?(projectId: string, agentId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
   resolveBuilderIntent?(projectId: string, input: BuilderResolveRequest): Promise<BuilderResolution>;
+  submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void }): Promise<BuilderConversationSnapshot>;
+  getBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot>;
+  recordBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRecordRequest): Promise<BuilderConversationSnapshot>;
+  listBuilderActivity?(projectId: string, limit?: number): Promise<BuilderActivityResponse>;
   createEditProposal?(projectId: string, input: CreateEditProposalRequest): Promise<EditProposal>;
+  createKnowledgeBindingProposal?(projectId: string, input: CreateKnowledgeBindingRequest): Promise<EditProposal>;
+  createResourceBindingProposal?(projectId: string, input: CreateResourceBindingRequest): Promise<EditProposal>;
+  createValidationRepairProposal?(projectId: string, input: CreateValidationRepairRequest): Promise<EditProposal>;
   listEditProposals?(projectId: string, kind: EditTargetKind, targetId: string): Promise<ListEditProposalsResponse>;
   commandEditProposal?(projectId: string, proposalId: string, input: { command: EditProposalCommand; confirm: boolean }): Promise<EditProposal>;
   createFactorySession?(projectId: string, input?: { goal?: string }): Promise<FactorySession>;
@@ -797,12 +824,7 @@ function validated(value: unknown, status = 502): ValidateResponse {
 
 function sourceValidation(value: unknown, status = 502): Omit<ValidateResponse, "file_hash"> {
   const record = schemaRecord(value, status);
-  if (record.valid !== true) {
-    throw new LocalApiClientError("The local service returned an invalid validation result.", {
-      status,
-      code: "invalid_response",
-    });
-  }
+  const valid = asBoolean(record.valid, "validation.valid", status);
   const dependencies = record.dependencies === undefined
     ? undefined
     : asArray(record.dependencies, "validation.dependencies", status).map((item) => validationDependency(item, status));
@@ -817,7 +839,7 @@ function sourceValidation(value: unknown, status = 502): Omit<ValidateResponse, 
   }
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
-    valid: true,
+    valid,
     source_hash: asString(record.source_hash, "source_hash", status),
     behavior_hash: asString(record.behavior_hash, "behavior_hash", status),
     lock_hash: asString(record.lock_hash, "lock_hash", status),
@@ -840,6 +862,270 @@ function builderResolution(value: unknown, status = 502): BuilderResolution {
   });
   if (record.status === "resolved" && record.intent === "edit" && (targets.length !== 1 || targets[0].revision === undefined)) throw new LocalApiClientError("Missing Builder edit baseline", { status, code: "invalid_response" });
   return { schema_version: LOCAL_API_SCHEMA_VERSION, intent: record.intent as BuilderResolution["intent"], create_kind: record.create_kind as BuilderResolution["create_kind"], status: record.status as BuilderResolution["status"], message: asString(record.message, "message", status), instruction: asText(record.instruction, "instruction", status), plan: asArray(record.plan, "plan", status).map((item) => asString(item, "plan item", status)), targets };
+}
+
+const builderMessageKinds = new Set<BuilderMessageKind>(["user", "assistant", "plan", "clarification", "failure", "proposal_reference", "reject", "confirm", "apply_summary", "validation_summary", "result"]);
+const builderOperationStatuses = new Set<BuilderOperationStatus>(["in_progress", "waiting", "succeeded", "failed", "rejected"]);
+const builderEventKinds = new Set<BuilderOperationEventKind>([
+  "builder.operation.started",
+  "builder.intent.started",
+  "builder.intent.resolved",
+  "builder.semantic_plan.started",
+  "builder.semantic_plan.completed",
+  "builder.capabilities.started",
+  "builder.capabilities.resolved",
+  "builder.compile.started",
+  "builder.compile.completed",
+  "builder.validation.started",
+  "builder.validation.completed",
+  "builder.proposal.ready",
+  "builder.proposal.confirmed",
+  "builder.proposal.rejected",
+  "builder.apply.started",
+  "builder.apply.completed",
+  "builder.operation.completed",
+  "builder.operation.failed",
+]);
+
+function optionalId(value: unknown, field: string, status: number): string | null {
+  if (value === null || value === undefined) return null;
+  return asString(value, field, status);
+}
+
+function stringFacts(value: unknown, field: string, status: number): Record<string, string> {
+  const record = asRecord(value, status);
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, asText(item, `${field}.${key}`, status)]));
+}
+
+function builderConversationMessage(value: unknown, status: number): BuilderConversationMessage {
+  const record = asRecord(value, status);
+  const kind = asString(record.kind, "builder.message.kind", status) as BuilderMessageKind;
+  const role = asString(record.role, "builder.message.role", status);
+  if (!builderMessageKinds.has(kind) || (role !== "user" && role !== "assistant" && role !== "system")) {
+    throw new LocalApiClientError("Invalid Builder conversation message", { status, code: "invalid_response" });
+  }
+  return {
+    message_id: asString(record.message_id, "builder.message_id", status),
+    conversation_id: asString(record.conversation_id, "builder.conversation_id", status),
+    sequence: asNumber(record.sequence, "builder.sequence", status),
+    role,
+    kind,
+    content: asText(record.content, "builder.content", status),
+    operation_id: optionalId(record.operation_id, "builder.operation_id", status),
+    payload: stringFacts(record.payload, "builder.payload", status),
+    created_at: asString(record.created_at, "builder.created_at", status),
+  };
+}
+
+function builderOperationEvent(value: unknown, status: number): BuilderOperationEvent {
+  const record = asRecord(value, status);
+  const kind = asString(record.kind, "builder.event.kind", status) as BuilderOperationEventKind;
+  if (!builderEventKinds.has(kind)) {
+    throw new LocalApiClientError("Invalid Builder operation event", { status, code: "invalid_response" });
+  }
+  return {
+    event_id: asString(record.event_id, "builder.event_id", status),
+    operation_id: asString(record.operation_id, "builder.event.operation_id", status),
+    sequence: asNumber(record.sequence, "builder.event.sequence", status),
+    kind,
+    label: asText(record.label, "builder.event.label", status),
+    summary: asText(record.summary, "builder.event.summary", status),
+    facts: stringFacts(record.facts, "builder.event.facts", status),
+    created_at: asString(record.created_at, "builder.event.created_at", status),
+  };
+}
+
+function builderConversationOperation(value: unknown, status: number): BuilderConversationOperation {
+  const record = asRecord(value, status);
+  const opStatus = asString(record.status, "builder.operation.status", status) as BuilderOperationStatus;
+  if (!builderOperationStatuses.has(opStatus)) throw new LocalApiClientError("Invalid Builder operation", { status, code: "invalid_response" });
+  const targetKind = record.target_kind;
+  let target: BuilderTargetKind | null = null;
+  if (targetKind !== null && targetKind !== undefined && targetKind !== "") {
+    if (targetKind !== "agent" && targetKind !== "workflow") {
+      throw new LocalApiClientError("Invalid Builder operation target", { status, code: "invalid_response" });
+    }
+    target = targetKind;
+  }
+  return {
+    operation_id: asString(record.operation_id, "builder.operation_id", status),
+    conversation_id: asString(record.conversation_id, "builder.conversation_id", status),
+    kind: asString(record.kind, "builder.operation.kind", status),
+    target_kind: target,
+    status: opStatus,
+    retry_of: optionalId(record.retry_of, "builder.retry_of", status),
+    error_code: optionalId(record.error_code, "builder.error_code", status),
+    proposal_id: optionalId(record.proposal_id, "builder.proposal_id", status),
+    run_id: optionalId(record.run_id, "builder.run_id", status),
+    factory_session_id: optionalId(record.factory_session_id, "builder.factory_session_id", status),
+    created_at: asString(record.created_at, "builder.operation.created_at", status),
+    updated_at: asString(record.updated_at, "builder.operation.updated_at", status),
+    diagnostic: stringFacts(record.diagnostic, "builder.diagnostic", status),
+    has_request: asBoolean(record.has_request, "builder.has_request", status),
+    events: asArray(record.events ?? [], "builder.operation.events", status).map((item) => builderOperationEvent(item, status)),
+  };
+}
+
+function builderConversationSummary(value: unknown, status: number): BuilderConversationSummary {
+  const record = asRecord(value, status);
+  const last = record.last_operation_status;
+  if (last !== null && last !== undefined && !builderOperationStatuses.has(last as BuilderOperationStatus)) {
+    throw new LocalApiClientError("Invalid Builder conversation status", { status, code: "invalid_response" });
+  }
+  return {
+    conversation_id: asString(record.conversation_id, "builder.conversation_id", status),
+    project_id: asString(record.project_id, "builder.project_id", status),
+    title: asText(record.title, "builder.title", status),
+    status: asString(record.status, "builder.status", status),
+    created_at: asString(record.created_at, "builder.created_at", status),
+    updated_at: asString(record.updated_at, "builder.updated_at", status),
+    last_activity_at: asString(record.last_activity_at, "builder.last_activity_at", status),
+    last_operation_status: last === null || last === undefined ? null : last as BuilderOperationStatus,
+  };
+}
+
+function builderConversationSnapshot(value: unknown, status = 502): BuilderConversationSnapshot {
+  const record = schemaRecord(value, status);
+  let factorySessionValue: FactorySession | null = null;
+  if (record.factory_session !== null && record.factory_session !== undefined) {
+    try {
+      factorySessionValue = factorySession(record.factory_session, status);
+    } catch (cause) {
+      if (!(cause instanceof LocalApiClientError) || cause.code !== "invalid_response") throw cause;
+    }
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    conversation: builderConversationSummary(record.conversation, status),
+    messages: asArray(record.messages, "builder.messages", status).map((item) => builderConversationMessage(item, status)),
+    operations: asArray(record.operations, "builder.operations", status).map((item) => builderConversationOperation(item, status)),
+    resolution: record.resolution === null || record.resolution === undefined ? null : builderResolution(record.resolution, status),
+    factory_session: factorySessionValue,
+  };
+}
+
+function builderActivityItem(value: unknown, status: number): BuilderActivityItem | null {
+  const record = asRecord(value, status);
+  if (record.kind === "run") return null;
+  if (record.kind !== "conversation") {
+    throw new LocalApiClientError("Invalid Builder activity item", { status, code: "invalid_response" });
+  }
+  return {
+    kind: "conversation",
+    id: asString(record.id, "activity.id", status),
+    conversation_id: asString(record.conversation_id, "activity.conversation_id", status),
+    title: asText(record.title, "activity.title", status),
+    status: asString(record.status, "activity.status", status),
+    operation_kind: asString(record.operation_kind, "activity.operation_kind", status),
+    occurred_at: asString(record.occurred_at, "activity.occurred_at", status),
+  };
+}
+
+function builderActivityResponse(value: unknown, status = 502): BuilderActivityResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "activity.project_id", status),
+    items: asArray(record.items, "activity.items", status).flatMap((item) => {
+      const parsed = builderActivityItem(item, status);
+      return parsed ? [parsed] : [];
+    }),
+  };
+}
+
+function knowledgeBindingPlan(value: unknown, status: number): KnowledgeBindingPlan {
+  const record = asRecord(value, status);
+  const indexStatus = record.index_status;
+  const action = record.required_action;
+  if (!["not_indexed", "indexed", "stale", "failed"].includes(String(indexStatus))
+    || typeof record.runnable !== "boolean"
+    || record.runnable !== (indexStatus === "indexed")
+    || !(action === null || action === "build_index" || action === "rebuild_index")) {
+    throw new LocalApiClientError("The local service returned an invalid Knowledge binding plan.", { status, code: "invalid_response" });
+  }
+  return {
+    reference: asString(record.reference, "knowledge_binding.reference", status),
+    name: asText(record.name, "knowledge_binding.name", status),
+    source_file_hash: asString(record.source_file_hash, "knowledge_binding.source_file_hash", status),
+    index_status: indexStatus as KnowledgeProcessing["index_status"],
+    ...(record.chunk_count === undefined || record.chunk_count === null ? {} : { chunk_count: asNumber(record.chunk_count, "knowledge_binding.chunk_count", status) }),
+    failure_reason: record.failure_reason === null ? null : asString(record.failure_reason, "knowledge_binding.failure_reason", status),
+    runnable: record.runnable,
+    required_action: action,
+  };
+}
+
+function resourceBindingPlan(value: unknown, status: number): ResourceBindingPlan {
+  const record = asRecord(value, status);
+  const bindingStatus = record.binding_status;
+  const readiness = record.readiness;
+  const availability = record.availability;
+  const runtimeStatus = record.runtime_status;
+  const boundHash = asString(record.bound_content_hash, "resource_binding.bound_content_hash", status);
+  const catalogHash = asString(record.catalog_content_hash, "resource_binding.catalog_content_hash", status);
+  const hashPattern = /^[0-9a-f]{64}$/;
+  const validReadiness = new Set(["ready", "requires_configuration", "design_only", "unavailable", "quarantined", "unsupported", "stale"]);
+  const stale = bindingStatus === "stale";
+  if ((bindingStatus !== "current" && !stale)
+    || !validReadiness.has(String(readiness))
+    || !resourceAvailability.has(availability as ResourceAvailability)
+    || !resourceRuntimeStatuses.has(runtimeStatus as ResourceRuntimeStatus)
+    || !hashPattern.test(boundHash)
+    || !hashPattern.test(catalogHash)
+    || stale !== (boundHash !== catalogHash)
+    || stale !== (readiness === "stale")
+    || (readiness === "ready" && (stale || availability !== "ready" || runtimeStatus !== "supported"))
+    || record.project_resource_changed !== false
+    || record.automatic_upgrade !== false) {
+    throw new LocalApiClientError("The local service returned an invalid Resource binding plan.", { status, code: "invalid_response" });
+  }
+  return {
+    reference: asString(record.reference, "resource_binding.reference", status),
+    name: asText(record.name, "resource_binding.name", status),
+    bound_content_hash: boundHash,
+    catalog_content_hash: catalogHash,
+    binding_status: bindingStatus,
+    readiness: readiness as ResourceBindingPlan["readiness"],
+    availability: availability as ResourceAvailability,
+    runtime_status: runtimeStatus as ResourceRuntimeStatus,
+    required_permissions: resourcePermissions(record.required_permissions, status),
+    blocking_reasons: asArray(record.blocking_reasons, "resource_binding.blocking_reasons", status).map((value) => {
+      const reason = asRecord(value, status);
+      return { code: asString(reason.code, "blocking_reason.code", status), message: asString(reason.message, "blocking_reason.message", status) };
+    }),
+    project_resource_changed: false,
+    automatic_upgrade: false,
+  };
+}
+
+function validationRepairPlan(value: unknown, status: number): ValidationRepairPlan {
+  const record = asRecord(value, status);
+  if (record.repairable !== true || record.automatic_upgrade !== false || record.project_resource_changed !== false || record.target_kind !== "agent") {
+    throw new LocalApiClientError("The local service returned an invalid validation repair plan.", { status, code: "invalid_response" });
+  }
+  const hash = (field: "locked_hash" | "bound_content_hash" | "content_hash") => {
+    if (record[field] === undefined || record[field] === null) return {};
+    const digest = asString(record[field], `validation_repair.${field}`, status);
+    if (!/^[0-9a-f]{64}$/.test(digest)) {
+      throw new LocalApiClientError("The local service returned an invalid validation repair plan.", { status, code: "invalid_response" });
+    }
+    return { [field]: digest };
+  };
+  return {
+    code: asString(record.code, "validation_repair.code", status),
+    kind: asString(record.kind, "validation_repair.kind", status),
+    reference: asString(record.reference, "validation_repair.reference", status),
+    name: asText(record.name, "validation_repair.name", status),
+    repairable: true,
+    automatic_upgrade: false,
+    project_resource_changed: false,
+    ...hash("locked_hash"),
+    ...hash("bound_content_hash"),
+    ...hash("content_hash"),
+    ...(record.required_permissions === undefined ? {} : { required_permissions: resourcePermissions(record.required_permissions, status) }),
+    target_kind: "agent",
+    impact: asText(record.impact, "validation_repair.impact", status),
+  };
 }
 
 function editProposal(value: unknown, status = 502): EditProposal {
@@ -871,6 +1157,9 @@ function editProposal(value: unknown, status = 502): EditProposal {
     instruction: asString(record.instruction, "instruction", status), created_at: asString(record.created_at, "created_at", status),
     base_revision: asNumber(record.base_revision, "base_revision", status), base_etag: asString(record.base_etag, "base_etag", status),
     candidate_source: candidate, changes: changes(record.changes), permission_changes: changes(record.permission_changes),
+    ...(record.knowledge_binding === undefined ? {} : { knowledge_binding: knowledgeBindingPlan(record.knowledge_binding, status) }),
+    ...(record.resource_binding === undefined ? {} : { resource_binding: resourceBindingPlan(record.resource_binding, status) }),
+    ...(record.validation_repair === undefined ? {} : { validation_repair: validationRepairPlan(record.validation_repair, status) }),
     impact: { target_kind: kind, target_id: asString(impact.target_id, "impact.target_id", status), scope: "single_draft", immutable_versions_changed: false, runs_started: false },
     validation: { ...checks, ...(validation.agent_calls === undefined ? {} : { agent_calls: asArray(validation.agent_calls, "agent_calls", status).map((item) => {
       const call = asRecord(item, status);
@@ -1636,7 +1925,11 @@ function factoryPlanItem(value: unknown, status = 502): FactoryResourcePlanItem 
 function factoryMissing(value: unknown, status = 502): FactoryMissingCapability {
   const record = asRecord(value, status);
   const proposal = asRecord(record.proposal, status);
-  if (proposal.action !== "quarantined_resource_draft" || proposal.executable !== false) {
+  const action = asString(proposal.action, "factory.missing.proposal.action", status);
+  if (proposal.executable !== false) {
+    throw new LocalApiClientError("The local service returned an invalid missing-capability proposal.", { status, code: "invalid_response" });
+  }
+  if (action !== "quarantined_resource_draft" && action !== "missing_capability") {
     throw new LocalApiClientError("The local service returned an invalid missing-capability proposal.", { status, code: "invalid_response" });
   }
   return {
@@ -1645,6 +1938,15 @@ function factoryMissing(value: unknown, status = 502): FactoryMissingCapability 
     reason: asString(record.reason, "factory.missing.reason", status),
     proposal: { action: "quarantined_resource_draft", executable: false },
   };
+}
+
+function factoryCandidate(value: unknown, status: number): FactorySession["candidate"] {
+  if (value === null || value === undefined) return null;
+  const record = asRecord(value, status);
+  const name = asText(record.name, "factory.candidate.name", status).trim();
+  if (!name) return null;
+  const slug = record.slug === undefined || record.slug === null ? undefined : asText(record.slug, "factory.candidate.slug", status);
+  return slug ? { name, slug } : { name };
 }
 
 function factorySession(value: unknown, status = 502): FactorySession {
@@ -1665,6 +1967,7 @@ function factorySession(value: unknown, status = 502): FactorySession {
     blueprint: record.blueprint === null ? null : asJsonValue(asRecord(record.blueprint, status), "factory.blueprint", status) as JsonObject,
     diagnostics: asArray(record.diagnostics, "factory.diagnostics", status).map((item) => asString(item, "factory.diagnostic", status)),
     missing_capabilities: asArray(record.missing_capabilities, "factory.missing_capabilities", status).map((item) => factoryMissing(item, status)),
+    candidate: factoryCandidate(record.candidate, status),
     run_availability: runAvailability,
     executes_drafts: false,
     revision: asNumber(record.revision, "factory.revision", status),
@@ -1689,7 +1992,59 @@ function factoryStatus(value: unknown, status = 502): FactoryStatus {
     reasoning_effort: effort,
     repair_attempts: asNumber(record.repair_attempts, "factory.repair_attempts", status),
     executes_drafts: false,
+    capability_profile: providerCapabilityProfile(record.capability_profile, status),
   };
+}
+
+const providerFamilies = new Set<ProviderCapabilityProfile["provider_family"]>(["moonshot", "openai_compatible"]);
+const structuredOutputs = new Set<ProviderCapabilityProfile["structured_output"]>(["json_schema", "json_object"]);
+const schemaFlavors = new Set<ProviderCapabilityProfile["schema_flavor"]>(["moonshot_mfjs", "none"]);
+
+function providerCapabilityProfile(value: unknown, status = 502): ProviderCapabilityProfile {
+  const record = schemaRecord(value, status);
+  const family = asString(record.provider_family, "factory.capability_profile.provider_family", status);
+  const output = asString(record.structured_output, "factory.capability_profile.structured_output", status);
+  const flavor = asString(record.schema_flavor, "factory.capability_profile.schema_flavor", status);
+  const source = asString(record.source, "factory.capability_profile.source", status);
+  if (
+    !providerFamilies.has(family as ProviderCapabilityProfile["provider_family"])
+    || !structuredOutputs.has(output as ProviderCapabilityProfile["structured_output"])
+    || !schemaFlavors.has(flavor as ProviderCapabilityProfile["schema_flavor"])
+    || source !== "host_defaults"
+  ) {
+    throw new LocalApiClientError("The local service returned an invalid Factory capability profile.", { status, code: "invalid_response" });
+  }
+  const profile: ProviderCapabilityProfile = {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    provider_family: family as ProviderCapabilityProfile["provider_family"],
+    structured_output: output as ProviderCapabilityProfile["structured_output"],
+    schema_flavor: flavor as ProviderCapabilityProfile["schema_flavor"],
+    strict_json_schema: asBoolean(record.strict_json_schema, "factory.capability_profile.strict_json_schema", status),
+    json_object_fallback: asBoolean(record.json_object_fallback, "factory.capability_profile.json_object_fallback", status),
+    reasoning_effort: asBoolean(record.reasoning_effort, "factory.capability_profile.reasoning_effort", status),
+    source: "host_defaults",
+    probed: asBoolean(record.probed, "factory.capability_profile.probed", status),
+  };
+  if (profile.provider_family === "moonshot") {
+    if (
+      profile.structured_output !== "json_schema"
+      || profile.schema_flavor !== "moonshot_mfjs"
+      || profile.strict_json_schema !== true
+      || profile.json_object_fallback !== true
+      || profile.reasoning_effort !== true
+    ) {
+      throw new LocalApiClientError("The local service returned an inconsistent Moonshot capability profile.", { status, code: "invalid_response" });
+    }
+  } else if (
+    profile.structured_output !== "json_object"
+    || profile.schema_flavor !== "none"
+    || profile.strict_json_schema
+    || profile.json_object_fallback
+    || profile.reasoning_effort
+  ) {
+    throw new LocalApiClientError("The local service returned an inconsistent OpenAI-compatible capability profile.", { status, code: "invalid_response" });
+  }
+  return profile;
 }
 
 function runtimeStatus(value: unknown, status = 502): RuntimeStatus {
@@ -2076,6 +2431,58 @@ function errorEnvelope(value: unknown, status: number): LocalApiClientError {
     return new LocalApiClientError(detail, { status, code: "http_error" });
   }
   return fallbackHttpError(status);
+}
+
+function parseSseChunk(chunk: string): { event: string; data: unknown } | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of chunk.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return null;
+  }
+}
+
+async function readBuilderTurnStream(
+  response: Response,
+  onEvent?: (event: BuilderOperationEvent) => void,
+): Promise<BuilderConversationSnapshot> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new LocalApiClientError("The local service returned an incomplete Builder turn.", { status: 502, code: "invalid_response" });
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let snapshot: BuilderConversationSnapshot | undefined;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const parsed = parseSseChunk(part);
+      if (!parsed || typeof parsed.data !== "object" || parsed.data === null) continue;
+      if (parsed.event === "builder.event") {
+        onEvent?.(builderOperationEvent(parsed.data, 200));
+      } else if (parsed.event === "builder.snapshot") {
+        snapshot = builderConversationSnapshot(parsed.data, 200);
+      } else if (parsed.event === "builder.error") {
+        const record = parsed.data as Record<string, unknown>;
+        const status = typeof record.status === "number" ? record.status : 502;
+        throw errorEnvelope(parsed.data, status);
+      }
+    }
+  }
+  if (!snapshot) {
+    throw new LocalApiClientError("The local service returned an incomplete Builder turn.", { status: 502, code: "invalid_response" });
+  }
+  return snapshot;
 }
 
 export class LocalApiClient {
@@ -2613,8 +3020,48 @@ export class LocalApiClient {
     return this.request(`projects/${encodeURIComponent(projectId)}/builder/resolve`, builderResolution, { method: "POST", body: input });
   }
 
+  submitBuilderTurn(
+    projectId: string,
+    input: BuilderTurnRequest,
+    options: { onEvent?: (event: BuilderOperationEvent) => void } = {},
+  ): Promise<BuilderConversationSnapshot> {
+    return this.submitBuilderTurnStream(projectId, input, options.onEvent);
+  }
+
+  getBuilderConversation(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}`,
+      builderConversationSnapshot,
+    );
+  }
+
+  recordBuilderConversation(projectId: string, conversationId: string, input: BuilderConversationRecordRequest): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/records`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
+    );
+  }
+
+  listBuilderActivity(projectId: string, limit = 5): Promise<BuilderActivityResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    return this.request(`projects/${encodeURIComponent(projectId)}/builder/activity?${query}`, builderActivityResponse);
+  }
+
   createEditProposal(projectId: string, input: CreateEditProposalRequest): Promise<EditProposal> {
     return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals`, editProposal, { method: "POST", body: input });
+  }
+
+  createKnowledgeBindingProposal(projectId: string, input: CreateKnowledgeBindingRequest): Promise<EditProposal> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals/knowledge-binding`, editProposal, { method: "POST", body: input });
+  }
+
+  createResourceBindingProposal(projectId: string, input: CreateResourceBindingRequest): Promise<EditProposal> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals/resource-binding`, editProposal, { method: "POST", body: input });
+  }
+
+  createValidationRepairProposal(projectId: string, input: CreateValidationRepairRequest): Promise<EditProposal> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/edit-proposals/validation-repair`, editProposal, { method: "POST", body: input });
   }
 
   listEditProposals(projectId: string, kind: EditTargetKind, targetId: string): Promise<ListEditProposalsResponse> {
@@ -2889,6 +3336,38 @@ export class LocalApiClient {
       `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/export`,
       exported,
     );
+  }
+
+  private async submitBuilderTurnStream(
+    projectId: string,
+    input: BuilderTurnRequest,
+    onEvent?: (event: BuilderOperationEvent) => void,
+  ): Promise<BuilderConversationSnapshot> {
+    const path = `projects/${encodeURIComponent(projectId)}/builder/turns`;
+    let response: Response;
+    try {
+      response = await this.fetcher(apiUrl(this.baseUrl, path), {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream, application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+        credentials: "include",
+      });
+    } catch {
+      throw new LocalApiClientError(
+        "The local service is unavailable. Check that the desktop sidecar is running.",
+        { status: 0, code: "unavailable" },
+      );
+    }
+    const type = response.headers.get("content-type") ?? "";
+    if (type.includes("text/event-stream") && response.body) {
+      return readBuilderTurnStream(response, onEvent);
+    }
+    const payload = await response.json().catch(() => undefined);
+    if (!response.ok) throw errorEnvelope(payload, response.status);
+    return builderConversationSnapshot(payload, response.status);
   }
 
   private async request<T>(

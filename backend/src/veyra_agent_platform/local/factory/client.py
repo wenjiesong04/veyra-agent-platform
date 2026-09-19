@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -15,15 +17,30 @@ from veyra_agent_platform.local.secrets import (
     resolve_secret,
 )
 
+from .capability_profile import (
+    ProviderCapabilityProfile,
+    derive_provider_capability_profile,
+)
 from .config import FactorySettings
+
+logger = logging.getLogger(__name__)
+_REDACT = re.compile(r"(?i)(bearer\s+\S+|sk-[A-Za-z0-9._-]+|moonshot-[A-Za-z0-9._-]+)")
+_ERROR_PATH = re.compile(r"At path '([^']{1,200})'")
 
 
 class FactoryProviderError(RuntimeError):
     """A safe, user-visible provider failure without credentials or raw bodies."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 class FactoryProviderNotConfigured(FactoryProviderError):
@@ -110,9 +127,11 @@ class HttpKimiTransport:
         body: dict[str, Any] = {
             "model": self.settings.model_id,
             "messages": [dict(message) for message in messages],
-            "reasoning_effort": self.settings.reasoning_effort,
             "max_completion_tokens": self.settings.max_completion_tokens,
         }
+        profile = derive_provider_capability_profile(self.settings)
+        if profile.reasoning_effort:
+            body["reasoning_effort"] = self.settings.reasoning_effort
         if response_format is not None:
             body["response_format"] = dict(response_format)
         try:
@@ -195,6 +214,9 @@ class KimiClient:
             )
         return self._http
 
+    def capability_profile(self) -> ProviderCapabilityProfile:
+        return derive_provider_capability_profile(self.settings)
+
     def ensure_model(self) -> None:
         models = self._transport().models()
         if self.settings.model_id not in models:
@@ -215,18 +237,82 @@ class KimiClient:
 def _raise_for_provider(response: httpx.Response) -> None:
     if response.is_success:
         return
+    status_details = {"http_status": str(response.status_code)}
+    logger.warning(
+        "factory provider error status=%s",
+        response.status_code,
+    )
     if response.status_code == 401:
         raise FactoryProviderError(
-            "factory_unauthorized", "Factory model credentials were rejected"
+            "factory_unauthorized",
+            "Factory model credentials were rejected",
+            details=status_details,
         )
     if response.status_code == 429:
         raise FactoryProviderError(
-            "factory_rate_limited", "Factory model service is rate limited"
+            "factory_rate_limited",
+            "Factory model service is rate limited",
+            details=status_details,
         )
     if response.status_code >= 500:
         raise FactoryProviderError(
-            "factory_provider_error", "Factory model service failed"
+            "factory_provider_error",
+            "Factory model service failed",
+            details=status_details,
         )
-    raise FactoryProviderError(
-        "factory_request_invalid", "Factory model request was rejected"
+    details = {**status_details, **_provider_error_facts(response)}
+    logger.warning(
+        "factory request rejected type=%s code=%s field=%s",
+        details.get("provider_error_type"),
+        details.get("provider_error_code"),
+        details.get("rejected_field"),
     )
+    raise FactoryProviderError(
+        "factory_request_invalid",
+        "Factory model request was rejected" + _diagnostic_suffix(details),
+        details=details,
+    )
+
+
+def _provider_error_facts(response: httpx.Response) -> dict[str, str]:
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return {}
+    facts: dict[str, str] = {}
+    mapping = (
+        ("type", "provider_error_type"),
+        ("code", "provider_error_code"),
+        ("param", "rejected_field"),
+    )
+    for source, destination in mapping:
+        value = error.get(source)
+        if isinstance(value, str) and value.strip():
+            facts[destination] = value.strip()[:80]
+    message = error.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return facts
+    cleaned = _REDACT.sub("<redacted>", " ".join(message.split()))
+    if len(cleaned) > 240:
+        cleaned = cleaned[:239] + "…"
+    facts["bounded_message"] = cleaned
+    match = _ERROR_PATH.search(message)
+    if match is not None and "rejected_field" not in facts:
+        facts["rejected_field"] = match.group(1)[:160]
+    return facts
+
+
+def _diagnostic_suffix(details: Mapping[str, str]) -> str:
+    parts: list[str] = []
+    error_type = details.get("provider_error_type")
+    field = details.get("rejected_field")
+    if error_type:
+        parts.append(error_type)
+    if field:
+        parts.append(f"at {field}")
+    if not parts:
+        return ""
+    return " [" + " ".join(parts) + "]"

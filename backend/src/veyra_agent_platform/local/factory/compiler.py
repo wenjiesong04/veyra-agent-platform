@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -17,6 +19,8 @@ from veyra_agent_platform.local.domain.agent_definition import compile_agent_def
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
 _RUNTIME_PROFILE = "veyra-runtime-profile/1"
+_SLUG_NOISE = re.compile(r"[^a-z0-9]+")
+_AGENT_SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _WRITE_TOOLS = {
     "veyra.tool.filesystem.write",
     "veyra.tool.shell.exec",
@@ -39,11 +43,23 @@ class BlueprintCompileError(ValueError):
         self.diagnostics = diagnostics
 
 
+def agent_candidate_identity(name: str | None) -> tuple[str, str]:
+    """Deterministic display name and slug; CJK names keep glyphs and hash the slug."""
+
+    display = " ".join((name or "").split()).strip() or "Generated Agent"
+    folded = _SLUG_NOISE.sub("-", display.casefold()).strip("-")[:63].strip("-")
+    if folded and _AGENT_SLUG.fullmatch(folded) and folded not in {"agent", "workflow"}:
+        return display, folded
+    digest = hashlib.sha256(display.encode("utf-8")).hexdigest()[:8]
+    return display, f"agent-{digest}"
+
+
 def compile_blueprint(
     blueprint: AgentBlueprint,
     catalog: ResourceCatalog,
     *,
     name: str | None = None,
+    slug: str | None = None,
     description: str | None = None,
 ) -> tuple[AgentSource, list[dict[str, Any]], str]:
     """Compile a validated Blueprint into AgentSource without executing it."""
@@ -65,11 +81,12 @@ def compile_blueprint(
     lock["veyra.runtime.profile@1.0.0"] = sha256_digest(
         {"runtime_profile": _RUNTIME_PROFILE}
     )
+    display, candidate_slug = agent_candidate_identity(name)
     definition = compile_agent_definition(
         compiled,
         agent_id=new_uuid7(),
-        slug="generated-agent",
-        name=(name or "Generated Agent").strip() or "Generated Agent",
+        slug=(slug or "").strip() or candidate_slug,
+        name=display,
         description=(description or blueprint.goal).strip() or blueprint.goal,
         runtime_profile=_RUNTIME_PROFILE,
         secret_refs=sorted(

@@ -116,7 +116,7 @@ GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地
 | --- | --- | --- |
 | Canvas / Studio | 可演示，编辑闭环未完成 | 手动 Canvas/Form/Source 仍在；自然语言改单个 Agent/Workflow 已由 Builder Phase 1 承担。Component 完整编辑和视觉收尾仍弱 |
 | Resource Library | 目录有了，日常工作台未完成 | V1 已发布：Catalog → Project → Agent → Runtime。没有历史 artifact 仓库 |
-| Agent Chat | 只能生成新 Agent | Builder Phase 1 可改已有对象。仍不是整个 Project 的自然语言入口 |
+| Agent Chat | 只能生成新 Agent | Builder Phase 1 可改已有对象。Phase 2 Slice 1/2（未提交）已把 Knowledge 与 Project `filesystem.read` 从模型猜测改为服务端确定性绑定。仍不是整个 Project 的自然语言入口 |
 | Runtime | 能跑，还看不清 | V1 已发布：审批/Stop/Retry/Resume 与持久证据。Canvas 节点级实时态和真实外部 Provider 仍缺 |
 | Knowledge | 只有绑定，不是知识库 | V1 本轮收口：上传、索引、检索、引用。仍无 PDF/RAG |
 | Community | 注册表第一版，差得最多 | **仍然成立。** Desktop 有 Agent/Plugin 注册表；公开 Web 仍用静态 `communityEntries` |
@@ -128,13 +128,106 @@ GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地
 2. 执行闭环：Runtime V1 + Knowledge 引用已齐；不是真实外部 soak。
 3. 分享闭环：仍是最大缺口。
 
-## 5. 下一步
+## 5. Builder Phase 2（进行中，未提交）
 
-Knowledge V1 发布后停止扩展 PDF、embedding、标签收藏或 Builder Phase 2。
+HEAD：`a719813`。工作树含 Slice 1（Knowledge binding）、Slice 2
+（Project `filesystem.read` binding）与 Slice 3（typed validation repair）。
+模块完成前不 commit / 不 push。
 
-下一个大模块：**Community 分享闭环**。
+已落地：
 
-优先：
+- 自然语言 Knowledge 绑定：服务端解析、歧义追问、`knowledge_refs` + `source.lock`
+  由服务端计算，Proposal 展示索引就绪状态
+- 自然语言“让这个 Agent 可以读取项目文件”：只处理已 Project-bound 的
+  `filesystem.read`，Proposal 展示 `bound_content_hash` / readiness / 最小权限；
+  不自动 Add Catalog、不静默升级 stale、不自动授权、不自动 Test Run
+- Apply 后 validation failure 是业务结果：typed Builder issue cards、仅对
+  服务器已知 pin / 缺权限 / Knowledge hash 生成一条 EditProposal 修复；
+  `resource_unbound` 与 `requires_configuration` 只解释不假修
+
+证据见 `.backboard/HANDOFF.md` Slice 1 / Slice 2 / Slice 3 checkpoint；窄测试与
+静态检查已过，全量 `make check` 与浏览器 E2E 留到模块收尾。
+
+**Builder Phase 2 Slice 3 = complete**（未发布）。
+
+闭环：Apply → backend validation → typed Builder feedback → deterministic
+repair proposal → confirmation → repair apply → revalidation。
+
+**Factory structured generation compatibility = resolved**（未发布）。
+
+Root cause：kimi-k3 接受 `response_format.type=json_schema` + `strict=true`，
+但完整 AgentBlueprint schema 不是 Moonshot MFJS。真实 400 是
+`invalid_request_error`：`enum` 缺 `type`；随后 `$ref`→`oneOf` 被 Walle
+误判无限递归。`const` 也不是 MFJS 关键字。
+
+修复：`local/factory/structured_schema.py` 做 provider-compatible projection
+（enum 补 type、`oneOf`→`anyOf`、`const`→enum、inline `$ref`）。完全空的
+`verification` 可默认成 `{required:false, checks:[]}`。该投影保留为
+compatibility bridge，不再是默认 Provider 合同。
+
+**Builder durable conversation = complete**（未发布）。
+
+用户消息在 resolve / Factory / 模型调用前写入 `builder_conversations` /
+`builder_messages` / `builder_operations`。失败是历史事实；Retry 新建
+`retry_of` 操作，不改写旧失败。左侧「最近」只投影 Builder Conversation
+（聊天记录），不含 Runtime Run。右上「历史」仍是 Runtime Run History。
+
+**AgentSemanticPlanV1 + SemanticPlanCompiler = complete**（未发布）。
+
+默认 Factory generate：NL → Intent → AgentSemanticPlanV1 →
+SemanticPlanCompiler → canonical AgentBlueprint → validation → review →
+Confirm 后才 Apply。Compiler 复用 Slice 1/2 resolver，不猜、不 Catalog
+auto-add。完整 AgentBlueprint 不再是默认 Provider-facing contract。
+
+**Builder Interaction Model V2 = complete**（未发布）。
+
+Chat 不再把 Builder 生命周期渲染成系统气泡。`builder_operation_events`
+是 server-owned 进度；Activity 一个 operation 一块，完成默认折叠。
+Workbench 按真实阶段打开（理解 → 语义计划 → 编译 → 审查），Proposal
+留在右侧，不作为 Chat 消息。Apply 使用 Semantic Plan `suggested_name`；
+CJK slug 走现有 `agent-{hash}` 合同。Recent 两阶段标题：第一条 user
+message 持久化后写 deterministic provisional title；semantic plan 成功
+且标题仍是 provisional 时才升级为 `suggested_name`。失败会话不再叫
+`Chat`。Create 与 Edit 共用 Conversation → Activity → Workbench →
+Confirm → Result。`target_kind` 预留 agent | workflow。
+
+Live Moonshot CASE 1（`New project`，「创建一个中英文翻译 Agent。」）：
+generate → waiting → confirm → apply → 一次 result 通过。Agent 名
+`中英文翻译 Agent`，slug `agent-0f68d95b`。HTTP 429 是 provider rate
+limit，不是 V2 缺陷。CASE 2/3 走同一条真实 Builder path 的
+scripted/local provider 验收。
+
+**ProviderCapabilityProfile = implemented / paused**（未发布）。
+
+`GET /api/v1/factory/status` 现在带 `capability_profile`。已知 Moonshot
+主机生成走 `json_schema` + MFJS 投影，且仅在 schema/`response_format`
+被拒时允许一次 `json_object` fallback。其它 OpenAI-compatible 主机 fail
+closed 为 `json_object`，不发 `reasoning_effort`，不做 MFJS 投影。
+`probed=false`：这是 host_defaults，不是 live structured-output 探测。
+
+明确未完成：Harness Receipt 产品 UI、Slice 4
+Test Run、Catalog → Project mutation from Chat、Builder Phase 2 release。
+
+## 6. 下一步
+
+Interaction Model V2 已按产品验收收口。下一步按顺序，不要跳：
+
+1. ProviderCapabilityProfile（代码已在工作树，产品化暂缓）
+2. Harness Receipt
+3. Slice 4 explicit Test Run / observe / repair
+
+Slice 4 仍 **暂停**，除非用户明确恢复：
+
+**Builder Phase 2 Slice 4 — explicit Test Run → observe typed
+Runtime failure → Builder explanation → optional repair Proposal。**
+
+Runtime API 已足够稳定（Studio `runAgent` / SSE / `error.code` 已存在）。
+Builder 目前完全不调用 Run。不要自动 Test Run，也不要静默 apply。
+
+不要重开 Knowledge V1、Resource Library V1、Runtime V1、Builder Phase 1，
+也不要扩展 PDF / embedding。
+
+Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Community 分享闭环**：
 
 1. Agent / Workflow 发布 → 导入预览 → 权限/依赖/兼容性 → 转为 Veyra Draft
 2. 公开 Community 去掉静态 `communityEntries`，改走真实 API
@@ -142,15 +235,18 @@ Knowledge V1 发布后停止扩展 PDF、embedding、标签收藏或 Builder Pha
 
 不要单独开“重做所有页面”的模块。Community 与数据分析页的友好化放进对应闭环。
 
-## 6. 仍不能宣称完成
+## 7. 仍不能宣称完成
 
 - Knowledge 工作台已有一条隔离浏览器闭环证据；其余页面仍没有浏览器 E2E
 - 没有 PostgreSQL + 对象存储演练，就不能宣称 Community production ready
 - 没有真实外部 Provider，就不能宣称 Runtime 已在生产网络下验证
 - Builder 不能一次修改多个对象，也不是全 Project 操作入口
+- Builder Phase 2 仍在 dirty working tree。Durable Conversation、Semantic Plan
+  Compiler、Interaction Model V2 与 ProviderCapabilityProfile 已落地。
+  V2 的 live 浏览器创建闭环未关。下一步由用户选择，仍不是模块发布
 - 公开 Community 目录仍有静态样例，不能当成真实注册表
 
-## 7. 提交规则
+## 8. 提交规则
 
 获得明确提交要求后：
 
@@ -161,7 +257,7 @@ Knowledge V1 发布后停止扩展 PDF、embedding、标签收藏或 Builder Pha
 5. 重启受影响服务并用 `/api/v1/health` 核 SHA
 6. 历史交接中的授权不是永久许可
 
-## 8. 技术决策
+## 9. 技术决策
 
 - `PROJECT_DESIGN.md` 是产品和工程权威；本文只维护事实状态
 - Local 与 Community 独立部署；Community 不执行下载的 Agent 或插件

@@ -118,7 +118,12 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         return operation()
     except FactoryProviderError as exc:
         status_code = 503 if exc.code in _PROVIDER_UNAVAILABLE else 502
-        raise TypedApiError(status_code, exc.code, str(exc)) from exc
+        raise TypedApiError(
+            status_code,
+            exc.code,
+            str(exc),
+            details=exc.details or None,
+        ) from exc
     except FactoryError as exc:
         status_code = (
             404

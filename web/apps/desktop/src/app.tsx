@@ -8,6 +8,7 @@ import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { desktopHeader } from "./desktop-header";
 import { agentRecentNavigation, isAgentContextRoute, projectContextActiveHref, projectContextNavigation, projectTreeSelection, workspaceNavRoute } from "./features/agents/agent-navigation";
+import { useBuilderActivity } from "./features/builder/use-builder-activity";
 import { resourceLibraryHref, rememberProjectId } from "./features/resources/library-navigation";
 import { AccountPage } from "./pages/account";
 import { AgentAnalysisPage } from "./pages/agent-analysis";
@@ -131,7 +132,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "projects") return <NewChatPage />;
   if (route.kind === "project") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-resources") return <ProjectResourcesPage projectId={route.projectId} />;
-  if (route.kind === "project-chat") return <ProjectChatPage projectId={route.projectId} />;
+  if (route.kind === "project-chat") return <ProjectChatPage projectId={route.projectId} conversationId={route.conversationId} />;
   if (route.kind === "project-analysis") return <ProjectAnalysisPage projectId={route.projectId} />;
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-workflows") return <ProjectWorkflowsPage projectId={route.projectId} />;
@@ -173,6 +174,9 @@ function DesktopWorkspace() {
   const treeSelection = projectTreeSelection(route);
   const scopedProjectId = treeSelection.projectId;
   const activeAgentId = agentContextRoute?.agentId;
+  const conversationId = route.kind === "project-chat" ? route.conversationId : undefined;
+  const scopedProject = projects.find((item) => item.project_id === scopedProjectId);
+  const recentItems = useBuilderActivity(scopedProjectId);
   React.useEffect(() => {
     if (scopedProjectId) rememberProjectId(scopedProjectId);
   }, [scopedProjectId]);
@@ -191,7 +195,7 @@ function DesktopWorkspace() {
   const historyHref = scopedProjectId ? projectRoutePaths.runs(scopedProjectId) : desktopRoutePaths.runs;
   const historyActive = route.kind === "runs" || route.kind === "project-runs";
   const navigation: NavigationGroup[] = workspaceRoute
-    ? [projectContextNavigation(workspaceRoute, locale), ...projectNavigation, agentRecentNavigation(locale)]
+    ? [projectContextNavigation(workspaceRoute, locale), ...projectNavigation, agentRecentNavigation(locale, recentItems, { projectId: scopedProjectId, projectName: scopedProject?.name, conversationId })]
     : [homeNavigation(libraryHref, locale), ...projectNavigation];
 
   return (

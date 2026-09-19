@@ -53,8 +53,9 @@ class FactorySessionRepository:
             """INSERT INTO factory_sessions(
                 session_id, project_id, state, ready, next_prompt,
                 resource_plan_json, blueprint_json, diagnostics_json,
-                missing_capabilities_json, revision, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', 0, ?, ?)""",
+                missing_capabilities_json, identity_json, revision,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '{}', 0, ?, ?)""",
             (
                 session_id,
                 project_id,
@@ -121,6 +122,7 @@ class FactorySessionRepository:
         blueprint: Mapping[str, Any] | None = None,
         diagnostics: list[str] | None = None,
         missing_capabilities: list[dict[str, Any]] | None = None,
+        identity: Mapping[str, str] | None = None,
         revision: int | None = None,
         updated_at: str,
     ) -> None:
@@ -162,6 +164,13 @@ class FactorySessionRepository:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
+            "identity_json": json.dumps(
+                dict(identity)
+                if identity is not None
+                else json.loads(current["identity_json"] or "{}"),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             "revision": revision
             if revision is not None
             else int(current["revision"]) + 1,
@@ -173,6 +182,7 @@ class FactorySessionRepository:
                next_prompt = :next_prompt, resource_plan_json = :resource_plan_json,
                blueprint_json = :blueprint_json, diagnostics_json = :diagnostics_json,
                missing_capabilities_json = :missing_capabilities_json,
+               identity_json = :identity_json,
                revision = :revision, updated_at = :updated_at
                WHERE session_id = :session_id""",
             values,
@@ -193,6 +203,7 @@ class FactorySessionRepository:
             else None,
             "diagnostics": json.loads(row["diagnostics_json"]),
             "missing_capabilities": json.loads(row["missing_capabilities_json"]),
+            "candidate": _identity(row),
             "revision": row["revision"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -208,3 +219,21 @@ class FactorySessionRepository:
                 for message in messages
             ],
         }
+
+
+def _identity(row: sqlite3.Row) -> dict[str, str] | None:
+    keys = row.keys()
+    raw = row["identity_json"] if "identity_json" in keys else "{}"
+    if not raw:
+        return None
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        return None
+    name = str(parsed.get("name") or "").strip()
+    slug = str(parsed.get("slug") or "").strip()
+    if not name:
+        return None
+    payload = {"name": name}
+    if slug:
+        payload["slug"] = slug
+    return payload

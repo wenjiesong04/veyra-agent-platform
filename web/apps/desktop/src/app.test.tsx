@@ -820,7 +820,7 @@ describe("desktop Project workspace", () => {
     expect(within(tree).queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("agent-project"));
     expect(document.querySelector(".nav-group-recent")).toBeInTheDocument();
-    expect(screen.getByText("No recent conversations or runs yet.")).toBeInTheDocument();
+    expect(screen.getByText("No recent chats yet.")).toBeInTheDocument();
   });
 
   it("localizes Project-context navigation on Agent canvas in Chinese", async () => {
@@ -851,7 +851,7 @@ describe("desktop Project workspace", () => {
     expect(agentTreeLink).not.toHaveClass("contextual");
     expect(projectTreeLink).not.toHaveAttribute("aria-current");
     expect(projectTreeLink).not.toHaveClass("contextual");
-    expect(screen.getByText("暂无最近聊天或运行记录。")).toBeInTheDocument();
+    expect(screen.getByText("暂无最近聊天。")).toBeInTheDocument();
     expect(within(await screen.findByLabelText("面包屑")).getByRole("link", { name: "主页" })).toHaveAttribute("href", "#/projects");
     expect(within(screen.getByLabelText("面包屑")).getByRole("link", { name: "中文项目" })).toHaveAttribute("href", projectRoutePaths.project("agent-project-zh"));
     expect(within(screen.getByLabelText("面包屑")).getByRole("link", { name: "Agent" })).toHaveAttribute("href", projectRoutePaths.agents("agent-project-zh"));
@@ -915,6 +915,58 @@ describe("desktop Project workspace", () => {
     expect(window.location.hash).toBe(projectRoutePaths.runs("history-project"));
     await waitFor(() => expect(document.querySelector("a.history-control")).toHaveAttribute("aria-current", "page"));
     expect(within(document.querySelector(".nav-group-projects") as HTMLElement).queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+  });
+
+  it("projects persisted Builder conversations into Recent without changing Runtime History", async () => {
+    const scoped = project({ project_id: "dddd", name: "dddd" });
+    const snapshot = {
+      schema_version: "1.0" as const,
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "dddd",
+        title: "礼物包装 Agent",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        last_activity_at: "2026-09-18T00:00:01Z",
+        last_operation_status: "failed" as const,
+      },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user" as const, kind: "user" as const, content: "帮我生成礼物包装 Agent", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-fail", conversation_id: "conv-1", sequence: 1, role: "system" as const, kind: "failure" as const, content: "Agent 结构生成失败", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" },
+      ],
+      operations: [
+        { operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed" as const, retry_of: null, error_code: "factory_request_invalid", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true, target_kind: "agent" as const, events: [] },
+      ],
+      resolution: null,
+      factory_session: null,
+    };
+    const api = apiFor([scoped]);
+    const getBuilderConversation = vi.fn().mockResolvedValue(snapshot);
+    Object.assign(api, {
+      listBuilderActivity: vi.fn().mockResolvedValue({
+        schema_version: "1.0",
+        project_id: "dddd",
+        items: [
+          { kind: "conversation", id: "conv-1", conversation_id: "conv-1", title: "礼物包装 Agent", status: "failed", operation_kind: "create_agent", occurred_at: new Date(Date.now() - 120_000).toISOString() },
+        ],
+      }),
+      getBuilderConversation,
+      submitBuilderTurn: vi.fn(),
+    });
+    window.location.hash = projectRoutePaths.projectChat("dddd");
+    await renderApp(api);
+    const recent = document.querySelector(".nav-group-recent") as HTMLElement;
+    const conversation = await within(recent).findByRole("link", { name: /礼物包装 Agent/ });
+    expect(conversation).toHaveAttribute("href", projectRoutePaths.projectChat("dddd", "conv-1"));
+    expect(within(recent).getByText(/Create Agent · Failed/)).toBeInTheDocument();
+    expect(within(recent).queryByText(/Run ·/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("dddd"));
+    fireEvent.click(conversation);
+    await waitFor(() => expect(getBuilderConversation).toHaveBeenCalledWith("dddd", "conv-1"));
+    expect(await screen.findByText("帮我生成礼物包装 Agent")).toBeInTheDocument();
+    expect(screen.getByText("Agent 结构生成失败")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("dddd"));
   });
 
   it("renders the New chat placeholder instead of a generic route error", async () => {
@@ -1202,6 +1254,7 @@ describe("desktop route parser", () => {
     expect(parseDesktopRoute(projectRoutePaths.project("p")).kind).toBe("project");
     expect(parseDesktopRoute(projectRoutePaths.projectResources("p")).kind).toBe("project-resources");
     expect(parseDesktopRoute(projectRoutePaths.projectChat("p")).kind).toBe("project-chat");
+    expect(parseDesktopRoute(projectRoutePaths.projectChat("p", "conv-1"))).toMatchObject({ kind: "project-chat", conversationId: "conv-1" });
     expect(parseDesktopRoute(projectRoutePaths.projectAnalysis("p")).kind).toBe("project-analysis");
     expect(parseDesktopRoute(projectRoutePaths.agents("p")).kind).toBe("project-agents");
     expect(parseDesktopRoute(projectRoutePaths.agent("p", "a")).kind).toBe("agent-detail");

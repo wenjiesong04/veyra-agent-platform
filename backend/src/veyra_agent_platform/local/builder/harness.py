@@ -124,8 +124,13 @@ class BuilderHarness:
                 "success criteria. Do not ask users to learn internal node types."
             ),
             "create_agent": (
-                "Return only an AgentBlueprint JSON matching the supplied response "
-                "schema. The server compiles and reviews it before creation."
+                "Return only an AgentSemanticPlanV1 JSON matching the supplied "
+                "response schema. Describe the Agent's goal, inputs, outputs, "
+                "steps and capability/knowledge intents. Do not emit resource "
+                "hashes, Knowledge UUIDs, node IDs, canvas positions, "
+                "source.lock, permission sets, or filesystem roots. The server "
+                "compiles a canonical AgentBlueprint and reviews it before "
+                "creation."
             ),
             "edit_source": (
                 "Return only the complete candidate Source JSON. Change only the "

@@ -74,6 +74,10 @@ def test_failed_migration_restores_or_removes_sqlite_files(
     Path(f"{existing}-wal").write_text("stale")
     Path(f"{existing}-shm").write_text("stale")
     monkeypatch.setattr(
+        "veyra_agent_platform.local.storage.bootstrap._schema_head",
+        lambda _path: "local_0019_edit_proposals",
+    )
+    monkeypatch.setattr(
         "veyra_agent_platform.local.storage.bootstrap.command.upgrade", fail_upgrade
     )
     with pytest.raises(RuntimeError, match="upgrade failed"):
@@ -91,6 +95,28 @@ def test_failed_migration_restores_or_removes_sqlite_files(
     assert not fresh.exists()
     assert not Path(f"{fresh}-wal").exists()
     assert not Path(f"{fresh}-shm").exists()
+
+
+def test_current_schema_head_skips_alembic_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "current.sqlite3"
+    migrate_local_database(database_path)
+    called = {"upgrade": 0}
+
+    def boom(*_: object, **__: object) -> None:
+        called["upgrade"] += 1
+        raise AssertionError("current schema head must not take an Alembic lock")
+
+    monkeypatch.setattr(
+        "veyra_agent_platform.local.storage.bootstrap.command.upgrade", boom
+    )
+    migrate_local_database(database_path)
+    assert called["upgrade"] == 0
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
 
 
 def test_lifecycle_migration_empty_and_upgrade_identity(tmp_path: Path) -> None:

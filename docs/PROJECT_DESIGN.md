@@ -32,8 +32,10 @@ Core product loop:
 
 ```text
 Describe requirement
-→ configured Kimi model generates typed AgentBlueprint Draft
-→ server compiles Agent Definition
+→ configured Kimi model emits AgentSemanticPlanV1
+→ Veyra compiles a canonical AgentBlueprint
+→ user reviews and confirms
+→ server creates an Agent Draft
 → user edits Form / Canvas / Source
 → validate schema, graph, components, permissions, secrets and verifier
 → save immutable version
@@ -805,6 +807,35 @@ output modes. Existing compiler/resolvers, EditProposal storage, Draft writer,
 validation and Runtime preflight remain the authoritative execution boundaries.
 The model has no write, registration, permission-grant or execution tool.
 
+Long-term generation rule: models express and plan semantics; Veyra compiles
+semantics into canonical, validated, authorized and executable objects. The
+default provider-facing create contract is `AgentSemanticPlanV1`. A full
+`AgentBlueprint` is compiled server-side and remains the canonical review/Apply
+object. The Moonshot MFJS projection of AgentBlueprint is a compatibility
+bridge, not the default model contract.
+
+Builder Conversation History and Runtime Run History are different canonical
+domains.
+
+Conversation Message ≠ Builder Operation ≠ Proposal ≠ Runtime Run.
+
+- Conversation messages are the user-facing chat: user input, understanding,
+  clarification, recoverable failure summaries, and a single final result.
+- Builder Operations are server-owned work. They persist a bounded event
+  stream (`builder.intent.*`, `builder.semantic_plan.*`, `builder.compile.*`,
+  `builder.proposal.*`, `builder.apply.*`) so Activity can be collapsed,
+  refreshed, and audited. They are not chat bubbles.
+- Proposals / compiled artifacts belong to the Workbench review surface
+  (Canvas, resource plan, Diff/Impact, readiness). Chat may link to them.
+- Runtime History records immutable execution facts (events, receipts,
+  approvals, evidence).
+
+Chat must not copy full Run event streams; at most a `run_id` reference.
+The desktop header “历史” page remains Runtime Run History only. The left
+“最近” list is Builder Conversation history, like a GPT/Codex chat list;
+it does not include Runtime Runs. Conversation titles are concise and
+persisted (prefer Semantic Plan `suggested_name`), not the raw prompt.
+
 Context includes Project identity/inventory, library bindings, available resource
 descriptors with exact hashes, readiness and permissions, plus the selected saved
 source/revision/ETag when editing. Knowledge and Files are metadata/bindings only;
@@ -853,19 +884,32 @@ client validates the configured model through `/v1/models` before generation.
 
 ### 6.2 Factory responsibility
 
-Kimi produces a strict `AgentBlueprint` Draft containing:
+The model produces a small `AgentSemanticPlanV1` describing user intent:
 
-- goal
+- goal, suggested name, description
 - inputs/outputs
-- required capabilities
-- known component/tool references
-- graph nodes and transitions
-- approval points
-- requested permissions
-- verification checks
-- UI suggestions
+- steps / behavior intent
+- capability intents and knowledge intents
+- approval points, success criteria, user constraints
 
-The server then resolves registered components and compiles canonical Agent source.
+It must not emit resource hashes, `source.lock`, Knowledge/Resource UUIDs,
+permission sets, node/edge IDs, canvas positions, filesystem roots, Project
+paths, runtime adapters, or credentials.
+
+`SemanticPlanCompiler` then compiles a canonical `AgentBlueprint` candidate by
+reusing the deterministic Project Knowledge and Project Resource resolvers.
+The server owns node/edge IDs, Tool/Knowledge refs, `source.lock`, required
+permissions, graph wiring and verification defaults. Ambiguous mentions become
+clarification. Unbound capabilities become `missing_capability`. Catalog
+auto-add, silent upgrades and permission overgrant are forbidden.
+
+The compiled Blueprint still goes through `AgentBlueprint.from_dict`, schema and
+graph validation, dependency checks, Factory review, Proposal/Diff/Impact, and
+explicit confirmation before Apply. Compiler output is never a second canonical
+store; `AgentBlueprint` / `AgentSource` remain source of truth.
+
+A provider-specific AgentBlueprint JSON Schema projection may still exist as a
+compatibility bridge. It is not the default generate contract.
 
 Kimi cannot:
 
@@ -915,17 +959,20 @@ transactions remain a subsequent module, tracked in the development document.
 
 ```text
 User requirement
+→ persist Builder user message
 → bounded Factory conversation
 → server-selected Resource Catalog snapshot
-→ Kimi JSON Schema AgentBlueprint
+→ Kimi JSON Schema AgentSemanticPlanV1
+→ SemanticPlanCompiler
+→ canonical AgentBlueprint
 → schema validation
-→ component/tool resolution
+→ component/tool/knowledge resolution
 → Skill compilation and Policy application
-→ exact resource lock and permission derivation
+→ exact Project pin and permission derivation
 → graph validation
 → bounded repair loop, maximum three attempts
 → user-visible Blueprint and Resource Plan
-→ user edits and confirms
+→ user confirms
 → server creates or replaces an Agent Draft
 → immutable version
 ```
@@ -950,20 +997,47 @@ The key belongs in the host Keychain/environment, never SQLite, Agent source,
 browser storage, logs, or packages. Desktop Settings can bind the model key to
 `model.primary`; headless development may continue using `MOONSHOT_API_KEY`.
 
-Blueprint generation uses `response_format.type=json_schema` with the committed
-AgentBlueprint JSON Schema. Thinking-model `reasoning_content` may be retained
+Blueprint generation uses the `ProviderCapabilityProfile` attached to
+`GET /api/v1/factory/status`. Known Moonshot hosts send
+`response_format.type=json_schema` with the committed AgentSemanticPlanV1 JSON
+Schema after the Moonshot MFJS projection. A single `json_object` fallback is
+allowed only when that profile sets `json_object_fallback=true` and the provider
+rejects the schema/`response_format` itself. Unknown OpenAI-compatible hosts
+fail closed to `json_object` with no MFJS projection and no schema fallback.
+401, 403, 429, unknown 4xx and 5xx do not fallback. Markdown scraping is
+forbidden. Thinking-model `reasoning_content` may be retained
 only inside one in-memory generation/repair request chain when required by the
 provider protocol. It is never persisted in Factory messages, SQLite, logs, or
 Agent source.
 
-Kimi K3 always uses thinking mode. The client sends only supported
-`reasoning_effort` values (`low`, `high`, `max`), omits fixed sampling
-parameters, and applies a Veyra-owned completion-token bound rather than the
-provider's very large default. Structured Output parses only final
+Kimi K3 always uses thinking mode. The client sends `reasoning_effort` only
+when the capability profile declares it (`low`, `high`, `max`), omits fixed
+sampling parameters, and applies a Veyra-owned completion-token bound rather
+than the provider's very large default. Structured Output parses only final
 `message.content`. Each repair request replays the complete prior assistant
 message required by the provider protocol, including ephemeral
 `reasoning_content`, then discards that reasoning data when the generation chain
 ends.
+
+### 6.4.1 ProviderCapabilityProfile
+
+Factory structured output is a declared host capability, not an implicit
+Moonshot assumption. `FactoryStatus.capability_profile` is derived from the
+configured Factory base URL (`source=host_defaults`). It is not a live
+structured-output probe, host secret readiness, or a successful Run.
+`probed` remains false until an explicit probe exists.
+
+| Host | Family | Generate format | Schema flavor | `json_object` fallback | `reasoning_effort` |
+| --- | --- | --- | --- | --- | --- |
+| `api.moonshot.cn`, `api.moonshot.ai`, and their subdomains | `moonshot` | `json_schema` strict | `moonshot_mfjs` | yes, once, schema/`response_format` 400 only | sent |
+| any other OpenAI-compatible base URL | `openai_compatible` | `json_object` | `none` | no | omitted |
+
+A lookalike host such as `api.moonshot.example` is not Moonshot. Intent
+resolution and source-edit generation may continue to use `json_object` when
+that format is within the profile; they do not expand the generate contract.
+
+The Moonshot MFJS projection of AgentBlueprint remains a compatibility bridge,
+not the default model contract and not a capability claimed for unknown hosts.
 
 ### 6.5 Kimi acceptance
 
@@ -1489,11 +1563,19 @@ Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or
 - `run_commands`
 - `agent_conversations`
 - `agent_conversation_messages`
+- `builder_conversations`
+- `builder_messages`
+- `builder_operations`
 - `runtime_connections`
 - `external_agent_sessions`
 - `workspace_locks`
 
 All frontend controls first write a durable `run_command`; they do not directly manipulate executors.
+
+`agent_conversations` are Runtime Agent chat, bound to an existing Agent version.
+`builder_conversations` are Project Chat construction history. They are not the
+same entity as Runtime Run History (`runs` / `run_events`). Factory
+`factory_sessions` remain the create-agent subflow under a Builder operation.
 
 ### 11.4 Local account/community cache
 

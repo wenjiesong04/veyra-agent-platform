@@ -13,6 +13,26 @@ from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.builder.harness import BuilderHarness
+from veyra_agent_platform.local.builder.knowledge_binding import (
+    bind_knowledge,
+    knowledge_readiness,
+    resolve_knowledge,
+)
+from veyra_agent_platform.local.builder.resource_binding import (
+    FILESYSTEM_READ_RESOURCE_ID,
+    ResourceMutationError,
+    bind_project_tool,
+    is_resource_binding_intent,
+    resolve_project_resource,
+    resource_readiness,
+)
+from veyra_agent_platform.local.builder.validation_repair import (
+    ValidationRepairError,
+    project_issues,
+    repair_agent_source,
+    repair_plan,
+    select_issue,
+)
 from veyra_agent_platform.local.library.dependencies import inspect_agent_dependencies
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
 from veyra_agent_platform.local.library.workflow_dependencies import (
@@ -20,6 +40,8 @@ from veyra_agent_platform.local.library.workflow_dependencies import (
 )
 from veyra_agent_platform.local.projects.service import ProjectError
 from veyra_agent_platform.local.resources import ResourceCatalog
+from veyra_agent_platform.local.resources.project import ProjectResourceService
+from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 
 from .client import KimiClient
 from .edit_store import EditProposalStore
@@ -30,6 +52,37 @@ EditCommand = Literal["apply", "reject", "undo"]
 MAX_SOURCE_BYTES = 200_000
 
 
+class KnowledgeBindingUnresolved(Exception):
+    """No single Project Knowledge document matched; the caller must clarify."""
+
+    def __init__(self, status: str, candidates: tuple[dict[str, Any], ...]) -> None:
+        super().__init__(f"knowledge mention is {status}")
+        self.status = status
+        self.candidates = tuple(
+            {
+                "knowledge_id": str(item["knowledge_id"]),
+                "name": str(item.get("name") or ""),
+                "version": str(item["version"]),
+            }
+            for item in candidates
+        )
+
+
+class ResourceBindingUnresolved(Exception):
+    """No single Project-owned Tool matched; the caller must clarify or stop."""
+
+    def __init__(self, status: str, candidates: tuple[dict[str, Any], ...]) -> None:
+        super().__init__(f"resource mention is {status}")
+        self.status = status
+        self.candidates = tuple(
+            {
+                "reference": str(item["reference"]),
+                "name": str(item.get("name") or ""),
+            }
+            for item in candidates
+        )
+
+
 class EditProposalService:
     def __init__(
         self,
@@ -37,11 +90,16 @@ class EditProposalService:
         library: LibraryService,
         catalog: ResourceCatalog,
         client: KimiClient,
+        *,
+        project_resources: ProjectResourceService,
+        resource_readiness: ResourceReadiness,
     ) -> None:
         self.store = store
         self.library = library
         self.catalog = catalog
         self.client = client
+        self.project_resources = project_resources
+        self.resource_readiness = resource_readiness
         self.harness = BuilderHarness(library.projects, catalog)
 
     def draft(
@@ -160,6 +218,234 @@ class EditProposalService:
             "The provider could not produce a valid source change; "
             "the Draft is unchanged",
         )
+
+    def create_knowledge_binding(
+        self,
+        project_id: str,
+        agent_id: str,
+        instruction: str,
+        expected_revision: int,
+        expected_etag: str,
+    ) -> dict[str, Any]:
+        """Propose one Project Knowledge binding without asking the model to choose.
+
+        The document is resolved from the Project inventory and the lock digest is
+        computed by the server, so an ambiguous or absent mention fails visibly
+        instead of becoming a guessed binding.
+        """
+        base = self.draft(project_id, "agent", agent_id)
+        if base["revision"] != expected_revision or base["etag"] != expected_etag:
+            raise DraftConflict(
+                "Save or reload the current Draft before proposing edits"
+            )
+        if not instruction.strip():
+            raise FactoryError("edit_instruction_empty", "Describe the change first")
+        inventory = self.library.projects.project_summary(project_id)["knowledge"]
+        match = resolve_knowledge(inventory, instruction)
+        if match.status != "resolved" or match.selected is None:
+            raise KnowledgeBindingUnresolved(match.status, match.candidates)
+        document = match.selected
+        candidate = bind_knowledge(base["source"], document)
+        changes = _changes(base["source"], candidate)
+        if not changes:
+            raise FactoryError(
+                "knowledge_already_bound",
+                "This Knowledge version is already bound to the Agent",
+            )
+        validation = self._validate(project_id, "agent", base["source"], candidate)
+        proposal = {
+            "schema_version": "1.0",
+            "proposal_id": new_uuid7(),
+            "apply_key": new_uuid7(),
+            "undo_key": new_uuid7(),
+            "project_id": project_id,
+            "target_kind": "agent",
+            "target_id": agent_id,
+            "instruction": instruction.strip(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "base_revision": base["revision"],
+            "base_etag": base["etag"],
+            "previous_source": base["source"],
+            "candidate_source": _parse("agent", candidate).to_dict(),
+            "changes": changes,
+            "permission_changes": [],
+            "impact": {
+                "target_kind": "agent",
+                "target_id": agent_id,
+                "scope": "single_draft",
+                "immutable_versions_changed": False,
+                "runs_started": False,
+            },
+            "knowledge_binding": knowledge_readiness(document),
+            "validation": validation,
+            "state": "review",
+        }
+        self.store.create(proposal)
+        return self.get(project_id, proposal["proposal_id"])
+
+    def create_resource_binding(
+        self,
+        project_id: str,
+        agent_id: str,
+        instruction: str,
+        expected_revision: int,
+        expected_etag: str,
+    ) -> dict[str, Any]:
+        """Propose one Project-owned filesystem.read Tool without model selection."""
+
+        base = self.draft(project_id, "agent", agent_id)
+        if base["revision"] != expected_revision or base["etag"] != expected_etag:
+            raise DraftConflict(
+                "Save or reload the current Draft before proposing edits"
+            )
+        if not instruction.strip():
+            raise FactoryError("edit_instruction_empty", "Describe the change first")
+        if not is_resource_binding_intent(instruction):
+            raise ResourceBindingUnresolved("unresolved", ())
+        project_view = self.project_resources.list(project_id)
+        project_view["resources"] = [
+            item
+            for item in project_view["resources"]
+            if item.get("resource_id") == FILESYSTEM_READ_RESOURCE_ID
+        ]
+        project_view = self.resource_readiness.response(project_view)
+        catalog_view = self.catalog.resources(kind="tool")
+        match = resolve_project_resource(
+            project_view["resources"],
+            catalog_view["resources"],
+            instruction,
+        )
+        if match.status != "resolved" or match.selected is None:
+            raise ResourceBindingUnresolved(match.status, match.candidates)
+        resource = match.selected
+        try:
+            candidate = bind_project_tool(base["source"], resource)
+        except ResourceMutationError as exc:
+            raise FactoryError(exc.code, str(exc)) from exc
+        parsed = _parse("agent", candidate).to_dict()
+        changes = _changes(base["source"], parsed)
+        validation = self._validate(project_id, "agent", base["source"], parsed)
+        proposal = {
+            "schema_version": "1.0",
+            "proposal_id": new_uuid7(),
+            "apply_key": new_uuid7(),
+            "undo_key": new_uuid7(),
+            "project_id": project_id,
+            "target_kind": "agent",
+            "target_id": agent_id,
+            "instruction": instruction.strip(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "base_revision": base["revision"],
+            "base_etag": base["etag"],
+            "previous_source": base["source"],
+            "candidate_source": parsed,
+            "changes": changes,
+            "permission_changes": _changes(
+                base["source"]["extensions"]["veyra"]["permissions"],
+                parsed["extensions"]["veyra"]["permissions"],
+            ),
+            "impact": {
+                "target_kind": "agent",
+                "target_id": agent_id,
+                "scope": "single_draft",
+                "immutable_versions_changed": False,
+                "runs_started": False,
+            },
+            "resource_binding": resource_readiness(resource),
+            "validation": validation,
+            "state": "review",
+        }
+        self.store.create(proposal)
+        return self.get(project_id, proposal["proposal_id"])
+
+    def create_validation_repair(
+        self,
+        project_id: str,
+        agent_id: str,
+        reference: str,
+        code: str,
+        expected_revision: int,
+        expected_etag: str,
+    ) -> dict[str, Any]:
+        """Propose one deterministic validation repair without calling the model."""
+
+        base = self.draft(project_id, "agent", agent_id)
+        if base["revision"] != expected_revision or base["etag"] != expected_etag:
+            raise DraftConflict(
+                "Save or reload the current Draft before proposing edits"
+            )
+        parsed = AgentSource.from_dict(base["source"])
+        inspected = inspect_agent_dependencies(
+            self.library.projects,
+            self.catalog,
+            project_id,
+            parsed,
+            resource_projection=self.resource_readiness.project,
+        )
+        try:
+            issue = select_issue(
+                {"dependencies": inspected["dependencies"]}, reference, code
+            )
+            candidate = repair_agent_source(base["source"], issue)
+            if issue["code"] in {"lock_mismatch", "lock_missing"}:
+                extra_source = AgentSource.from_dict(candidate)
+                extra_inspected = inspect_agent_dependencies(
+                    self.library.projects,
+                    self.catalog,
+                    project_id,
+                    extra_source,
+                    resource_projection=self.resource_readiness.project,
+                )
+                for extra in project_issues(extra_inspected):
+                    if extra["repairable"] and extra["code"] in {
+                        "lock_mismatch",
+                        "lock_missing",
+                    }:
+                        candidate = repair_agent_source(candidate, extra)
+        except ValidationRepairError as exc:
+            raise FactoryError(exc.code, str(exc)) from exc
+        parsed_candidate = _parse("agent", candidate).to_dict()
+        changes = _changes(base["source"], parsed_candidate)
+        if not changes:
+            raise FactoryError(
+                "validation_repair_not_needed",
+                "This validation issue does not change the Agent source",
+            )
+        validation = self._validate(
+            project_id, "agent", base["source"], parsed_candidate
+        )
+        proposal = {
+            "schema_version": "1.0",
+            "proposal_id": new_uuid7(),
+            "apply_key": new_uuid7(),
+            "undo_key": new_uuid7(),
+            "project_id": project_id,
+            "target_kind": "agent",
+            "target_id": agent_id,
+            "instruction": f"Repair {issue['code']} for {issue['reference']}",
+            "created_at": datetime.now(UTC).isoformat(),
+            "base_revision": base["revision"],
+            "base_etag": base["etag"],
+            "previous_source": base["source"],
+            "candidate_source": parsed_candidate,
+            "changes": changes,
+            "permission_changes": _changes(
+                base["source"]["extensions"]["veyra"]["permissions"],
+                parsed_candidate["extensions"]["veyra"]["permissions"],
+            ),
+            "impact": {
+                "target_kind": "agent",
+                "target_id": agent_id,
+                "scope": "single_draft",
+                "immutable_versions_changed": False,
+                "runs_started": False,
+            },
+            "validation_repair": repair_plan(issue),
+            "validation": validation,
+            "state": "review",
+        }
+        self.store.create(proposal)
+        return self.get(project_id, proposal["proposal_id"])
 
     def _validate(
         self,

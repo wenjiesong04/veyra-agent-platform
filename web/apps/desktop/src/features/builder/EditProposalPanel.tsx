@@ -1,6 +1,6 @@
 import * as React from "react";
-import type { EditProposal, EditProposalChange, EditProposalCommand, EditTargetKind } from "@veyra/api-contracts";
-import { Alert, Button, Panel, SectionHeading } from "@veyra/ui";
+import type { EditProposal, EditProposalChange, EditProposalCommand, EditTargetKind, KnowledgeBindingPlan, ResourceBindingPlan, ValidationRepairPlan } from "@veyra/api-contracts";
+import { Alert, Button, Panel, SectionHeading, StatusBadge } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../../api/local-client";
 import { DependencyReport } from "../studio/DependencyReport";
 
@@ -72,6 +72,9 @@ export function EditProposalPanel({ api, projectId, targetKind, targetId, revisi
         <p>{states[proposal.state]} · {zh ? "基于修订" : "Base revision"} {proposal.base_revision} · {proposal.created_at}</p>
         <p>{proposal.target_kind} <code>{proposal.target_id}</code> · {zh ? "影响范围：仅当前 Draft；不可变版本与 Run 不变。" : "Impact: this Draft only; immutable versions and Runs unchanged."}</p>
         {stale ? <Alert type="warning">{zh ? "提案已过期，不能覆盖后续修改。请重新生成；仍可拒绝。" : "This proposal is stale and cannot overwrite later edits. Generate a new proposal; rejection is still available."}</Alert> : null}
+        {proposal.knowledge_binding ? <KnowledgeBindingSummary plan={proposal.knowledge_binding} zh={zh} /> : null}
+        {proposal.resource_binding ? <ResourceBindingSummary plan={proposal.resource_binding} zh={zh} /> : null}
+        {proposal.validation_repair ? <ValidationRepairSummary plan={proposal.validation_repair} zh={zh} /> : null}
         <ChangeList title={zh ? "源码差异" : "Source changes"} changes={proposal.changes} zh={zh} />
         <ChangeList title={zh ? "权限差异" : "Permission changes"} changes={proposal.permission_changes} zh={zh} />
         <DependencyReport validation={proposal.validation} locale={locale} />
@@ -88,6 +91,88 @@ export function EditProposalPanel({ api, projectId, targetKind, targetId, revisi
       </article>;
     })}
   </Panel>;
+}
+
+function KnowledgeBindingSummary({ plan, zh }: { plan: KnowledgeBindingPlan; zh: boolean }) {
+  const readiness = {
+    indexed: zh ? "已建立索引" : "Indexed",
+    not_indexed: zh ? "未建立索引" : "Not indexed",
+    stale: zh ? "需重建" : "Needs rebuild",
+    failed: zh ? "索引失败" : "Index failed",
+  }[plan.index_status];
+  const action = plan.required_action === "build_index"
+    ? (zh ? "运行前需要先在知识库点“构建索引”。绑定不会自动建索引。" : "Build the index in Knowledge before running. Binding never builds it for you.")
+    : plan.required_action === "rebuild_index"
+      ? (zh ? "内容已变化，运行前需要先重建索引。绑定不会自动重建。" : "Content changed; rebuild the index before running. Binding never rebuilds it for you.")
+      : null;
+  return (
+    <section aria-label={zh ? "Knowledge 绑定" : "Knowledge binding"}>
+      <h4>{zh ? "Knowledge 绑定" : "Knowledge binding"}</h4>
+      <p>{zh ? "将绑定：" : "Will bind: "}<strong>{plan.name}</strong></p>
+      <dl className="detail-list">
+        <div><dt>{zh ? "身份" : "Identity"}</dt><dd><code>{plan.reference}</code></dd></div>
+        <div><dt>{zh ? "锁定内容 hash" : "Locked content hash"}</dt><dd><code>{plan.source_file_hash}</code></dd></div>
+        <div><dt>{zh ? "检索就绪" : "Retrieval readiness"}</dt><dd><StatusBadge label={readiness} tone={plan.runnable ? "good" : "warn"} /></dd></div>
+        {plan.chunk_count == null ? null : <div><dt>{zh ? "片段数" : "Chunk count"}</dt><dd>{plan.chunk_count}</dd></div>}
+      </dl>
+      {action ? <Alert type="warning">{action}</Alert> : null}
+      {plan.failure_reason ? <Alert type="error">{plan.failure_reason}</Alert> : null}
+      <small>{zh ? "只改当前 Draft；已提交版本不变，Runtime 要在新版本或新运行后才使用这份知识。" : "This changes the Draft only. Committed versions are unchanged, and the Runtime uses this Knowledge only after a new version or run."}</small>
+    </section>
+  );
+}
+
+function ResourceBindingSummary({ plan, zh }: { plan: ResourceBindingPlan; zh: boolean }) {
+  const labels: Record<ResourceBindingPlan["readiness"], [string, string]> = {
+    ready: ["就绪", "Ready"],
+    requires_configuration: ["需要配置", "Needs configuration"],
+    design_only: ["仅设计", "Design only"],
+    unavailable: ["不可用", "Unavailable"],
+    quarantined: ["隔离待审", "Quarantined"],
+    unsupported: ["Runtime 不支持", "Runtime unsupported"],
+    stale: ["Project pin 已漂移", "Project pin stale"],
+  };
+  const tone = plan.readiness === "ready"
+    ? "good" as const
+    : plan.readiness === "requires_configuration" || plan.readiness === "stale"
+      ? "warn" as const
+      : "bad" as const;
+  return (
+    <section aria-label={zh ? "Project Resource 绑定" : "Project Resource binding"}>
+      <h4>{zh ? "Project Resource 绑定" : "Project Resource binding"}</h4>
+      <p>{zh ? "将使用：" : "Will use: "}<strong>{plan.name}</strong></p>
+      <dl className="detail-list">
+        <div><dt>Resource</dt><dd><code>{plan.reference}</code></dd></div>
+        <div><dt>Project pin</dt><dd><code>{plan.bound_content_hash}</code></dd></div>
+        {plan.binding_status === "stale" ? <div><dt>{zh ? "当前 Catalog hash" : "Current Catalog hash"}</dt><dd><code>{plan.catalog_content_hash}</code></dd></div> : null}
+        <div><dt>{zh ? "就绪状态" : "Readiness"}</dt><dd><StatusBadge label={labels[plan.readiness][zh ? 0 : 1]} tone={tone} /></dd></div>
+        <div><dt>{zh ? "Runtime 状态" : "Runtime status"}</dt><dd>{plan.runtime_status}</dd></div>
+      </dl>
+      <h5>{zh ? "需要增加的最小权限" : "Minimum required permissions"}</h5>
+      <pre>{JSON.stringify(plan.required_permissions, null, 2)}</pre>
+      {plan.blocking_reasons.length ? <ul>{plan.blocking_reasons.map((reason) => <li key={reason.code}><code>{reason.code}</code> · {reason.message}</li>)}</ul> : null}
+      {plan.readiness !== "ready" ? <Alert type="warning">{zh ? "Resource 已属于当前 Project，但还不能执行。Builder 不会配置密钥、升级 pin 或绕过 Runtime 检查。" : "This Resource belongs to the Project but is not executable yet. Builder will not configure secrets, upgrade the pin, or bypass Runtime checks."}</Alert> : null}
+      <small>{zh ? "只改 Agent Draft；Project Resource 和不可变版本不变。source.lock 使用 Project pin，不会自动升级到当前 Catalog hash。" : "Only the Agent Draft changes. The Project Resource and immutable versions stay unchanged. source.lock uses the Project pin and never auto-upgrades to the current Catalog hash."}</small>
+    </section>
+  );
+}
+
+function ValidationRepairSummary({ plan, zh }: { plan: ValidationRepairPlan; zh: boolean }) {
+  return (
+    <section aria-label={zh ? "验证修复" : "Validation repair"}>
+      <h4>{zh ? "验证修复" : "Validation repair"}</h4>
+      <p>{zh ? "将修复：" : "Will repair: "}<strong>{plan.name}</strong> · <code>{plan.code}</code></p>
+      <dl className="detail-list">
+        <div><dt>Resource</dt><dd><code>{plan.reference}</code></dd></div>
+        {plan.bound_content_hash ? <div><dt>Project pin</dt><dd><code>{plan.bound_content_hash}</code></dd></div> : null}
+        {plan.content_hash ? <div><dt>{zh ? "当前 Project hash" : "Current Project hash"}</dt><dd><code>{plan.content_hash}</code></dd></div> : null}
+        {plan.locked_hash ? <div><dt>{zh ? "当前 Agent lock" : "Current Agent lock"}</dt><dd><code>{plan.locked_hash}</code></dd></div> : null}
+      </dl>
+      {plan.required_permissions ? <pre>{JSON.stringify(plan.required_permissions, null, 2)}</pre> : null}
+      <Alert type="info">{plan.impact}</Alert>
+      <small>{zh ? "确认前草稿不变。不会静默升级 Catalog、不会自动加入 Project、不会配置密钥。" : "The Draft is unchanged until you confirm. No silent Catalog upgrade, Project add, or secret configuration."}</small>
+    </section>
+  );
 }
 
 function ChangeList({ title, changes, zh }: { title: string; changes: EditProposalChange[]; zh: boolean }) {

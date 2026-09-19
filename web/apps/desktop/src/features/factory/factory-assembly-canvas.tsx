@@ -3,6 +3,7 @@ import { LayoutPanelTop, X } from "lucide-react";
 import type { FactoryResourcePlanItem, FactorySession } from "@veyra/api-contracts";
 import { Alert, Button, IconButton, LinkButton, StatusBadge } from "@veyra/ui";
 import { blueprintGraph } from "./factory-blueprint";
+import type { WorkbenchPhase } from "../builder/workbench-phase";
 
 type Locale = "zh" | "en";
 type Busy = "message" | "generate" | "apply" | "draft" | null;
@@ -12,17 +13,18 @@ const NODE_H = 58;
 
 const copy = {
   zh: {
-    canvas: "组装画布",
-    collecting: "正在了解需求",
-    ready: "可以组装蓝图",
-    generating: "正在组装蓝图",
-    review: "资源计划",
+    canvas: "工作台",
+    understanding: "正在理解需求",
+    planning: "正在生成方案",
+    compiling: "正在组装 Agent",
+    validating: "正在验证结构",
+    review: "审查方案",
     missing: "缺少能力",
     completed: "Draft 已创建",
     abandoned: "会话已放弃",
     plan: "将引用这些已登记资源",
-    emptyPlan: "发送需求后，这里会显示资源计划和蓝图。",
-    assembling: "Veyra Agent 正在按资源库组装 Blueprint，不会执行草稿。",
+    emptyPlan: "确认创建意图后，这里会显示正在构建的对象。",
+    assembling: "正在根据语义计划编译 Agent 结构。",
     missingHint: "缺失能力会写入隔离 Catalog。它们不可执行，Factory 也不能再选用，直到人工审核并登记。",
     quarantine: "写入隔离草稿",
     quarantining: "正在写入…",
@@ -30,6 +32,7 @@ const copy = {
     generate: "生成 Blueprint",
     generatingBtn: "正在生成…",
     apply: "确认创建 Draft",
+    reject: "拒绝",
     applying: "正在创建…",
     studio: "打开 Studio",
     created: "Draft 已创建。请在 Studio 检查，再用本机 Runtime 试跑直到验证通过。",
@@ -37,19 +40,21 @@ const copy = {
     child: "将创建为当前 Agent 的子版本",
     diagnostics: "修复诊断",
     availability: "运行可用性",
+    reviewReady: "方案待确认",
   },
   en: {
-    canvas: "Assembly canvas",
-    collecting: "Collecting requirements",
-    ready: "Ready to assemble",
-    generating: "Assembling blueprint",
-    review: "Resource plan",
+    canvas: "Workbench",
+    understanding: "Understanding the request",
+    planning: "Generating the plan",
+    compiling: "Assembling the Agent",
+    validating: "Validating structure",
+    review: "Review proposal",
     missing: "Missing capabilities",
     completed: "Draft created",
     abandoned: "Session abandoned",
     plan: "These registered catalog resources will be used",
-    emptyPlan: "After you describe the Agent, the resource plan and blueprint appear here.",
-    assembling: "Veyra Agent is assembling a Blueprint from the catalog. It will not execute the Draft.",
+    emptyPlan: "Once create intent is known, the object being built appears here.",
+    assembling: "Compiling the Agent structure from the semantic plan.",
     missingHint: "Missing capabilities become quarantined catalog drafts. They are not executable and Factory cannot select them until they are reviewed and registered.",
     quarantine: "Create quarantined drafts",
     quarantining: "Writing drafts…",
@@ -57,6 +62,7 @@ const copy = {
     generate: "Generate Blueprint",
     generatingBtn: "Generating…",
     apply: "Create Draft",
+    reject: "Reject",
     applying: "Creating…",
     studio: "Open Studio",
     created: "Draft created. Review it in Studio, then test-run it with the local Runtime until it verifies.",
@@ -64,16 +70,19 @@ const copy = {
     child: "Will be created as a child of the current Agent",
     diagnostics: "Repair diagnostics",
     availability: "Run availability",
+    reviewReady: "Review ready",
   },
 } as const;
 
-const stageOrder: FactorySession["state"][] = ["collecting", "ready", "generating", "review", "completed"];
+const stageOrder: WorkbenchPhase[] = ["understanding", "planning", "compiling", "validating", "review", "completed"];
 
-function stageLabel(state: FactorySession["state"], locale: Locale): string {
+function stageLabel(state: WorkbenchPhase | FactorySession["state"], locale: Locale): string {
   const text = copy[locale];
-  if (state === "missing_capability") return text.missing;
+  if (state === "missing_capability" || state === "missing") return text.missing;
   if (state === "abandoned") return text.abandoned;
-  return text[state];
+  if (state === "collecting" || state === "ready" || state === "generating") return text.understanding;
+  if (state in text) return text[state as keyof typeof text] as string;
+  return text.understanding;
 }
 
 function availabilityTone(value: FactorySession["run_availability"]): "good" | "warn" | "bad" | "neutral" {
@@ -82,23 +91,12 @@ function availabilityTone(value: FactorySession["run_availability"]): "good" | "
 
 function BlueprintFlow({
   session,
-  assembling,
 }: {
   session: FactorySession | null;
-  assembling: boolean;
 }) {
   const graph = blueprintGraph(session?.blueprint);
-  const nodes = graph.nodes.length
-    ? graph.nodes
-    : assembling
-      ? [
-          { id: "start", component_type: "Start" },
-          { id: "work", component_type: "Agent" },
-          { id: "output", component_type: "Output" },
-        ]
-      : [];
-  if (!nodes.length) return null;
-  const placed = nodes.map((node, index) => ({
+  if (!graph.nodes.length) return null;
+  const placed = graph.nodes.map((node, index) => ({
     ...node,
     x: 24 + (index % 3) * 180,
     y: 24 + Math.floor(index / 3) * 88,
@@ -110,19 +108,11 @@ function BlueprintFlow({
     if (!node) return null;
     return { x: node.x + NODE_W / 2, y: node.y + NODE_H / 2 };
   };
-  const edges = graph.transitions.length
-    ? graph.transitions
-    : assembling
-      ? [
-          { from: "start", port: "next", to: "work" },
-          { from: "work", port: "next", to: "output" },
-        ]
-      : [];
   return (
     <div className="agent-convo-flow-block">
-      <div className={`agent-convo-flow${assembling ? " is-assembling" : ""}`} style={{ width, height }}>
+      <div className="agent-convo-flow" style={{ width, height }}>
         <svg className="agent-convo-flow-edges" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-          {edges.map((edge) => {
+          {graph.transitions.map((edge) => {
             const from = center(edge.from);
             const to = center(edge.to);
             if (!from || !to) return null;
@@ -133,7 +123,7 @@ function BlueprintFlow({
           <div
             key={node.id}
             className="agent-convo-flow-node"
-            data-state={assembling ? "running" : "pending"}
+            data-state="completed"
             style={{ left: node.x, top: node.y, width: NODE_W }}
           >
             <strong>{node.component_type}</strong>
@@ -173,9 +163,12 @@ export function FactoryAssemblyCanvas({
   createdAgentId,
   drafted,
   focusChild,
+  phase,
+  planSummary,
   onClose,
   onGenerate,
   onApply,
+  onReject,
   onQuarantine,
   testRun,
 }: {
@@ -188,26 +181,43 @@ export function FactoryAssemblyCanvas({
   createdAgentId: string | null;
   drafted: boolean;
   focusChild: boolean;
+  phase?: WorkbenchPhase;
+  planSummary?: Record<string, string>;
   onClose: () => void;
   onGenerate?: () => void;
   onApply: () => void;
+  onReject?: () => void;
   onQuarantine?: () => void;
   testRun?: ReactNode;
 }) {
   const text = copy[locale];
-  const assembling = busy === "generate" || session?.state === "generating";
-  const state = assembling ? "generating" : (session?.state ?? "collecting");
-  const activeIndex = state === "missing_capability" ? 3 : Math.max(stageOrder.indexOf(state), 0);
+  const resolvedPhase = phase ?? (
+    createdAgentId || session?.state === "completed" ? "completed"
+    : session?.state === "missing_capability" ? "missing"
+    : session?.state === "review" ? "review"
+    : session?.state === "generating" || busy === "generate" ? "compiling"
+    : session?.state === "ready" ? "planning"
+    : "understanding"
+  );
+  const compiled = Boolean(session?.blueprint) && (resolvedPhase === "review" || resolvedPhase === "completed" || resolvedPhase === "missing");
+  const assembled = resolvedPhase === "compiling" || resolvedPhase === "validating";
+  const activeIndex = resolvedPhase === "missing" ? 4 : Math.max(stageOrder.indexOf(resolvedPhase), 0);
+  const showApply = resolvedPhase === "review" && !createdAgentId;
+  const showReject = showApply && Boolean(onReject);
+  const showStudio = Boolean(studioHref);
+  const showGenerate = Boolean(onGenerate);
+  const showQuarantine = Boolean(onQuarantine) && Boolean(session?.missing_capabilities.length);
+  const showActions = showApply || showReject || showStudio || showGenerate || showQuarantine;
   return (
     <aside className="agent-convo-canvas factory-assembly-canvas" aria-label={text.canvas}>
       <header className="agent-convo-canvas-head">
         <div>
-          <span className="ui-eyebrow">Canvas</span>
-          <h3>{stageLabel(state, locale)}</h3>
+          <span className="ui-eyebrow">Workbench</span>
+          <h3>{stageLabel(resolvedPhase, locale)}</h3>
         </div>
         <div className="factory-canvas-head-actions">
           {session ? <StatusBadge label={session.state} tone={session.state === "completed" ? "good" : session.state === "missing_capability" ? "bad" : "warn"} /> : null}
-          <IconButton icon={X} label={locale === "zh" ? "关闭画布" : "Close canvas"} onClick={onClose} />
+          <IconButton icon={X} label={locale === "zh" ? "关闭工作台" : "Close workbench"} onClick={onClose} />
         </div>
       </header>
       <div className="agent-convo-canvas-body">
@@ -216,14 +226,21 @@ export function FactoryAssemblyCanvas({
             <li key={item} data-active={index <= activeIndex ? "true" : "false"}>{stageLabel(item, locale)}</li>
           ))}
         </ol>
-        {!session ? <p className="factory-canvas-empty">{text.emptyPlan}</p> : null}
-        {assembling ? <p className="factory-canvas-assembling">{text.assembling}</p> : null}
-        <BlueprintFlow session={session} assembling={assembling} />
-        <ResourcePlan items={session?.resource_plan ?? []} locale={locale} />
-        {session?.resource_plan.length ? (
+        {resolvedPhase === "understanding" ? <p className="factory-canvas-empty">{text.understanding}…</p> : null}
+        {resolvedPhase === "planning" ? (
+          <div className="draft-note">
+            <strong>{text.planning}</strong>
+            {planSummary?.suggested_name ? <p>{planSummary.suggested_name}</p> : null}
+            {planSummary?.input_count ? <p>{planSummary.input_count} inputs · {planSummary.output_count ?? "0"} outputs</p> : null}
+          </div>
+        ) : null}
+        {assembled ? <p className="factory-canvas-assembling">{text.assembling}</p> : null}
+        {compiled ? <BlueprintFlow session={session} /> : null}
+        {compiled ? <ResourcePlan items={session?.resource_plan ?? []} locale={locale} /> : null}
+        {compiled && session?.resource_plan.length ? (
           <StatusBadge label={`${text.availability}: ${session.run_availability}`} tone={availabilityTone(session.run_availability)} />
         ) : null}
-        {session?.missing_capabilities.length ? (
+        {resolvedPhase === "missing" && session?.missing_capabilities.length ? (
           <div className="draft-note">
             <strong>{text.missing}</strong>
             <p>{text.missingHint}</p>
@@ -233,7 +250,7 @@ export function FactoryAssemblyCanvas({
             {drafted ? <p>{text.quarantined}</p> : null}
           </div>
         ) : null}
-        {session?.diagnostics.length ? (
+        {compiled && session?.diagnostics.length ? (
           <Alert type="warning" title={text.diagnostics}>
             {session.diagnostics.map((item) => <p key={item}>{item}</p>)}
           </Alert>
@@ -245,18 +262,19 @@ export function FactoryAssemblyCanvas({
             <p>{text.noExecute}</p>
           </div>
         ) : null}
-        <div className="factory-canvas-actions">
-          {onGenerate ? <Button variant="primary" disabled={!canGenerate || Boolean(busy)} onClick={onGenerate}>
+        {showActions ? <div className="factory-canvas-actions">
+          {showGenerate ? <Button variant="primary" disabled={!canGenerate || Boolean(busy)} onClick={onGenerate}>
             {busy === "generate" ? text.generatingBtn : text.generate}
           </Button> : null}
-          <Button disabled={!canApply || Boolean(busy)} onClick={onApply}>
+          {showApply ? <Button disabled={!canApply || Boolean(busy)} onClick={onApply}>
             {busy === "apply" ? text.applying : text.apply}
-          </Button>
-          {onQuarantine ? <Button disabled={!session?.missing_capabilities.length || Boolean(busy)} onClick={onQuarantine}>
+          </Button> : null}
+          {showReject ? <Button disabled={!canApply || Boolean(busy)} onClick={onReject}>{text.reject}</Button> : null}
+          {showQuarantine ? <Button disabled={!session?.missing_capabilities.length || Boolean(busy)} onClick={onQuarantine}>
             {busy === "draft" ? text.quarantining : text.quarantine}
           </Button> : null}
-          {studioHref ? <LinkButton href={studioHref}>{text.studio}</LinkButton> : null}
-        </div>
+          {showStudio ? <LinkButton href={studioHref!}>{text.studio}</LinkButton> : null}
+        </div> : null}
         {focusChild && canApply ? <p className="factory-canvas-kicker">{text.child}</p> : null}
         {createdAgentId ? testRun : null}
         <p className="factory-canvas-kicker">{text.noExecute}</p>

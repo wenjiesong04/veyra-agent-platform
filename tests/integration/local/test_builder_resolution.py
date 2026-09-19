@@ -8,7 +8,7 @@ import pytest
 
 from tests.integration.local.test_edit_proposal_routes import _target
 from tests.integration.local.test_factory_routes import (
-    VALID_BLUEPRINT,
+    VALID_SEMANTIC_PLAN,
     ScriptedKimiTransport,
     _client,
     _completion,
@@ -190,7 +190,7 @@ def test_creation_resolves_type_without_creating_objects(tmp_path, kind):
             transport.completions.extend(
                 [
                     _completion("Ready for a proposal."),
-                    _completion(json.dumps(VALID_BLUEPRINT)),
+                    _completion(json.dumps(VALID_SEMANTIC_PLAN)),
                 ]
             )
             session = client.post(

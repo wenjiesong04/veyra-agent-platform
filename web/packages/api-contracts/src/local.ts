@@ -203,6 +203,124 @@ export type BuilderResolution = {
   plan: string[];
   targets: { kind: EditTargetKind; target_id: string; name: string; revision?: number; etag?: string }[];
 };
+export type BuilderMessageKind =
+  | "user"
+  | "assistant"
+  | "plan"
+  | "clarification"
+  | "failure"
+  | "proposal_reference"
+  | "reject"
+  | "confirm"
+  | "apply_summary"
+  | "validation_summary"
+  | "result";
+export type BuilderTargetKind = "agent" | "workflow";
+export type BuilderOperationEventKind =
+  | "builder.operation.started"
+  | "builder.intent.started"
+  | "builder.intent.resolved"
+  | "builder.semantic_plan.started"
+  | "builder.semantic_plan.completed"
+  | "builder.capabilities.started"
+  | "builder.capabilities.resolved"
+  | "builder.compile.started"
+  | "builder.compile.completed"
+  | "builder.validation.started"
+  | "builder.validation.completed"
+  | "builder.proposal.ready"
+  | "builder.proposal.confirmed"
+  | "builder.proposal.rejected"
+  | "builder.apply.started"
+  | "builder.apply.completed"
+  | "builder.operation.completed"
+  | "builder.operation.failed";
+export type BuilderOperationEvent = {
+  event_id: string;
+  operation_id: string;
+  sequence: number;
+  kind: BuilderOperationEventKind;
+  label: string;
+  summary: string;
+  facts: Record<string, string>;
+  created_at: string;
+};
+export type BuilderConversationMessage = {
+  message_id: string;
+  conversation_id: string;
+  sequence: number;
+  role: "user" | "assistant" | "system";
+  kind: BuilderMessageKind;
+  content: string;
+  operation_id: string | null;
+  payload: Record<string, string>;
+  created_at: string;
+};
+export type BuilderOperationStatus = "in_progress" | "waiting" | "succeeded" | "failed" | "rejected";
+export type BuilderConversationOperation = {
+  operation_id: string;
+  conversation_id: string;
+  kind: string;
+  target_kind: BuilderTargetKind | null;
+  status: BuilderOperationStatus;
+  retry_of: string | null;
+  error_code: string | null;
+  proposal_id: string | null;
+  run_id: string | null;
+  factory_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+  diagnostic: Record<string, string>;
+  has_request: boolean;
+  events: BuilderOperationEvent[];
+};
+export type BuilderConversationSummary = {
+  conversation_id: string;
+  project_id: string;
+  title: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+  last_operation_status: BuilderOperationStatus | null;
+};
+export type BuilderConversationSnapshot = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  conversation: BuilderConversationSummary;
+  messages: BuilderConversationMessage[];
+  operations: BuilderConversationOperation[];
+  resolution: BuilderResolution | null;
+  factory_session: FactorySession | null;
+};
+export type BuilderTurnRequest = {
+  conversation_id?: string;
+  content?: string;
+  focus: { kind: EditTargetKind; target_id: string } | null;
+  locale: "zh" | "en";
+  retry_of?: string;
+};
+export type BuilderRecordKind = "proposal_reference" | "reject" | "confirm" | "apply_summary" | "validation_summary";
+export type BuilderConversationRecordRequest = {
+  kind: BuilderRecordKind;
+  content: string;
+  operation_id?: string;
+  proposal_id?: string;
+  details?: Record<string, string>;
+};
+export type BuilderActivityItem = {
+  kind: "conversation";
+  id: string;
+  conversation_id: string;
+  title: string;
+  status: string;
+  operation_kind: string;
+  occurred_at: string;
+};
+export type BuilderActivityResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  items: BuilderActivityItem[];
+};
 export type EditProposalCommand = "apply" | "reject" | "undo";
 export type CreateEditProposalRequest = {
   target_kind: EditTargetKind;
@@ -210,6 +328,72 @@ export type CreateEditProposalRequest = {
   instruction: string;
   expected_revision: number;
   expected_etag: string;
+};
+export type CreateKnowledgeBindingRequest = {
+  agent_id: string;
+  instruction: string;
+  expected_revision: number;
+  expected_etag: string;
+};
+export type KnowledgeBindingPlan = {
+  reference: string;
+  name: string;
+  source_file_hash: string;
+  index_status: KnowledgeProcessing["index_status"];
+  chunk_count?: number | null;
+  failure_reason: string | null;
+  runnable: boolean;
+  required_action: "build_index" | "rebuild_index" | null;
+};
+export type CreateResourceBindingRequest = {
+  agent_id: string;
+  instruction: string;
+  expected_revision: number;
+  expected_etag: string;
+};
+export type CreateValidationRepairRequest = {
+  agent_id: string;
+  reference: string;
+  code: string;
+  expected_revision: number;
+  expected_etag: string;
+};
+export type ValidationRepairPlan = {
+  code: string;
+  kind: string;
+  reference: string;
+  name: string;
+  repairable: true;
+  automatic_upgrade: false;
+  project_resource_changed: false;
+  locked_hash?: string | null;
+  bound_content_hash?: string | null;
+  content_hash?: string | null;
+  required_permissions?: ResourcePermissions;
+  target_kind: "agent";
+  impact: string;
+};
+export type ResourceBindingReadiness =
+  | "ready"
+  | "requires_configuration"
+  | "design_only"
+  | "unavailable"
+  | "quarantined"
+  | "unsupported"
+  | "stale";
+export type ResourceBindingPlan = {
+  reference: string;
+  name: string;
+  bound_content_hash: string;
+  catalog_content_hash: string;
+  binding_status: "current" | "stale";
+  readiness: ResourceBindingReadiness;
+  availability: ResourceAvailability;
+  runtime_status: ResourceRuntimeStatus;
+  required_permissions: ResourcePermissions;
+  blocking_reasons: Array<{ code: string; message: string }>;
+  project_resource_changed: false;
+  automatic_upgrade: false;
 };
 export type EditProposalChange = {
   path: string;
@@ -230,6 +414,9 @@ export type EditProposal = {
   candidate_source: StudioSource;
   changes: EditProposalChange[];
   permission_changes: EditProposalChange[];
+  knowledge_binding?: KnowledgeBindingPlan;
+  resource_binding?: ResourceBindingPlan;
+  validation_repair?: ValidationRepairPlan;
   impact: {
     target_kind: EditTargetKind;
     target_id: string;
@@ -717,7 +904,7 @@ export type AgentDependencySummary = {
 
 export type ValidateResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
-  valid: true;
+  valid: boolean;
   source_hash: string;
   behavior_hash: string;
   lock_hash: string;
@@ -930,12 +1117,25 @@ export type FactorySession = {
   blueprint: JsonObject | null;
   diagnostics: string[];
   missing_capabilities: FactoryMissingCapability[];
+  candidate: { name: string; slug?: string } | null;
   run_availability: FactoryRunAvailability;
   executes_drafts: false;
   revision: number;
   created_at: string;
   updated_at: string;
   messages: FactoryMessage[];
+};
+
+export type ProviderCapabilityProfile = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  provider_family: "moonshot" | "openai_compatible";
+  structured_output: "json_schema" | "json_object";
+  schema_flavor: "moonshot_mfjs" | "none";
+  strict_json_schema: boolean;
+  json_object_fallback: boolean;
+  reasoning_effort: boolean;
+  source: "host_defaults";
+  probed: boolean;
 };
 
 export type FactoryStatus = {
@@ -947,6 +1147,7 @@ export type FactoryStatus = {
   reasoning_effort: "low" | "high" | "max";
   repair_attempts: number;
   executes_drafts: false;
+  capability_profile: ProviderCapabilityProfile;
 };
 
 export type RuntimeStatus = {

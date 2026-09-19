@@ -1,11 +1,11 @@
-import { Boxes, Gauge, MessageCirclePlus, Wrench } from "lucide-react";
-import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
+import { Boxes, Gauge, MessageCircle, MessageCirclePlus, Wrench } from "lucide-react";
+import { desktopRoutePaths, projectRoutePaths, type BuilderActivityItem, type DesktopRouteLocation } from "@veyra/api-contracts";
 import type { NavigationGroup } from "@veyra/ui";
 
 export type AgentContextRouteKind = "agent-detail" | "agent-design" | "agent-analysis" | "agent-run" | "agent-version";
 export type AgentContextRoute = { kind: AgentContextRouteKind; path: string; projectId: string; agentId: string; versionId?: string };
 export type ProjectContextRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "factory";
-export type ProjectContextRoute = { kind: ProjectContextRouteKind; path: string; projectId: string; workflowId?: string; knowledgeId?: string };
+export type ProjectContextRoute = { kind: ProjectContextRouteKind; path: string; projectId: string; workflowId?: string; knowledgeId?: string; conversationId?: string };
 export type DesktopLocale = "zh" | "en";
 
 export function isAgentContextRoute(route: DesktopRouteLocation): route is AgentContextRoute {
@@ -72,6 +72,7 @@ export function projectContextNavigation(route: ProjectContextRoute, locale: Des
   const labels = locale === "zh"
     ? { newChat: "新聊天", resourceLibrary: "项目资源", analysis: "数据分析", factory: "Factory" }
     : { newChat: "New chat", resourceLibrary: "Project resources", analysis: "Data analysis", factory: "Factory" };
+  const chatHref = projectRoutePaths.projectChat(route.projectId);
   const activeHref = projectContextActiveHref(route);
   const projectHref = projectRoutePaths.projectResources(route.projectId);
   const factoryHref = projectRoutePaths.factory(route.projectId);
@@ -80,7 +81,7 @@ export function projectContextNavigation(route: ProjectContextRoute, locale: Des
     section: "fixed",
     backLink: workspaceContextBackLink(locale),
     items: [
-      { href: projectRoutePaths.projectChat(route.projectId), label: labels.newChat, icon: MessageCirclePlus, active: activeHref === projectRoutePaths.projectChat(route.projectId) },
+      { href: chatHref, label: labels.newChat, icon: MessageCirclePlus, active: route.kind === "project-chat" && !route.conversationId },
       { href: projectHref, label: labels.resourceLibrary, icon: Boxes, active: activeHref === projectHref },
       { href: projectRoutePaths.projectAnalysis(route.projectId), label: labels.analysis, icon: Gauge, active: activeHref === projectRoutePaths.projectAnalysis(route.projectId) },
       ...(route.kind === "factory" ? [{ href: factoryHref, label: labels.factory, icon: Wrench, active: true }] : []),
@@ -88,12 +89,65 @@ export function projectContextNavigation(route: ProjectContextRoute, locale: Des
   };
 }
 
-export function agentRecentNavigation(locale: DesktopLocale): NavigationGroup {
+export function relativeActivityTime(value: string, locale: DesktopLocale, now = Date.now()): string {
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return value;
+  const minutes = Math.max(0, Math.round((now - stamp) / 60_000));
+  if (minutes < 1) return locale === "zh" ? "刚刚" : "just now";
+  if (minutes < 60) return locale === "zh" ? `${minutes} 分钟前` : `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return locale === "zh" ? `${hours} 小时前` : `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return locale === "zh" ? `${days} 天前` : `${days}d ago`;
+}
+
+function activityStatusLabel(status: string, locale: DesktopLocale): string {
+  const zh = locale === "zh";
+  if (status === "failed") return zh ? "Failed" : "Failed";
+  if (status === "waiting" || status === "in_progress") return zh ? "Waiting" : "Waiting";
+  if (status === "rejected") return zh ? "Rejected" : "Rejected";
+  if (status === "verified" || status === "succeeded" || status === "completed") return zh ? "Completed" : "Completed";
+  if (status === "running") return zh ? "Running" : "Running";
+  return status;
+}
+
+function conversationKindLabel(kind: string, locale: DesktopLocale): string {
+  if (kind === "create_agent") return locale === "zh" ? "创建 Agent" : "Create Agent";
+  if (kind === "edit") return locale === "zh" ? "修改" : "Edit";
+  return locale === "zh" ? "对话" : "Chat";
+}
+
+export function agentRecentNavigation(
+  locale: DesktopLocale,
+  items: BuilderActivityItem[] = [],
+  context: { projectId?: string; projectName?: string; conversationId?: string } = {},
+): NavigationGroup {
+  const empty = {
+    label: "Recent",
+    section: "recent" as const,
+    items: [],
+    status: "empty" as const,
+    statusText: locale === "zh" ? "暂无最近聊天。" : "No recent chats yet.",
+  };
+  if (!context.projectId) return empty;
+  const conversations = items.filter((item) => item.kind === "conversation" && item.conversation_id);
+  if (!conversations.length) return empty;
+  const projectId = context.projectId;
+  const projectName = context.projectName ?? "";
   return {
     label: "Recent",
     section: "recent",
-    items: [],
-    status: "empty",
-    statusText: locale === "zh" ? "暂无最近聊天或运行记录。" : "No recent conversations or runs yet.",
+    items: conversations.map((item) => {
+      const when = relativeActivityTime(item.occurred_at, locale);
+      const detail = [projectName, when].filter(Boolean).join(" · ");
+      return {
+        href: projectRoutePaths.projectChat(projectId, item.conversation_id),
+        label: item.title,
+        icon: MessageCircle,
+        active: context.conversationId === item.conversation_id,
+        detail,
+        meta: `${conversationKindLabel(item.operation_kind, locale)} · ${activityStatusLabel(item.status, locale)}`,
+      };
+    }),
   };
 }

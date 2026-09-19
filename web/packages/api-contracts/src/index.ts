@@ -17,7 +17,9 @@ export type DesktopRoute = keyof typeof desktopRoutePaths;
 
 export const projectRoutePaths = {
   project: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}`,
-  projectChat: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/chat`,
+  projectChat: (projectId: string, conversationId?: string) => conversationId
+    ? `#/projects/${encodeRouteSegment(projectId)}/chat?conversation=${encodeRouteSegment(conversationId)}`
+    : `#/projects/${encodeRouteSegment(projectId)}/chat`,
   projectAnalysis: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/analysis`,
   projectResources: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/resources`,
   agents: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents`,
@@ -54,7 +56,7 @@ export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 export type DesktopRouteLocation =
   | { kind: "projects"; path: string }
   | { kind: DesktopRoute; path: string; }
-  | { kind: ProjectRouteKind; path: string; projectId: string; agentId?: string; versionId?: string; workflowId?: string; knowledgeId?: string }
+  | { kind: ProjectRouteKind; path: string; projectId: string; agentId?: string; versionId?: string; workflowId?: string; knowledgeId?: string; conversationId?: string }
   | { kind: DesktopSubrouteKind; path: string; componentId?: string; fileId?: string; owner?: string; slug?: string; versionId?: string }
   | { kind: DesktopAuthRouteKind; path: string }
   | { kind: "not-found"; path: string };
@@ -82,6 +84,14 @@ function fromWorkflowQuery(input: string): string | undefined {
   const raw = input.replace(/^#/, "");
   const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
   const value = new URLSearchParams(query).get("fromWorkflow");
+  const decoded = value ? decodeRouteSegment(value) : null;
+  return decoded ?? undefined;
+}
+
+function conversationQuery(input: string): string | undefined {
+  const raw = input.replace(/^#/, "");
+  const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
+  const value = new URLSearchParams(query).get("conversation");
   const decoded = value ? decodeRouteSegment(value) : null;
   return decoded ?? undefined;
 }
@@ -131,7 +141,12 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   const projectId = parts[1] ? decodeRouteSegment(parts[1]) : null;
   if (!projectId) return { kind: "not-found", path };
   if (parts.length === 2) return { kind: "project", path, projectId };
-  if (parts.length === 3 && parts[2] === "chat") return { kind: "project-chat", path, projectId };
+  if (parts.length === 3 && parts[2] === "chat") {
+    const conversationId = conversationQuery(input);
+    return conversationId
+      ? { kind: "project-chat", path, projectId, conversationId }
+      : { kind: "project-chat", path, projectId };
+  }
   if (parts.length === 3 && parts[2] === "analysis") return { kind: "project-analysis", path, projectId };
   if (parts.length === 3 && parts[2] === "resources") return { kind: "project-resources", path, projectId };
   if (parts.length === 3 && parts[2] === "factory") return { kind: "factory", path, projectId };

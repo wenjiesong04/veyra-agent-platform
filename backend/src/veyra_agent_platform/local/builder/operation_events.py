@@ -1,0 +1,81 @@
+"""Canonical BuilderOperation event kinds. Server-owned, not UI timers."""
+
+from __future__ import annotations
+
+from typing import Final
+
+OPERATION_STARTED = "builder.operation.started"
+INTENT_STARTED = "builder.intent.started"
+INTENT_RESOLVED = "builder.intent.resolved"
+SEMANTIC_PLAN_STARTED = "builder.semantic_plan.started"
+SEMANTIC_PLAN_COMPLETED = "builder.semantic_plan.completed"
+CAPABILITIES_STARTED = "builder.capabilities.started"
+CAPABILITIES_RESOLVED = "builder.capabilities.resolved"
+COMPILE_STARTED = "builder.compile.started"
+COMPILE_COMPLETED = "builder.compile.completed"
+VALIDATION_STARTED = "builder.validation.started"
+VALIDATION_COMPLETED = "builder.validation.completed"
+PROPOSAL_READY = "builder.proposal.ready"
+PROPOSAL_CONFIRMED = "builder.proposal.confirmed"
+PROPOSAL_REJECTED = "builder.proposal.rejected"
+APPLY_STARTED = "builder.apply.started"
+APPLY_COMPLETED = "builder.apply.completed"
+OPERATION_COMPLETED = "builder.operation.completed"
+OPERATION_FAILED = "builder.operation.failed"
+
+EVENT_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        OPERATION_STARTED,
+        INTENT_STARTED,
+        INTENT_RESOLVED,
+        SEMANTIC_PLAN_STARTED,
+        SEMANTIC_PLAN_COMPLETED,
+        CAPABILITIES_STARTED,
+        CAPABILITIES_RESOLVED,
+        COMPILE_STARTED,
+        COMPILE_COMPLETED,
+        VALIDATION_STARTED,
+        VALIDATION_COMPLETED,
+        PROPOSAL_READY,
+        PROPOSAL_CONFIRMED,
+        PROPOSAL_REJECTED,
+        APPLY_STARTED,
+        APPLY_COMPLETED,
+        OPERATION_COMPLETED,
+        OPERATION_FAILED,
+    }
+)
+
+TERMINAL_EVENT_KINDS: Final[frozenset[str]] = frozenset(
+    {OPERATION_COMPLETED, OPERATION_FAILED, PROPOSAL_REJECTED}
+)
+
+_LABELS: Final[dict[str, tuple[str, str]]] = {
+    OPERATION_STARTED: ("开始构建", "Started"),
+    INTENT_STARTED: ("理解需求", "Understanding request"),
+    INTENT_RESOLVED: ("理解需求", "Understanding request"),
+    SEMANTIC_PLAN_STARTED: ("生成方案", "Planning Agent"),
+    SEMANTIC_PLAN_COMPLETED: ("生成方案", "Planning Agent"),
+    CAPABILITIES_STARTED: ("解析资源", "Resolving capabilities"),
+    CAPABILITIES_RESOLVED: ("解析资源", "Resolving capabilities"),
+    COMPILE_STARTED: ("编译 Agent", "Compiling Agent"),
+    COMPILE_COMPLETED: ("编译 Agent", "Compiling Agent"),
+    VALIDATION_STARTED: ("验证结构", "Validating"),
+    VALIDATION_COMPLETED: ("验证结构", "Validating"),
+    PROPOSAL_READY: ("等待确认", "Preparing review"),
+    PROPOSAL_CONFIRMED: ("用户确认", "Confirmed"),
+    PROPOSAL_REJECTED: ("已拒绝", "Rejected"),
+    APPLY_STARTED: ("创建 Draft", "Creating Draft"),
+    APPLY_COMPLETED: ("创建 Draft", "Creating Draft"),
+    OPERATION_COMPLETED: ("完成", "Completed"),
+    OPERATION_FAILED: ("失败", "Failed"),
+}
+
+
+def event_label(kind: str, *, locale: str = "en") -> str:
+    pair = _LABELS.get(kind, ("工作阶段", "Work stage"))
+    return pair[0] if locale == "zh" else pair[1]
+
+
+def is_terminal_event(kind: str) -> bool:
+    return kind in TERMINAL_EVENT_KINDS

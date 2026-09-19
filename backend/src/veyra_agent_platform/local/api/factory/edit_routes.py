@@ -11,6 +11,8 @@ from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.factory.edit_service import (
     EditCommand,
     EditProposalService,
+    KnowledgeBindingUnresolved,
+    ResourceBindingUnresolved,
     TargetKind,
 )
 
@@ -23,6 +25,34 @@ class CreateEditProposalRequest(BaseModel):
     target_kind: TargetKind
     target_id: str = Field(min_length=1, max_length=64)
     instruction: str = Field(min_length=1, max_length=10_000)
+    expected_revision: int = Field(ge=0, strict=True)
+    expected_etag: str = Field(min_length=1, max_length=200)
+
+
+class CreateKnowledgeBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(min_length=1, max_length=64)
+    instruction: str = Field(min_length=1, max_length=10_000)
+    expected_revision: int = Field(ge=0, strict=True)
+    expected_etag: str = Field(min_length=1, max_length=200)
+
+
+class CreateResourceBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(min_length=1, max_length=64)
+    instruction: str = Field(min_length=1, max_length=10_000)
+    expected_revision: int = Field(ge=0, strict=True)
+    expected_etag: str = Field(min_length=1, max_length=200)
+
+
+class CreateValidationRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(min_length=1, max_length=64)
+    reference: str = Field(min_length=1, max_length=200)
+    code: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=0, strict=True)
     expected_etag: str = Field(min_length=1, max_length=200)
 
@@ -49,6 +79,92 @@ def build_router() -> APIRouter:
                 payload.target_kind,
                 payload.target_id,
                 payload.instruction,
+                payload.expected_revision,
+                payload.expected_etag,
+            )
+        )
+
+    @router.post("/knowledge-binding", status_code=status.HTTP_201_CREATED)
+    def create_knowledge_binding(
+        project_id: str, payload: CreateKnowledgeBindingRequest, request: Request
+    ) -> dict[str, Any]:
+        service = _service(request)
+
+        def operation() -> dict[str, Any]:
+            try:
+                return service.create_knowledge_binding(
+                    project_id,
+                    payload.agent_id,
+                    payload.instruction,
+                    payload.expected_revision,
+                    payload.expected_etag,
+                )
+            except KnowledgeBindingUnresolved as exc:
+                raise TypedApiError(
+                    422,
+                    f"knowledge_mention_{exc.status}",
+                    "No single Project Knowledge document matched this request.",
+                    details={
+                        "candidates": ", ".join(
+                            f"{item['name']} ({item['knowledge_id']}@{item['version']})"
+                            for item in exc.candidates
+                        )
+                    },
+                ) from exc
+
+        return _translate(operation)
+
+    @router.post("/resource-binding", status_code=status.HTTP_201_CREATED)
+    def create_resource_binding(
+        project_id: str, payload: CreateResourceBindingRequest, request: Request
+    ) -> dict[str, Any]:
+        service = _service(request)
+
+        def operation() -> dict[str, Any]:
+            try:
+                return service.create_resource_binding(
+                    project_id,
+                    payload.agent_id,
+                    payload.instruction,
+                    payload.expected_revision,
+                    payload.expected_etag,
+                )
+            except ResourceBindingUnresolved as exc:
+                if exc.status == "unbound":
+                    message = (
+                        "filesystem.read is available in the Catalog but has not "
+                        "been added to this Project."
+                    )
+                elif exc.status == "ambiguous":
+                    message = (
+                        "Multiple Project Resources match; choose an exact version."
+                    )
+                else:
+                    message = "No supported Project Resource matched this request."
+                raise TypedApiError(
+                    422,
+                    f"resource_mention_{exc.status}",
+                    message,
+                    details={
+                        "candidates": ", ".join(
+                            f"{item['name']} ({item['reference']})"
+                            for item in exc.candidates
+                        )
+                    },
+                ) from exc
+
+        return _translate(operation)
+
+    @router.post("/validation-repair", status_code=status.HTTP_201_CREATED)
+    def create_validation_repair(
+        project_id: str, payload: CreateValidationRepairRequest, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _service(request).create_validation_repair(
+                project_id,
+                payload.agent_id,
+                payload.reference,
+                payload.code,
                 payload.expected_revision,
                 payload.expected_etag,
             )

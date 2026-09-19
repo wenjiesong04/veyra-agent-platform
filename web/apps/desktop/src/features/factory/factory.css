@@ -425,8 +425,12 @@
 }
 
 .factory-canvas-actions {
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
   margin-top: 8px;
+}
+
+.factory-canvas-actions .ui-button {
+  min-width: 0;
 }
 
 .factory-canvas-kicker,
@@ -502,5 +506,9 @@
 
   .factory-apply .ui-button {
     width: 100%;
+  }
+
+  .factory-canvas-actions {
+    grid-template-columns: 1fr;
   }
 }
