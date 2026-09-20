@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from veyra_agent_platform.local.builder.receipts import HarnessReceiptRecorder
+from veyra_agent_platform.local.factory.client import FactoryProviderError
 from veyra_agent_platform.local.factory.edit_service import EditProposalService
 from veyra_agent_platform.local.factory.service import FactoryError
 
@@ -52,7 +54,13 @@ class BuilderResolutionService:
     def __init__(self, edits: EditProposalService) -> None:
         self.edits = edits
 
-    def resolve(self, project_id: str, request: ResolveRequest) -> dict[str, Any]:
+    def resolve(
+        self,
+        project_id: str,
+        request: ResolveRequest,
+        *,
+        receipts: HarnessReceiptRecorder | None = None,
+    ) -> dict[str, Any]:
         messages = self.edits.harness.messages(
             project_id,
             "resolve_intent",
@@ -74,9 +82,32 @@ class BuilderResolutionService:
                 "builder_target_invalid", "Context target is not in this Project"
             )
         self.edits.client.ensure_model()
-        completion = self.edits.client.complete(
-            messages, response_format={"type": "json_object"}
-        )
+        schema = Intent.model_json_schema()
+        receipt_id = None
+        if receipts is not None:
+            receipt_id = receipts.begin(
+                kind="resolve_intent",
+                harness_mode="resolve_intent",
+                structured_mode="json_object",
+                output_contract="BuilderIntentV1",
+                schema=schema,
+                messages=messages,
+                history_message_count=len(request.history),
+            )
+        try:
+            completion = self.edits.client.complete(
+                messages, response_format={"type": "json_object"}
+            )
+        except Exception as exc:
+            if (
+                receipt_id is not None
+                and receipts is not None
+                and isinstance(exc, FactoryProviderError)
+            ):
+                receipts.fail(receipt_id, exc)
+            raise
+        if receipt_id is not None and receipts is not None:
+            receipts.succeed(receipt_id, provider_request_id=completion.request_id)
         try:
             if len(completion.content.encode()) > 40_000:
                 raise ValueError("Resolution exceeds the size limit")

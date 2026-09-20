@@ -17,6 +17,7 @@ import {
   type BuilderActivityResponse,
   type BuilderConversationMessage,
   type BuilderConversationOperation,
+  type BuilderHarnessReceipt,
   type BuilderConversationSummary,
   type BuilderMessageKind,
   type BuilderOperationEvent,
@@ -234,6 +235,7 @@ export type LocalProjectApi = {
   listResources?(filters?: ListResourceFilters): Promise<ListResourcesResponse>;
   getResource?(resourceId: string, version: string): Promise<ResourceDescriptor>;
   factoryStatus?(): Promise<FactoryStatus>;
+  probeFactoryCapabilities?(): Promise<FactoryStatus>;
   runtimeStatus?(): Promise<RuntimeStatus>;
   validateRuntimeProfile?(profile: RuntimeApiProfileInput): Promise<RuntimeProfileValidation>;
   runtimeReadiness?(projectId: string, agentId: string): Promise<RuntimeReadiness>;
@@ -886,6 +888,9 @@ const builderEventKinds = new Set<BuilderOperationEventKind>([
   "builder.operation.completed",
   "builder.operation.failed",
 ]);
+const builderHarnessInvocationKinds = new Set(["resolve_intent", "interview", "semantic_plan", "semantic_plan_repair"]);
+const builderHarnessReceiptStatuses = new Set(["prepared", "success", "failed"]);
+const builderHarnessStructuredModes = new Set(["strict_json_schema", "json_object", "none"]);
 
 function optionalId(value: unknown, field: string, status: number): string | null {
   if (value === null || value === undefined) return null;
@@ -935,6 +940,60 @@ function builderOperationEvent(value: unknown, status: number): BuilderOperation
   };
 }
 
+function builderHarnessReceipt(value: unknown, status: number): BuilderHarnessReceipt {
+  const record = asRecord(value, status);
+  const invocation = asString(record.invocation_kind, "builder.receipt.invocation_kind", status) as BuilderHarnessReceipt["invocation_kind"];
+  if (!builderHarnessInvocationKinds.has(invocation)) {
+    throw new LocalApiClientError("Invalid Builder harness receipt", { status, code: "invalid_response" });
+  }
+  const receiptStatus = asString(record.status, "builder.receipt.status", status) as BuilderHarnessReceipt["status"];
+  if (!builderHarnessReceiptStatuses.has(receiptStatus)) {
+    throw new LocalApiClientError("Invalid Builder harness receipt status", { status, code: "invalid_response" });
+  }
+  const structured = asString(record.structured_mode, "builder.receipt.structured_mode", status) as BuilderHarnessReceipt["structured_mode"];
+  if (!builderHarnessStructuredModes.has(structured)) {
+    throw new LocalApiClientError("Invalid Builder harness structured mode", { status, code: "invalid_response" });
+  }
+  return {
+    receipt_id: asString(record.receipt_id, "builder.receipt_id", status),
+    operation_id: asString(record.operation_id, "builder.receipt.operation_id", status),
+    conversation_id: asString(record.conversation_id, "builder.receipt.conversation_id", status),
+    project_id: asString(record.project_id, "builder.receipt.project_id", status),
+    invocation_kind: invocation,
+    sequence: asNumber(record.sequence, "builder.receipt.sequence", status),
+    status: receiptStatus,
+    started_at: asString(record.started_at, "builder.receipt.started_at", status),
+    completed_at: optionalId(record.completed_at, "builder.receipt.completed_at", status),
+    harness_mode: asString(record.harness_mode, "builder.receipt.harness_mode", status),
+    policy_version: asString(record.policy_version, "builder.receipt.policy_version", status),
+    policy_hash: asString(record.policy_hash, "builder.receipt.policy_hash", status),
+    output_contract: asString(record.output_contract, "builder.receipt.output_contract", status),
+    schema_version: asString(record.schema_version, "builder.receipt.schema_version", status),
+    schema_hash: asString(record.schema_hash, "builder.receipt.schema_hash", status),
+    structured_mode: structured,
+    project_snapshot_hash: asString(record.project_snapshot_hash, "builder.receipt.project_snapshot_hash", status),
+    catalog_snapshot_hash: asString(record.catalog_snapshot_hash, "builder.receipt.catalog_snapshot_hash", status),
+    included_categories: asArray(record.included_categories, "builder.receipt.included_categories", status).map((item) => asString(item, "builder.receipt.included", status)) as BuilderHarnessReceipt["included_categories"],
+    excluded_categories: asArray(record.excluded_categories, "builder.receipt.excluded_categories", status).map((item) => asString(item, "builder.receipt.excluded", status)) as BuilderHarnessReceipt["excluded_categories"],
+    history_message_count: asNumber(record.history_message_count, "builder.receipt.history_message_count", status),
+    context_size_bytes: asNumber(record.context_size_bytes, "builder.receipt.context_size_bytes", status),
+    request_size_bytes: asNumber(record.request_size_bytes, "builder.receipt.request_size_bytes", status),
+    provider_id: asString(record.provider_id, "builder.receipt.provider_id", status),
+    model: asString(record.model, "builder.receipt.model", status),
+    endpoint_kind: asString(record.endpoint_kind, "builder.receipt.endpoint_kind", status),
+    provider_profile_status: asString(record.provider_profile_status, "builder.receipt.provider_profile_status", status),
+    provider_profile_source: asString(record.provider_profile_source, "builder.receipt.provider_profile_source", status),
+    schema_profile: asString(record.schema_profile, "builder.receipt.schema_profile", status),
+    failure_stage: optionalId(record.failure_stage, "builder.receipt.failure_stage", status),
+    error_code: optionalId(record.error_code, "builder.receipt.error_code", status),
+    safe_provider_error_type: optionalId(record.safe_provider_error_type, "builder.receipt.safe_provider_error_type", status),
+    safe_provider_error_param: optionalId(record.safe_provider_error_param, "builder.receipt.safe_provider_error_param", status),
+    provider_request_id: optionalId(record.provider_request_id, "builder.receipt.provider_request_id", status),
+    fallback_from: optionalId(record.fallback_from, "builder.receipt.fallback_from", status),
+    fallback_to: optionalId(record.fallback_to, "builder.receipt.fallback_to", status),
+  };
+}
+
 function builderConversationOperation(value: unknown, status: number): BuilderConversationOperation {
   const record = asRecord(value, status);
   const opStatus = asString(record.status, "builder.operation.status", status) as BuilderOperationStatus;
@@ -963,6 +1022,7 @@ function builderConversationOperation(value: unknown, status: number): BuilderCo
     diagnostic: stringFacts(record.diagnostic, "builder.diagnostic", status),
     has_request: asBoolean(record.has_request, "builder.has_request", status),
     events: asArray(record.events ?? [], "builder.operation.events", status).map((item) => builderOperationEvent(item, status)),
+    receipts: asArray(record.receipts ?? [], "builder.operation.receipts", status).map((item) => builderHarnessReceipt(item, status)),
   };
 }
 
@@ -1999,52 +2059,79 @@ function factoryStatus(value: unknown, status = 502): FactoryStatus {
 const providerFamilies = new Set<ProviderCapabilityProfile["provider_family"]>(["moonshot", "openai_compatible"]);
 const structuredOutputs = new Set<ProviderCapabilityProfile["structured_output"]>(["json_schema", "json_object"]);
 const schemaFlavors = new Set<ProviderCapabilityProfile["schema_flavor"]>(["moonshot_mfjs", "none"]);
+const schemaProfiles = new Set<ProviderCapabilityProfile["schema_profile"]>(["mfjs", "openai_json_schema", "unknown"]);
+const endpointKinds = new Set<ProviderCapabilityProfile["endpoint_kind"]>(["chat_completions", "responses", "compatible_chat"]);
+const profileSources = new Set<ProviderCapabilityProfile["source"]>(["static_known", "probe", "fallback"]);
+const profileStatuses = new Set<ProviderCapabilityProfile["status"]>(["known", "unknown", "stale", "failed", "inconclusive"]);
+const capabilitySupports = new Set<ProviderCapabilityProfile["strict_json_schema_support"]>(["supported", "unsupported", "unknown"]);
+
+function optionalProfileText(value: unknown, field: string, status = 502): string | null {
+  if (value === null) return null;
+  return asString(value, field, status);
+}
+
+function providerCapabilitySummary(value: unknown, status = 502): ProviderCapabilityProfile["summary"] {
+  const record = asRecord(value, status);
+  return {
+    provider: asString(record.provider, "factory.capability_profile.summary.provider", status),
+    model: asString(record.model, "factory.capability_profile.summary.model", status),
+    structured_output: asString(record.structured_output, "factory.capability_profile.summary.structured_output", status),
+    schema_profile: asString(record.schema_profile, "factory.capability_profile.summary.schema_profile", status),
+    json_object_fallback: asString(record.json_object_fallback, "factory.capability_profile.summary.json_object_fallback", status),
+    status: asString(record.status, "factory.capability_profile.summary.status", status),
+    checked_at: asText(record.checked_at, "factory.capability_profile.summary.checked_at", status),
+    error_class: asText(record.error_class, "factory.capability_profile.summary.error_class", status),
+  };
+}
 
 function providerCapabilityProfile(value: unknown, status = 502): ProviderCapabilityProfile {
   const record = schemaRecord(value, status);
   const family = asString(record.provider_family, "factory.capability_profile.provider_family", status);
   const output = asString(record.structured_output, "factory.capability_profile.structured_output", status);
   const flavor = asString(record.schema_flavor, "factory.capability_profile.schema_flavor", status);
+  const schemaProfile = asString(record.schema_profile, "factory.capability_profile.schema_profile", status);
+  const endpointKind = asString(record.endpoint_kind, "factory.capability_profile.endpoint_kind", status);
   const source = asString(record.source, "factory.capability_profile.source", status);
+  const profileStatus = asString(record.status, "factory.capability_profile.status", status);
+  const strictSupport = asString(record.strict_json_schema_support, "factory.capability_profile.strict_json_schema_support", status);
+  const jsonObjectSupport = asString(record.json_object_support, "factory.capability_profile.json_object_support", status);
   if (
     !providerFamilies.has(family as ProviderCapabilityProfile["provider_family"])
     || !structuredOutputs.has(output as ProviderCapabilityProfile["structured_output"])
     || !schemaFlavors.has(flavor as ProviderCapabilityProfile["schema_flavor"])
-    || source !== "host_defaults"
+    || !schemaProfiles.has(schemaProfile as ProviderCapabilityProfile["schema_profile"])
+    || !endpointKinds.has(endpointKind as ProviderCapabilityProfile["endpoint_kind"])
+    || !profileSources.has(source as ProviderCapabilityProfile["source"])
+    || !profileStatuses.has(profileStatus as ProviderCapabilityProfile["status"])
+    || !capabilitySupports.has(strictSupport as ProviderCapabilityProfile["strict_json_schema_support"])
+    || !capabilitySupports.has(jsonObjectSupport as ProviderCapabilityProfile["json_object_support"])
   ) {
     throw new LocalApiClientError("The local service returned an invalid Factory capability profile.", { status, code: "invalid_response" });
   }
-  const profile: ProviderCapabilityProfile = {
+  return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
+    provider_id: asString(record.provider_id, "factory.capability_profile.provider_id", status),
     provider_family: family as ProviderCapabilityProfile["provider_family"],
+    model: asString(record.model, "factory.capability_profile.model", status),
+    endpoint_kind: endpointKind as ProviderCapabilityProfile["endpoint_kind"],
+    base_url_fingerprint: asString(record.base_url_fingerprint, "factory.capability_profile.base_url_fingerprint", status),
     structured_output: output as ProviderCapabilityProfile["structured_output"],
     schema_flavor: flavor as ProviderCapabilityProfile["schema_flavor"],
+    schema_profile: schemaProfile as ProviderCapabilityProfile["schema_profile"],
     strict_json_schema: asBoolean(record.strict_json_schema, "factory.capability_profile.strict_json_schema", status),
     json_object_fallback: asBoolean(record.json_object_fallback, "factory.capability_profile.json_object_fallback", status),
     reasoning_effort: asBoolean(record.reasoning_effort, "factory.capability_profile.reasoning_effort", status),
-    source: "host_defaults",
+    supports_reasoning_effort: asBoolean(record.supports_reasoning_effort, "factory.capability_profile.supports_reasoning_effort", status),
+    strict_json_schema_support: strictSupport as ProviderCapabilityProfile["strict_json_schema_support"],
+    json_object_support: jsonObjectSupport as ProviderCapabilityProfile["json_object_support"],
+    source: source as ProviderCapabilityProfile["source"],
+    status: profileStatus as ProviderCapabilityProfile["status"],
+    checked_at: optionalProfileText(record.checked_at, "factory.capability_profile.checked_at", status),
+    probe_version: asString(record.probe_version, "factory.capability_profile.probe_version", status),
     probed: asBoolean(record.probed, "factory.capability_profile.probed", status),
+    error_class: optionalProfileText(record.error_class, "factory.capability_profile.error_class", status),
+    summary: providerCapabilitySummary(record.summary, status),
   };
-  if (profile.provider_family === "moonshot") {
-    if (
-      profile.structured_output !== "json_schema"
-      || profile.schema_flavor !== "moonshot_mfjs"
-      || profile.strict_json_schema !== true
-      || profile.json_object_fallback !== true
-      || profile.reasoning_effort !== true
-    ) {
-      throw new LocalApiClientError("The local service returned an inconsistent Moonshot capability profile.", { status, code: "invalid_response" });
-    }
-  } else if (
-    profile.structured_output !== "json_object"
-    || profile.schema_flavor !== "none"
-    || profile.strict_json_schema
-    || profile.json_object_fallback
-    || profile.reasoning_effort
-  ) {
-    throw new LocalApiClientError("The local service returned an inconsistent OpenAI-compatible capability profile.", { status, code: "invalid_response" });
-  }
-  return profile;
 }
 
 function runtimeStatus(value: unknown, status = 502): RuntimeStatus {
@@ -2937,6 +3024,10 @@ export class LocalApiClient {
 
   factoryStatus(): Promise<FactoryStatus> {
     return this.request("factory/status", factoryStatus);
+  }
+
+  probeFactoryCapabilities(): Promise<FactoryStatus> {
+    return this.request("factory/capability-probe", factoryStatus, { method: "POST" });
   }
 
   runtimeStatus(): Promise<RuntimeStatus> {

@@ -58,6 +58,7 @@ class KimiCompletion:
     content: str
     assistant_message: dict[str, Any]
     finish_reason: str | None
+    request_id: str | None = None
 
 
 class KimiTransport(Protocol):
@@ -93,6 +94,8 @@ class HttpKimiTransport:
         )
 
     def models(self) -> Sequence[str]:
+        """List visible model ids. Listing is not a capability proof."""
+
         try:
             response = self._client.get("/models")
         except httpx.TimeoutException as exc:
@@ -162,6 +165,7 @@ class HttpKimiTransport:
                 finish_reason=choice.get("finish_reason")
                 if isinstance(choice, dict)
                 else None,
+                request_id=_safe_completion_id(payload.get("id")),
             )
         except (
             KeyError,
@@ -248,6 +252,12 @@ def _raise_for_provider(response: httpx.Response) -> None:
             "Factory model credentials were rejected",
             details=status_details,
         )
+    if response.status_code == 403:
+        raise FactoryProviderError(
+            "factory_forbidden",
+            "Factory model request was forbidden",
+            details=status_details,
+        )
     if response.status_code == 429:
         raise FactoryProviderError(
             "factory_rate_limited",
@@ -316,3 +326,15 @@ def _diagnostic_suffix(details: Mapping[str, str]) -> str:
     if not parts:
         return ""
     return " [" + " ".join(parts) + "]"
+
+
+def _safe_completion_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", cleaned):
+        return None
+    folded = cleaned.casefold()
+    if folded.startswith("sk-") or "bearer" in folded:
+        return None
+    return cleaned

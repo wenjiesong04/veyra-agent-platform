@@ -541,7 +541,7 @@ function durableSnapshot(overrides: Partial<BuilderConversationSnapshot> = {}): 
       { message_id: "m-fail", conversation_id: conversation.conversation_id, sequence: 1, role: "system", kind: "failure", content: "Agent 结构生成失败\nStage: blueprint_generation\nProvider: Kimi K3\nHTTP: 400", operation_id: "op-1", payload: { error_code: "factory_request_invalid", http_status: "400" }, created_at: "2026-09-18T00:00:01Z" },
     ],
     operations: overrides.operations ?? [
-      { operation_id: "op-1", conversation_id: conversation.conversation_id, kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_request_invalid", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: { http_status: "400" }, has_request: true, target_kind: "agent", events: [] },
+      { operation_id: "op-1", conversation_id: conversation.conversation_id, kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_request_invalid", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: { http_status: "400" }, has_request: true, target_kind: "agent", events: [], receipts: [] },
     ],
     resolution: overrides.resolution ?? null,
     factory_session: overrides.factory_session === undefined ? null : overrides.factory_session,
@@ -599,6 +599,75 @@ describe("Durable Project Chat", () => {
     expect(getBuilderConversation).toHaveBeenCalledWith("project-1", "conv-1");
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  });
+
+  it("does not render harness receipts as chat bubbles and restores Build details", async () => {
+    const snapshot = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "waiting" },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "帮我生成礼物包装 Agent", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-asst", conversation_id: "conv-1", sequence: 1, role: "assistant", kind: "assistant", content: "我理解为创建一个新的礼物包装 Agent。", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" },
+      ],
+      operations: [{
+        ...durableSnapshot().operations[0],
+        status: "waiting",
+        error_code: null,
+        receipts: [{
+          receipt_id: "receipt-1",
+          operation_id: "op-1",
+          conversation_id: "conv-1",
+          project_id: "project-1",
+          invocation_kind: "semantic_plan",
+          sequence: 2,
+          status: "success",
+          started_at: "2026-09-18T00:00:02Z",
+          completed_at: "2026-09-18T00:00:10Z",
+          harness_mode: "create_agent",
+          policy_version: "builder-policy-v1",
+          policy_hash: "policyhashpolicyhashpolicyhashpolicyhashpolicyhashpolicyhashpol",
+          output_contract: "AgentSemanticPlanV1",
+          schema_version: "1.0",
+          schema_hash: "schemahashschemahashschemahashschemahashschemahashschemahashsch",
+          structured_mode: "strict_json_schema",
+          project_snapshot_hash: "projecthashprojecthashprojecthashprojecthashprojecthashprojectha",
+          catalog_snapshot_hash: "cataloghashcataloghashcataloghashcataloghashcataloghashcatalogha",
+          included_categories: ["project_agents_metadata", "catalog_capabilities"],
+          excluded_categories: ["knowledge_contents", "project_file_contents", "secrets"],
+          history_message_count: 1,
+          context_size_bytes: 100,
+          request_size_bytes: 200,
+          provider_id: "moonshot",
+          model: "kimi-k3",
+          endpoint_kind: "chat_completions",
+          provider_profile_status: "known",
+          provider_profile_source: "probe",
+          schema_profile: "mfjs",
+          failure_stage: null,
+          error_code: null,
+          safe_provider_error_type: null,
+          safe_provider_error_param: null,
+          provider_request_id: null,
+          fallback_from: null,
+          fallback_to: null,
+        }],
+      }],
+      factory_session: factoryReviewSession(),
+    });
+    const { api, wrapper } = setup("agent", [], false);
+    Object.assign(api, {
+      submitBuilderTurn: vi.fn(),
+      getBuilderConversation: vi.fn().mockResolvedValue(snapshot),
+    });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByText("帮我生成礼物包装 Agent")).toBeInTheDocument();
+    expect(screen.queryByText(/Moonshot/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/policyhashpolicyhash/)).not.toBeInTheDocument();
+    const activity = screen.getByRole("button", { name: /Build Agent/ });
+    if (activity.getAttribute("aria-expanded") === "false") fireEvent.click(activity);
+    fireEvent.click(screen.getByRole("button", { name: /Build details/ }));
+    expect(screen.getByText("Moonshot · Kimi K3")).toBeInTheDocument();
   });
 
   it("retries as a new operation on the same conversation", async () => {

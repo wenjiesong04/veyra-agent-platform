@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,12 +9,17 @@ from fastapi.testclient import TestClient
 
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.factory.capability_probe import PROBE_USER_CONTENT
+from veyra_agent_platform.local.factory.capability_profile import (
+    derive_provider_capability_profile,
+)
 from veyra_agent_platform.local.factory.client import (
     FactoryProviderError,
     KimiCompletion,
     KimiTransport,
 )
 from veyra_agent_platform.local.factory.config import FactorySettings
+from veyra_agent_platform.local.factory.service import FactoryService
 
 VALID_BLUEPRINT = {
     "schema_version": "1.0",
@@ -139,17 +145,10 @@ def test_factory_status_never_claims_to_execute_drafts(tmp_path: Path) -> None:
         assert payload["model_id"] == "kimi-k3"
         assert payload["model_base_url"] == "https://api.moonshot.cn/v1"
         assert payload["configured"] is False
-        assert payload["capability_profile"] == {
-            "schema_version": "1.0",
-            "provider_family": "moonshot",
-            "structured_output": "json_schema",
-            "schema_flavor": "moonshot_mfjs",
-            "strict_json_schema": True,
-            "json_object_fallback": True,
-            "reasoning_effort": True,
-            "source": "host_defaults",
-            "probed": False,
-        }
+        assert (
+            payload["capability_profile"]
+            == derive_provider_capability_profile(FactorySettings()).to_dict()
+        )
 
 
 def test_conversation_without_provider_and_generate_requires_key(
@@ -676,7 +675,9 @@ def test_openai_compatible_host_uses_json_object_without_schema_fallback(
         assert status["capability_profile"]["provider_family"] == "openai_compatible"
         assert status["capability_profile"]["structured_output"] == "json_object"
         assert status["capability_profile"]["json_object_fallback"] is False
+        assert status["capability_profile"]["source"] == "static_known"
         assert status["capability_profile"]["probed"] is False
+        assert status["capability_profile"]["status"] == "unknown"
         project_id = _project(client)
         created = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
@@ -743,3 +744,204 @@ def test_openai_compatible_schema_400_does_not_retry(tmp_path: Path) -> None:
         assert failed.status_code == 502
         assert failed.json()["code"] == "factory_request_invalid"
         assert transport.generate_calls == 1
+
+
+def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> None:
+    class RecordingTransport:
+        def __init__(self) -> None:
+            self.formats: list[object] = []
+            self.prompts: list[str] = []
+
+        def models(self) -> tuple[str, ...]:
+            return ("kimi-k3",)
+
+        def complete(
+            self,
+            messages: object,
+            *,
+            response_format: object = None,
+        ) -> KimiCompletion:
+            self.formats.append(response_format)
+            self.prompts.append(json.dumps(messages))
+            if response_format is None:
+                return _completion("What should success look like?")
+            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
+
+    transport = RecordingTransport()
+    with _client(tmp_path, transport) as client:
+        factory = _factory(client)
+        seed = derive_provider_capability_profile(factory.client.settings)
+        factory.profiles.put(
+            replace(
+                seed,
+                status="known",
+                source="probe",
+                probed=True,
+                strict_json_schema_support="supported",
+                checked_at="2026-09-19T12:00:00Z",
+            )
+        )
+        status = client.get("/api/v1/factory/status").json()["capability_profile"]
+        assert status["status"] == "known"
+        assert status["summary"]["structured_output"] == "Strict JSON Schema"
+        project_id = _project(client)
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "帮我生成礼物包装 agent"},
+        )
+        generated = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/"
+            f"{created.json()['session_id']}/generate"
+        )
+        assert generated.status_code == 200, generated.text
+        assert any(
+            isinstance(item, dict) and item.get("type") == "json_schema"
+            for item in transport.formats
+        )
+        assert all(PROBE_USER_CONTENT not in prompt for prompt in transport.prompts)
+
+
+def test_generate_uses_json_object_only_when_profile_allows(
+    tmp_path: Path,
+) -> None:
+    class RecordingTransport:
+        def __init__(self) -> None:
+            self.formats: list[object] = []
+
+        def models(self) -> tuple[str, ...]:
+            return ("kimi-k3",)
+
+        def complete(
+            self,
+            messages: object,
+            *,
+            response_format: object = None,
+        ) -> KimiCompletion:
+            del messages
+            self.formats.append(response_format)
+            if response_format is None:
+                return _completion("What should success look like?")
+            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
+
+    transport = RecordingTransport()
+    with _client(tmp_path, transport) as client:
+        factory = _factory(client)
+        seed = derive_provider_capability_profile(factory.client.settings)
+        factory.profiles.put(
+            replace(
+                seed,
+                structured_output="json_object",
+                strict_json_schema=False,
+                json_object_fallback=False,
+                strict_json_schema_support="unsupported",
+                json_object_support="supported",
+                source="fallback",
+                status="known",
+                probed=True,
+                checked_at="2026-09-19T12:00:00Z",
+            )
+        )
+        project_id = _project(client)
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "帮我生成礼物包装 agent"},
+        )
+        generated = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/"
+            f"{created.json()['session_id']}/generate"
+        )
+        assert generated.status_code == 200, generated.text
+        assert generated.json()["state"] == "review"
+        assert transport.formats[-1] == {"type": "json_object"}
+        assert not any(
+            isinstance(item, dict) and item.get("type") == "json_schema"
+            for item in transport.formats
+        )
+
+
+def test_rate_limit_does_not_fallback_or_mark_unsupported(tmp_path: Path) -> None:
+    class RateLimitedTransport:
+        def __init__(self) -> None:
+            self.generate_calls = 0
+
+        def models(self) -> tuple[str, ...]:
+            return ("kimi-k3",)
+
+        def complete(
+            self,
+            messages: object,
+            *,
+            response_format: object = None,
+        ) -> KimiCompletion:
+            del messages
+            if response_format is None:
+                return _completion("What inputs should it receive?")
+            self.generate_calls += 1
+            raise FactoryProviderError(
+                "factory_rate_limited",
+                "Factory model service is rate limited",
+                details={"http_status": "429"},
+            )
+
+    transport = RateLimitedTransport()
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "帮我生成礼物包装 agent"},
+        )
+        failed = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/"
+            f"{created.json()['session_id']}/generate"
+        )
+        assert failed.status_code == 502
+        assert failed.json()["code"] == "factory_rate_limited"
+        assert transport.generate_calls == 1
+        profile = client.get("/api/v1/factory/status").json()["capability_profile"]
+        assert profile["strict_json_schema"] is True
+        assert profile["strict_json_schema_support"] == "unknown"
+        assert profile["summary"]["status"] != "Not supported"
+
+
+def test_capability_probe_endpoint_uses_synthetic_prompt(tmp_path: Path) -> None:
+    class ProbeTransport:
+        def __init__(self) -> None:
+            self.messages: list[object] = []
+            self.models_called = False
+
+        def models(self) -> tuple[str, ...]:
+            self.models_called = True
+            return ("kimi-k3",)
+
+        def complete(
+            self,
+            messages: object,
+            *,
+            response_format: object = None,
+        ) -> KimiCompletion:
+            del response_format
+            self.messages.append(messages)
+            return _completion('{"ok": true}')
+
+    transport = ProbeTransport()
+    with _client(tmp_path, transport) as client:
+        probed = client.post("/api/v1/factory/capability-probe")
+        assert probed.status_code == 200, probed.text
+        profile = probed.json()["capability_profile"]
+        assert profile["status"] == "known"
+        assert profile["strict_json_schema_support"] == "supported"
+        assert profile["source"] == "probe"
+        assert profile["summary"]["status"] == "Known"
+        assert transport.models_called is False
+        assert [list(item) for item in transport.messages] == [
+            [{"role": "user", "content": PROBE_USER_CONTENT}]
+        ]
+        cached = client.get("/api/v1/factory/status").json()["capability_profile"]
+        assert cached["probed"] is True
+        assert cached["status"] == "known"
+        assert cached["model"] == profile["model"]
+        assert cached["base_url_fingerprint"] == profile["base_url_fingerprint"]
+
+
+def _factory(client: TestClient) -> FactoryService:
+    return client.app.state.factory

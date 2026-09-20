@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectSummaryResponse, ResourceDescriptor } from "@veyra/api-contracts";
+import type { ProjectSummaryResponse, ProviderCapabilityProfile, ResourceDescriptor } from "@veyra/api-contracts";
 import { LocalApiClient } from "./local-client";
 
 function summary(overrides: Partial<ProjectSummaryResponse> = {}) {
@@ -18,6 +18,43 @@ function summary(overrides: Partial<ProjectSummaryResponse> = {}) {
     agents: [],
     ...overrides,
   } satisfies ProjectSummaryResponse;
+}
+
+function capabilityProfile(overrides: Partial<ProviderCapabilityProfile> = {}): ProviderCapabilityProfile {
+  return {
+    schema_version: "1.0",
+    provider_id: "moonshot",
+    provider_family: "moonshot",
+    model: "kimi-k3",
+    endpoint_kind: "chat_completions",
+    base_url_fingerprint: "fingerprint",
+    structured_output: "json_schema",
+    schema_flavor: "moonshot_mfjs",
+    schema_profile: "mfjs",
+    strict_json_schema: true,
+    json_object_fallback: true,
+    reasoning_effort: true,
+    supports_reasoning_effort: true,
+    strict_json_schema_support: "unknown",
+    json_object_support: "unknown",
+    source: "static_known",
+    status: "unknown",
+    checked_at: null,
+    probe_version: "semantic-plan-ok-v1",
+    probed: false,
+    error_class: null,
+    summary: {
+      provider: "Moonshot",
+      model: "kimi-k3",
+      structured_output: "Strict JSON Schema",
+      schema_profile: "MFJS",
+      json_object_fallback: "Supported",
+      status: "Unknown",
+      checked_at: "",
+      error_class: "",
+    },
+    ...overrides,
+  };
 }
 
 function response(payload: unknown, status = 200): Response {
@@ -420,17 +457,7 @@ describe("LocalApiClient Project requests", () => {
       .mockResolvedValueOnce(response({
         schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
         model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
-        capability_profile: {
-          schema_version: "1.0",
-          provider_family: "moonshot",
-          structured_output: "json_schema",
-          schema_flavor: "moonshot_mfjs",
-          strict_json_schema: true,
-          json_object_fallback: true,
-          reasoning_effort: true,
-          source: "host_defaults",
-          probed: false,
-        },
+        capability_profile: capabilityProfile(),
       }))
       .mockResolvedValueOnce(response({
         schema_version: "1.0",
@@ -468,24 +495,72 @@ describe("LocalApiClient Project requests", () => {
     await expect(client.factoryStatus()).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  it("rejects an inconsistent Moonshot capability profile", async () => {
+  it("accepts a probed Moonshot json_object fallback profile", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({
       schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
       model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
-      capability_profile: {
-        schema_version: "1.0",
-        provider_family: "moonshot",
+      capability_profile: capabilityProfile({
         structured_output: "json_object",
-        schema_flavor: "none",
+        schema_flavor: "moonshot_mfjs",
+        schema_profile: "mfjs",
         strict_json_schema: false,
         json_object_fallback: false,
-        reasoning_effort: false,
-        source: "host_defaults",
-        probed: false,
-      },
+        strict_json_schema_support: "unsupported",
+        json_object_support: "supported",
+        source: "fallback",
+        status: "known",
+        probed: true,
+        checked_at: "2026-09-19T12:00:00Z",
+        summary: {
+          provider: "Moonshot",
+          model: "kimi-k3",
+          structured_output: "JSON object",
+          schema_profile: "MFJS",
+          json_object_fallback: "Not used",
+          status: "Known",
+          checked_at: "2026-09-19T12:00:00Z",
+          error_class: "",
+        },
+      }),
     }));
     const client = new LocalApiClient({ fetcher });
-    await expect(client.factoryStatus()).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(client.factoryStatus()).resolves.toMatchObject({
+      capability_profile: {
+        source: "fallback",
+        json_object_support: "supported",
+        summary: { status: "Known", structured_output: "JSON object" },
+      },
+    });
+  });
+
+  it("parses an inconclusive rate-limited capability profile without unsupported", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0", configured: true, model_id: "kimi-k3", model_base_url: "https://api.moonshot.cn/v1",
+      model_api_key_env: "MOONSHOT_API_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
+      capability_profile: capabilityProfile({
+        status: "inconclusive",
+        error_class: "rate_limited",
+        checked_at: "2026-09-19T12:00:00Z",
+        summary: {
+          provider: "Moonshot",
+          model: "kimi-k3",
+          structured_output: "Strict JSON Schema",
+          schema_profile: "MFJS",
+          json_object_fallback: "Supported",
+          status: "Inconclusive",
+          checked_at: "2026-09-19T12:00:00Z",
+          error_class: "rate_limited",
+        },
+      }),
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.factoryStatus()).resolves.toMatchObject({
+      capability_profile: {
+        status: "inconclusive",
+        strict_json_schema: true,
+        summary: { status: "Inconclusive", structured_output: "Strict JSON Schema" },
+      },
+    });
   });
 
   it("parses an OpenAI-compatible Factory capability profile", async () => {
@@ -494,14 +569,36 @@ describe("LocalApiClient Project requests", () => {
       model_api_key_env: "EXAMPLE_KEY", reasoning_effort: "high", repair_attempts: 3, executes_drafts: false,
       capability_profile: {
         schema_version: "1.0",
+        provider_id: "openai_compatible",
         provider_family: "openai_compatible",
+        model: "gpt-test",
+        endpoint_kind: "chat_completions",
+        base_url_fingerprint: "compat-fingerprint",
         structured_output: "json_object",
         schema_flavor: "none",
+        schema_profile: "unknown",
         strict_json_schema: false,
         json_object_fallback: false,
         reasoning_effort: false,
-        source: "host_defaults",
+        supports_reasoning_effort: false,
+        strict_json_schema_support: "unknown",
+        json_object_support: "unknown",
+        source: "static_known",
+        status: "unknown",
+        checked_at: null,
+        probe_version: "semantic-plan-ok-v1",
         probed: false,
+        error_class: null,
+        summary: {
+          provider: "OpenAI-compatible",
+          model: "gpt-test",
+          structured_output: "JSON object",
+          schema_profile: "Unknown",
+          json_object_fallback: "Not used",
+          status: "Unknown",
+          checked_at: "",
+          error_class: "",
+        },
       },
     }));
     const client = new LocalApiClient({ fetcher });
@@ -546,6 +643,87 @@ describe("LocalApiClient Project requests", () => {
     });
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/builder/turns");
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ content: "Wrap a gift", focus: null, locale: "en" });
+  });
+
+  it("parses Builder harness receipts on operations and defaults missing receipts", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "Wrap a gift",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        last_activity_at: "2026-09-18T00:00:01Z",
+        last_operation_status: "waiting",
+      },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Wrap a gift", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+      ],
+      operations: [
+        {
+          operation_id: "op-1",
+          conversation_id: "conv-1",
+          kind: "create_agent",
+          status: "waiting",
+          retry_of: null,
+          error_code: null,
+          proposal_id: null,
+          run_id: null,
+          factory_session_id: "session-1",
+          created_at: "2026-09-18T00:00:00Z",
+          updated_at: "2026-09-18T00:00:01Z",
+          diagnostic: {},
+          has_request: true,
+          receipts: [{
+            receipt_id: "receipt-1",
+            operation_id: "op-1",
+            conversation_id: "conv-1",
+            project_id: "project-1",
+            invocation_kind: "semantic_plan",
+            sequence: 2,
+            status: "success",
+            started_at: "2026-09-18T00:00:02Z",
+            completed_at: "2026-09-18T00:00:10Z",
+            harness_mode: "create_agent",
+            policy_version: "builder-policy-v1",
+            policy_hash: "abc",
+            output_contract: "AgentSemanticPlanV1",
+            schema_version: "1.0",
+            schema_hash: "def",
+            structured_mode: "strict_json_schema",
+            project_snapshot_hash: "ghi",
+            catalog_snapshot_hash: "jkl",
+            included_categories: ["project_agents_metadata"],
+            excluded_categories: ["knowledge_contents"],
+            history_message_count: 1,
+            context_size_bytes: 10,
+            request_size_bytes: 20,
+            provider_id: "moonshot",
+            model: "kimi-k3",
+            endpoint_kind: "chat_completions",
+            provider_profile_status: "known",
+            provider_profile_source: "probe",
+            schema_profile: "mfjs",
+            failure_stage: null,
+            error_code: null,
+            safe_provider_error_type: null,
+            safe_provider_error_param: null,
+            provider_request_id: null,
+            fallback_from: null,
+            fallback_to: null,
+          }],
+        },
+      ],
+      resolution: null,
+      factory_session: null,
+    };
+    const fetcher = vi.fn().mockResolvedValue(response(snapshot));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.getBuilderConversation("project-1", "conv-1")).resolves.toMatchObject({
+      operations: [{ receipts: [{ invocation_kind: "semantic_plan", structured_mode: "strict_json_schema" }] }],
+    });
   });
 
   it("keeps Builder conversation messages when Factory missing-capability payload is invalid", async () => {

@@ -427,3 +427,162 @@ class BuilderConversationStore:
                 "facts_json": payload,
                 "created_at": created_at,
             }
+
+    def next_receipt_sequence(self, operation_id: str) -> int:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                """SELECT COALESCE(MAX(sequence), -1) AS last
+                   FROM builder_harness_receipts WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+            last = int(row["last"]) if row is not None else -1
+            return last + 1
+
+    def insert_receipt(self, payload: dict[str, Any]) -> None:
+        included = json.dumps(
+            payload["included_categories"], ensure_ascii=False, sort_keys=True
+        )
+        excluded = json.dumps(
+            payload["excluded_categories"], ensure_ascii=False, sort_keys=True
+        )
+        with self.repository.transaction() as connection:
+            connection.execute(
+                """INSERT INTO builder_harness_receipts(
+                    receipt_id, operation_id, conversation_id, project_id,
+                    invocation_kind, sequence, status, started_at, completed_at,
+                    harness_mode, policy_version, policy_hash, output_contract,
+                    schema_version, schema_hash, structured_mode,
+                    project_snapshot_hash, catalog_snapshot_hash,
+                    included_categories_json, excluded_categories_json,
+                    history_message_count, context_size_bytes, request_size_bytes,
+                    provider_id, model, endpoint_kind, provider_profile_status,
+                    provider_profile_source, schema_profile, failure_stage,
+                    error_code, safe_provider_error_type, safe_provider_error_param,
+                    provider_request_id, fallback_from, fallback_to,
+                    created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )""",
+                (
+                    payload["receipt_id"],
+                    payload["operation_id"],
+                    payload["conversation_id"],
+                    payload["project_id"],
+                    payload["invocation_kind"],
+                    int(payload["sequence"]),
+                    payload["status"],
+                    payload["started_at"],
+                    payload.get("completed_at"),
+                    payload["harness_mode"],
+                    payload["policy_version"],
+                    payload["policy_hash"],
+                    payload["output_contract"],
+                    payload["schema_version"],
+                    payload["schema_hash"],
+                    payload["structured_mode"],
+                    payload["project_snapshot_hash"],
+                    payload["catalog_snapshot_hash"],
+                    included,
+                    excluded,
+                    int(payload["history_message_count"]),
+                    int(payload["context_size_bytes"]),
+                    int(payload["request_size_bytes"]),
+                    payload["provider_id"],
+                    payload["model"],
+                    payload["endpoint_kind"],
+                    payload["provider_profile_status"],
+                    payload["provider_profile_source"],
+                    payload["schema_profile"],
+                    payload.get("failure_stage"),
+                    payload.get("error_code"),
+                    payload.get("safe_provider_error_type"),
+                    payload.get("safe_provider_error_param"),
+                    payload.get("provider_request_id"),
+                    payload.get("fallback_from"),
+                    payload.get("fallback_to"),
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+
+    def receipts(
+        self,
+        *,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+    ) -> list[dict[str, Any]]:
+        with self.repository.transaction() as connection:
+            rows = connection.execute(
+                """SELECT receipts.*
+                   FROM builder_harness_receipts AS receipts
+                   JOIN builder_conversations AS conversations
+                     ON conversations.conversation_id = receipts.conversation_id
+                   JOIN builder_operations AS operations
+                     ON operations.operation_id = receipts.operation_id
+                   WHERE receipts.project_id = ?
+                     AND receipts.conversation_id = ?
+                     AND receipts.operation_id = ?
+                     AND conversations.project_id = ?
+                     AND operations.conversation_id = ?
+                   ORDER BY receipts.sequence ASC, receipts.receipt_id ASC""",
+                (
+                    project_id,
+                    conversation_id,
+                    operation_id,
+                    project_id,
+                    conversation_id,
+                ),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def receipt(self, receipt_id: str) -> dict[str, Any] | None:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM builder_harness_receipts WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def finalize_receipt(
+        self,
+        receipt_id: str,
+        *,
+        status: str,
+        completed_at: str,
+        failure_stage: str | None = None,
+        error_code: str | None = None,
+        safe_provider_error_type: str | None = None,
+        safe_provider_error_param: str | None = None,
+        provider_request_id: str | None = None,
+    ) -> None:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                """SELECT status FROM builder_harness_receipts
+                   WHERE receipt_id = ?""",
+                (receipt_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("unknown harness receipt")
+            if str(row["status"]) != "prepared":
+                raise ValueError("completed harness receipt is immutable")
+            connection.execute(
+                """UPDATE builder_harness_receipts
+                   SET status = ?, completed_at = ?, failure_stage = ?,
+                       error_code = ?, safe_provider_error_type = ?,
+                       safe_provider_error_param = ?, provider_request_id = ?,
+                       updated_at = ?
+                   WHERE receipt_id = ? AND status = 'prepared'""",
+                (
+                    status,
+                    completed_at,
+                    failure_stage,
+                    error_code,
+                    safe_provider_error_type,
+                    safe_provider_error_param,
+                    provider_request_id,
+                    completed_at,
+                    receipt_id,
+                ),
+            )

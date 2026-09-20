@@ -69,6 +69,7 @@ function mergeEvent(operations: BuilderConversationOperation[], event: BuilderOp
       diagnostic: event.facts,
       has_request: true,
       events: [event],
+      receipts: [],
     }];
   }
   const current = operations[index];

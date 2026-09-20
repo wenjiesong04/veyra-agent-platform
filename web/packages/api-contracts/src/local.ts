@@ -245,6 +245,69 @@ export type BuilderOperationEvent = {
   facts: Record<string, string>;
   created_at: string;
 };
+export type BuilderHarnessInvocationKind =
+  | "resolve_intent"
+  | "interview"
+  | "semantic_plan"
+  | "semantic_plan_repair";
+export type BuilderHarnessReceiptStatus = "prepared" | "success" | "failed";
+export type BuilderHarnessStructuredMode = "strict_json_schema" | "json_object" | "none";
+export type BuilderHarnessContextCategory =
+  | "conversation_recent_messages"
+  | "project_agents_metadata"
+  | "workflows_metadata"
+  | "knowledge_metadata"
+  | "project_resource_bindings"
+  | "catalog_capabilities"
+  | "project_files_metadata"
+  | "project_config";
+export type BuilderHarnessExcludedCategory =
+  | "knowledge_contents"
+  | "project_file_contents"
+  | "credentials"
+  | "secrets"
+  | "raw_runtime_events"
+  | "hidden_reasoning"
+  | "raw_prompts"
+  | "provider_response_bodies";
+export type BuilderHarnessReceipt = {
+  receipt_id: string;
+  operation_id: string;
+  conversation_id: string;
+  project_id: string;
+  invocation_kind: BuilderHarnessInvocationKind;
+  sequence: number;
+  status: BuilderHarnessReceiptStatus;
+  started_at: string;
+  completed_at: string | null;
+  harness_mode: string;
+  policy_version: string;
+  policy_hash: string;
+  output_contract: string;
+  schema_version: string;
+  schema_hash: string;
+  structured_mode: BuilderHarnessStructuredMode;
+  project_snapshot_hash: string;
+  catalog_snapshot_hash: string;
+  included_categories: BuilderHarnessContextCategory[];
+  excluded_categories: BuilderHarnessExcludedCategory[];
+  history_message_count: number;
+  context_size_bytes: number;
+  request_size_bytes: number;
+  provider_id: string;
+  model: string;
+  endpoint_kind: string;
+  provider_profile_status: string;
+  provider_profile_source: string;
+  schema_profile: string;
+  failure_stage: string | null;
+  error_code: string | null;
+  safe_provider_error_type: string | null;
+  safe_provider_error_param: string | null;
+  provider_request_id: string | null;
+  fallback_from: string | null;
+  fallback_to: string | null;
+};
 export type BuilderConversationMessage = {
   message_id: string;
   conversation_id: string;
@@ -273,6 +336,7 @@ export type BuilderConversationOperation = {
   diagnostic: Record<string, string>;
   has_request: boolean;
   events: BuilderOperationEvent[];
+  receipts: BuilderHarnessReceipt[];
 };
 export type BuilderConversationSummary = {
   conversation_id: string;
@@ -1126,16 +1190,40 @@ export type FactorySession = {
   messages: FactoryMessage[];
 };
 
+export type ProviderCapabilitySupport = "supported" | "unsupported" | "unknown";
+
 export type ProviderCapabilityProfile = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  provider_id: string;
   provider_family: "moonshot" | "openai_compatible";
+  model: string;
+  endpoint_kind: "chat_completions" | "responses" | "compatible_chat";
+  base_url_fingerprint: string;
   structured_output: "json_schema" | "json_object";
   schema_flavor: "moonshot_mfjs" | "none";
+  schema_profile: "mfjs" | "openai_json_schema" | "unknown";
   strict_json_schema: boolean;
   json_object_fallback: boolean;
   reasoning_effort: boolean;
-  source: "host_defaults";
+  supports_reasoning_effort: boolean;
+  strict_json_schema_support: ProviderCapabilitySupport;
+  json_object_support: ProviderCapabilitySupport;
+  source: "static_known" | "probe" | "fallback";
+  status: "known" | "unknown" | "stale" | "failed" | "inconclusive";
+  checked_at: string | null;
+  probe_version: string;
   probed: boolean;
+  error_class: string | null;
+  summary: {
+    provider: string;
+    model: string;
+    structured_output: string;
+    schema_profile: string;
+    json_object_fallback: string;
+    status: string;
+    checked_at: string;
+    error_class: string;
+  };
 };
 
 export type FactoryStatus = {

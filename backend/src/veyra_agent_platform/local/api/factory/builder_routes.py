@@ -94,6 +94,23 @@ def build_router() -> APIRouter:
             request, lambda: _conversations(request).activity(project_id, limit=limit)
         )
 
+    @router.get(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+        "/operations/{operation_id}/receipts"
+    )
+    def operation_receipts(
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).receipts(
+                project_id, conversation_id, operation_id
+            ),
+        )
+
     return router
 
 

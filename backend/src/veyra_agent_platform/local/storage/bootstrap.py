@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0021_builder_operation_events"
+HEAD_REVISION = "local_0023_builder_harness_receipts"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

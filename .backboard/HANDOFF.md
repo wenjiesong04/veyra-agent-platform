@@ -1,6 +1,200 @@
 # Veyra Development Handoff
 
-## Current checkpoint（2026-09-19，Builder Interaction Model V2 = complete）
+## Current checkpoint（2026-09-20，Builder Harness Receipt = complete）
+
+- Branch：`codex/agent-platform` → `origin/codex/agent-platform`
+- HEAD：`aba074d` 之上本 checkpoint 提交 ProviderCapabilityProfile +
+  BuilderHarnessReceipt（精确 SHA 以 git HEAD 为准）
+- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`
+- 不要重开 Interaction Model V2 / Durable Conversation / AgentSemanticPlanV1 /
+  SemanticPlanCompiler / ProviderCapabilityProfile / Harness Receipt
+- 暂停：autonomous Run、Community redesign
+- 下一步：Slice 4 Test Run → Observe → Explain → optional Repair Proposal →
+  Builder Phase 2 release gate
+
+### Builder Harness Receipt = complete
+
+一次真实模型调用一条 `BuilderHarnessReceipt`。它回答「这次调用在什么受控
+Harness / Provider 协议下发生」，不是 prompt 归档、不是 CoT、不是第二套
+ProviderProfile、不是 operation timeline、不是 Chat 气泡。
+
+```text
+Conversation Message  ≠  BuilderOperationEvent  ≠  BuilderHarnessReceipt
+≠  Proposal  ≠  Runtime Run
+```
+
+- 生命周期：准备 context → persist `prepared` → provider request →
+  finalize `success`/`failed`。请求失败时 Receipt 已经存在。
+- invocation_kind：`resolve_intent` / `interview` / `semantic_plan` /
+  `semantic_plan_repair`。一个 operation 可有多条，按 sequence 排序。
+- typed fallback：strict → json_object 是两次 invocation；两条 Receipt。
+- 只存安全 metadata：policy/schema/snapshot hash、included/excluded
+  枚举、当时 profile 摘要（id/model/endpoint/status/source/schema_profile）。
+- 不存：system/developer/user prompt、conversation 全文、Project JSON、
+  Knowledge/File 正文、密钥、Authorization、headers、provider body/response、
+  hidden reasoning。
+- snapshot hash 来自 Builder 实际可见的 canonical bounded metadata
+  projection，不含 secret / timestamp / 绝对路径 / 正文。
+- 历史不可变：finalize 后 Recheck / Project / Catalog 变化不改写旧 Receipt。
+- Project scoped：conversation + operation + project 必须同时匹配；跨
+  Project 读 404。无全局 receipt lookup。
+- 无模型调用的 deterministic operation 可以没有 Receipt；UI 显示
+  「模型调用：无」，不是错误。
+- 不记录 Runtime evidence。`run_id` 字段留给 Slice 4，本轮未 start Run。
+
+Activity → 默认折叠「构建详情」：Provider / Contract / Structured mode /
+Policy / Context / Excluded / Status。hash 只在 Technical details。
+Chat 不渲染 Receipt。
+
+API：operation 详情附 `receipts`；另有
+`GET /api/v1/projects/{project}/builder/conversations/{conversation}/operations/{operation}/receipts`。
+迁移：`local_0023_builder_harness_receipts`。
+
+### 证据
+
+- 后端 focused：`test_builder_harness_receipts.py` +
+  `test_builder_conversations.py` + `test_factory_client.py` +
+  `test_factory_routes.py` + `test_capability_probe.py` +
+  `test_provider_capability_profile.py` → **78 passed**
+- Desktop focused：`BuilderActivityBlock.test.tsx` +
+  `project-builder.test.tsx` + `local-client.test.ts` +
+  `workbench-phase.test.ts` + `factory-conversation.test.tsx` → **82 passed**
+- Desktop `tsc --noEmit` 通过
+- `ruff check`（本切片相关）/ `ruff format --check` / `mypy`（170 files）/
+  `git diff --check`：clean
+- 未做全量 `make check`；未做 Playwright
+
+### 真实 Moonshot 验收（一次，到 Proposal ready，未 Confirm）
+
+- Project：`New project`
+- 请求：「创建一个日程提醒整理 Agent。」
+- conversation `01a0ba7f-b355-78b1-b742-9140807d2198`
+- operation `waiting`，events 到 `builder.proposal.ready`
+- messages：`user` + `assistant`（无 Receipt 气泡）
+- `run_id=null`；未创建新 Agent（现有仍是 `礼物包装 Agent` /
+  `中英文翻译 Agent`）
+- 3 条 Receipt，全部 `success`：
+  1. `resolve_intent` / `json_object` / `BuilderIntentV1`
+  2. `interview` / `none`
+  3. `semantic_plan` / `strict_json_schema` / `AgentSemanticPlanV1`
+- Provider `moonshot` / model `kimi-k3` / profile `known` + `source=probe`
+  / schema `mfjs`
+- Excluded 含 knowledge_contents / project_file_contents / credentials /
+  secrets / hidden_reasoning / raw_prompts / provider_response_bodies
+- 刷新 conversation 与 receipts GET 均恢复 3 条；跨 Project 读 404
+- DB/API/消息扫描：无 API key、无 Authorization、无 raw prompt、无
+  provider body、无 Knowledge 正文
+- 随后 Factory status 仍是 `known` / `probe`（generate 未改 capability truth）
+- 不是 429
+
+### 四服务
+
+真实配置，无 temp DB / temp project root / loopback fake provider：
+
+- Desktop `5173` → 200
+- Community `5174` → 200
+- Local `8771` `build_sha=aba074d-harness-receipt-dirty` /
+  `local_0023_builder_harness_receipts` / `database_ready=true`
+- Community API `8772` `build_sha=a719813-interaction-v2-dirty` /
+  `community_0008` / `database_ready=true`
+- Factory `configured=true`，Moonshot / `kimi-k3`
+- 真实 Projects 仍在：`dddd` / `test` / `New project`
+
+### 下一步
+
+Slice 4 Explicit Test Run → Observe → Explain → optional Repair Proposal。
+不要开始 Community redesign。
+
+---
+
+## Historical checkpoint（2026-09-19，ProviderCapabilityProfile = complete）
+
+- Branch：`codex/agent-platform` → `origin/codex/agent-platform`
+- HEAD：`aba074d`（dirty working tree，**未 commit / 未 push**）
+- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`
+- 不要重开 Interaction Model V2 开发
+- 当时暂停：Harness Receipt UI、Slice 4 Test Run、autonomous Run、Community redesign
+- 当时下一步：Harness Receipt → Slice 4
+
+### Builder Interaction Model V2 = complete
+
+产品验收已关。最终 release gate caveat：
+
+当前环境没有 Playwright，所以完整 browser CASE 1–3 没有全部自动化执行。
+
+已有证据：Live Moonshot CASE 1 PASS；scripted provider CASE 2 / CASE 3 PASS；Desktop focused tests PASS；refresh / naming / missing capability / Recent 已验证；四服务真实配置正常。完整 Playwright acceptance 留到 Builder Phase 2 最终 release gate。
+
+### 审计（半成品 → 本轮事实）
+
+1. 类型定义：有。Python `ProviderCapabilityProfile` + TS 合同。本轮扩展了 identity / support / status。
+2. 持久化：本轮起写入 `provider_capability_profiles`（`local_0022`）。此前只是每次从 host 推导。
+3. 静态 + 有界 probe。未 probe 时 `source=static_known`。`POST /api/v1/factory/capability-probe` 才 probe。
+4. Factory generate 读取 resolved profile（缓存优先，否则 static_known）。
+5. `GET /api/v1/factory/status` 暴露 profile + 安全 `summary`。Settings 轻量显示。
+6. model 切换：identity 变，旧 profile 不复用。
+7. endpoint / base_url 变：fingerprint 变，旧 profile 不复用。Query 不进入 fingerprint。
+8. 不把 `/models` 当能力证明。Probe 不调用 `/models`。listing ≠ capability。
+9. Moonshot fallback 不再靠「读 403 body 里的 json_schema」。401/403/429/5xx/unknown 4xx 不 fallback、不把 capability 打成 unsupported。403 现为 `factory_forbidden`。只有 `schema_incompatible` / `response_format_unsupported` 才允许 strict → json_object。
+10. 本阶段已补：synthetic probe、cache identity、invalidation、typed failure、Factory 消费 profile、无用户数据、无密钥持久化。未做 Harness Receipt / Slice 4 / Playwright gate。
+
+### ProviderCapabilityProfile
+
+只回答：「这个 Provider + Model + Endpoint 支持怎样的模型请求协议？」
+
+不回答：「Veyra Agent 应该是什么？」Canonical 仍是 AgentSemanticPlanV1 → SemanticPlanCompiler → AgentBlueprint / AgentSource。
+
+- 身份：`provider_id` + `model` + `endpoint_kind=chat_completions` + `base_url_fingerprint` + `probe_version=semantic-plan-ok-v1`
+- Probe：固定 prompt `Return an object with field "ok".` + `{ok: boolean}` schema。无 Project / Knowledge / Files / Conversation / 用户 Prompt。
+- 顺序：minimal strict JSON Schema → 仅 schema/response_format 不兼容时才 `json_object` → 否则 unsupported/unknown。401/403/429 停止。429 = `status=inconclusive`，不改已有 capability truth。
+- Generate：`strict_json_schema_support=supported` → strict SemanticPlan schema；否则 `json_object_support=supported` → json_object + server parse + AgentSemanticPlanV1 校验；都 unsupported → typed `factory_structured_output_unsupported`。未 probe 时沿用 Moonshot static_known / 其它主机 fail-closed json_object。
+- 不把 Markdown regex 截 JSON 当 Draft。
+- Settings 只显示 Provider / Model / Structured output / Schema / JSON object fallback / Profile status / Checked + Recheck。Builder Activity 不刷 profile 加载。
+
+### 证据
+
+- 后端 focused：`test_provider_capability_profile.py` + `test_capability_probe.py` + `test_factory_client.py` + `test_factory_structured_schema.py` + `test_factory_routes.py` → **53 passed**
+- Desktop：`local-client.test.ts` + `factory-conversation.test.tsx` + `factory-capability-summary.test.tsx` → **41 passed**；`tsc -b` 通过
+- `ruff check` / `ruff format --check`：本切片相关文件通过
+- `mypy`：169 files，无问题
+- `git diff --check`：clean
+- 迁移头：`local_0022_provider_capability_profiles`
+- 未做全量 `make check`；未做 browser E2E；未 commit；未 push
+
+### 真实 Moonshot capability probe（一次，有界）
+
+- `POST /api/v1/factory/capability-probe` → HTTP 200
+- 不是 Builder create，未创建 Agent
+- 结果：**known / probe / strict JSON Schema supported**
+  - Provider：Moonshot
+  - Model：kimi-k3
+  - Structured output：Strict JSON Schema
+  - Schema profile：MFJS
+  - JSON object fallback：Supported（generate 大 SemanticPlan schema 仍允许一次 schema 400 fallback）
+  - Profile status：Known
+  - `strict_json_schema_support=supported`
+  - `json_object_support=unknown`（strict 已成功，未再 probe json_object）
+  - `source=probe`，`probed=true`
+- 随后 `GET /api/v1/factory/status` 读缓存，仍是 Known，没有第二次 live probe
+- 不是 429，不是 inconclusive，不是 unsupported
+
+### 四服务
+
+真实配置，无 temp DB / temp project root / loopback fake provider：
+
+- Desktop `5173` → 200
+- Community `5174` → 200
+- Local `8771` `build_sha=aba074d-provider-profile-dirty` / `local_0022` / `database_ready=true`
+- Community API `8772` `build_sha=a719813-interaction-v2-dirty` / `community_0008` / `database_ready=true`
+- Factory `configured=true`，`api.moonshot.cn`，`kimi-k3`
+- 真实 Projects 未改
+
+### 当时下一步
+
+Harness Receipt（现已完成）。不要开始 Slice 4 / Community redesign / commit / push。
+
+---
+
+## Historical checkpoint（2026-09-19，Builder Interaction Model V2 = complete）
 
 - Branch：`codex/agent-platform` → `origin/codex/agent-platform`
 - HEAD：`a719813`（dirty working tree，**未 commit / 未 push**）

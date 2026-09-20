@@ -128,11 +128,13 @@ GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地
 2. 执行闭环：Runtime V1 + Knowledge 引用已齐；不是真实外部 soak。
 3. 分享闭环：仍是最大缺口。
 
-## 5. Builder Phase 2（进行中，未提交）
+## 5. Builder Phase 2（进行中）
 
-HEAD：`a719813`。工作树含 Slice 1（Knowledge binding）、Slice 2
-（Project `filesystem.read` binding）与 Slice 3（typed validation repair）。
-模块完成前不 commit / 不 push。
+HEAD：`aba074d` 之上本 checkpoint 发布 ProviderCapabilityProfile 与
+BuilderHarnessReceipt。Slice 1（Knowledge binding）、Slice 2
+（Project `filesystem.read` binding）与 Slice 3（typed validation repair）
+已随先前 Interaction Model V2 提交落地。Phase 2 模块整体仍未做最终
+release gate。
 
 已落地：
 
@@ -179,7 +181,7 @@ SemanticPlanCompiler → canonical AgentBlueprint → validation → review →
 Confirm 后才 Apply。Compiler 复用 Slice 1/2 resolver，不猜、不 Catalog
 auto-add。完整 AgentBlueprint 不再是默认 Provider-facing contract。
 
-**Builder Interaction Model V2 = complete**（未发布）。
+**Builder Interaction Model V2 = complete**（`aba074d`）。
 
 Chat 不再把 Builder 生命周期渲染成系统气泡。`builder_operation_events`
 是 server-owned 进度；Activity 一个 operation 一块，完成默认折叠。
@@ -197,26 +199,67 @@ generate → waiting → confirm → apply → 一次 result 通过。Agent 名
 limit，不是 V2 缺陷。CASE 2/3 走同一条真实 Builder path 的
 scripted/local provider 验收。
 
-**ProviderCapabilityProfile = implemented / paused**（未发布）。
+完整 Playwright CASE 1–3 浏览器验收未在本环境执行（无 Playwright）。
+产品证据是 live Moonshot CASE 1 + scripted CASE 2/3 + Desktop focused
+tests。真正 browser acceptance 留到 Builder Phase 2 最终 release gate。
 
-`GET /api/v1/factory/status` 现在带 `capability_profile`。已知 Moonshot
-主机生成走 `json_schema` + MFJS 投影，且仅在 schema/`response_format`
-被拒时允许一次 `json_object` fallback。其它 OpenAI-compatible 主机 fail
-closed 为 `json_object`，不发 `reasoning_effort`，不做 MFJS 投影。
-`probed=false`：这是 host_defaults，不是 live structured-output 探测。
+**ProviderCapabilityProfile = complete**（本 checkpoint）。
 
-明确未完成：Harness Receipt 产品 UI、Slice 4
-Test Run、Catalog → Project mutation from Chat、Builder Phase 2 release。
+Profile 只回答「这个 Provider + Model + Endpoint 支持怎样的模型请求
+协议」，不定义 Veyra Agent 语义。Canonical 仍是 AgentSemanticPlanV1 →
+SemanticPlanCompiler → AgentBlueprint。`/models` 只证明模型可见，不是
+structured-output 能力。
+
+身份：`provider_id` + `model` + `endpoint_kind` + `base_url` fingerprint
+（无 query / 无密钥）+ `probe_version`。缓存命中则普通 Builder generate
+只读 profile，不 probe。显式 `POST /api/v1/factory/capability-probe`
+用固定 `{ok: boolean}` synthetic schema；401/403/429/5xx/unknown 4xx
+不降级 capability，429 记 `inconclusive` 而不是 unsupported。
+
+Factory generate：probe 已知则 strict → 允许的 json_object；否则沿用
+Moonshot static_known / 其它主机 fail-closed json_object。schema /
+response_format 不兼容才允许一次 json_object fallback。结果仍走
+AgentSemanticPlanV1 校验，再编译为 canonical AgentBlueprint。
+
+Settings 只显示很轻的能力摘要 + Recheck。Builder Activity 不刷
+profile 技术细节。
+
+一次有界 live Moonshot probe（`api.moonshot.cn` / `kimi-k3`）：
+`strict_json_schema_support=supported`，`status=known`，`source=probe`。
+不是 429，不是 inconclusive，不是 unsupported。未创建 Agent。
+
+**Builder Harness Receipt = complete**（本 checkpoint）。
+
+一次真实模型调用一条 `BuilderHarnessReceipt`：先 persist
+`prepared`，请求后再 finalize `success`/`failed`。失败也保留证据。
+Receipt 只存安全 metadata（Harness / Policy / Contract / structured
+mode / included+excluded categories / 有界 snapshot hash / 当时
+ProviderProfile 摘要）。不存 prompt、Knowledge/File 正文、密钥、
+Authorization、provider body、hidden reasoning。
+
+五者不同：
+
+```text
+Conversation Message  ≠  BuilderOperationEvent  ≠  BuilderHarnessReceipt
+≠  Proposal  ≠  Runtime Run
+```
+
+Activity 折叠「构建详情」展示人类可读 Provider / Contract / Mode；
+hash 只在 Technical details。Chat 不刷 Receipt。无模型调用的
+operation 不报 “No receipt found”。历史 Receipt 在 Recheck 后不变。
+API 只走 Project-scoped conversation/operation。
+
+明确未完成：Slice 4 Test Run、Catalog → Project mutation from Chat、
+Builder Phase 2 release。
 
 ## 6. 下一步
 
-Interaction Model V2 已按产品验收收口。下一步按顺序，不要跳：
+Builder Harness Receipt 已收口。下一步按顺序，不要跳：
 
-1. ProviderCapabilityProfile（代码已在工作树，产品化暂缓）
-2. Harness Receipt
-3. Slice 4 explicit Test Run / observe / repair
+1. Slice 4 explicit Test Run / observe / repair
+2. Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
 
-Slice 4 仍 **暂停**，除非用户明确恢复：
+Slice 4 现已恢复为下一步：
 
 **Builder Phase 2 Slice 4 — explicit Test Run → observe typed
 Runtime failure → Builder explanation → optional repair Proposal。**
@@ -241,9 +284,10 @@ Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Comm
 - 没有 PostgreSQL + 对象存储演练，就不能宣称 Community production ready
 - 没有真实外部 Provider，就不能宣称 Runtime 已在生产网络下验证
 - Builder 不能一次修改多个对象，也不是全 Project 操作入口
-- Builder Phase 2 仍在 dirty working tree。Durable Conversation、Semantic Plan
-  Compiler、Interaction Model V2 与 ProviderCapabilityProfile 已落地。
-  V2 的 live 浏览器创建闭环未关。下一步由用户选择，仍不是模块发布
+- Builder Phase 2 仍未发布。Durable Conversation、Semantic Plan Compiler、
+  Interaction Model V2、ProviderCapabilityProfile 与 Harness Receipt 已落地。
+  完整 Playwright CASE 1–3 留到最终 release gate。下一步是 Slice 4
+  Test Run，不是模块发布
 - 公开 Community 目录仍有静态样例，不能当成真实注册表
 
 ## 8. 提交规则

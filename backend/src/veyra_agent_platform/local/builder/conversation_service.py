@@ -27,6 +27,10 @@ from veyra_agent_platform.local.builder.operation_events import (
     PROPOSAL_REJECTED,
     event_label,
 )
+from veyra_agent_platform.local.builder.receipts import (
+    HarnessReceiptRecorder,
+    public_receipt,
+)
 from veyra_agent_platform.local.builder.resolution import (
     BuilderMessage,
     BuilderResolutionService,
@@ -224,6 +228,14 @@ class BuilderConversationService:
                 on_event=on_event,
             )
             history = self._bounded_history(conversation_id, content)
+            receipts = HarnessReceiptRecorder(
+                self.store,
+                self.factory.harness,
+                project_id=project_id,
+                conversation_id=conversation_id,
+                operation_id=operation_id,
+                profile=self.factory.resolved_capability_profile(),
+            )
             resolution = self.resolution.resolve(
                 project_id,
                 ResolveRequest(
@@ -232,6 +244,7 @@ class BuilderConversationService:
                     focus=focus,
                     locale=locale,
                 ),
+                receipts=receipts,
             )
             self._append_resolution(
                 conversation_id, operation_id, resolution, locale, on_event=on_event
@@ -249,6 +262,7 @@ class BuilderConversationService:
                     content,
                     locale,
                     on_event=on_event,
+                    receipts=receipts,
                 )
             elif (
                 resolution.get("status") == "resolved"
@@ -429,7 +443,7 @@ class BuilderConversationService:
                 status_code=404,
             )
         operations = [
-            self._public_operation(row)
+            self._public_operation(row, project_id)
             for row in self.store.operations(conversation_id)
         ]
         latest = operations[-1] if operations else None
@@ -667,9 +681,10 @@ class BuilderConversationService:
         locale: Literal["zh", "en"],
         *,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
         goal = str(resolution.get("instruction") or content)
-        session = self.factory.create_session(project_id, goal)
+        session = self.factory.create_session(project_id, goal, receipts=receipts)
         session_id = str(session["session_id"])
         self.store.update_operation(
             operation_id,
@@ -691,7 +706,9 @@ class BuilderConversationService:
                     diagnostic=_facts({"candidate_name": name[:80], **facts}),
                 )
 
-        generated = self.factory.generate(project_id, session_id, on_stage=on_stage)
+        generated = self.factory.generate(
+            project_id, session_id, on_stage=on_stage, receipts=receipts
+        )
         state = str(generated.get("state") or "")
         candidate = generated.get("candidate") if isinstance(generated, dict) else None
         name = ""
@@ -872,7 +889,40 @@ class BuilderConversationService:
             return
         self.store.touch(conversation_id, title=upgraded, updated_at=_now())
 
-    def _public_operation(self, row: dict[str, Any]) -> dict[str, Any]:
+    def receipts(
+        self, project_id: str, conversation_id: str, operation_id: str
+    ) -> dict[str, Any]:
+        self._require_project(project_id)
+        conversation = self.store.conversation(conversation_id, project_id)
+        if conversation is None:
+            raise BuilderConversationError(
+                "builder_conversation_not_found",
+                "Builder conversation was not found",
+                status_code=404,
+            )
+        operation = self.store.operation(operation_id, conversation_id)
+        if operation is None:
+            raise BuilderConversationError(
+                "builder_operation_not_found",
+                "Builder operation was not found",
+                status_code=404,
+            )
+        return {
+            "schema_version": "1.0",
+            "project_id": project_id,
+            "conversation_id": conversation_id,
+            "operation_id": operation_id,
+            "receipts": [
+                public_receipt(item)
+                for item in self.store.receipts(
+                    project_id=project_id,
+                    conversation_id=conversation_id,
+                    operation_id=operation_id,
+                )
+            ],
+        }
+
+    def _public_operation(self, row: dict[str, Any], project_id: str) -> dict[str, Any]:
         diagnostic = _load_object(row.get("diagnostic_json"))
         payload = _load_object(row.get("input_json"))
         events = [
@@ -902,6 +952,14 @@ class BuilderConversationService:
             "diagnostic": _facts(diagnostic),
             "has_request": bool(payload.get("content")),
             "events": events,
+            "receipts": [
+                public_receipt(item)
+                for item in self.store.receipts(
+                    project_id=project_id,
+                    conversation_id=str(row["conversation_id"]),
+                    operation_id=str(row["operation_id"]),
+                )
+            ],
         }
 
     def _public_event(self, row: dict[str, Any]) -> dict[str, Any]:

@@ -52,6 +52,10 @@ def build_router() -> APIRouter:
     def factory_status(request: Request) -> dict[str, Any]:
         return _translate(lambda: _factory(request).status())
 
+    @router.post("/api/v1/factory/capability-probe")
+    def factory_capability_probe(request: Request) -> dict[str, Any]:
+        return _translate(lambda: _factory(request).probe_capabilities())
+
     sessions = APIRouter(prefix="/api/v1/projects/{project_id}/factory")
 
     @sessions.post("/sessions", status_code=status.HTTP_201_CREATED)
@@ -117,7 +121,12 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
     try:
         return operation()
     except FactoryProviderError as exc:
-        status_code = 503 if exc.code in _PROVIDER_UNAVAILABLE else 502
+        if exc.code == "factory_structured_output_unsupported":
+            status_code = 422
+        elif exc.code in _PROVIDER_UNAVAILABLE:
+            status_code = 503
+        else:
+            status_code = 502
         raise TypedApiError(
             status_code,
             exc.code,

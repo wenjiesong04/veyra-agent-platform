@@ -936,7 +936,7 @@ describe("desktop Project workspace", () => {
         { message_id: "m-fail", conversation_id: "conv-1", sequence: 1, role: "system" as const, kind: "failure" as const, content: "Agent 结构生成失败", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" },
       ],
       operations: [
-        { operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed" as const, retry_of: null, error_code: "factory_request_invalid", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true, target_kind: "agent" as const, events: [] },
+        { operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed" as const, retry_of: null, error_code: "factory_request_invalid", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true, target_kind: "agent" as const, events: [], receipts: [] },
       ],
       resolution: null,
       factory_session: null,

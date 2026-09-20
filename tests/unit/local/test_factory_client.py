@@ -100,6 +100,21 @@ def test_http_transport_maps_unauthorized_without_leaking_bodies() -> None:
         raise AssertionError("expected FactoryProviderError")
 
 
+def test_http_transport_maps_forbidden_without_leaking_bodies() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": {"message": "no access sk-secret"}})
+
+    transport = _transport(handler)
+    try:
+        transport.complete([{"role": "user", "content": "hello"}])
+    except FactoryProviderError as exc:
+        assert exc.code == "factory_forbidden"
+        assert "sk-secret" not in str(exc)
+        assert exc.details == {"http_status": "403"}
+    else:
+        raise AssertionError("expected FactoryProviderError")
+
+
 def test_http_transport_maps_rate_limit_without_leaking_bodies() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"error": {"message": "slow down sk-secret"}})

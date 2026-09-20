@@ -20,3 +20,10 @@
 .builder-activity-steps li[data-state="failed"] { color: var(--danger, #b42318); }
 .builder-activity-steps li[data-state="current"] strong { font-weight: 650; }
 .builder-activity-actions { margin-top: 8px; }
+.builder-build-details { margin-top: 10px; }
+.builder-build-details-toggle { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: inherit; cursor: pointer; padding: 2px 0; font-size: 13px; opacity: 0.85; }
+.builder-build-details-facts { margin: 8px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px; }
+.builder-build-details-facts dt { opacity: 0.7; }
+.builder-build-details-facts dd { margin: 0; }
+.builder-build-details-technical { grid-column: 1 / -1; margin-top: 6px; }
+.builder-build-details-technical dl { margin: 6px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12px; opacity: 0.85; font-variant-numeric: tabular-nums; }

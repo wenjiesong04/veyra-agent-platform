@@ -117,6 +117,14 @@ def _assert_no_secrets(payload: dict[str, Any]) -> None:
                     "reasoning",
                     "authorization",
                 }
+        for operation in payload.get("operations") or []:
+            for receipt in operation.get("receipts") or []:
+                dumped = json.dumps(receipt, ensure_ascii=False)
+                assert "sk-" not in dumped
+                assert "Authorization" not in dumped
+                assert BUILDER_SYSTEM_PROMPT not in dumped
+                assert "reasoning_content" not in dumped.casefold()
+                assert "You are Veyra Builder" not in dumped
 
 
 def _assert_chat_kinds(payload: dict[str, Any]) -> None:

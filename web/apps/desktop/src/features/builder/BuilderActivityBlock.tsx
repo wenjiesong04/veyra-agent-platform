@@ -1,6 +1,7 @@
 import * as React from "react";
 import type {
   BuilderConversationOperation,
+  BuilderHarnessReceipt,
   BuilderOperationEvent,
   BuilderOperationEventKind,
 } from "@veyra/api-contracts";
@@ -170,6 +171,198 @@ function headline(operation: BuilderConversationOperation, locale: "zh" | "en"):
   return zh ? `构建 ${target} · 已完成` : `Build ${target} · completed`;
 }
 
+function BuilderBuildDetails({
+  operation,
+  locale,
+}: {
+  operation: BuilderConversationOperation;
+  locale: "zh" | "en";
+}) {
+  const zh = locale === "zh";
+  const [open, setOpen] = React.useState(false);
+  const [technical, setTechnical] = React.useState(false);
+  const receipts = operation.receipts ?? [];
+  const primary = primaryReceipt(receipts);
+  const fallback = receipts.find((item) => item.fallback_to || item.fallback_from);
+  return (
+    <div className="builder-build-details">
+      <button type="button" className="builder-build-details-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span aria-hidden="true">{open ? "▼" : "▶"}</span>
+        {zh ? "构建详情" : "Build details"}
+      </button>
+      {open ? (
+        <dl className="builder-build-details-facts">
+          {primary ? (
+            <>
+              <dt>{zh ? "Provider" : "Provider"}</dt>
+              <dd>{providerLabel(primary.provider_id, primary.model)}</dd>
+              <dt>{zh ? "模式" : "Mode"}</dt>
+              <dd>{modeLabel(operation, locale)}</dd>
+              <dt>{zh ? "契约" : "Contract"}</dt>
+              <dd>{contractLabel(primary.output_contract)}</dd>
+              <dt>{zh ? "结构化输出" : "Structured output"}</dt>
+              <dd>{structuredLabel(primary.structured_mode, locale)}</dd>
+              <dt>{zh ? "策略" : "Policy"}</dt>
+              <dd>{policyLabel(primary.policy_version)}</dd>
+              <dt>{zh ? "上下文" : "Context"}</dt>
+              <dd>{contextLabel(primary.included_categories, locale)}</dd>
+              <dt>{zh ? "排除" : "Excluded"}</dt>
+              <dd>{excludedLabel(primary.excluded_categories, locale)}</dd>
+              <dt>{zh ? "状态" : "Status"}</dt>
+              <dd>{receiptStatusLabel(primary, operation, locale)}</dd>
+              {primary.failure_stage ? (
+                <>
+                  <dt>{zh ? "失败阶段" : "Failure stage"}</dt>
+                  <dd>{failureStageLabel(primary.failure_stage, locale)}</dd>
+                </>
+              ) : null}
+              {primary.error_code ? (
+                <>
+                  <dt>{zh ? "错误" : "Error"}</dt>
+                  <dd>{safeErrorLabel(primary, locale)}</dd>
+                </>
+              ) : null}
+              {fallback ? (
+                <>
+                  <dt>{zh ? "回退" : "Fallback"}</dt>
+                  <dd>{structuredLabel(fallback.fallback_to || fallback.structured_mode, locale)}</dd>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <dt>{zh ? "模型调用" : "Model invocation"}</dt>
+              <dd>{zh ? "无" : "None"}</dd>
+            </>
+          )}
+          <div className="builder-build-details-technical">
+            <button type="button" className="builder-build-details-toggle" onClick={() => setTechnical((value) => !value)} aria-expanded={technical}>
+              <span aria-hidden="true">{technical ? "▼" : "▶"}</span>
+              {zh ? "技术详情" : "Technical details"}
+            </button>
+            {technical ? (
+              <dl>
+                <dt>operation_id</dt>
+                <dd>{shortId(operation.operation_id)}</dd>
+                {primary ? (
+                  <>
+                    <dt>receipt_id</dt>
+                    <dd>{shortId(primary.receipt_id)}</dd>
+                    <dt>policy_hash</dt>
+                    <dd>{shortId(primary.policy_hash)}</dd>
+                    <dt>project_snapshot_hash</dt>
+                    <dd>{shortId(primary.project_snapshot_hash)}</dd>
+                    <dt>catalog_snapshot_hash</dt>
+                    <dd>{shortId(primary.catalog_snapshot_hash)}</dd>
+                    <dt>schema_hash</dt>
+                    <dd>{shortId(primary.schema_hash)}</dd>
+                    <dt>request_size</dt>
+                    <dd>{primary.request_size_bytes}</dd>
+                    <dt>profile</dt>
+                    <dd>{`${primary.provider_profile_source} / ${primary.provider_profile_status}`}</dd>
+                    {primary.provider_request_id ? (
+                      <>
+                        <dt>provider_request_id</dt>
+                        <dd>{primary.provider_request_id}</dd>
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
+                {receipts.map((item) => (
+                  <React.Fragment key={item.receipt_id}>
+                    <dt>{zh ? `调用 ${item.sequence + 1}` : `Invocation ${item.sequence + 1}`}</dt>
+                    <dd>{`${item.invocation_kind} · ${item.structured_mode} · ${item.status}`}</dd>
+                  </React.Fragment>
+                ))}
+              </dl>
+            ) : null}
+          </div>
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
+function primaryReceipt(receipts: BuilderHarnessReceipt[]): BuilderHarnessReceipt | undefined {
+  const plans = receipts.filter((item) => item.invocation_kind === "semantic_plan" || item.invocation_kind === "semantic_plan_repair");
+  return [...plans].reverse()[0] ?? [...receipts].reverse()[0];
+}
+
+function providerLabel(providerId: string, model: string): string {
+  const provider = providerId === "moonshot" ? "Moonshot" : providerId;
+  const modelName = model === "kimi-k3" ? "Kimi K3" : model;
+  return `${provider} · ${modelName}`;
+}
+
+function modeLabel(operation: BuilderConversationOperation, locale: "zh" | "en"): string {
+  if (operation.kind === "create_agent" || operation.target_kind === "agent") return locale === "zh" ? "创建 Agent" : "Create Agent";
+  if (operation.kind === "create_workflow" || operation.target_kind === "workflow") return locale === "zh" ? "创建 Workflow" : "Create Workflow";
+  if (operation.kind === "edit") return locale === "zh" ? "修改" : "Edit";
+  return locale === "zh" ? "理解需求" : "Resolve intent";
+}
+
+function contractLabel(contract: string): string {
+  if (contract === "AgentSemanticPlanV1") return "AgentSemanticPlan v1";
+  if (contract === "BuilderIntentV1") return "BuilderIntent v1";
+  return contract;
+}
+
+function structuredLabel(mode: string, locale: "zh" | "en"): string {
+  if (mode === "strict_json_schema") return "Strict JSON Schema";
+  if (mode === "json_object") return "JSON Object";
+  return locale === "zh" ? "无" : "None";
+}
+
+function policyLabel(version: string): string {
+  if (version === "builder-policy-v1") return "Builder Policy v1";
+  return version.replace(/^builder-policy-/, "Builder Policy ");
+}
+
+function contextLabel(included: string[], locale: "zh" | "en"): string {
+  const hasProject = included.some((item) => item === "project_agents_metadata" || item === "project_config" || item === "knowledge_metadata" || item === "workflows_metadata");
+  const hasCatalog = included.includes("catalog_capabilities") || included.includes("project_resource_bindings");
+  if (hasProject && hasCatalog) return locale === "zh" ? "Project 元数据 + Resource 元数据" : "Project metadata + Resource metadata";
+  if (hasProject) return locale === "zh" ? "Project 元数据" : "Project metadata";
+  return locale === "zh" ? "Resource 元数据" : "Resource metadata";
+}
+
+function excludedLabel(excluded: string[], locale: "zh" | "en"): string {
+  const labels: string[] = [];
+  if (excluded.includes("knowledge_contents")) labels.push(locale === "zh" ? "Knowledge 正文" : "Knowledge contents");
+  if (excluded.includes("project_file_contents")) labels.push(locale === "zh" ? "Files 正文" : "Files contents");
+  if (excluded.includes("secrets") || excluded.includes("credentials")) labels.push(locale === "zh" ? "密钥" : "Secrets");
+  return labels.join(", ");
+}
+
+function receiptStatusLabel(receipt: BuilderHarnessReceipt, operation: BuilderConversationOperation, locale: "zh" | "en"): string {
+  if (operation.status === "failed" || receipt.status === "failed") return locale === "zh" ? "失败" : "Failed";
+  if (receipt.status === "success") return locale === "zh" ? "成功" : "Success";
+  return locale === "zh" ? "准备中" : "Prepared";
+}
+
+function failureStageLabel(stage: string, locale: "zh" | "en"): string {
+  if (stage === "provider_request") return locale === "zh" ? "Provider 请求" : "Provider request";
+  return stage;
+}
+
+function safeErrorLabel(receipt: BuilderHarnessReceipt, locale: "zh" | "en"): string {
+  const code = receipt.error_code ?? "";
+  if (code === "factory_rate_limited") return "Rate limited";
+  if (code === "factory_unauthorized") return locale === "zh" ? "未授权" : "Unauthorized";
+  if (code === "factory_forbidden") return locale === "zh" ? "禁止访问" : "Forbidden";
+  if (code === "factory_provider_error") return locale === "zh" ? "Provider 故障" : "Provider failure";
+  if (code === "factory_request_invalid") {
+    const kind = receipt.safe_provider_error_type ?? "";
+    if (kind.includes("invalid_request") || (receipt.safe_provider_error_param ?? "").includes("json_schema")) return "Schema incompatible";
+    return "Schema incompatible";
+  }
+  return code.replace(/^factory_/, "").replaceAll("_", " ") || (locale === "zh" ? "失败" : "Failed");
+}
+
+function shortId(value: string): string {
+  return value.length <= 12 ? value : `${value.slice(0, 12)}…`;
+}
+
 export function BuilderActivityBlock({
   operation,
   locale,
@@ -200,17 +393,20 @@ export function BuilderActivityBlock({
         </span>
       </button>
       {open ? (
-        <ol className="builder-activity-steps">
-          {steps.map((step) => (
-            <li key={step.key} data-state={step.state}>
-              <span aria-hidden="true">{step.state === "done" ? "✓" : step.state === "failed" ? "✕" : step.state === "current" ? "●" : "○"}</span>
-              <div>
-                <strong>{zh ? step.label.zh : step.label.en}</strong>
-                {step.summary ? <small>{step.summary}</small> : null}
-              </div>
-            </li>
-          ))}
-        </ol>
+        <>
+          <ol className="builder-activity-steps">
+            {steps.map((step) => (
+              <li key={step.key} data-state={step.state}>
+                <span aria-hidden="true">{step.state === "done" ? "✓" : step.state === "failed" ? "✕" : step.state === "current" ? "●" : "○"}</span>
+                <div>
+                  <strong>{zh ? step.label.zh : step.label.en}</strong>
+                  {step.summary ? <small>{step.summary}</small> : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+          <BuilderBuildDetails operation={operation} locale={locale} />
+        </>
       ) : null}
       {operation.status === "failed" && onRetry ? (
         <div className="builder-activity-actions">

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.projects.service import ProjectService
@@ -13,6 +14,53 @@ from .prompt import BUILDER_SYSTEM_PROMPT
 
 MAX_CONTEXT_BYTES = 400_000
 BuilderMode = Literal["interview", "create_agent", "edit_source", "resolve_intent"]
+ContextCategory = Literal[
+    "conversation_recent_messages",
+    "project_agents_metadata",
+    "workflows_metadata",
+    "knowledge_metadata",
+    "project_resource_bindings",
+    "catalog_capabilities",
+    "project_files_metadata",
+    "project_config",
+]
+ExcludedCategory = Literal[
+    "knowledge_contents",
+    "project_file_contents",
+    "credentials",
+    "secrets",
+    "raw_runtime_events",
+    "hidden_reasoning",
+    "raw_prompts",
+    "provider_response_bodies",
+]
+
+INCLUDED_CONTEXT_CATEGORIES: tuple[ContextCategory, ...] = (
+    "conversation_recent_messages",
+    "project_agents_metadata",
+    "workflows_metadata",
+    "knowledge_metadata",
+    "project_resource_bindings",
+    "catalog_capabilities",
+    "project_files_metadata",
+    "project_config",
+)
+EXCLUDED_CONTEXT_CATEGORIES: tuple[ExcludedCategory, ...] = (
+    "knowledge_contents",
+    "project_file_contents",
+    "credentials",
+    "secrets",
+    "raw_runtime_events",
+    "hidden_reasoning",
+    "raw_prompts",
+    "provider_response_bodies",
+)
+
+
+class SnapshotFacts(NamedTuple):
+    project_hash: str
+    catalog_hash: str
+    context_size_bytes: int
 
 
 class BuilderHarness:
@@ -20,15 +68,14 @@ class BuilderHarness:
         self.projects = projects
         self.catalog = catalog
 
-    def messages(
+    def context_document(
         self,
         project_id: str,
         mode: BuilderMode,
         *,
         target: dict[str, Any] | None = None,
-        schema: dict[str, Any] | None = None,
         conversation: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         project = self.projects.project_summary(project_id)
         inventory = {
             kind: [
@@ -118,6 +165,21 @@ class BuilderHarness:
         encoded = json.dumps(context, ensure_ascii=False)
         if len(encoded.encode()) > MAX_CONTEXT_BYTES:
             raise ContractValidationError("Builder context exceeds the size limit")
+        return context
+
+    def messages(
+        self,
+        project_id: str,
+        mode: BuilderMode,
+        *,
+        target: dict[str, Any] | None = None,
+        schema: dict[str, Any] | None = None,
+        conversation: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        context = self.context_document(
+            project_id, mode, target=target, conversation=conversation
+        )
+        encoded = json.dumps(context, ensure_ascii=False)
         contract = {
             "interview": (
                 "Ask one concise follow-up about goal, inputs, outputs, risks or "
@@ -161,3 +223,132 @@ class BuilderHarness:
             {"role": "system", "content": BUILDER_SYSTEM_PROMPT + "\n" + contract},
             {"role": "user", "content": encoded},
         ]
+
+    def snapshot_facts(self, project_id: str, mode: BuilderMode) -> SnapshotFacts:
+        context = self.context_document(project_id, mode)
+        encoded = json.dumps(context, ensure_ascii=False)
+        return SnapshotFacts(
+            project_hash=canonical_json_hash(project_snapshot_projection(context)),
+            catalog_hash=canonical_json_hash(
+                catalog_snapshot_projection(context["resources"])
+            ),
+            context_size_bytes=len(encoded.encode("utf-8")),
+        )
+
+
+def canonical_json_hash(value: object) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def project_snapshot_projection(context: dict[str, Any]) -> dict[str, Any]:
+    inventory = context.get("inventory") or {}
+    return {
+        "project": _pick(
+            context.get("project") or {},
+            ("project_id", "name", "description", "manifest_hash"),
+        ),
+        "agents": [_agent_projection(item) for item in inventory.get("agents") or []],
+        "workflows": [
+            _pick(
+                item,
+                (
+                    "workflow_id",
+                    "slug",
+                    "name",
+                    "description",
+                    "version",
+                    "source_file_hash",
+                ),
+            )
+            | _graph_projection(item)
+            for item in inventory.get("workflows") or []
+        ],
+        "knowledge": [
+            _knowledge_projection(item) for item in inventory.get("knowledge") or []
+        ],
+        "project_bindings": list(context.get("project_bindings") or []),
+        "files": [
+            _pick(item, ("path", "kind", "byte_length", "agent_id"))
+            for item in context.get("files") or []
+        ],
+    }
+
+
+def catalog_snapshot_projection(
+    resources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        _pick(
+            item,
+            (
+                "reference",
+                "kind",
+                "name",
+                "description",
+                "availability",
+                "runtime_status",
+                "required_permissions",
+                "factory_selectable",
+                "content_hash",
+                "origin",
+                "component_class",
+            ),
+        )
+        for item in resources
+    ]
+
+
+def _agent_projection(item: dict[str, Any]) -> dict[str, Any]:
+    payload = _pick(
+        item,
+        ("agent_id", "slug", "name", "description", "version", "source_file_hash"),
+    )
+    origin = item.get("community_origin")
+    if isinstance(origin, dict):
+        payload["community_origin"] = _pick(
+            origin, ("owner_handle", "slug", "version", "source_hash")
+        )
+    payload.update(_graph_projection(item))
+    return payload
+
+
+def _graph_projection(item: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    draft = item.get("draft")
+    if isinstance(draft, dict):
+        payload["draft"] = _pick(draft, ("revision", "etag", "source_file_hash"))
+    if "nodes" in item:
+        payload["nodes"] = item["nodes"]
+    if "transitions" in item:
+        payload["transitions"] = item["transitions"]
+    if "lock" in item:
+        payload["lock"] = item["lock"]
+    if "versions" in item:
+        payload["versions"] = item["versions"]
+    return payload
+
+
+def _knowledge_projection(item: dict[str, Any]) -> dict[str, Any]:
+    payload = _pick(
+        item,
+        (
+            "knowledge_id",
+            "slug",
+            "name",
+            "description",
+            "version",
+            "source_file_hash",
+        ),
+    )
+    processing = item.get("processing")
+    if isinstance(processing, dict):
+        payload["index_status"] = processing.get("index_status")
+        payload["chunk_count"] = processing.get("chunk_count")
+    return payload
+
+
+def _pick(item: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {key: item[key] for key in keys if key in item and item[key] is not None}

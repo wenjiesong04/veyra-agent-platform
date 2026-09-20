@@ -4,6 +4,7 @@ from .capability_profile import (
     ProviderCapabilityProfile,
     derive_provider_capability_profile,
 )
+from .capability_store import ProviderCapabilityStore
 from .client import (
     FactoryProviderError,
     FactoryProviderNotConfigured,
@@ -24,5 +25,6 @@ __all__ = [
     "KimiCompletion",
     "KimiTransport",
     "ProviderCapabilityProfile",
+    "ProviderCapabilityStore",
     "derive_provider_capability_profile",
 ]

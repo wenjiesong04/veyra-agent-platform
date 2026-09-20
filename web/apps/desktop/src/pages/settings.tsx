@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Check, KeyRound, Moon, Palette, Settings2, Sun } from "lucide-react";
-import type { SecretStatus } from "@veyra/api-contracts";
+import type { FactoryStatus, SecretStatus } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, StatusBadge, useLocale, useTheme, type ThemeChoice } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { FactoryCapabilitySummary } from "../features/settings/factory-capability-summary";
 
 const choices: Array<{ value: ThemeChoice; icon: typeof Sun }> = [
   { value: "system", icon: Settings2 },
@@ -22,6 +23,8 @@ export function SettingsPage() {
   const [modelStatus, setModelStatus] = useState<SecretStatus | null>(null);
   const [modelMessage, setModelMessage] = useState("");
   const [modelBusy, setModelBusy] = useState(false);
+  const [factoryStatus, setFactoryStatus] = useState<FactoryStatus | null>(null);
+  const [factoryBusy, setFactoryBusy] = useState(false);
   const copy = locale === "zh" ? {
     eyebrow: "工作区偏好", title: "让控制面适应你的工作。", description: "外观和布局只是便利偏好；产品真实状态仍在项目、定义和运行记录中。", saved: "已保存到本机", appearance: "外观", theme: "主题", themeDetail: "选择舒适的白昼、暗夜或跟随系统界面。", system: "系统", light: "白昼", dark: "暗夜", workspace: "工作区", boundary: "本机边界", boundaryDetail: "没有远程访问时，桌面壳层仍然可用。", execution: "执行", localOnly: "仅限本机", effects: "外部效果", guarded: "受控", source: "源文件", userOwned: "用户拥有", evidence: "运行证据", replayable: "可重放", storage: "布局偏好是此壳层唯一使用的浏览器存储。", accessibility: "无障碍", comfort: "舒适默认值", comfortDetail: "壳层遵循减少动态效果偏好，并保持焦点状态可见。", reset: "重置布局", change: "侧栏宽度和主题随时可以更改。", secrets: "凭据", githubToken: "GitHub Token", githubDetail: "保存到本机 Keychain；GitHub 工具只读取已授权的 github.main 引用。", modelKey: "模型 API Key", modelDetail: "保存到本机 Keychain；Runtime 和 Factory 会使用它调用配置的模型服务。", token: "Token", save: "保存 Token", clear: "清除 Keychain", loading: "读取中", configured: "已配置", missing: "未配置", keychain: "macOS Keychain", environment: "环境变量回退", savedSecret: "Token 已保存到本机 Keychain。", clearedSecret: "Keychain 中的 Token 已清除。", secretUnavailable: "当前桌面 sidecar 不支持凭据管理。", secretFailed: "凭据操作失败，请检查 sidecar 状态。",
   } : {
@@ -56,6 +59,15 @@ export function SettingsPage() {
     });
     return () => { active = false; };
   }, [api, copy.secretFailed, copy.secretUnavailable]);
+
+  useEffect(() => {
+    let active = true;
+    if (!api.factoryStatus) return () => { active = false; };
+    void api.factoryStatus().then((next) => {
+      if (active) setFactoryStatus(next);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [api]);
 
   async function saveGithubToken() {
     if (!api.setSecret || !githubToken.trim()) return;
@@ -119,6 +131,16 @@ export function SettingsPage() {
     }
   }
 
+  async function recheckFactory() {
+    if (!api.probeFactoryCapabilities) return;
+    setFactoryBusy(true);
+    try {
+      setFactoryStatus(await api.probeFactoryCapabilities());
+    } finally {
+      setFactoryBusy(false);
+    }
+  }
+
   const secretLabel = githubStatus?.source === "keychain"
     ? copy.keychain
     : githubStatus?.source === "environment" ? copy.environment : githubStatus ? copy.missing : copy.loading;
@@ -128,5 +150,5 @@ export function SettingsPage() {
     : modelStatus?.source === "environment" ? copy.environment : modelStatus ? copy.missing : copy.loading;
   const modelTone = modelStatus?.configured ? "good" : "warn";
 
-  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div><StatusBadge label={copy.saved} tone="good" /></div><div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.appearance} title={copy.theme} detail={copy.themeDetail} /><div className="choice-list">{choices.map(({ value, icon: Icon }) => <button className={theme === value ? "choice active" : "choice"} key={value} type="button" onClick={() => setTheme(value)}><Icon size={17} /><span>{labels[value]}</span>{theme === value ? <Check size={15} /> : null}</button>)}</div></Panel><Panel><SectionHeading eyebrow={copy.workspace} title={copy.boundary} detail={copy.boundaryDetail} /><div className="settings-facts"><div><span>{copy.execution}</span><strong>{copy.localOnly}</strong></div><div><span>{copy.effects}</span><strong>{copy.guarded}</strong></div><div><span>{copy.source}</span><strong>{copy.userOwned}</strong></div><div><span>{copy.evidence}</span><strong>{copy.replayable}</strong></div></div><div className="settings-note"><Palette size={16} /><span>{copy.storage}</span></div></Panel></div><Panel><SectionHeading eyebrow={copy.secrets} title={copy.githubToken} detail={copy.githubDetail} /><div className="settings-secret-form"><label><span>{copy.token}</span><input type="password" autoComplete="new-password" value={githubToken} onChange={(event) => setGithubToken(event.target.value)} placeholder="ghp_…" /></label><div className="button-row"><Button icon={KeyRound} variant="primary" disabled={githubBusy || !githubToken.trim() || !api.setSecret} onClick={() => void saveGithubToken()}>{copy.save}</Button><Button variant="secondary" disabled={githubBusy || !api.deleteSecret} onClick={() => void clearGithubToken()}>{copy.clear}</Button></div></div><div className="settings-secret-status"><StatusBadge label={githubStatus?.configured ? copy.configured : copy.missing} tone={secretTone} /><span>{secretLabel}</span></div>{githubMessage ? <p className="settings-secret-message" role="status">{githubMessage}</p> : null}</Panel><Panel><SectionHeading eyebrow={copy.secrets} title={copy.modelKey} detail={copy.modelDetail} /><div className="settings-secret-form"><label><span>{copy.token}</span><input type="password" autoComplete="new-password" value={modelToken} onChange={(event) => setModelToken(event.target.value)} placeholder="sk-…" /></label><div className="button-row"><Button icon={KeyRound} variant="primary" disabled={modelBusy || !modelToken.trim() || !api.setSecret} onClick={() => void saveModelToken()}>{copy.save}</Button><Button variant="secondary" disabled={modelBusy || !api.deleteSecret} onClick={() => void clearModelToken()}>{copy.clear}</Button></div></div><div className="settings-secret-status"><StatusBadge label={modelStatus?.configured ? copy.configured : copy.missing} tone={modelTone} /><span>{modelLabel}</span></div>{modelMessage ? <p className="settings-secret-message" role="status">{modelMessage}</p> : null}</Panel><Panel><SectionHeading eyebrow={copy.accessibility} title={copy.comfort} detail={copy.comfortDetail} /><div className="accessibility-row"><Button variant="secondary">{copy.reset}</Button><span>{copy.change}</span></div></Panel></div>;
+  return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div><StatusBadge label={copy.saved} tone="good" /></div><div className="content-grid two-thirds"><Panel><SectionHeading eyebrow={copy.appearance} title={copy.theme} detail={copy.themeDetail} /><div className="choice-list">{choices.map(({ value, icon: Icon }) => <button className={theme === value ? "choice active" : "choice"} key={value} type="button" onClick={() => setTheme(value)}><Icon size={17} /><span>{labels[value]}</span>{theme === value ? <Check size={15} /> : null}</button>)}</div></Panel><Panel><SectionHeading eyebrow={copy.workspace} title={copy.boundary} detail={copy.boundaryDetail} /><div className="settings-facts"><div><span>{copy.execution}</span><strong>{copy.localOnly}</strong></div><div><span>{copy.effects}</span><strong>{copy.guarded}</strong></div><div><span>{copy.source}</span><strong>{copy.userOwned}</strong></div><div><span>{copy.evidence}</span><strong>{copy.replayable}</strong></div></div><div className="settings-note"><Palette size={16} /><span>{copy.storage}</span></div></Panel></div><Panel><SectionHeading eyebrow={copy.secrets} title={copy.githubToken} detail={copy.githubDetail} /><div className="settings-secret-form"><label><span>{copy.token}</span><input type="password" autoComplete="new-password" value={githubToken} onChange={(event) => setGithubToken(event.target.value)} placeholder="ghp_…" /></label><div className="button-row"><Button icon={KeyRound} variant="primary" disabled={githubBusy || !githubToken.trim() || !api.setSecret} onClick={() => void saveGithubToken()}>{copy.save}</Button><Button variant="secondary" disabled={githubBusy || !api.deleteSecret} onClick={() => void clearGithubToken()}>{copy.clear}</Button></div></div><div className="settings-secret-status"><StatusBadge label={githubStatus?.configured ? copy.configured : copy.missing} tone={secretTone} /><span>{secretLabel}</span></div>{githubMessage ? <p className="settings-secret-message" role="status">{githubMessage}</p> : null}</Panel><Panel><SectionHeading eyebrow={copy.secrets} title={copy.modelKey} detail={copy.modelDetail} /><div className="settings-secret-form"><label><span>{copy.token}</span><input type="password" autoComplete="new-password" value={modelToken} onChange={(event) => setModelToken(event.target.value)} placeholder="sk-…" /></label><div className="button-row"><Button icon={KeyRound} variant="primary" disabled={modelBusy || !modelToken.trim() || !api.setSecret} onClick={() => void saveModelToken()}>{copy.save}</Button><Button variant="secondary" disabled={modelBusy || !api.deleteSecret} onClick={() => void clearModelToken()}>{copy.clear}</Button></div></div><div className="settings-secret-status"><StatusBadge label={modelStatus?.configured ? copy.configured : copy.missing} tone={modelTone} /><span>{modelLabel}</span></div>{modelMessage ? <p className="settings-secret-message" role="status">{modelMessage}</p> : null}</Panel><FactoryCapabilitySummary status={factoryStatus} locale={locale} busy={factoryBusy} onRecheck={() => void recheckFactory()} /><Panel><SectionHeading eyebrow={copy.accessibility} title={copy.comfort} detail={copy.comfortDetail} /><div className="accessibility-row"><Button variant="secondary">{copy.reset}</Button><span>{copy.change}</span></div></Panel></div>;
 }

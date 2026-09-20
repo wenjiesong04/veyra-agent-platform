@@ -13,7 +13,7 @@ from typing import Any
 from veyra_agent_platform.contracts.agent import AgentBlueprint
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
-from veyra_agent_platform.local.builder.harness import BuilderHarness
+from veyra_agent_platform.local.builder.harness import BuilderHarness, BuilderMode
 from veyra_agent_platform.local.builder.operation_events import (
     CAPABILITIES_RESOLVED,
     CAPABILITIES_STARTED,
@@ -23,6 +23,11 @@ from veyra_agent_platform.local.builder.operation_events import (
     SEMANTIC_PLAN_STARTED,
     VALIDATION_COMPLETED,
     VALIDATION_STARTED,
+)
+from veyra_agent_platform.local.builder.receipts import (
+    HarnessReceiptRecorder,
+    InvocationKind,
+    structured_mode_of,
 )
 from veyra_agent_platform.local.builder.semantic_compiler import (
     BuilderProjectContext,
@@ -34,8 +39,21 @@ from veyra_agent_platform.local.projects.service import ProjectError, ProjectSer
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 from veyra_agent_platform.local.resources.project import ProjectResourceService
 
-from .capability_profile import ProviderCapabilityProfile, structured_response_format
-from .client import FactoryProviderError, KimiClient
+from .capability_probe import probe_provider_capabilities
+from .capability_profile import (
+    ProviderCapabilityProfile,
+    allows_json_object_generate_fallback,
+    derive_provider_capability_profile,
+    generate_structured_output,
+    structured_response_format,
+)
+from .capability_store import ProviderCapabilityStore
+from .client import (
+    FactoryProviderError,
+    FactoryProviderNotConfigured,
+    KimiClient,
+    KimiCompletion,
+)
 from .compiler import (
     BlueprintCompileError,
     agent_candidate_identity,
@@ -84,17 +102,19 @@ class FactoryService:
         projects: ProjectService,
         catalog: ResourceCatalog,
         client: KimiClient,
+        profiles: ProviderCapabilityStore | None = None,
     ) -> None:
         self.store = store
         self.projects = projects
         self.catalog = catalog
         self.client = client
+        self.profiles = profiles or ProviderCapabilityStore(store.database_path)
         self.harness = BuilderHarness(projects, catalog)
         self._writer_lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
         settings = self.client.settings
-        profile = self.client.capability_profile()
+        profile = self._capability_profile()
         return {
             "schema_version": "1.0",
             "configured": self.client.configured,
@@ -107,8 +127,30 @@ class FactoryService:
             "capability_profile": profile.to_dict(),
         }
 
+    def probe_capabilities(self) -> dict[str, Any]:
+        if not self.client.configured:
+            raise FactoryProviderNotConfigured()
+        previous = self._capability_profile()
+        profile = probe_provider_capabilities(
+            self.client.complete, previous, now=_now()
+        )
+        self.profiles.put(profile)
+        return self.status()
+
+    def _capability_profile(self) -> ProviderCapabilityProfile:
+        seed = derive_provider_capability_profile(self.client.settings)
+        cached = self.profiles.get(seed.identity_key)
+        return cached if cached is not None else seed
+
+    def resolved_capability_profile(self) -> ProviderCapabilityProfile:
+        return self._capability_profile()
+
     def create_session(
-        self, project_id: str, goal: str | None = None
+        self,
+        project_id: str,
+        goal: str | None = None,
+        *,
+        receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
         self._require_project(project_id)
         session_id = new_uuid7()
@@ -137,7 +179,7 @@ class FactoryService:
                     created_at=now,
                 )
         if clean_goal:
-            self._append_interview(session_id)
+            self._append_interview(session_id, receipts=receipts)
         return self.get_session(project_id, session_id)
 
     def get_session(self, project_id: str, session_id: str) -> dict[str, Any]:
@@ -199,6 +241,7 @@ class FactoryService:
         session_id: str,
         *,
         on_stage: Callable[[str, dict[str, str]], None] | None = None,
+        receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
         def stage(kind: str, facts: dict[str, str] | None = None) -> None:
             if on_stage is not None:
@@ -234,9 +277,16 @@ class FactoryService:
                     ),
                 },
             ]
-            response_format: dict[str, Any] = _plan_response_format(
-                self.client.capability_profile()
-            )
+            profile = self._capability_profile()
+            if generate_structured_output(profile) is None:
+                raise FactoryProviderError(
+                    "factory_structured_output_unsupported",
+                    "Factory model does not support structured output",
+                    details={"error_class": "structured_output_unsupported"},
+                )
+            response_format: dict[str, Any] = _plan_response_format(profile)
+            plan_schema = _plan_schema()
+            history_count = len(self.store.messages(session_id))
             used_object_fallback = False
             diagnostics: list[str] = []
             attempts = self.client.settings.repair_attempts
@@ -244,15 +294,39 @@ class FactoryService:
             stage(SEMANTIC_PLAN_STARTED)
             while attempt <= attempts:
                 self._set_state(session_id, "generating", diagnostics=diagnostics)
+                mode = structured_mode_of(response_format)
+                kind: InvocationKind = (
+                    "semantic_plan" if attempt == 1 else "semantic_plan_repair"
+                )
+                fallback_from = (
+                    "strict_json_schema"
+                    if used_object_fallback and mode == "json_object"
+                    else None
+                )
+                fallback_to = "json_object" if fallback_from else None
                 try:
-                    completion = self.client.complete(
-                        messages, response_format=response_format
+                    completion = self._complete_with_receipt(
+                        messages,
+                        response_format=response_format,
+                        receipts=receipts,
+                        kind=kind,
+                        harness_mode="create_agent",
+                        output_contract="AgentSemanticPlanV1",
+                        schema=plan_schema,
+                        history_message_count=history_count,
+                        fallback_from=fallback_from,
+                        fallback_to=fallback_to,
+                        profile=profile,
                     )
                 except FactoryProviderError as exc:
                     if (
                         not used_object_fallback
-                        and self.client.capability_profile().json_object_fallback
-                        and _schema_compatibility_failure(exc)
+                        and allows_json_object_generate_fallback(
+                            profile,
+                            code=exc.code,
+                            message=str(exc),
+                            details=exc.details,
+                        )
                     ):
                         used_object_fallback = True
                         response_format = {"type": "json_object"}
@@ -471,9 +545,14 @@ class FactoryService:
                 "agent": agent,
             }
 
-    def _append_interview(self, session_id: str) -> None:
+    def _append_interview(
+        self,
+        session_id: str,
+        *,
+        receipts: HarnessReceiptRecorder | None = None,
+    ) -> None:
         previous = self.store.messages(session_id)
-        reply = self._interview_reply(session_id)
+        reply = self._interview_reply(session_id, receipts=receipts)
         with self.store.transaction() as connection:
             self.store.append_message(
                 connection,
@@ -485,7 +564,12 @@ class FactoryService:
                 created_at=_now(),
             )
 
-    def _interview_reply(self, session_id: str) -> str:
+    def _interview_reply(
+        self,
+        session_id: str,
+        *,
+        receipts: HarnessReceiptRecorder | None = None,
+    ) -> str:
         if not self.client.configured:
             return _CANNED_FOLLOW_UP
         session = self.store.session(session_id)
@@ -499,9 +583,58 @@ class FactoryService:
         ]
         try:
             self.client.ensure_model()
-            return self.client.complete(messages).content.strip() or _CANNED_FOLLOW_UP
+            completion = self._complete_with_receipt(
+                messages,
+                response_format=None,
+                receipts=receipts,
+                kind="interview",
+                harness_mode="interview",
+                output_contract="none",
+                schema=None,
+                history_message_count=len(self.store.messages(session_id)),
+            )
+            return completion.content.strip() or _CANNED_FOLLOW_UP
         except FactoryProviderError:
             return _CANNED_FOLLOW_UP
+
+    def _complete_with_receipt(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        response_format: dict[str, Any] | None,
+        receipts: HarnessReceiptRecorder | None,
+        kind: InvocationKind,
+        harness_mode: BuilderMode,
+        output_contract: str,
+        schema: dict[str, Any] | None,
+        history_message_count: int,
+        fallback_from: str | None = None,
+        fallback_to: str | None = None,
+        profile: ProviderCapabilityProfile | None = None,
+    ) -> KimiCompletion:
+        receipt_id: str | None = None
+        if receipts is not None:
+            receipt_id = receipts.begin(
+                kind=kind,
+                harness_mode=harness_mode,
+                structured_mode=structured_mode_of(response_format),
+                output_contract=output_contract,
+                schema=schema,
+                messages=messages,
+                history_message_count=history_message_count,
+                fallback_from=fallback_from,
+                fallback_to=fallback_to,
+                profile=profile,
+            )
+        try:
+            completion = self.client.complete(messages, response_format=response_format)
+        except FactoryProviderError as exc:
+            if receipt_id is not None and receipts is not None:
+                receipts.fail(receipt_id, exc)
+            raise
+        if receipt_id is not None and receipts is not None:
+            receipts.succeed(receipt_id, provider_request_id=completion.request_id)
+        return completion
 
     def _missing_capabilities(self, blueprint: AgentBlueprint) -> list[dict[str, Any]]:
         missing: list[dict[str, Any]] = []
@@ -672,30 +805,6 @@ def _repair_prompt(diagnostics: list[str]) -> str:
         "Repair only the invalid AgentSemanticPlanV1 fields. Do not add resource "
         "hashes, Knowledge UUIDs, node IDs, canvas positions, source.lock, or "
         "permissions. Diagnostics: " + "; ".join(diagnostics)
-    )
-
-
-def _schema_compatibility_failure(exc: FactoryProviderError) -> bool:
-    if exc.code != "factory_request_invalid":
-        return False
-    details = exc.details or {}
-    blob = " ".join(
-        [
-            str(exc),
-            str(details.get("rejected_field") or ""),
-            str(details.get("bounded_message") or ""),
-            str(details.get("provider_error_type") or ""),
-        ]
-    ).casefold()
-    return any(
-        hint in blob
-        for hint in (
-            "json_schema",
-            "flavored json schema",
-            "response_format",
-            "moonshot flavored",
-            "mfjs",
-        )
     )
 
 

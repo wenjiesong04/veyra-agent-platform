@@ -817,18 +817,33 @@ bridge, not the default model contract.
 Builder Conversation History and Runtime Run History are different canonical
 domains.
 
-Conversation Message ≠ Builder Operation ≠ Proposal ≠ Runtime Run.
+Conversation Message ≠ Builder Operation Event ≠ BuilderHarnessReceipt ≠
+Proposal ≠ Runtime Run.
 
 - Conversation messages are the user-facing chat: user input, understanding,
   clarification, recoverable failure summaries, and a single final result.
-- Builder Operations are server-owned work. They persist a bounded event
-  stream (`builder.intent.*`, `builder.semantic_plan.*`, `builder.compile.*`,
-  `builder.proposal.*`, `builder.apply.*`) so Activity can be collapsed,
-  refreshed, and audited. They are not chat bubbles.
+  They never carry Provider protocol facts, snapshot hashes, or receipts.
+- Builder Operation Events answer “what happened in this operation?” They
+  persist a bounded event stream (`builder.intent.*`,
+  `builder.semantic_plan.*`, `builder.compile.*`, `builder.proposal.*`,
+  `builder.apply.*`) so Activity stages can be collapsed, refreshed, and
+  audited. They are not chat bubbles and are not receipts.
+- BuilderHarnessReceipt answers “under what controlled harness/provider
+  context did this model invocation happen?” One receipt per real provider
+  request (`resolve_intent`, `interview`, `semantic_plan`,
+  `semantic_plan_repair`). Persist `prepared` before the request; finalize
+  `success` or `failed`. Failures still have receipts. Typed
+  `strict_json_schema` → `json_object` fallback is two invocations. Receipts
+  store only safe metadata (policy/schema hashes, bounded snapshot hashes,
+  included/excluded context categories, provider/profile facts). They never
+  persist prompts, Knowledge/File bodies, credentials, headers, provider
+  bodies, or hidden reasoning. Historical receipts are immutable after
+  finalize; later Recheck / Project / Catalog changes must not rewrite them.
+  Deterministic operations with no model call have no receipt.
 - Proposals / compiled artifacts belong to the Workbench review surface
   (Canvas, resource plan, Diff/Impact, readiness). Chat may link to them.
-- Runtime History records immutable execution facts (events, receipts,
-  approvals, evidence).
+- Runtime Run records what actually executed. Builder operations may later
+  reference `run_id`; receipts do not store Runtime evidence.
 
 Chat must not copy full Run event streams; at most a `run_id` reference.
 The desktop header “历史” page remains Runtime Run History only. The left
@@ -998,14 +1013,19 @@ browser storage, logs, or packages. Desktop Settings can bind the model key to
 `model.primary`; headless development may continue using `MOONSHOT_API_KEY`.
 
 Blueprint generation uses the `ProviderCapabilityProfile` attached to
-`GET /api/v1/factory/status`. Known Moonshot hosts send
-`response_format.type=json_schema` with the committed AgentSemanticPlanV1 JSON
-Schema after the Moonshot MFJS projection. A single `json_object` fallback is
-allowed only when that profile sets `json_object_fallback=true` and the provider
-rejects the schema/`response_format` itself. Unknown OpenAI-compatible hosts
-fail closed to `json_object` with no MFJS projection and no schema fallback.
-401, 403, 429, unknown 4xx and 5xx do not fallback. Markdown scraping is
-forbidden. Thinking-model `reasoning_content` may be retained
+`GET /api/v1/factory/status`. The profile is a request-protocol fact for one
+Provider + Model + Endpoint identity. It does not define Veyra Agent
+semantics; those remain AgentSemanticPlanV1 → SemanticPlanCompiler →
+AgentBlueprint / AgentSource.
+
+Known Moonshot hosts send `response_format.type=json_schema` with the
+committed AgentSemanticPlanV1 JSON Schema after the Moonshot MFJS
+projection. A single `json_object` fallback is allowed only when that
+profile permits it and the provider rejects the schema/`response_format`
+itself. Unknown OpenAI-compatible hosts fail closed to `json_object` with
+no MFJS projection and no schema fallback. 401, 403, 429, unknown 4xx and
+5xx do not fallback and do not infer `strict_json_schema=false`. Markdown
+scraping is forbidden. Thinking-model `reasoning_content` may be retained
 only inside one in-memory generation/repair request chain when required by the
 provider protocol. It is never persisted in Factory messages, SQLite, logs, or
 Agent source.
@@ -1021,23 +1041,62 @@ ends.
 
 ### 6.4.1 ProviderCapabilityProfile
 
-Factory structured output is a declared host capability, not an implicit
-Moonshot assumption. `FactoryStatus.capability_profile` is derived from the
-configured Factory base URL (`source=host_defaults`). It is not a live
-structured-output probe, host secret readiness, or a successful Run.
-`probed` remains false until an explicit probe exists.
+Factory structured output is a declared capability of one Provider + Model +
+Endpoint, not an implicit Moonshot assumption and not a Veyra Agent contract.
 
-| Host | Family | Generate format | Schema flavor | `json_object` fallback | `reasoning_effort` |
+`GET /api/v1/factory/status.capability_profile` is keyed by `provider_id`,
+`model`, `endpoint_kind`, a `base_url` fingerprint (scheme+host+port+path,
+never query strings or credentials), and `probe_version`. `/v1/models`
+listing only proves a model id is visible. It is not evidence of strict JSON
+Schema, `json_object`, `reasoning_effort`, or any schema keyword.
+
+A cached profile is reused for ordinary Builder generate. Probe is synthetic
+only (`ok: boolean`, no Project / Knowledge / Files / Conversation / user
+prompt) and runs on explicit Recheck (`POST /api/v1/factory/capability-probe`),
+not every Builder turn. Probe order is bounded: minimal strict JSON Schema,
+then `json_object` only after `schema_incompatible` or
+`response_format_unsupported`. 401/403/429/5xx/unknown 4xx stop probing and
+leave prior capability truth unchanged (`429` → `status=inconclusive`, never
+unsupported).
+
+Static host defaults remain the generate strategy until a matching probe
+exists:
+
+| Host | Family | Generate format | Schema profile | `json_object` fallback | `reasoning_effort` |
 | --- | --- | --- | --- | --- | --- |
-| `api.moonshot.cn`, `api.moonshot.ai`, and their subdomains | `moonshot` | `json_schema` strict | `moonshot_mfjs` | yes, once, schema/`response_format` 400 only | sent |
-| any other OpenAI-compatible base URL | `openai_compatible` | `json_object` | `none` | no | omitted |
+| `api.moonshot.cn`, `api.moonshot.ai`, and their subdomains | `moonshot` | `json_schema` strict | `mfjs` | yes, once, schema/`response_format` 400 only | sent |
+| any other OpenAI-compatible base URL | `openai_compatible` | `json_object` | `unknown` | no | omitted |
 
-A lookalike host such as `api.moonshot.example` is not Moonshot. Intent
-resolution and source-edit generation may continue to use `json_object` when
-that format is within the profile; they do not expand the generate contract.
+After a successful probe, generate follows `strict_json_schema_support` then
+`json_object_support`. Both unsupported is a typed
+`factory_structured_output_unsupported` failure. The Moonshot MFJS projection
+of AgentBlueprint remains a compatibility bridge, not the default
+provider-facing contract. Probe targets SemanticPlan-sized structured output,
+not a full AgentBlueprint schema.
 
-The Moonshot MFJS projection of AgentBlueprint remains a compatibility bridge,
-not the default model contract and not a capability claimed for unknown hosts.
+A lookalike host such as `api.moonshot.example` is not Moonshot. Same model
+name on a different endpoint fingerprint is a different profile.
+
+### 6.4.2 BuilderHarnessReceipt
+
+A receipt is the safe execution evidence of one Builder model invocation.
+It is not a second `ProviderCapabilityProfile`, not an operation timeline,
+not a chat message, and not a request archive.
+
+`GET /api/v1/projects/{project_id}/builder/conversations/{conversation_id}/operations/{operation_id}`
+includes `receipts`. The same list is also available at
+`.../operations/{operation_id}/receipts`. Lookups are Project-scoped: a
+receipt_id alone is not a global key. Cross-project reads 404.
+
+Desktop Activity shows collapsed “Build details” / 「构建详情」from those
+receipts. Chat does not render receipt bubbles. Hashes stay under Technical
+details. Operations with no model call show no Provider section rather than
+an error.
+
+Receipts copy only the profile facts used for that invocation (`provider_id`,
+`model`, `endpoint_kind`, status/source, `schema_profile`, structured mode).
+They do not clone the profile row. Recheck updates the live profile cache
+only.
 
 ### 6.5 Kimi acceptance
 
