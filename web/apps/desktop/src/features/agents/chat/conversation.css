@@ -2,31 +2,40 @@
 .page-content:has(.agent-conversation) {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  max-height: 100%;
   overflow: hidden;
   padding: 0;
 }
 
+.page-content.agent-conversation-content > *,
 .page-content:has(.agent-conversation) > * {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   min-height: 0;
+  height: 100%;
   width: 100%;
+  overflow: hidden;
 }
 
 .agent-conversation {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   min-height: 0;
+  height: 100%;
   width: 100%;
   overflow: hidden;
 }
 
 .agent-conversation-main {
+  position: relative;
   display: flex;
-  flex: 1 1 0;
+  flex: 1 1 0%;
   min-width: 16rem;
   min-height: 0;
+  height: 100%;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .agent-conversation.is-empty .agent-conversation-main {
@@ -53,7 +62,7 @@
   min-height: 0;
   place-content: center;
   justify-items: center;
-  animation: agent-convo-rise 420ms ease both;
+  animation: agent-convo-rise 420ms ease;
 }
 
 .agent-convo-mark {
@@ -325,7 +334,10 @@
   }
 
   .agent-convo-canvas,
-  .agent-convo-canvas-slot {
+  .agent-convo-canvas-slot,
+  .agent-convo-enter,
+  .agent-convo-hero,
+  .agent-convo-canvas-card {
     animation: none;
   }
 }
@@ -392,9 +404,12 @@
 }
 
 .agent-convo-scroll {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 20px 20px 8px;
 }
 
@@ -402,8 +417,16 @@
   display: grid;
   gap: 14px;
   width: min(760px, 100%);
+  max-width: 100%;
+  min-width: 0;
   margin: 0 auto;
-  padding-bottom: 12px;
+}
+
+.agent-convo-end-space {
+  flex: 0 0 auto;
+  width: 100%;
+  pointer-events: none;
+  overflow-anchor: none;
 }
 
 .agent-convo-dock {
@@ -411,7 +434,58 @@
   width: min(720px, calc(100% - 8px));
   margin: 0 auto;
   padding: 8px 0 16px;
-  animation: agent-convo-rise 280ms ease both;
+}
+
+.agent-conversation.is-active .agent-convo-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  flex-direction: column;
+  align-items: center;
+  padding: 36px 20px 16px;
+  background: linear-gradient(
+    to top,
+    var(--paper) 0%,
+    var(--paper) 46%,
+    color-mix(in srgb, var(--paper) 78%, transparent) 72%,
+    transparent 100%
+  );
+  pointer-events: none;
+  overflow-anchor: none;
+}
+
+.agent-conversation.is-active .agent-convo-dock > :not(.agent-convo-jump) {
+  width: min(720px, 100%);
+  pointer-events: auto;
+}
+
+.agent-convo-jump {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 1;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--soft-shadow);
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.agent-convo-jump:hover {
+  background: var(--surface-soft);
 }
 
 .agent-conversation.is-empty .agent-convo-dock {
@@ -744,7 +818,7 @@
 }
 
 .agent-convo-enter {
-  animation: agent-convo-rise 360ms ease both;
+  animation: agent-convo-fade 220ms ease;
 }
 
 .agent-convo-turn {
@@ -960,7 +1034,7 @@
   background: var(--surface);
   cursor: pointer;
   text-align: left;
-  animation: agent-convo-rise 280ms ease both;
+  animation: agent-convo-fade 220ms ease;
 }
 
 .agent-convo-canvas-card-icon {
@@ -982,8 +1056,11 @@
 .agent-convo-flow-block {
   display: grid;
   gap: 12px;
+  width: 100%;
   max-width: 100%;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .agent-convo-flow {
@@ -1091,8 +1168,13 @@
 }
 
 @keyframes agent-convo-rise {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes agent-convo-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes agent-convo-canvas-in {

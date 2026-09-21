@@ -1,7 +1,6 @@
 import * as React from "react";
 import { projectRoutePaths, type BuilderConversationMessage, type BuilderConversationOperation, type BuilderConversationSnapshot, type BuilderOperationEvent, type BuilderResolution, type BuilderResolveRequest, type FactorySession, type EditProposal, type EditProposalCommand, type EditTargetKind, type ProjectSummaryResponse, type StudioSource, type ValidateResponse } from "@veyra/api-contracts";
-import { Alert, Button, IconButton } from "@veyra/ui";
-import { X } from "lucide-react";
+import { Alert, Button } from "@veyra/ui";
 import { useProjectWorkspace } from "../../api/project-workspace";
 import { LocalApiClientError } from "../../api/local-client";
 import { type FactoryConversationScope } from "../factory/factory-conversation";
@@ -18,6 +17,8 @@ import { notifyBuilderActivity } from "./use-builder-activity";
 import { BuilderValidationIssues } from "./BuilderValidationIssues";
 import { BuilderActivityBlock } from "./BuilderActivityBlock";
 import { EditProposalPanel } from "./EditProposalPanel";
+import { BuilderTestRun, latestTestOperation } from "./BuilderTestRun";
+import { BuilderWorkspaceDock, type BuilderWorkspaceTab } from "./BuilderWorkspaceDock";
 import { builderValidationFailed, builderValidationIssues } from "./validation-feedback";
 import { planFacts, workbenchPhase } from "./workbench-phase";
 import "./builder.css";
@@ -34,7 +35,7 @@ function chatHref(projectId: string, conversationId?: string | null, target?: st
 
 function retryableOperation(operations: BuilderConversationOperation[]): BuilderConversationOperation | undefined {
   const latest = [...operations].reverse().find((item) => item.has_request);
-  if (!latest || latest.status !== "failed") return undefined;
+  if (!latest || latest.status !== "failed" || latest.kind === "test_agent") return undefined;
   return latest;
 }
 
@@ -42,11 +43,11 @@ function statusFromEvent(
   kind: BuilderOperationEvent["kind"],
   current: BuilderConversationOperation["status"],
 ): BuilderConversationOperation["status"] {
-  if (kind === "builder.operation.failed") return "failed";
+  if (kind === "builder.operation.failed" || kind === "builder.test_run.failed") return "failed";
   if (kind === "builder.proposal.rejected") return "rejected";
-  if (kind === "builder.proposal.ready") return "waiting";
-  if (kind === "builder.operation.completed") return "succeeded";
-  if (kind === "builder.apply.started") return "in_progress";
+  if (kind === "builder.proposal.ready" || kind === "builder.test_run.waiting_approval") return "waiting";
+  if (kind === "builder.operation.completed" || kind === "builder.test_run.completed" || kind === "builder.test_run.stopped") return "succeeded";
+  if (kind === "builder.apply.started" || kind === "builder.test_run.started") return "in_progress";
   return current;
 }
 
@@ -70,6 +71,7 @@ function mergeEvent(operations: BuilderConversationOperation[], event: BuilderOp
       has_request: true,
       events: [event],
       receipts: [],
+      run_observation: null,
     }];
   }
   const current = operations[index];
@@ -111,24 +113,14 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [blocked, setBlocked] = React.useState(false);
-  const [canvasOpen, setCanvasOpen] = React.useState(Boolean(selected));
-  const userClosedCanvas = React.useRef(false);
-  const openedForOperation = React.useRef<string | null>(null);
+  const [workspaceTabs, setWorkspaceTabs] = React.useState<Record<string, BuilderWorkspaceTab>>({});
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = React.useState<Record<string, true>>({});
+  const [expandedWorkspace, setExpandedWorkspace] = React.useState<string | null>(null);
   const [attachments, setAttachments] = React.useState<ConversationAttachment[]>([]);
   const [attachHint, setAttachHint] = React.useState("");
   const attachmentSeq = React.useRef(0);
   const inFlight = React.useRef(false);
   const refreshProject = async () => upsertProject(await api.getProject(project.project_id));
-  const maybeOpenWorkbench = React.useCallback((operation?: BuilderConversationOperation, intent?: string, createKind?: string | null) => {
-    const createAgent = (intent === "create" && createKind === "agent")
-      || operation?.kind === "create_agent"
-      || operation?.target_kind === "agent";
-    if (!createAgent && intent !== "edit" && operation?.kind !== "edit") return;
-    if (userClosedCanvas.current) return;
-    if (operation && openedForOperation.current === operation.operation_id && canvasOpen) return;
-    if (operation) openedForOperation.current = operation.operation_id;
-    setCanvasOpen(true);
-  }, [canvasOpen]);
   const applySnapshot = React.useCallback((snapshot: BuilderConversationSnapshot) => {
     conversationRef.current = snapshot.conversation.conversation_id;
     operationsRef.current = snapshot.operations;
@@ -140,10 +132,8 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       ?? [...snapshot.operations].reverse().find((item) => item.diagnostic.agent_id)?.diagnostic.agent_id
       ?? null;
     setCreatedAgentId(createdId);
-    const latest = snapshot.operations[snapshot.operations.length - 1];
-    maybeOpenWorkbench(latest, snapshot.resolution?.intent, snapshot.resolution?.create_kind);
     notifyBuilderActivity();
-  }, [maybeOpenWorkbench]);
+  }, []);
   const rememberConversation = (nextId: string, nextTarget = target) => {
     window.history.replaceState(null, "", chatHref(project.project_id, nextId, nextTarget));
   };
@@ -220,18 +210,19 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       const resolved = next.targets[0];
       await refreshProject();
       const value = `${resolved.kind}:${resolved.target_id}`;
-      setTarget(value); setSession(null); setIncoming(undefined); setCanvasOpen(true);
+      setTarget(value); setSession(null); setIncoming(undefined);
+      setWorkspaceTabs((current) => ({ ...current, [`focus:${resolved.target_id}`]: "workbench" }));
       rememberConversation(conversationId, value);
       const proposal = await proposeEdit(resolved, next.instruction, userContent);
       setIncoming(proposal);
       await persistRecord("proposal_reference", zh ? `提案 ${proposal.proposal_id}` : `Proposal ${proposal.proposal_id}`, { proposal_id: proposal.proposal_id });
     } else if (next.intent === "create" && next.create_kind === "agent" && !api.submitBuilderTurn) {
-      setTarget("create"); setIncoming(undefined); setCreatedAgentId(null); setSession(null); setCanvasOpen(true);
+      setTarget("create"); setIncoming(undefined); setCreatedAgentId(null); setSession(null);
       rememberConversation(conversationId, "create");
       const started = await api.createFactorySession!(project.project_id, { goal: next.instruction || userContent });
       setSession(await api.generateFactoryBlueprint!(project.project_id, started.session_id));
     } else if (next.intent === "create" && next.create_kind === "agent") {
-      setTarget("create"); setIncoming(undefined); setCanvasOpen(true);
+      setTarget("create"); setIncoming(undefined);
       rememberConversation(conversationId, "create");
     }
   };
@@ -247,10 +238,6 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
         setOperations((items) => {
           const next = mergeEvent(items, event);
           operationsRef.current = next;
-          const current = next.find((item) => item.operation_id === event.operation_id);
-          if (event.kind === "builder.intent.resolved" || event.kind === "builder.proposal.ready") {
-            maybeOpenWorkbench(current, event.facts.intent, event.facts.create_kind);
-          }
           return next;
         });
       },
@@ -274,8 +261,6 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     setError("");
     setContent("");
     setAttachments([]);
-    userClosedCanvas.current = false;
-    openedForOperation.current = null;
     if (!retryOf && userContent) setMessages((items) => [...items, syntheticUser(userContent, items.length)]);
     try {
       if (api.submitBuilderTurn) await sendTurn(userContent, retryOf);
@@ -300,6 +285,16 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     });
     return () => { active = false; };
   }, [api, applySnapshot, conversationId, project.project_id]);
+  React.useEffect(() => {
+    const conversation = conversationRef.current;
+    if (!conversation || !api.getBuilderConversation) return;
+    const pending = operations.some((item) => item.kind === "test_agent" && (item.status === "in_progress" || item.status === "waiting"));
+    if (!pending) return;
+    const timer = window.setInterval(() => {
+      void api.getBuilderConversation!(project.project_id, conversation).then(applySnapshot).catch(() => undefined);
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [api, applySnapshot, operations, project.project_id]);
   const applyCreation = async () => {
     if (!session || inFlight.current) return;
     inFlight.current = true; setBusy(true); setError("");
@@ -323,7 +318,8 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     inFlight.current = true; setBusy(true); setError("");
     try {
       await persistRecord("reject", zh ? "已拒绝 Blueprint，未创建 Agent。" : "Rejected the Blueprint. No Agent was created.");
-      setCanvasOpen(false);
+      const current = operationsRef.current[operationsRef.current.length - 1];
+      if (current) setCollapsedWorkspaces((items) => ({ ...items, [current.operation_id]: true }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { inFlight.current = false; setBusy(false); }
   };
@@ -334,20 +330,56 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     setAttachments((items) => [...items, ...next]);
   };
   const latestOperation = operations[operations.length - 1];
-  const phase = workbenchPhase(latestOperation, session, createdAgentId);
-  const reviewReady = latestOperation?.status === "waiting" && !canvasOpen;
   const persistedInProgress = !busy && operations.some((item) => item.status === "in_progress");
   const empty = !messages.length && !selected && !session && !error && !busy;
   const retry = retryableOperation(operations);
-  const closeWorkbench = () => {
-    userClosedCanvas.current = true;
-    setCanvasOpen(false);
-  };
   const transcript = transcriptItems(messages, operations);
   const lastChatIndex = [...transcript].reverse().findIndex((item) => item.type === "message");
   const lastChatAbs = lastChatIndex >= 0 ? transcript.length - 1 - lastChatIndex : -1;
+  const lastWorkspaceIndex = new Map<string, number>();
+  transcript.forEach((item, index) => {
+    const operationId = transcriptOperationId(item);
+    if (!operationId) return;
+    const operation = operations.find((entry) => entry.operation_id === operationId);
+    if (operation && isWorkspaceOperation(operation)) lastWorkspaceIndex.set(operationId, index);
+  });
+  const focusWorkspaceKey = selected ? `focus:${selected.id}` : null;
+  const focusCovered = Boolean(selected && operations.some((operation) => isWorkspaceOperation(operation) && operationAgentId(operation, messages) === selected.id));
+  const renderWorkspace = (workspaceId: string, operation?: BuilderConversationOperation) => {
+    if (collapsedWorkspaces[workspaceId]) {
+      return <FactoryCanvasCard key={`card-${workspaceId}`} title={zh ? "工作台" : "Workbench"} locale={locale} onOpen={() => setCollapsedWorkspaces((current) => {
+        const next = { ...current };
+        delete next[workspaceId];
+        return next;
+      })} />;
+    }
+    const agentId = operation ? operationAgentId(operation, messages) : selected?.id ?? createdAgentId;
+    const ownsSession = Boolean(session && operation && (operation.factory_session_id === session.session_id || (!operation.factory_session_id && operation.operation_id === latestOperation?.operation_id)));
+    const phase = workbenchPhase(operation ?? latestOperation, ownsSession ? session : null, agentId ?? null);
+    const live = busy || operation?.status === "in_progress" || operation?.status === "waiting";
+    const tab = workspaceTabs[workspaceId] ?? "workbench";
+    const workbench = operation?.kind === "edit" || (!operation && selected)
+      ? <BuilderTarget key={agentId ?? workspaceId} projectId={project.project_id} kind={(operation?.target_kind ?? selected?.kind ?? "agent") as EditTargetKind} targetId={agentId ?? selected?.id ?? ""} targetName={selected?.name ?? agentId ?? ""} locale={locale} incoming={incoming && (!operation?.proposal_id || incoming.proposal_id === operation.proposal_id) ? incoming : undefined} resolving={busy} resolutionBlocked={blocked} onReload={() => setBlocked(false)} onPersisted={(kind, text, extra) => void persistRecord(kind, text, extra)} />
+      : <FactoryAssemblyCanvas embedded locale={locale} session={ownsSession ? session : null} busy={busy ? "generate" : null} phase={phase} planSummary={planFacts((operation ?? latestOperation)?.events ?? [])} canGenerate={false} canApply={Boolean(ownsSession && session?.state === "review")} studioHref={agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} createdAgentId={agentId ?? null} drafted={false} focusChild={false} onClose={() => setCollapsedWorkspaces((current) => ({ ...current, [workspaceId]: true }))} onApply={() => void applyCreation()} onReject={ownsSession && session?.state === "review" ? () => void rejectCreation() : undefined} />;
+    return <BuilderWorkspaceDock
+      key={`dock-${workspaceId}`}
+      idPrefix={workspaceId}
+      locale={locale}
+      live={live}
+      tab={tab}
+      onTabChange={(next) => setWorkspaceTabs((current) => ({ ...current, [workspaceId]: next }))}
+      expanded={expandedWorkspace === workspaceId}
+      onToggleExpand={() => setExpandedWorkspace((current) => current === workspaceId ? null : workspaceId)}
+      onClose={() => {
+        setExpandedWorkspace((current) => current === workspaceId ? null : current);
+        setCollapsedWorkspaces((current) => ({ ...current, [workspaceId]: true }));
+      }}
+      workbench={workbench}
+      test={agentId ? <BuilderTestRun api={api} projectId={project.project_id} agentId={agentId} conversationId={activeConversationId} locale={locale} operation={latestTestOperation(operations.filter((item) => item.kind === "test_agent" && (item.diagnostic.agent_id === agentId || item.run_observation?.agent_id === agentId || !item.diagnostic.agent_id)))} onSnapshot={applySnapshot} /> : null}
+    />;
+  };
   return <ConversationStage
-    empty={empty} canvasOpen={canvasOpen}
+    empty={empty} canvasOpen={false} className={expandedWorkspace ? "is-builder-workspace is-workspace-expanded" : "is-builder-workspace"}
     mark={<ConversationHeroMark />}
     greetingTitle={<ConversationGreetingTitle locale={locale} projectName={project.name} />}
     greetingLabel={assembleGreeting(locale, project.name)}
@@ -357,38 +389,69 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       if (next.kind !== "new" && next.projectId === project.project_id) {
         setTarget(next.kind === "agent" ? `agent:${next.agentId}` : "create");
         setIncoming(undefined); setSession(null); setBlocked(false); setError("");
-        userClosedCanvas.current = false;
-        setCanvasOpen(next.kind === "agent");
+        if (next.kind === "agent") {
+          setCollapsedWorkspaces((current) => {
+            const copy = { ...current };
+            delete copy[`focus:${next.agentId}`];
+            return copy;
+          });
+        }
       }
       return scope.onSelect(next);
     }} onCreateProject={scope.onCreateProject} />}
     data-project-id={project.project_id} data-factory="veyra-agent"
     composer={<ConversationComposer locale={locale} value={content} onChange={(value) => setContent(value.slice(0, 10000))} onSubmit={() => void send(composeFactoryPrompt(content, attachments, locale))} disabled={busy || blocked || (!content.trim() && !attachments.length) || (!api.resolveBuilderIntent && !api.submitBuilderTurn)} sending={busy} textboxLabel={zh ? "消息" : "Message"} placeholder={zh ? "随心输入" : "Type freely"} sendLabel={zh ? "发送" : "Send"} attachLabel={zh ? "添加文件" : "Attach files"} onAttachFiles={(files) => void attach(files)} extraFields={<>{attachHint ? <p className="agent-convo-hint" role="status">{attachHint}</p> : null}<ConversationAttachmentList items={attachments} locale={locale} onRemove={(id) => setAttachments((items) => items.filter((item) => item.id !== id))} /></>} />}
-    canvas={selected ? <aside className="agent-convo-canvas factory-assembly-canvas" aria-label={zh ? "修改提案" : "Edit proposal"}>
-      <header className="agent-convo-canvas-head"><h3>Proposal</h3><IconButton icon={X} label={zh ? "关闭工作台" : "Close workbench"} onClick={closeWorkbench} /></header>
-      <div className="agent-convo-canvas-body"><BuilderTarget key={target} projectId={project.project_id} kind={selected.kind} targetId={selected.id} targetName={selected.name} locale={locale} incoming={incoming} resolving={busy} resolutionBlocked={blocked} onReload={() => setBlocked(false)} onPersisted={(kind, text, extra) => void persistRecord(kind, text, extra)} /></div>
-    </aside> : <FactoryAssemblyCanvas locale={locale} session={session} busy={busy ? "generate" : null} phase={phase} planSummary={planFacts(latestOperation?.events ?? [])} canGenerate={false} canApply={session?.state === "review"} studioHref={createdAgentId ? projectRoutePaths.agentDesign(project.project_id, createdAgentId) : null} createdAgentId={createdAgentId} drafted={false} focusChild={false} onClose={closeWorkbench} onApply={() => void applyCreation()} onReject={session?.state === "review" ? () => void rejectCreation() : undefined} />}
   >
     {transcript.map((item, index) => {
+      const operationId = transcriptOperationId(item);
+      const embed = Boolean(operationId && lastWorkspaceIndex.get(operationId) === index);
+      let row: React.ReactNode;
       if (item.type === "activity") {
-        return <BuilderActivityBlock key={`op-${item.operation.operation_id}`} operation={item.operation} locale={locale} onRetry={retry?.operation_id === item.operation.operation_id && !busy ? () => void send("", retry.operation_id) : undefined} />;
+        row = <BuilderActivityBlock key={`op-${item.operation.operation_id}`} operation={item.operation} locale={locale} onRetry={retry?.operation_id === item.operation.operation_id && !busy ? () => void send("", retry.operation_id) : undefined} />;
+      } else {
+        const activityHasRetry = Boolean(retry && transcript.some((entry) => entry.type === "activity" && entry.operation.operation_id === retry.operation_id));
+        const messageRetry = !busy && !activityHasRetry && index === lastChatAbs && retry && (item.message.kind === "assistant" || item.message.kind === "clarification" || item.message.kind === "result") ? retry : undefined;
+        const related = operationId ? operations.find((entry) => entry.operation_id === operationId) : undefined;
+        const agentId = (related ? operationAgentId(related, messages) : null) ?? createdAgentId;
+        row = <BuilderTranscriptMessage key={item.message.message_id} item={item.message} locale={locale} studioHref={item.message.kind === "result" && agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} onRetry={messageRetry ? () => void send("", messageRetry.operation_id) : undefined} />;
       }
-      const activityHasRetry = Boolean(retry && transcript.some((entry) => entry.type === "activity" && entry.operation.operation_id === retry.operation_id));
-      const messageRetry = !busy && !activityHasRetry && index === lastChatAbs && retry && (item.message.kind === "assistant" || item.message.kind === "clarification" || item.message.kind === "result") ? retry : undefined;
-      return <BuilderTranscriptMessage key={item.message.message_id} item={item.message} locale={locale} studioHref={item.message.kind === "result" && createdAgentId ? projectRoutePaths.agentDesign(project.project_id, createdAgentId) : null} onRetry={messageRetry ? () => void send("", messageRetry.operation_id) : undefined} />;
+      if (!embed || !operationId) return row;
+      return <React.Fragment key={`turn-${operationId}-${index}`}>
+        {row}
+        {renderWorkspace(operationId, operations.find((entry) => entry.operation_id === operationId))}
+      </React.Fragment>;
     })}
+    {focusWorkspaceKey && !focusCovered ? renderWorkspace(focusWorkspaceKey) : null}
     {persistedInProgress ? <p className="agent-convo-hint">{zh ? "上次操作仍在进行中。" : "The previous operation is still in progress."}</p> : null}
     {error ? <Alert type="error">{error}</Alert> : null}
     {!api.resolveBuilderIntent && !api.submitBuilderTurn ? <Alert type="warning">{zh ? "请更新 Local sidecar 以使用自然语言 Builder。" : "Update the Local sidecar to use natural-language Builder."}</Alert> : null}
     {busy ? <ConversationTyping label={zh ? "正在思考…" : "Thinking…"} /> : null}
-    {(selected || session || reviewReady) && !canvasOpen ? <FactoryCanvasCard title={reviewReady ? (zh ? "方案待确认" : "Review ready") : (zh ? "工作台" : "Workbench")} locale={locale} onOpen={() => { userClosedCanvas.current = false; setCanvasOpen(true); }} /> : null}
   </ConversationStage>;
 }
 
 function isActivityOperation(operation: BuilderConversationOperation): boolean {
-  if (operation.kind === "create_agent" || operation.kind === "create_workflow" || operation.kind === "edit") return true;
+  if (operation.kind === "create_agent" || operation.kind === "create_workflow" || operation.kind === "edit" || operation.kind === "test_agent") return true;
   if (operation.target_kind) return true;
   return operation.status === "failed" || operation.status === "in_progress" || operation.status === "waiting";
+}
+
+function isWorkspaceOperation(operation: BuilderConversationOperation): boolean {
+  if (operation.kind === "test_agent") return false;
+  if (operation.kind === "create_agent" || operation.kind === "edit") return true;
+  return operation.target_kind === "agent";
+}
+
+function operationAgentId(operation: BuilderConversationOperation, messages: BuilderConversationMessage[]): string | null {
+  return operation.diagnostic.agent_id
+    ?? operation.diagnostic.target_id
+    ?? operation.diagnostic.focus_id
+    ?? operation.run_observation?.agent_id
+    ?? [...messages].reverse().find((item) => item.operation_id === operation.operation_id && item.payload.agent_id)?.payload.agent_id
+    ?? null;
+}
+
+function transcriptOperationId(item: { type: "message"; message: BuilderConversationMessage } | { type: "activity"; operation: BuilderConversationOperation }): string | null {
+  return item.type === "activity" ? item.operation.operation_id : item.message.operation_id;
 }
 
 function transcriptItems(messages: BuilderConversationMessage[], operations: BuilderConversationOperation[]): Array<{ type: "message"; message: BuilderConversationMessage } | { type: "activity"; operation: BuilderConversationOperation }> {

@@ -173,10 +173,18 @@
 .project-row-actions { position: relative; display: inline-flex; align-items: center; height: 24px; gap: 0; }
 .project-row-actions > button { width: 24px; height: 24px; flex: 0 0 24px; }
 .project-row-actions > button:hover, .project-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
+.project-row-actions > .sidebar-more-chip:hover, .project-row-actions > .sidebar-more-chip:focus-visible { color: var(--ink); background: color-mix(in srgb, var(--ink) 14%, transparent); }
 .agent-row-actions { display: inline-flex; align-items: center; height: 22px; gap: 0; }
 .agent-row-actions > button { width: 22px; height: 22px; }
 .agent-row-actions > button:hover, .agent-row-actions > button:focus-visible { color: var(--accent-strong); background: var(--surface-soft); outline: none; }
-.sidebar-fixed-popover { position: fixed; z-index: 200; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); }
+.agent-row-actions > .sidebar-more-chip:hover, .agent-row-actions > .sidebar-more-chip:focus-visible { color: var(--ink); background: color-mix(in srgb, var(--ink) 14%, transparent); }
+.sidebar-nav-item-row:has(> .sidebar-nav-link.active) .sidebar-more-chip,
+.sidebar-nav-item-row:has(> .sidebar-nav-link.active) .sidebar-more-chip:hover,
+.sidebar-nav-item-row:has(> .sidebar-nav-link.active) .sidebar-more-chip:focus-visible {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.sidebar-fixed-popover { position: fixed; z-index: 400; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: var(--soft-shadow); pointer-events: auto; }
 .sidebar-project-menu, .sidebar-agent-menu, .agent-add-chooser { width: max-content; max-width: min(196px, calc(100vw - 16px)); padding: 4px; }
 .sidebar-action-menu { display: grid; gap: 0; }
 .sidebar-popover-item { display: flex; width: 100%; min-height: 40px; box-sizing: border-box; align-items: center; gap: 8px; border: 0; border-radius: 8px; padding: 5px 6px; color: var(--ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }

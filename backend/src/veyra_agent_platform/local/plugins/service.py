@@ -262,6 +262,30 @@ class PluginService:
         result.update({"trash_id": trash_id, "disposition": "trashed"})
         return {"schema_version": SCHEMA_VERSION, "plugin": result}
 
+    def purge(self, trash_id: str, *, confirm: bool) -> dict[str, Any]:
+        if not confirm:
+            raise PluginError(
+                "plugin_confirmation_required",
+                "Explicit confirmation is required to permanently delete a Plugin Pack",
+            )
+        if (
+            re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                trash_id,
+            )
+            is None
+        ):
+            raise PluginError("plugin_not_found", "Plugin Pack was not found")
+        trash_target = self.root / ".trash" / trash_id
+        if not trash_target.is_dir() or trash_target.is_symlink():
+            raise PluginError("plugin_not_found", "Plugin Pack was not found")
+        self._remove_temporary(trash_target)
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "trash_id": trash_id,
+            "deleted": True,
+        }
+
     def restore(self, trash_id: str, *, confirm: bool) -> dict[str, Any]:
         if not confirm:
             raise PluginError(

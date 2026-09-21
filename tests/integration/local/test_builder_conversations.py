@@ -481,6 +481,52 @@ def test_project_isolation_and_recent_activity(tmp_path: Path) -> None:
         _assert_no_secrets(payload)
 
 
+def test_builder_activity_lists_more_than_five_conversations(tmp_path: Path) -> None:
+    transport = InspectingTransport([])
+    with _client(tmp_path, transport) as client:
+        transport.client = client
+        project, _, _ = _target(client, "agent")
+        ids: list[str] = []
+        for index in range(6):
+            payload = _turn(
+                client,
+                project,
+                content=f"创建第 {index} 个日程提醒 Agent。",
+                locale="zh",
+            ).json()
+            ids.append(payload["conversation"]["conversation_id"])
+        recent = client.get(f"/api/v1/projects/{project}/builder/activity").json()
+        assert len(recent["items"]) == 6
+        assert {item["conversation_id"] for item in recent["items"]} == set(ids)
+        assert all(item["kind"] == "conversation" for item in recent["items"])
+        still_capped = client.get(
+            f"/api/v1/projects/{project}/builder/activity?limit=2"
+        ).json()
+        assert len(still_capped["items"]) == 2
+
+
+def test_workspace_activity_lists_chats_across_projects(tmp_path: Path) -> None:
+    transport = InspectingTransport([])
+    with _client(tmp_path, transport) as client:
+        transport.client = client
+        project_a, _, _ = _target(client, "agent")
+        project_b, _, _ = _target(client, "agent")
+        first = _turn(
+            client, project_a, content="创建项目 A 的聊天。", locale="zh"
+        ).json()
+        second = _turn(
+            client, project_b, content="创建项目 B 的聊天。", locale="zh"
+        ).json()
+        recent = client.get("/api/v1/builder/activity").json()
+        ids = {item["conversation_id"] for item in recent["items"]}
+        assert first["conversation"]["conversation_id"] in ids
+        assert second["conversation"]["conversation_id"] in ids
+        assert {item["project_id"] for item in recent["items"]} >= {
+            project_a,
+            project_b,
+        }
+
+
 def test_proposal_reference_persists_without_creating_agent(tmp_path: Path) -> None:
     transport = ScriptedKimiTransport(
         [
@@ -904,3 +950,72 @@ def test_placeholder_chat_title_is_repaired_on_activity(tmp_path: Path) -> None:
             f"/api/v1/projects/{project}/builder/conversations/{conversation_id}"
         ).json()
         assert restored["conversation"]["title"] != "Chat"
+
+
+def test_rename_and_delete_builder_conversation(tmp_path: Path) -> None:
+    transport = InspectingTransport([])
+    with _client(tmp_path, transport) as client:
+        transport.client = client
+        project, _, _ = _target(client, "agent")
+        payload = _turn(
+            client,
+            project,
+            content="创建一个日程提醒整理 Agent。",
+            locale="zh",
+        ).json()
+        conversation_id = payload["conversation"]["conversation_id"]
+        renamed = client.patch(
+            f"/api/v1/projects/{project}/builder/conversations/{conversation_id}",
+            json={"title": "  日程提醒整理 Agent  "},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["conversation"]["title"] == "日程提醒整理 Agent"
+        recent = client.get(f"/api/v1/projects/{project}/builder/activity").json()
+        assert recent["items"][0]["title"] == "日程提醒整理 Agent"
+        missing_title = client.patch(
+            f"/api/v1/projects/{project}/builder/conversations/{conversation_id}",
+            json={"title": "   "},
+        )
+        assert missing_title.status_code == 422
+        deleted = client.delete(
+            f"/api/v1/projects/{project}/builder/conversations/{conversation_id}"
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {
+            "schema_version": "1.0",
+            "conversation_id": conversation_id,
+            "deleted": True,
+        }
+        missing = client.get(
+            f"/api/v1/projects/{project}/builder/conversations/{conversation_id}"
+        )
+        assert missing.status_code == 404
+        empty = client.get(f"/api/v1/projects/{project}/builder/activity").json()
+        assert empty["items"] == []
+        trashed = client.get("/api/v1/trash").json()
+        item = next(item for item in trashed["items"] if item["id"] == conversation_id)
+        assert item["kind"] == "conversation"
+        assert item["restorable"] is True
+        restored = client.post(
+            f"/api/v1/trash/conversation/{conversation_id}/restore",
+            json={"confirm": True},
+        )
+        assert restored.status_code == 200, restored.text
+        assert (
+            client.get(
+                f"/api/v1/projects/{project}/builder/conversations/{conversation_id}"
+            ).status_code
+            == 200
+        )
+        client.delete(
+            f"/api/v1/projects/{project}/builder/conversations/{conversation_id}"
+        )
+        purged = client.post(
+            f"/api/v1/trash/conversation/{conversation_id}/purge",
+            json={"confirm": True},
+        )
+        assert purged.status_code == 200, purged.text
+        assert all(
+            item["id"] != conversation_id
+            for item in client.get("/api/v1/trash").json()["items"]
+        )

@@ -2,11 +2,12 @@
 
 export const SIDEBAR_RESOURCE_PINS_KEY = "veyra.sidebar-resource-pins";
 
-export type SidebarResourceKind = "workflow" | "knowledge";
+export type SidebarResourceKind = "workflow" | "knowledge" | "conversation";
 
 export type ProjectResourcePins = {
   workflow?: string;
   knowledge?: string;
+  conversation?: string;
 };
 
 export type SidebarResourcePins = Record<string, ProjectResourcePins>;
@@ -24,7 +25,8 @@ export function readSidebarResourcePins(): SidebarResourcePins {
       const next: ProjectResourcePins = {};
       if (typeof record.workflow === "string" && record.workflow) next.workflow = record.workflow;
       if (typeof record.knowledge === "string" && record.knowledge) next.knowledge = record.knowledge;
-      if (next.workflow || next.knowledge) pins[projectId] = next;
+      if (typeof record.conversation === "string" && record.conversation) next.conversation = record.conversation;
+      if (next.workflow || next.knowledge || next.conversation) pins[projectId] = next;
     }
     return pins;
   } catch {
@@ -49,7 +51,7 @@ export function toggleSidebarResourcePin(
   const current = pins[projectId] ?? {};
   const nextValue = current[kind] === id ? undefined : id;
   const nextProject: ProjectResourcePins = { ...current, [kind]: nextValue };
-  if (!nextProject.workflow && !nextProject.knowledge) {
+  if (!nextProject.workflow && !nextProject.knowledge && !nextProject.conversation) {
     const { [projectId]: _removed, ...rest } = pins;
     return rest;
   }

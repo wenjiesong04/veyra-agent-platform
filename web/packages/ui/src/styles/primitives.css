@@ -319,33 +319,60 @@
 
 .ui-empty {
   display: grid;
-  min-height: 180px;
+  min-height: 240px;
   place-items: center;
   align-content: center;
-  gap: 8px;
+  gap: 10px;
+  padding: 28px 18px;
   color: var(--muted);
   text-align: center;
 }
 
-.ui-empty-icon {
+.ui-empty-figure {
   display: grid;
-  width: 42px;
-  height: 42px;
   place-items: center;
-  border-radius: 13px;
+  margin-bottom: 4px;
+}
+
+.ui-empty-icon,
+.ui-empty-mark {
+  display: grid;
+  width: 88px;
+  height: 88px;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--line-strong) 78%, transparent);
+  border-radius: 28px;
   color: var(--accent-strong);
-  background: var(--accent-soft);
+  background:
+    radial-gradient(circle at 50% 28%, color-mix(in srgb, var(--surface) 88%, transparent), transparent 58%),
+    var(--surface-soft);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 80%, transparent);
+}
+
+.ui-empty-mark img {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+  filter: grayscale(1) contrast(0.92) brightness(1.08);
+  opacity: 0.42;
 }
 
 .ui-empty strong {
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 760;
 }
 
 .ui-empty p {
-  max-width: 360px;
+  max-width: 380px;
+  margin: 0;
   color: var(--subtle);
   font-size: 12px;
+  line-height: 1.55;
+}
+
+.ui-empty-action {
+  margin-top: 6px;
 }
 
 .ui-metric {

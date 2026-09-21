@@ -64,7 +64,7 @@ describe("Project Chat Builder", () => {
     fireEvent.click(screen.getByRole("button", { name: "Choose project" }));
     expect(screen.getByRole("option", { name: /Review/ })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("option", { name: /^Project / }));
-    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Edit proposal" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Workbench" })).not.toBeInTheDocument());
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Discuss this project" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.resolveBuilderIntent).toHaveBeenLastCalledWith("project-1", expect.objectContaining({ focus: null })));
@@ -112,7 +112,7 @@ describe("Project Chat Builder", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await screen.findByText("Will modify: Agent · Review");
     expect(api.resolveBuilderIntent).toHaveBeenCalledWith("project-1", expect.objectContaining({ content: "Give Review a quality check", focus: null }));
-    expect(document.querySelector(".agent-conversation.is-canvas .agent-convo-canvas")).toBeInTheDocument();
+    expect(document.querySelector(".agent-convo-column .builder-workspace-dock")).toBeInTheDocument();
     expect(api.commandEditProposal).not.toHaveBeenCalled();
   });
 
@@ -803,7 +803,7 @@ describe("Durable Project Chat", () => {
       operation_id: "op-1",
     })));
     expect(applyFactoryDraft).not.toHaveBeenCalled();
-    expect(await screen.findByText(/Build Agent · rejected/)).toBeInTheDocument();
+    expect(await screen.findByText("Rejected")).toBeInTheDocument();
     expect(screen.queryByText("Rejected the Blueprint. No Agent was created.")).not.toBeInTheDocument();
   });
 
@@ -967,5 +967,150 @@ describe("Durable Project Chat", () => {
     expect(screen.getAllByText("Planning Agent").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.queryByText("系统")).not.toBeInTheDocument();
+  });
+
+  it("starts an explicit Test Agent run from the completed workbench", async () => {
+    const completed = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "succeeded", title: "中英文翻译 Agent" },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "创建一个中英文翻译 Agent。", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-asst", conversation_id: "conv-1", sequence: 1, role: "assistant", kind: "assistant", content: "我会创建一个中英文翻译 Agent。", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" },
+        { message_id: "m-result", conversation_id: "conv-1", sequence: 2, role: "assistant", kind: "result", content: "中英文翻译 Agent已经创建并通过结构验证。", operation_id: "op-1", payload: { agent_id: "agent-1" }, created_at: "2026-09-18T00:00:03Z" },
+      ],
+      operations: [{
+        ...durableSnapshot().operations[0],
+        status: "succeeded",
+        error_code: null,
+        events: [
+          { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+          { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.operation.completed", label: "Completed", summary: "", facts: {}, created_at: "2026-09-18T00:00:03Z" },
+        ],
+      }],
+    });
+    const tested = {
+      ...completed,
+      operations: [
+        ...completed.operations,
+        {
+          operation_id: "op-test",
+          conversation_id: "conv-1",
+          kind: "test_agent",
+          target_kind: "agent" as const,
+          status: "succeeded" as const,
+          retry_of: null,
+          error_code: null,
+          proposal_id: null,
+          run_id: "run-1",
+          factory_session_id: null,
+          created_at: "2026-09-20T00:00:00Z",
+          updated_at: "2026-09-20T00:00:01Z",
+          diagnostic: {},
+          has_request: false,
+          events: [
+            { event_id: "t1", operation_id: "op-test", sequence: 0, kind: "builder.test_run.started" as const, label: "Testing Agent", summary: "", facts: {}, created_at: "2026-09-20T00:00:00Z" },
+            { event_id: "t2", operation_id: "op-test", sequence: 1, kind: "builder.test_run.completed" as const, label: "Test succeeded", summary: "", facts: { run_id: "run-1" }, created_at: "2026-09-20T00:00:01Z" },
+            { event_id: "t3", operation_id: "op-test", sequence: 2, kind: "builder.operation.completed" as const, label: "Completed", summary: "", facts: {}, created_at: "2026-09-20T00:00:01Z" },
+          ],
+          receipts: [],
+          run_observation: {
+            run_id: "run-1",
+            agent_id: "agent-1",
+            version_id: "version-1",
+            status: "unverified",
+            runtime_model_id: "translator-model",
+            runtime_model_source: "default",
+            output_summary: "你好，世界",
+            failure_code: null,
+            failed_node: null,
+            tool_failure: null,
+            knowledge_failure: null,
+            approval_required: false,
+            duration_ms: 15,
+            evidence_count: 0,
+            classification: "none" as const,
+            explanation: "测试成功。",
+            repair_proposal_id: null,
+            repair_code: null,
+            next_action: null,
+          },
+        },
+      ],
+    };
+    const { api, wrapper } = setup("agent", [], false);
+    const startBuilderTestRun = vi.fn().mockResolvedValue(tested);
+    Object.assign(api, {
+      submitBuilderTurn: vi.fn(),
+      getBuilderConversation: vi.fn().mockResolvedValue(completed),
+      startBuilderTestRun,
+      runtimeReadiness: vi.fn().mockResolvedValue({
+        schema_version: "1.0",
+        project_id: "project-1",
+        agent_id: "agent-1",
+        ready: true,
+        profile_source: "default",
+        model: { required: true, configured: true, model_id: "translator-model", model_base_url: "", model_api_key_env: "" },
+        dependency_summary: { total: 0, ready: 0, attention: 0 },
+        dependencies: [],
+        tool_checks: [],
+        checks: [],
+      }),
+      getDraft: vi.fn().mockResolvedValue(editDraft({ ...editAgent, inputs: { text: "string" } })),
+    });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByRole("button", { name: /Build Agent · completed/ })).toBeInTheDocument();
+    expect(document.querySelector(".agent-convo-column .builder-workspace-dock")).toBeInTheDocument();
+    expect(document.querySelector(".agent-convo-workspace")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Workbench" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "Test" }));
+    expect(screen.getByRole("tab", { name: "Test" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.change(await screen.findByLabelText("Test input"), { target: { value: "Hello world" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test Agent" }));
+    await waitFor(() => expect(startBuilderTestRun).toHaveBeenCalledWith("project-1", "conv-1", {
+      agent_id: "agent-1",
+      inputs: { text: "Hello world" },
+      locale: "en",
+    }));
+    expect(await screen.findByRole("button", { name: /Test Agent · completed/ })).toBeInTheDocument();
+    expect(screen.getByText("你好，世界")).toBeInTheDocument();
+    expect(screen.getByText(/translator-model/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View run detail" })).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/run?run_id=run-1");
+    expect(screen.queryByText("run.created")).not.toBeInTheDocument();
+    expect(screen.queryByText("Kimi K3")).not.toBeInTheDocument();
+  });
+
+  it("does not show Test Agent while the build proposal is still in review", async () => {
+    const reviewed = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "waiting" },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "创建一个翻译 Agent", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-asst", conversation_id: "conv-1", sequence: 1, role: "assistant", kind: "assistant", content: "方案已准备好。", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" },
+      ],
+      operations: [{
+        ...durableSnapshot().operations[0],
+        status: "waiting",
+        error_code: null,
+        events: [
+          { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.proposal.ready", label: "Preparing review", summary: "", facts: {}, created_at: "2026-09-18T00:00:01Z" },
+        ],
+      }],
+      factory_session: factoryReviewSession(),
+    });
+    const { api, wrapper } = setup("agent", [], false);
+    Object.assign(api, {
+      submitBuilderTurn: vi.fn(),
+      getBuilderConversation: vi.fn().mockResolvedValue(reviewed),
+      startBuilderTestRun: vi.fn(),
+    });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByRole("button", { name: "Create Draft" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Workbench" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Test Agent" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Test" }));
+    expect(await screen.findByText(/After the Agent is created and validated/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Test Agent" })).not.toBeInTheDocument();
   });
 });

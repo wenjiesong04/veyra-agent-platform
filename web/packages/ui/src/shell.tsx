@@ -1,5 +1,5 @@
-import { ArrowLeft, History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, UserRound, X, type LucideIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ArrowLeft, ChevronDown, History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, Settings2, Sun, Trash2, UserRound, X, type LucideIcon } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useLocale } from "./i18n";
 import { PaneResizeHandle } from "./pane-resize";
 import { IconButton } from "./primitives";
@@ -9,8 +9,48 @@ import type { AccountMenuConfig, Brand, NavigationGroup, NavigationItem } from "
 export const SIDEBAR_WIDTH_MIN = 200;
 const SIDEBAR_WIDTH_MAX = 420;
 const SIDEBAR_WIDTH_DEFAULT = 248;
-const SIDEBAR_WIDTH_COLLAPSED = 64;
 const SHELL_OVERLAY_LEFT_VAR = "--shell-overlay-left";
+const NAV_SECTION_STORAGE = "veyra.nav-section-collapsed.v1";
+const NAV_STICKY_HEADING = 22;
+const NAV_STICKY_PAD = 8;
+const NAV_STICKY_FIRST = NAV_STICKY_PAD * 2 + NAV_STICKY_HEADING;
+const NAV_STICKY_REST = NAV_STICKY_FIRST + 1;
+
+type CollapsibleNavSection = "pinned" | "projects" | "recent";
+type CollapsedNavSections = Record<CollapsibleNavSection, boolean>;
+
+function isCollapsibleNavSection(section?: string): section is CollapsibleNavSection {
+  return section === "pinned" || section === "projects" || section === "recent";
+}
+
+function isFixedNavGroup(group: NavigationGroup): boolean {
+  return group.section === "fixed" || group.section === undefined;
+}
+
+function emptyCollapsedNavSections(): CollapsedNavSections {
+  return { pinned: false, projects: false, recent: false };
+}
+
+function readCollapsedNavSections(): CollapsedNavSections {
+  const empty = emptyCollapsedNavSections();
+  try {
+    const raw = window.localStorage.getItem(NAV_SECTION_STORAGE);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as Partial<Record<string, unknown>>;
+    return {
+      pinned: parsed.pinned === true,
+      projects: parsed.projects === true,
+      recent: parsed.recent === true,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function sectionFoldAriaLabel(collapsed: boolean, label: string, locale: string, translate: (key: string) => string): string {
+  const verb = collapsed ? translate("expandSection") : translate("collapseSection");
+  return locale === "zh" ? `${verb}${label}` : `${verb} ${label}`;
+}
 
 type ApplicationShellProps = {
   brand: Brand;
@@ -106,6 +146,7 @@ const shellLabelKeys: Record<string, string> = {
   Catalog: "catalog",
   "Route not found": "routeNotFound",
   "Version-aware catalog": "versionAwareCatalog",
+  Trash: "trash",
 };
 
 function shellText(value: string, translate: (key: string, fallback?: string) => string): string {
@@ -162,6 +203,38 @@ function NavLinkLabel({ text }: { text: string }) {
   return <span ref={ref} onMouseEnter={onMouseEnter}>{text}</span>;
 }
 
+function SidebarToggle({
+  collapsed,
+  className,
+  expandLabel,
+  collapseLabel,
+  buttonRef,
+  onToggle,
+}: {
+  collapsed: boolean;
+  className?: string;
+  expandLabel: string;
+  collapseLabel: string;
+  buttonRef?: Ref<HTMLButtonElement>;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      ref={buttonRef}
+      className={className ? `sidebar-toggle ${className}` : "sidebar-toggle"}
+      type="button"
+      aria-label={collapsed ? expandLabel : collapseLabel}
+      aria-expanded={!collapsed}
+      aria-controls="primary-navigation"
+      onClick={onToggle}
+    >
+      <span className={`sidebar-toggle-glyph${collapsed ? " is-flipped" : ""}`} aria-hidden="true">
+        <PanelLeftClose size={17} />
+      </span>
+    </button>
+  );
+}
+
 function NavLinkCopy({ item, label }: { item: NavigationItem; label: string }) {
   if (!item.detail && !item.meta) return <NavLinkLabel text={label} />;
   return (
@@ -170,6 +243,119 @@ function NavLinkCopy({ item, label }: { item: NavigationItem; label: string }) {
       {item.detail ? <small>{item.detail}</small> : null}
       {item.meta ? <small>{item.meta}</small> : null}
     </span>
+  );
+}
+
+function FoldableNavTree({ open, children }: { open: boolean; children: ReactNode }) {
+  return (
+    <div className={`sidebar-nav-children${open ? " is-open" : ""}`} aria-hidden={!open} inert={!open || undefined}>
+      <div className="sidebar-nav-children-inner">{children}</div>
+    </div>
+  );
+}
+
+function NavSectionHeading({
+  group,
+  section,
+  folded,
+  locale,
+  t,
+  onToggle,
+}: {
+  group: NavigationGroup;
+  section: CollapsibleNavSection;
+  folded: boolean;
+  locale: string;
+  t: (key: string, fallback?: string) => string;
+  onToggle: (section: CollapsibleNavSection) => void;
+}) {
+  const groupLabel = shellText(group.label, t);
+  return (
+    <div className="nav-group-heading">
+      <button
+        type="button"
+        className={`nav-group-fold${folded ? "" : " is-open"}`}
+        aria-label={sectionFoldAriaLabel(folded, groupLabel, locale, t)}
+        aria-expanded={!folded}
+        aria-controls={`nav-section-${section}`}
+        onClick={() => onToggle(section)}
+      >
+        <span className="nav-group-label">{groupLabel}</span>
+        <span className="nav-group-fold-mark" aria-hidden="true">
+          <ChevronDown className="nav-group-fold-icon" size={14} />
+        </span>
+      </button>
+      {group.action ? <span className="nav-group-action">{group.action}</span> : null}
+    </div>
+  );
+}
+
+function SidebarNavGroup({
+  group,
+  activeHref,
+  collapsed,
+  sectionCollapsed,
+  scrollFolded = false,
+  locale,
+  t,
+  closeMobile,
+  onToggleSection,
+}: {
+  group: NavigationGroup;
+  activeHref: string;
+  collapsed: boolean;
+  sectionCollapsed: boolean;
+  scrollFolded?: boolean;
+  locale: string;
+  t: (key: string, fallback?: string) => string;
+  closeMobile: () => void;
+  onToggleSection: (section: CollapsibleNavSection) => void;
+}) {
+  const section = isCollapsibleNavSection(group.section) ? group.section : undefined;
+  const groupLabel = shellText(group.label, t);
+  const sectionBodyId = section ? `nav-section-${section}` : undefined;
+  const folded = sectionCollapsed || scrollFolded;
+  const groupBody = (
+    <>
+      {group.items.map((item) => {
+        const active = isNavigationItemActive(item, activeHref);
+        const contextual = item.contextual === true && !active;
+        const label = shellText(item.label, t);
+        return <div className={navigationRowClassName(item, `sidebar-nav-item ${item.children ? "has-children" : ""}`)} key={`${item.href}-${label}`}>
+          <div className={navigationRowClassName(item, `sidebar-nav-item-row${item.trailingAction ? " has-action" : ""}`)}>
+            {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
+            <a className={navigationLinkClassName(item, active, contextual)} href={item.href} aria-label={navigationItemAriaLabel(item, label)} title={collapsed ? navigationItemAriaLabel(item, label) : undefined} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><NavigationGlyph item={item} size={16} /><NavLinkCopy item={item} label={label} /></a>
+            {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
+          </div>
+          {item.children ? <FoldableNavTree open={item.expanded === true}>{renderSidebarChildren(item.children, activeHref, closeMobile, t, collapsed)}</FoldableNavTree> : null}
+        </div>;
+      })}
+      {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}
+    </>
+  );
+  return (
+    <div className={`nav-group ${isFixedNavGroup(group) ? "nav-group-fixed" : "nav-group-list"} nav-group-${group.section ?? "fixed"}${sectionCollapsed ? " is-folded" : ""}${scrollFolded ? " is-scroll-folded" : ""}`} data-nav-section={section}>
+      {section ? (
+        <div className="nav-group-chrome">
+          <NavSectionHeading
+            group={group}
+            section={section}
+            folded={folded}
+            locale={locale}
+            t={t}
+            onToggle={onToggleSection}
+          />
+        </div>
+      ) : (
+        <div className="nav-group-heading"><span className="nav-group-label">{groupLabel}</span>{group.action ? <span className="nav-group-action">{group.action}</span> : null}</div>
+      )}
+      {group.backLink ? <a className="sidebar-context-back" href={group.backLink.href} aria-label={group.backLink.label} title={group.backLink.label} onClick={() => closeMobile()}><ArrowLeft size={16} aria-hidden="true" /><span>{group.backLink.label}</span></a> : null}
+      {section ? (
+        <div className={`nav-group-body${sectionCollapsed ? "" : " is-open"}`} id={sectionBodyId} aria-hidden={sectionCollapsed} inert={sectionCollapsed || undefined}>
+          <div className="nav-group-body-inner">{groupBody}</div>
+        </div>
+      ) : groupBody}
+    </div>
   );
 }
 
@@ -190,13 +376,38 @@ function renderSidebarChildren(
           <a className={navigationLinkClassName(child, childActive, childContextual)} href={child.href} aria-label={navigationItemAriaLabel(child, childLabel)} title={collapsed ? navigationItemAriaLabel(child, childLabel) : undefined} aria-current={childActive ? "page" : undefined} onClick={() => { child.onClick?.(); closeMobile(); }}><NavigationGlyph item={child} size={16} /><NavLinkCopy item={child} label={childLabel} /></a>
           {child.trailingAction ? <span className="sidebar-nav-item-action sidebar-nav-child-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{child.trailingAction}</span> : null}
         </div>
-        {child.children && child.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(child.children, activeHref, closeMobile, translate, collapsed)}</div> : null}
+        {child.children ? <FoldableNavTree open={child.expanded === true}>{renderSidebarChildren(child.children, activeHref, closeMobile, translate, collapsed)}</FoldableNavTree> : null}
       </div>
     );
   });
 }
 
-function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: AccountMenuConfig; collapsed: boolean; onNavigate: () => void }) {
+function AccountMenuLink({
+  href,
+  activeHref,
+  onClick,
+  children,
+}: {
+  href: string;
+  activeHref: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  const current = href === activeHref;
+  return (
+    <a
+      className={`shell-account-menu-item${current ? " is-current" : ""}`}
+      role="menuitem"
+      href={href}
+      aria-current={current ? "page" : undefined}
+      onClick={onClick}
+    >
+      {children}
+    </a>
+  );
+}
+
+function SidebarAccountMenu({ account, collapsed, onNavigate, activeHref }: { account: AccountMenuConfig; collapsed: boolean; onNavigate: () => void; activeHref: string }) {
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -250,15 +461,21 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
           <div className="shell-account-menu-list">
             {authenticated ? (
               <>
-                <a className="shell-account-menu-item" role="menuitem" href={account.accountHref} onClick={closeAndNavigate}>
+                <AccountMenuLink href={account.accountHref} activeHref={activeHref} onClick={closeAndNavigate}>
                   <UserRound size={16} aria-hidden="true" />
                   <span>{t("accountInfo")}</span>
-                </a>
+                </AccountMenuLink>
                 {account.settingsHref ? (
-                  <a className="shell-account-menu-item" role="menuitem" href={account.settingsHref} onClick={closeAndNavigate}>
+                  <AccountMenuLink href={account.settingsHref} activeHref={activeHref} onClick={closeAndNavigate}>
                     <Settings2 size={16} aria-hidden="true" />
                     <span>{t("settings")}</span>
-                  </a>
+                  </AccountMenuLink>
+                ) : null}
+                {account.trashHref ? (
+                  <AccountMenuLink href={account.trashHref} activeHref={activeHref} onClick={closeAndNavigate}>
+                    <Trash2 size={16} aria-hidden="true" />
+                    <span>{t("trash")}</span>
+                  </AccountMenuLink>
                 ) : null}
                 <button className="shell-account-menu-item shell-account-menu-signout" role="menuitem" type="button" onClick={handleSignOut}>
                   <LogOut size={16} aria-hidden="true" />
@@ -267,15 +484,21 @@ function SidebarAccountMenu({ account, collapsed, onNavigate }: { account: Accou
               </>
             ) : (
               <>
-                <a className="shell-account-menu-item" role="menuitem" href={account.accountHref} onClick={closeAndNavigate}>
+                <AccountMenuLink href={account.accountHref} activeHref={activeHref} onClick={closeAndNavigate}>
                   <LogIn size={16} aria-hidden="true" />
                   <span>{t("signInOrRegister")}</span>
-                </a>
+                </AccountMenuLink>
                 {account.settingsHref ? (
-                  <a className="shell-account-menu-item" role="menuitem" href={account.settingsHref} onClick={closeAndNavigate}>
+                  <AccountMenuLink href={account.settingsHref} activeHref={activeHref} onClick={closeAndNavigate}>
                     <Settings2 size={16} aria-hidden="true" />
                     <span>{t("settings")}</span>
-                  </a>
+                  </AccountMenuLink>
+                ) : null}
+                {account.trashHref ? (
+                  <AccountMenuLink href={account.trashHref} activeHref={activeHref} onClick={closeAndNavigate}>
+                    <Trash2 size={16} aria-hidden="true" />
+                    <span>{t("trash")}</span>
+                  </AccountMenuLink>
                 ) : null}
               </>
             )}
@@ -307,11 +530,19 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   const { locale, setLanguage, t } = useLocale();
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
+  const [collapsedSections, setCollapsedSections] = useState(readCollapsedNavSections);
+  const [scrollFolded, setScrollFolded] = useState(emptyCollapsedNavSections);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileViewport, setMobileViewport] = useState(readMobileViewport);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const sidebarCloseRef = useRef<HTMLButtonElement>(null);
+  const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+  const headerToggleRef = useRef<HTMLButtonElement>(null);
+  const pendingToggleFocus = useRef<"header" | "sidebar" | null>(null);
+  const fixedNavigation = navigation.filter(isFixedNavGroup);
+  const listNavigation = navigation.filter((group) => !isFixedNavGroup(group));
 
   useEffect(() => {
     try {
@@ -320,6 +551,41 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
       // Layout preference is optional and never carries account identity.
     }
   }, [collapsed, storageKey]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(NAV_SECTION_STORAGE, JSON.stringify(collapsedSections));
+    } catch {
+      // Section fold preference is optional and never carries account identity.
+    }
+  }, [collapsedSections]);
+
+  useEffect(() => {
+    const scroller = sidebarScrollRef.current;
+    if (!scroller || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setScrollFolded((current) => {
+          if (scroller.clientHeight <= 0) return current;
+          let changed = false;
+          const next = { ...current };
+          for (const entry of entries) {
+            const key = (entry.target.parentElement as HTMLElement | null)?.dataset.navSection;
+            if (!isCollapsibleNavSection(key)) continue;
+            const folded = entry.intersectionRatio <= 0;
+            if (next[key] !== folded) {
+              next[key] = folded;
+              changed = true;
+            }
+          }
+          return changed ? next : current;
+        });
+      },
+      { root: scroller, threshold: 0 },
+    );
+    for (const body of scroller.querySelectorAll("[data-nav-section] > .nav-group-body")) observer.observe(body);
+    return () => observer.disconnect();
+  }, [listNavigation.length, collapsedSections]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -350,15 +616,26 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
     if (mobileViewport) {
       root.style.setProperty(SHELL_OVERLAY_LEFT_VAR, "0px");
     } else {
-      const sidebar = document.getElementById("primary-navigation");
-      const measured = sidebar?.getBoundingClientRect().width ?? 0;
-      const width = measured > 0 ? Math.round(measured) : collapsed ? SIDEBAR_WIDTH_COLLAPSED : sidebarWidth;
-      root.style.setProperty(SHELL_OVERLAY_LEFT_VAR, `${width}px`);
+      if (collapsed) {
+        root.style.setProperty(SHELL_OVERLAY_LEFT_VAR, "0px");
+      } else {
+        const sidebar = document.getElementById("primary-navigation");
+        const measured = sidebar?.getBoundingClientRect().width ?? 0;
+        const width = measured > 0 ? Math.round(measured) : sidebarWidth;
+        root.style.setProperty(SHELL_OVERLAY_LEFT_VAR, `${width}px`);
+      }
     }
     return () => {
       root.style.removeProperty(SHELL_OVERLAY_LEFT_VAR);
     };
   }, [collapsed, mobileViewport, sidebarWidth]);
+
+  useLayoutEffect(() => {
+    const target = pendingToggleFocus.current;
+    if (!target) return;
+    pendingToggleFocus.current = null;
+    (target === "header" ? headerToggleRef : sidebarToggleRef).current?.focus();
+  }, [collapsed]);
 
   const openMobile = () => {
     setMobileOpen(true);
@@ -368,6 +645,14 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   const closeMobile = () => {
     setMobileOpen(false);
     window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
+  };
+
+  const desktopSidebarHidden = collapsed && !mobileViewport;
+  const sidebarHidden = mobileViewport ? !mobileOpen : collapsed;
+
+  const toggleCollapsed = () => {
+    pendingToggleFocus.current = collapsed ? "sidebar" : "header";
+    setCollapsed((value) => !value);
   };
 
   const iconSrc = brand.iconSrc ?? "/veyra-icon.png";
@@ -380,57 +665,88 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
     initials: locale === "zh" ? "本" : "LW",
     authenticated: false,
     accountHref: "#/account",
+    trashHref: "#/trash",
+  };
+  const toggleNavSection = (section: CollapsibleNavSection) => {
+    if (scrollFolded[section] && !collapsedSections[section]) {
+      const scroller = sidebarScrollRef.current;
+      const target = scroller?.querySelector<HTMLElement>(`[data-nav-section="${section}"]`);
+      if (scroller && target) scroller.scrollTop = target.offsetTop;
+      return;
+    }
+    setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
   };
 
   return (
     <div
       className={`app-shell ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-mobile-open" : ""}`}
-      style={!collapsed ? { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties : undefined}
+      style={{ "--sidebar-width": collapsed ? "0px" : `${sidebarWidth}px` } as CSSProperties}
     >
-      <aside id="primary-navigation" className="app-sidebar" aria-label={`${brand.name} navigation`} aria-hidden={mobileViewport && !mobileOpen ? true : undefined} inert={mobileViewport && !mobileOpen ? true : undefined}>
+      <aside id="primary-navigation" className="app-sidebar" aria-label={`${brand.name} navigation`} aria-hidden={sidebarHidden ? true : undefined} inert={sidebarHidden ? true : undefined}>
         <div className="sidebar-header">
           <a className="brand" href={navigation[0]?.items[0]?.href ?? "#/"} onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden="true"><img src={iconSrc} alt="" /></span>
             <span className="brand-copy"><strong>{brand.name}</strong><small>{shellText(brand.subtitle, t)}</small></span>
           </a>
-          <button
-            className="sidebar-toggle"
-            type="button"
-            aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-            aria-expanded={!collapsed}
-            aria-controls="primary-navigation"
-            onClick={() => setCollapsed((value) => !value)}
-          >
-            {collapsed ? <PanelLeftOpen size={17} aria-hidden="true" /> : <PanelLeftClose size={17} aria-hidden="true" />}
-          </button>
+          {desktopSidebarHidden ? null : (
+            <SidebarToggle
+              collapsed={collapsed}
+              expandLabel={t("expandSidebar")}
+              collapseLabel={t("collapseSidebar")}
+              buttonRef={sidebarToggleRef}
+              onToggle={toggleCollapsed}
+            />
+          )}
           <IconButton ref={sidebarCloseRef} className="sidebar-close" icon={X} label={t("closeNavigation")} aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={closeMobile} />
         </div>
 
         <nav className="sidebar-nav">
-          {navigation.map((group) => (
-            <div className={`nav-group ${group.section === "fixed" || group.section === undefined ? "nav-group-fixed" : "nav-group-list"} nav-group-${group.section ?? "fixed"}`} key={group.label}>
-              <div className="nav-group-heading"><span className="nav-group-label">{shellText(group.label, t)}</span>{group.action ? <span className="nav-group-action">{group.action}</span> : null}</div>
-              {group.backLink ? <a className="sidebar-context-back" href={group.backLink.href} aria-label={group.backLink.label} title={group.backLink.label} onClick={() => closeMobile()}><ArrowLeft size={16} aria-hidden="true" /><span>{group.backLink.label}</span></a> : null}
-              {group.items.map((item) => {
-                const active = isNavigationItemActive(item, activeHref);
-                const contextual = item.contextual === true && !active;
-                const label = shellText(item.label, t);
-                return <div className={navigationRowClassName(item, `sidebar-nav-item ${item.children ? "has-children" : ""}`)} key={`${item.href}-${label}`}>
-                  <div className={navigationRowClassName(item, "sidebar-nav-item-row")}>
-                    {item.leadingAction ? <span className="sidebar-nav-item-leading-action">{item.leadingAction}</span> : null}
-                    <a className={navigationLinkClassName(item, active, contextual)} href={item.href} aria-label={navigationItemAriaLabel(item, label)} title={collapsed ? navigationItemAriaLabel(item, label) : undefined} aria-current={active ? "page" : undefined} onClick={() => { item.onClick?.(); closeMobile(); }}><NavigationGlyph item={item} size={16} /><NavLinkCopy item={item} label={label} /></a>
-                    {item.trailingAction ? <span className="sidebar-nav-item-action" onClickCapture={(event) => { if ((event.target as Element).closest("a")) closeMobile(); }}>{item.trailingAction}</span> : null}
-                  </div>
-                  {item.children && item.expanded ? <div className="sidebar-nav-children">{renderSidebarChildren(item.children, activeHref, closeMobile, t, collapsed)}</div> : null}
-                </div>;
-              })}
-              {group.status ? <span className="nav-group-state" role="status">{navigationStatusText(group, t)}</span> : null}
+          {fixedNavigation.length ? (
+            <div className="sidebar-nav-fixed">
+              {fixedNavigation.map((group) => (
+                <SidebarNavGroup
+                  key={group.label}
+                  group={group}
+                  activeHref={activeHref}
+                  collapsed={collapsed}
+                  sectionCollapsed={false}
+                  locale={locale}
+                  t={t}
+                  closeMobile={closeMobile}
+                  onToggleSection={toggleNavSection}
+                />
+              ))}
             </div>
-          ))}
+          ) : null}
+          {listNavigation.length ? (
+            <div
+              className="sidebar-nav-scroll"
+              ref={sidebarScrollRef}
+              style={{ "--nav-sticky-first": `${NAV_STICKY_FIRST}px`, "--nav-sticky-rest": `${NAV_STICKY_REST}px` } as CSSProperties}
+            >
+              {listNavigation.map((group) => {
+                const section = isCollapsibleNavSection(group.section) ? group.section : undefined;
+                return (
+                  <SidebarNavGroup
+                    key={group.label}
+                    group={group}
+                    activeHref={activeHref}
+                    collapsed={collapsed}
+                    sectionCollapsed={section ? collapsedSections[section] : false}
+                    scrollFolded={section ? scrollFolded[section] : false}
+                    locale={locale}
+                    t={t}
+                    closeMobile={closeMobile}
+                    onToggleSection={toggleNavSection}
+                  />
+                );
+              })}
+            </div>
+          ) : null}
         </nav>
 
         <div className="sidebar-footer">
-          <SidebarAccountMenu account={resolvedAccount} collapsed={collapsed && !mobileViewport} onNavigate={closeMobile} />
+          <SidebarAccountMenu account={resolvedAccount} collapsed={collapsed && !mobileViewport} onNavigate={closeMobile} activeHref={activeHref} />
           {footer}
         </div>
         {collapsed || mobileViewport ? null : (
@@ -449,6 +765,16 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
 
       <div className="app-main">
         <header className="app-header">
+          {desktopSidebarHidden ? (
+            <SidebarToggle
+              collapsed
+              className="header-sidebar-toggle"
+              expandLabel={t("expandSidebar")}
+              collapseLabel={t("collapseSidebar")}
+              buttonRef={headerToggleRef}
+              onToggle={toggleCollapsed}
+            />
+          ) : null}
           <IconButton ref={mobileMenuRef} className="mobile-menu" icon={Menu} label={t("openNavigation")} aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={openMobile} />
           <div className={`header-copy ${breadcrumbs ? "has-breadcrumbs" : ""}`}>
             {breadcrumbs ? <nav className="header-breadcrumbs" aria-label={t("breadcrumb")}>{breadcrumbs.map((crumb, index) => {

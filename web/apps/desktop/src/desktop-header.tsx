@@ -1,4 +1,4 @@
-import { BookOpen, Bot, Boxes, FileText, FolderKanban, Gauge, History, Home, MessageCirclePlus, Play, Workflow, Wrench } from "lucide-react";
+import { BookOpen, Bot, Boxes, FolderKanban, Gauge, History, Home, MessageCircle, Play, Workflow, Wrench } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation, type ProjectAgentRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import { agentAncestryPath } from "./features/projects/agent-tree";
 
@@ -7,8 +7,8 @@ type DesktopHeader = { title: string; breadcrumbs?: Crumb[] };
 type DesktopLocale = "zh" | "en";
 
 const rootTitles: Record<"en" | "zh", Partial<Record<DesktopRouteLocation["kind"], string>>> = {
-  en: { chat: "New chat", projects: "New chat", components: "Resource Catalog", resources: "Resource Catalog", files: "Knowledge base", runs: "History", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", "not-found": "Route not found" },
-  zh: { chat: "新聊天", projects: "新聊天", components: "资源目录", resources: "资源目录", files: "知识库", runs: "历史", monitor: "监控", community: "社区", account: "账号", settings: "设置", "not-found": "找不到页面" },
+  en: { chat: "New chat", projects: "New chat", components: "Resource Catalog", resources: "Resource Catalog", files: "Knowledge base", runs: "History", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", trash: "Trash", "not-found": "Route not found" },
+  zh: { chat: "新聊天", projects: "新聊天", components: "资源目录", resources: "资源目录", files: "知识库", runs: "历史", monitor: "监控", community: "社区", account: "账号", settings: "设置", trash: "回收站", "not-found": "找不到页面" },
 };
 
 function agentDisplayLabel(agent: ProjectAgentRecord): string {
@@ -27,10 +27,15 @@ function projectTrail(home: Crumb, project: Crumb, ...rest: Crumb[]): Crumb[] {
   return [home, project, ...rest];
 }
 
-export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSummaryResponse[], locale: DesktopLocale = "en"): DesktopHeader {
+export function desktopHeader(
+  route: DesktopRouteLocation,
+  projects: ProjectSummaryResponse[],
+  locale: DesktopLocale = "en",
+  context: { conversationTitle?: string } = {},
+): DesktopHeader {
   const contextLabels = locale === "zh"
-    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", resourceLibrary: "项目资源", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "历史" }
-    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", resourceLibrary: "Project resources", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "History" };
+    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", resourceLibrary: "项目资源", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", history: "历史" }
+    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", resourceLibrary: "Project resources", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", history: "History" };
   const title = rootTitles[locale][route.kind];
   if (title) return { title };
   const project = "projectId" in route ? projects.find((item) => item.project_id === route.projectId) : undefined;
@@ -39,7 +44,7 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   const projectCrumb = "projectId" in route ? { label: projectLabel, href: projectRoutePaths.project(route.projectId), icon: FolderKanban } : undefined;
   if (!projectCrumb) return { title: "Route not found" };
 
-  if (route.kind === "project") {
+  if (route.kind === "project" || route.kind === "project-files") {
     return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb) };
   }
   if (route.kind === "project-resources") {
@@ -49,7 +54,16 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
     return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.agents, href: projectRoutePaths.agents(route.projectId), icon: Bot }) };
   }
   if (route.kind === "project-chat") {
-    return { title: contextLabels.newChat, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.newChat, href: projectRoutePaths.projectChat(route.projectId), icon: MessageCirclePlus }) };
+    const chatLabel = route.conversationId
+      ? (context.conversationTitle?.trim() || contextLabels.newChat)
+      : contextLabels.newChat;
+    const href = route.conversationId
+      ? projectRoutePaths.projectChat(route.projectId, route.conversationId)
+      : projectRoutePaths.projectChat(route.projectId);
+    return {
+      title: chatLabel,
+      breadcrumbs: projectTrail(home, projectCrumb, { label: chatLabel, href, icon: MessageCircle }),
+    };
   }
   if (route.kind === "project-analysis") {
     return { title: contextLabels.analysis, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.analysis, href: projectRoutePaths.projectAnalysis(route.projectId), icon: Gauge }) };
@@ -67,9 +81,6 @@ export function desktopHeader(route: DesktopRouteLocation, projects: ProjectSumm
   }
   if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") {
     return { title: contextLabels.knowledge, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.knowledge, href: projectRoutePaths.knowledge(route.projectId), icon: BookOpen }) };
-  }
-  if (route.kind === "project-files") {
-    return { title: contextLabels.files, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.files, href: projectRoutePaths.files(route.projectId), icon: FileText }) };
   }
   if (route.kind === "project-runs") {
     return { title: contextLabels.history, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.history, href: projectRoutePaths.runs(route.projectId), icon: History }) };

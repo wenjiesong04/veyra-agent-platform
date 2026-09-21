@@ -4,8 +4,11 @@ import type {
   BuilderHarnessReceipt,
   BuilderOperationEvent,
   BuilderOperationEventKind,
+  BuilderRunObservation,
 } from "@veyra/api-contracts";
-import { Button } from "@veyra/ui";
+import { ChevronsDown, ChevronsRight, Circle, CircleAlert, CircleCheck } from "lucide-react";
+import { Button, StatusBadge } from "@veyra/ui";
+import { observationStatusLabel } from "./BuilderTestRun";
 
 const STEP_ORDER = [
   "builder.intent.resolved",
@@ -57,12 +60,22 @@ const PLAN_FAILURE_CODES = new Set([
   "factory_generation_invalid",
 ]);
 
-function durationLabel(startedAt: string, endedAt: string): string {
-  const start = Date.parse(startedAt);
-  const end = Date.parse(endedAt);
+function durationLabel(operation: BuilderConversationOperation): string {
+  const startSource = operation.events[0]?.created_at || operation.created_at;
+  const endSource = [...operation.events].reverse().find((item) => item.created_at)?.created_at || operation.updated_at;
+  const start = Date.parse(startSource);
+  const end = Date.parse(endSource);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "";
-  const seconds = Math.max(1, Math.round((end - start) / 1000));
-  return `${seconds}s`;
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 1) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours >= 6) return "";
+  const leftover = minutes % 60;
+  return leftover ? `${hours}h ${leftover}m` : `${hours}h`;
 }
 
 function currentKind(events: BuilderOperationEvent[]): BuilderOperationEventKind {
@@ -150,13 +163,131 @@ function capabilitySummary(kind: StepKind, event: BuilderOperationEvent | undefi
     const extra = event.facts.extra_permission_count ?? "0";
     const missing = event.facts.missing_count;
     if (missing && missing !== "0") return `${missing} missing`;
+    if (tools === "0" && knowledge === "0" && extra === "0") return "";
     return `${tools} Tools · ${knowledge} Knowledge · ${extra} extra permissions`;
   }
   return event.summary;
 }
 
+const TEST_STEPS = [
+  "builder.test_run.started",
+  "builder.test_run.waiting_approval",
+  "builder.test_run.completed",
+] as const;
+
+function testSteps(operation: BuilderConversationOperation): Array<{
+  key: string;
+  label: { zh: string; en: string };
+  state: "done" | "current" | "failed" | "pending";
+  summary: string;
+}> {
+  const byKind = new Map(operation.events.map((item) => [item.kind, item]));
+  const failed = operation.status === "failed";
+  const stopped = byKind.has("builder.test_run.stopped");
+  const waiting = operation.status === "waiting" || byKind.has("builder.test_run.waiting_approval");
+  const completed = byKind.has("builder.test_run.completed") || (operation.status === "succeeded" && !stopped);
+  const terminalKind = failed
+    ? "builder.test_run.failed"
+    : stopped
+      ? "builder.test_run.stopped"
+      : "builder.test_run.completed";
+  const labels: Record<string, { zh: string; en: string }> = {
+    "builder.test_run.started": { zh: "开始测试", en: "Start test" },
+    "builder.test_run.waiting_approval": { zh: "等待批准", en: "Waiting for approval" },
+    "builder.test_run.completed": failed
+      ? { zh: "测试失败", en: "Test failed" }
+      : stopped
+        ? { zh: "测试已停止", en: "Test stopped" }
+        : { zh: "测试成功", en: "Test succeeded" },
+  };
+  return TEST_STEPS.filter((kind) => kind !== "builder.test_run.waiting_approval" || waiting || byKind.has(kind)).map((kind) => {
+    const isTerminal = kind === "builder.test_run.completed";
+    const present = isTerminal ? byKind.has(terminalKind) || completed || failed || stopped : byKind.has(kind);
+    let state: "done" | "current" | "failed" | "pending" = "pending";
+    if (isTerminal && failed) state = "failed";
+    else if (present && !(isTerminal && operation.status === "in_progress")) state = "done";
+    else if (kind === "builder.test_run.started" && operation.status === "in_progress") state = "current";
+    else if (kind === "builder.test_run.waiting_approval" && waiting && operation.status === "waiting") state = "current";
+    else if (isTerminal && operation.status === "in_progress") state = "current";
+    return {
+      key: kind,
+      label: labels[kind],
+      state,
+      summary: isTerminal ? failureSummary(operation) : "",
+    };
+  });
+}
+
+function BuilderTestObservation({
+  observation,
+  locale,
+}: {
+  observation: BuilderRunObservation | null | undefined;
+  locale: "zh" | "en";
+}) {
+  const zh = locale === "zh";
+  if (!observation) return null;
+  return (
+    <dl className="builder-test-observation-facts">
+      <dt>{zh ? "状态" : "Status"}</dt>
+      <dd>{observationStatusLabel(observation, locale)}</dd>
+      {observation.runtime_model_id || observation.failure_code === "runtime_not_configured" ? (
+        <>
+          <dt>Runtime model</dt>
+          <dd>{observation.runtime_model_id || (zh ? "未配置" : "not configured")}</dd>
+        </>
+      ) : null}
+      {observation.output_summary ? (
+        <>
+          <dt>{zh ? "输出" : "Output"}</dt>
+          <dd><code>{observation.output_summary}</code></dd>
+        </>
+      ) : null}
+      {observation.explanation && observation.status !== "verified" && observation.status !== "unverified" ? (
+        <>
+          <dt>{zh ? "说明" : "Explanation"}</dt>
+          <dd>{observation.explanation}</dd>
+        </>
+      ) : null}
+    </dl>
+  );
+}
+
+function activityTitle(operation: BuilderConversationOperation, locale: "zh" | "en"): string {
+  const zh = locale === "zh";
+  if (operation.kind === "test_agent") return zh ? "测试 Agent" : "Test Agent";
+  const target = operation.target_kind === "workflow" ? "Workflow" : operation.target_kind === "agent" ? "Agent" : "";
+  if (!target) return zh ? "构建" : "Build";
+  return zh ? `构建 ${target}` : `Build ${target}`;
+}
+
+function statusPresentation(operation: BuilderConversationOperation, locale: "zh" | "en"): { label: string; tone: "good" | "warn" | "bad" | "neutral" } {
+  const zh = locale === "zh";
+  if (operation.kind === "test_agent") {
+    const stopped = operation.events.some((item) => item.kind === "builder.test_run.stopped");
+    if (operation.status === "in_progress") return { label: zh ? "进行中" : "Running", tone: "neutral" };
+    if (operation.status === "waiting") return { label: zh ? "等待批准" : "Waiting", tone: "warn" };
+    if (operation.status === "failed") return { label: zh ? "失败" : "Failed", tone: "bad" };
+    if (stopped) return { label: zh ? "已停止" : "Stopped", tone: "neutral" };
+    return { label: zh ? "完成" : "Completed", tone: "good" };
+  }
+  if (operation.status === "in_progress") return { label: zh ? "进行中" : "Running", tone: "neutral" };
+  if (operation.status === "waiting") return { label: zh ? "等待确认" : "Waiting", tone: "warn" };
+  if (operation.status === "failed") return { label: zh ? "失败" : "Failed", tone: "bad" };
+  if (operation.status === "rejected") return { label: zh ? "已拒绝" : "Rejected", tone: "neutral" };
+  return { label: zh ? "已完成" : "Completed", tone: "good" };
+}
+
 function headline(operation: BuilderConversationOperation, locale: "zh" | "en"): string {
   const zh = locale === "zh";
+  if (operation.kind === "test_agent") {
+    const stopped = operation.events.some((item) => item.kind === "builder.test_run.stopped");
+    if (operation.status === "in_progress") return zh ? "测试 Agent · 正在运行" : "Test Agent · running";
+    if (operation.status === "waiting") return zh ? "测试 Agent · 等待批准" : "Test Agent · waiting for approval";
+    if (operation.status === "failed") return zh ? "测试 Agent · 失败" : "Test Agent · failed";
+    if (stopped) return zh ? "测试 Agent · 已停止" : "Test Agent · stopped";
+    return zh ? "测试 Agent · 完成" : "Test Agent · completed";
+  }
   const target = operation.target_kind === "workflow" ? "Workflow" : operation.target_kind === "agent" ? "Agent" : "";
   if (!target) {
     if (operation.status === "in_progress") return zh ? "正在理解需求" : "Understanding request";
@@ -187,7 +318,7 @@ function BuilderBuildDetails({
   return (
     <div className="builder-build-details">
       <button type="button" className="builder-build-details-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-        <span aria-hidden="true">{open ? "▼" : "▶"}</span>
+        {open ? <ChevronsDown size={14} aria-hidden="true" /> : <ChevronsRight size={14} aria-hidden="true" />}
         {zh ? "构建详情" : "Build details"}
       </button>
       {open ? (
@@ -237,7 +368,7 @@ function BuilderBuildDetails({
           )}
           <div className="builder-build-details-technical">
             <button type="button" className="builder-build-details-toggle" onClick={() => setTechnical((value) => !value)} aria-expanded={technical}>
-              <span aria-hidden="true">{technical ? "▼" : "▶"}</span>
+              {technical ? <ChevronsDown size={14} aria-hidden="true" /> : <ChevronsRight size={14} aria-hidden="true" />}
               {zh ? "技术详情" : "Technical details"}
             </button>
             {technical ? (
@@ -363,6 +494,13 @@ function shortId(value: string): string {
   return value.length <= 12 ? value : `${value.slice(0, 12)}…`;
 }
 
+function StepMark({ state }: { state: "done" | "current" | "failed" | "pending" }) {
+  if (state === "done") return <CircleCheck size={15} strokeWidth={2.2} aria-hidden="true" />;
+  if (state === "failed") return <CircleAlert size={15} strokeWidth={2.2} aria-hidden="true" />;
+  if (state === "current") return <span className="builder-activity-pulse" aria-hidden="true" />;
+  return <Circle size={15} strokeWidth={2} aria-hidden="true" />;
+}
+
 export function BuilderActivityBlock({
   operation,
   locale,
@@ -378,26 +516,34 @@ export function BuilderActivityBlock({
   React.useEffect(() => {
     setOpen(running);
   }, [running, operation.operation_id]);
-  const steps = visibleSteps(operation);
-  const elapsed = durationLabel(operation.created_at, operation.updated_at);
+  const steps = operation.kind === "test_agent" ? testSteps(operation) : visibleSteps(operation);
+  const elapsed = durationLabel(operation);
   const currentStep = steps.find((item) => item.state === "current" || item.state === "failed");
+  const status = statusPresentation(operation, locale);
+  const showRetry = operation.status === "failed" && onRetry && operation.kind !== "test_agent";
+  const meta = operation.status === "succeeded" && elapsed
+    ? elapsed
+    : operation.status === "failed" && operation.kind !== "test_agent"
+      ? failureSummary(operation)
+      : operation.status === "in_progress" && currentStep
+        ? (zh ? currentStep.label.zh : currentStep.label.en)
+        : "";
   return (
-    <section className="builder-activity" data-status={operation.status}>
-      <button type="button" className="builder-activity-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-        <span className="builder-activity-mark" aria-hidden="true">{open ? "▼" : "▶"}</span>
-        <span className="builder-activity-title">{headline(operation, locale)}</span>
-        <span className="builder-activity-meta">
-          {operation.status === "succeeded" && elapsed ? elapsed : null}
-          {operation.status === "failed" ? failureSummary(operation) : null}
-          {operation.status === "in_progress" && currentStep ? (zh ? currentStep.label.zh : currentStep.label.en) : null}
+    <section className="builder-activity" data-status={operation.status} data-kind={operation.kind}>
+      <button type="button" className="builder-activity-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={headline(operation, locale)}>
+        {open ? <ChevronsDown className="builder-activity-mark" size={16} aria-hidden="true" /> : <ChevronsRight className="builder-activity-mark" size={16} aria-hidden="true" />}
+        <span className="builder-activity-copy">
+          <span className="builder-activity-title">{activityTitle(operation, locale)}</span>
+          {meta ? <span className="builder-activity-meta">{meta}</span> : null}
         </span>
+        <StatusBadge label={status.label} tone={status.tone} />
       </button>
       {open ? (
         <>
           <ol className="builder-activity-steps">
             {steps.map((step) => (
               <li key={step.key} data-state={step.state}>
-                <span aria-hidden="true">{step.state === "done" ? "✓" : step.state === "failed" ? "✕" : step.state === "current" ? "●" : "○"}</span>
+                <span className="builder-activity-step-mark"><StepMark state={step.state} /></span>
                 <div>
                   <strong>{zh ? step.label.zh : step.label.en}</strong>
                   {step.summary ? <small>{step.summary}</small> : null}
@@ -405,12 +551,14 @@ export function BuilderActivityBlock({
               </li>
             ))}
           </ol>
-          <BuilderBuildDetails operation={operation} locale={locale} />
+          {operation.kind === "test_agent"
+            ? <BuilderTestObservation observation={operation.run_observation} locale={locale} />
+            : <BuilderBuildDetails operation={operation} locale={locale} />}
         </>
       ) : null}
-      {operation.status === "failed" && onRetry ? (
+      {showRetry ? (
         <div className="builder-activity-actions">
-          <Button onClick={onRetry}>{zh ? "重试" : "Retry"}</Button>
+          <Button size="sm" onClick={onRetry}>{zh ? "重试" : "Retry"}</Button>
         </div>
       ) : null}
     </section>

@@ -219,7 +219,7 @@ export function AgentChatSurface({
   }, [source, initialPrompt, api.runAgent, start, projectId, agentId]);
 
   if (loadState === "loading") {
-    return <ConversationStage empty canvasOpen={false} data-project-id={projectId} data-agent-id={agentId} suggestions={<LoadingState label={text.loading} />} />;
+    return <ConversationStage empty canvasOpen={false} data-project-id={projectId} data-agent-id={agentId} suggestions={<LoadingState compact label={text.loading} />} />;
   }
   if (loadState === "error" || !source) {
     return <ConversationStage empty canvasOpen={false} data-project-id={projectId} data-agent-id={agentId} suggestions={<ErrorState message={error || text.unavailable} onRetry={() => void load()} />} />;

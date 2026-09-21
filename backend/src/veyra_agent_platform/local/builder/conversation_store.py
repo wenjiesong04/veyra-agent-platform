@@ -137,27 +137,138 @@ class BuilderConversationStore:
         with self.repository.transaction() as connection:
             if project_id is None:
                 row = connection.execute(
-                    "SELECT * FROM builder_conversations WHERE conversation_id = ?",
+                    """SELECT * FROM builder_conversations
+                       WHERE conversation_id = ? AND removed_at IS NULL""",
                     (conversation_id,),
                 ).fetchone()
             else:
                 row = connection.execute(
                     """SELECT * FROM builder_conversations
-                       WHERE conversation_id = ? AND project_id = ?""",
+                       WHERE conversation_id = ? AND project_id = ?
+                         AND removed_at IS NULL""",
                     (conversation_id, project_id),
                 ).fetchone()
             return dict(row) if row is not None else None
 
-    def conversations(self, project_id: str, *, limit: int) -> list[dict[str, Any]]:
+    def conversations(
+        self, project_id: str | None = None, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        with self.repository.transaction() as connection:
+            clauses = ["removed_at IS NULL"]
+            params: list[Any] = []
+            if project_id:
+                clauses.append("project_id = ?")
+                params.append(project_id)
+            sql = f"""SELECT * FROM builder_conversations
+                   WHERE {' AND '.join(clauses)}
+                   ORDER BY last_activity_at DESC, conversation_id DESC"""
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit)
+            rows = connection.execute(sql, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_conversation(
+        self, conversation_id: str, project_id: str, *, removed_at: str
+    ) -> bool:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                """SELECT conversation_id FROM builder_conversations
+                   WHERE conversation_id = ? AND project_id = ?
+                     AND removed_at IS NULL""",
+                (conversation_id, project_id),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                """UPDATE builder_conversations
+                   SET removed_at = ?, status = 'deleted', updated_at = ?
+                   WHERE conversation_id = ? AND project_id = ?
+                     AND removed_at IS NULL""",
+                (removed_at, removed_at, conversation_id, project_id),
+            )
+            return True
+
+    def trashed_conversations(self) -> list[dict[str, Any]]:
         with self.repository.transaction() as connection:
             rows = connection.execute(
-                """SELECT * FROM builder_conversations
-                   WHERE project_id = ?
-                   ORDER BY last_activity_at DESC, conversation_id DESC
-                   LIMIT ?""",
-                (project_id, limit),
+                """SELECT conversations.conversation_id AS id,
+                          conversations.title AS name,
+                          conversations.project_id AS project_id,
+                          conversations.removed_at AS removed_at,
+                          projects.name AS project_name,
+                          projects.removed_at AS project_removed_at
+                   FROM builder_conversations AS conversations
+                   LEFT JOIN projects
+                     ON projects.project_id = conversations.project_id
+                   WHERE conversations.removed_at IS NOT NULL
+                   ORDER BY conversations.removed_at DESC,
+                            conversations.conversation_id DESC"""
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def restore_trashed(self, conversation_id: str, *, restored_at: str) -> bool:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                """SELECT conversation_id FROM builder_conversations
+                   WHERE conversation_id = ? AND removed_at IS NOT NULL""",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            cursor = connection.execute(
+                """UPDATE builder_conversations
+                   SET removed_at = NULL, status = 'active', updated_at = ?
+                   WHERE conversation_id = ? AND removed_at IS NOT NULL""",
+                (restored_at, conversation_id),
+            )
+            return cursor.rowcount == 1
+
+    def purge_trashed(self, conversation_id: str) -> bool:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                """SELECT conversation_id FROM builder_conversations
+                   WHERE conversation_id = ? AND removed_at IS NOT NULL""",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                """UPDATE builder_operations SET retry_of = NULL
+                   WHERE conversation_id = ?""",
+                (conversation_id,),
+            )
+            connection.execute(
+                """DELETE FROM builder_harness_receipts
+                   WHERE conversation_id = ?""",
+                (conversation_id,),
+            )
+            connection.execute(
+                """DELETE FROM builder_operation_events
+                   WHERE operation_id IN (
+                     SELECT operation_id FROM builder_operations
+                     WHERE conversation_id = ?
+                   )""",
+                (conversation_id,),
+            )
+            connection.execute(
+                """UPDATE builder_messages SET operation_id = NULL
+                   WHERE conversation_id = ?""",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM builder_operations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM builder_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM builder_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            return True
 
     def touch(
         self, conversation_id: str, *, title: str | None, updated_at: str

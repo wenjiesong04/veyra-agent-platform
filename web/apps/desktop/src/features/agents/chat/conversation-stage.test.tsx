@@ -85,4 +85,65 @@ describe("ConversationStage canvas chrome", () => {
     expect(screen.getByRole("separator", { name: "Resize canvas height" })).toBeInTheDocument();
     expect(screen.queryByRole("separator", { name: "Resize canvas" })).not.toBeInTheDocument();
   });
+
+  it("keeps the canvas under the transcript when forceStacked is set", () => {
+    render(
+      <ThemeProvider storageKey="conversation-canvas-test">
+        <ConversationStage
+          empty={false}
+          canvasOpen
+          forceStacked
+          canvas={<aside className="agent-convo-canvas" aria-label="Assembly canvas">Blueprint</aside>}
+        >
+          <p>Hello</p>
+        </ConversationStage>
+      </ThemeProvider>,
+    );
+    setStageSize(1100, 800);
+    const stage = document.querySelector(".agent-conversation") as HTMLElement;
+    expect(stage).toHaveAttribute("data-canvas-layout", "stack");
+    expect(screen.getByRole("separator", { name: "Resize canvas height" })).toBeInTheDocument();
+    expect(screen.queryByRole("separator", { name: "Resize canvas" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the composer below the transcript without a covering workspace slot", () => {
+    render(
+      <ThemeProvider storageKey="conversation-canvas-test">
+        <ConversationStage
+          empty={false}
+          canvasOpen={false}
+          composer={<div>Composer</div>}
+        >
+          <p>Hello</p>
+        </ConversationStage>
+      </ThemeProvider>,
+    );
+    const main = document.querySelector(".agent-conversation-main") as HTMLElement;
+    const scroll = main.querySelector(".agent-convo-scroll");
+    const dock = main.querySelector(".agent-convo-dock");
+    expect(scroll?.nextElementSibling).toBe(dock);
+    expect(scroll).not.toContainElement(screen.getByText("Composer"));
+    expect(document.querySelector(".agent-convo-end-space")).toBeInTheDocument();
+    expect(document.querySelector(".agent-convo-workspace")).not.toBeInTheDocument();
+    expect(screen.getByText("Hello")).toBeInTheDocument();
+  });
+
+  it("pins the composer and offers a jump control after scrolling away from the bottom", () => {
+    render(
+      <ThemeProvider storageKey="conversation-canvas-test">
+        <ConversationStage empty={false} canvasOpen={false} composer={<div>Composer</div>}>
+          <p>Older message</p>
+        </ConversationStage>
+      </ThemeProvider>,
+    );
+    const scroll = document.querySelector(".agent-convo-scroll") as HTMLDivElement;
+    Object.defineProperty(scroll, "scrollHeight", { configurable: true, value: 2000 });
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(scroll, "scrollTop", { configurable: true, writable: true, value: 0 });
+    fireEvent.scroll(scroll);
+    expect(screen.getByRole("button", { name: "Scroll to bottom" })).toBeInTheDocument();
+    expect(document.querySelector(".agent-convo-dock")).toContainElement(screen.getByText("Composer"));
+    fireEvent.click(screen.getByRole("button", { name: "Scroll to bottom" }));
+    expect(screen.queryByRole("button", { name: "Scroll to bottom" })).not.toBeInTheDocument();
+  });
 });

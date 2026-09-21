@@ -143,6 +143,33 @@ class LocalRepository:
             )
             return cursor.rowcount == 1
 
+    def project_row(self, project_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone(),
+            )
+
+    def trashed_projects(self) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                """SELECT * FROM projects
+                   WHERE removed_at IS NOT NULL
+                   ORDER BY removed_at DESC, project_id DESC"""
+            ).fetchall()
+
+    def restore_project(self, project_id: str) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE projects SET removed_at = NULL
+                   WHERE project_id = ? AND removed_at IS NOT NULL""",
+                (project_id,),
+            )
+            return cursor.rowcount == 1
+
     def agent(self, agent_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:
             return cast(
@@ -235,6 +262,14 @@ class LocalRepository:
                 (agent_id,),
             )
             return cursor.rowcount == 1
+
+    def trashed_agents(self) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                """SELECT * FROM agents
+                   WHERE removed_at IS NOT NULL
+                   ORDER BY removed_at DESC, agent_id DESC"""
+            ).fetchall()
 
     def agent_origin(self, agent_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:
@@ -588,6 +623,14 @@ class LocalRepository:
                 (workflow_id,),
             )
             return cursor.rowcount == 1
+
+    def trashed_workflows(self) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                """SELECT * FROM workflows
+                   WHERE removed_at IS NOT NULL
+                   ORDER BY removed_at DESC, workflow_id DESC"""
+            ).fetchall()
 
     def delete_workflows(
         self, connection: sqlite3.Connection, workflow_ids: set[str]

@@ -1,5 +1,5 @@
 import { CircleStop, Clock3, Gauge, Play, RotateCcw } from "lucide-react";
-import { Button, EmptyState, ErrorState, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { Button, EmptyState, ErrorState, ListSkeleton, LoadingMask, Panel, SectionHeading, StatusBadge, Tag, toast, useLocale } from "@veyra/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OrchestratorStatus, WorkItem } from "@veyra/api-contracts";
 import { useProjectWorkspace } from "../api/project-workspace";
@@ -71,9 +71,10 @@ export function MonitorPage() {
     setBusyId(workItemId);
     try {
       await api.dispatchWorkItem(workItemId);
+      toast.success(zh ? "已派发。" : "Dispatched.");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "派发失败。" : "Dispatch failed."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "派发失败。" : "Dispatch failed."));
     } finally {
       setBusyId(null);
     }
@@ -84,9 +85,10 @@ export function MonitorPage() {
     setBusyId(workItemId);
     try {
       await api.cancelWorkItem(workItemId);
+      toast.success(zh ? "已取消。" : "Cancelled.");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "取消失败。" : "Cancel failed."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "取消失败。" : "Cancel failed."));
     } finally {
       setBusyId(null);
     }
@@ -97,9 +99,10 @@ export function MonitorPage() {
     setBusyId(workItemId);
     try {
       await api.retryWorkItem(workItemId);
+      toast.success(zh ? "已重试。" : "Retried.");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "重试失败。" : "Retry failed."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "重试失败。" : "Retry failed."));
     } finally {
       setBusyId(null);
     }
@@ -110,9 +113,10 @@ export function MonitorPage() {
     setBusyId(workItemId);
     try {
       await api.recoverWorkItem(workItemId);
+      toast.success(zh ? "已恢复停滞项。" : "Stalled item recovered.");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "恢复停滞 WorkItem 失败。" : "Stalled WorkItem recovery failed."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "恢复停滞 WorkItem 失败。" : "Stalled WorkItem recovery failed."));
     } finally {
       setBusyId(null);
     }
@@ -132,9 +136,10 @@ export function MonitorPage() {
       setTitle("");
       setDescription("");
       setDependsOn([]);
+      toast.success(zh ? "已创建 WorkItem。" : "Work item created.");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "创建 WorkItem 失败。" : "Could not create WorkItem."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "创建 WorkItem 失败。" : "Could not create WorkItem."));
     } finally {
       setBusyId(null);
     }
@@ -193,11 +198,12 @@ export function MonitorPage() {
           </div>
         </Panel>
       ) : null}
-      {workspaceStatus === "loading" || (!plane && !error) ? <Panel><LoadingState label={zh ? "正在加载编排状态…" : "Loading orchestrator…"} /></Panel> : null}
+      {workspaceStatus === "loading" || (!plane && !error) ? <Panel><ListSkeleton label={zh ? "正在加载编排状态…" : "Loading orchestrator…"} /></Panel> : null}
       {plane ? (
         <Panel>
           <SectionHeading eyebrow={copy.counts} title={`${plane.active.length} active`} detail={`backlog ${plane.counts.backlog} · ready ${plane.counts.ready} · running ${plane.counts.running} · waiting ${plane.counts.waiting} · stale ${plane.stale_count} · limit ${plane.limits.global_concurrency}/${plane.limits.per_project_concurrency}`} />
           {items.length ? (
+            <LoadingMask active={busyId !== null && busyId !== "create"} label={zh ? "正在更新…" : "Updating…"}>
             <div className="run-list">
               {items.map((item) => (
                 <div className="run-row" key={item.work_item_id}>
@@ -224,6 +230,7 @@ export function MonitorPage() {
                 </div>
               ))}
             </div>
+            </LoadingMask>
           ) : (
             <EmptyState icon={Clock3} title={copy.empty} detail={copy.emptyDetail} />
           )}

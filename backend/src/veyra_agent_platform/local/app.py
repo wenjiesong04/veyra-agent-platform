@@ -26,6 +26,7 @@ from .api.resources import build_router as build_resources_router
 from .api.runtime import build_router as build_runtime_router
 from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
+from .api.trash import build_router as build_trash_router
 from .api.workflows import build_router as build_workflow_router
 from .builder.conversation_service import BuilderConversationService
 from .builder.conversation_store import BuilderConversationStore
@@ -60,6 +61,7 @@ from .secrets import MacOSKeychainSecretStore, SecretStore
 from .storage import LocalRepository, migrate_local_database
 from .storage.bootstrap import HEAD_REVISION
 from .system import DirectoryPicker, MacOSDirectoryPicker
+from .trash import TrashService
 
 
 def _sqlite_database_path(database_url: str) -> Path:
@@ -196,6 +198,13 @@ def create_app(
             projects,
             application.state.builder,
             application.state.factory,
+            runtime=application.state.runtime,
+            edits=application.state.edit_proposals,
+        )
+        application.state.trash = TrashService(
+            projects,
+            application.state.plugins,
+            application.state.builder_conversations,
         )
         application.state.orchestrator = OrchestratorService(
             OrchestratorStore(database_path),
@@ -240,6 +249,7 @@ def create_app(
     application.include_router(build_secrets_router())
     application.include_router(build_mcp_router())
     application.include_router(build_plugins_router())
+    application.include_router(build_trash_router())
     application.include_router(build_orchestrator_router())
 
     return application

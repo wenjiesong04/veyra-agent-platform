@@ -25,6 +25,7 @@ import {
   EmptyState,
   ErrorState,
   LinkButton,
+  ListSkeleton,
   LoadingState,
   Panel,
   SectionHeading,
@@ -413,7 +414,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
       </div>
       {tab === "skill" ? <Panel><SectionHeading eyebrow={copy.createSkill} title={copy.createSkill} detail={copy.skillDraftHint} /><div className="inspector-fields"><label><span>{skillFileCopy.label}</span><input type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={(event) => { void importSkillFile(event.target.files?.item(0) ?? null); event.target.value = ""; }} />{skillFileName ? <small className="resource-detail-muted">{skillFileCopy.selected}: {skillFileName}</small> : null}{skillFileError ? <small className="resource-detail-error">{skillFileError}</small> : null}</label><label><span>{copy.skillName}</span><input value={skillDraftName} onChange={(event) => setSkillDraftName(event.target.value)} /></label><label><span>{copy.skillReference}</span><input value={skillDraftReference} onChange={(event) => setSkillDraftReference(event.target.value)} placeholder={copy.skillReferenceHint} /></label><label><span>{copy.skillDraftInstruction}</span><textarea value={skillDraftInstruction} onChange={(event) => setSkillDraftInstruction(event.target.value)} rows={5} /></label><div className="button-row"><Button variant="primary" disabled={!api.createResourceDraft || skillDraftState === "creating" || !skillDraftReference.trim() || !skillDraftInstruction.trim()} onClick={() => void createSkillDraft()}>{skillDraftState === "creating" ? "…" : skillDraftState === "created" ? copy.skillCreated : copy.createSkillAction}</Button>{skillDraftState === "error" ? <span className="resource-detail-error">{copy.skillCreateFailed}</span> : null}</div></div></Panel> : null}
       {status === "error" ? <ErrorState message={error ?? copy.unavailable} onRetry={() => void load()} /> : null}
-      {status === "loading" ? <Panel><LoadingState label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel> : null}
+      {status === "loading" ? <Panel><ListSkeleton label={zh ? "正在加载资源…" : "Loading resources…"} /></Panel> : null}
       {status === "ready" && tab !== "plugin" && visible.length === 0 ? <Panel><EmptyState icon={LayoutGrid} title={copy.empty} detail={copy.emptyDetail} /></Panel> : null}
       {status === "ready" && tab !== "plugin" && visible.length > 0 ? (
         <div className="resource-card-grid">

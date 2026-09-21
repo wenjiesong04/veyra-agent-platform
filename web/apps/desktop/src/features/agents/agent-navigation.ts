@@ -62,9 +62,8 @@ export function projectTreeSelection(route: DesktopRouteLocation): ProjectTreeSe
   if (route.kind === "project-workflow") return { projectId, workflowId: route.workflowId, resourceKind: "workflows" };
   if (route.kind === "project-knowledge") return { projectId, resourceKind: "knowledge" };
   if (route.kind === "project-knowledge-item") return { projectId, knowledgeId: route.knowledgeId, resourceKind: "knowledge" };
-  if (route.kind === "project-files") return { projectId, resourceKind: "files" };
   if (route.kind === "project-runs") return { projectId, resourceKind: "runs" };
-  if (route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "factory") return { projectId };
+  if (route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "factory" || route.kind === "project-files") return { projectId };
   return { projectId };
 }
 
@@ -101,26 +100,15 @@ export function relativeActivityTime(value: string, locale: DesktopLocale, now =
   return locale === "zh" ? `${days} 天前` : `${days}d ago`;
 }
 
-function activityStatusLabel(status: string, locale: DesktopLocale): string {
-  const zh = locale === "zh";
-  if (status === "failed") return zh ? "Failed" : "Failed";
-  if (status === "waiting" || status === "in_progress") return zh ? "Waiting" : "Waiting";
-  if (status === "rejected") return zh ? "Rejected" : "Rejected";
-  if (status === "verified" || status === "succeeded" || status === "completed") return zh ? "Completed" : "Completed";
-  if (status === "running") return zh ? "Running" : "Running";
-  return status;
-}
-
-function conversationKindLabel(kind: string, locale: DesktopLocale): string {
-  if (kind === "create_agent") return locale === "zh" ? "创建 Agent" : "Create Agent";
-  if (kind === "edit") return locale === "zh" ? "修改" : "Edit";
-  return locale === "zh" ? "对话" : "Chat";
-}
-
 export function agentRecentNavigation(
   locale: DesktopLocale,
   items: BuilderActivityItem[] = [],
-  context: { projectId?: string; projectName?: string; conversationId?: string } = {},
+  context: {
+    projectId?: string;
+    projectName?: string;
+    projectNames?: Record<string, string>;
+    conversationId?: string;
+  } = {},
 ): NavigationGroup {
   const empty = {
     label: "Recent",
@@ -129,25 +117,25 @@ export function agentRecentNavigation(
     status: "empty" as const,
     statusText: locale === "zh" ? "暂无最近聊天。" : "No recent chats yet.",
   };
-  if (!context.projectId) return empty;
   const conversations = items.filter((item) => item.kind === "conversation" && item.conversation_id);
-  if (!conversations.length) return empty;
-  const projectId = context.projectId;
-  const projectName = context.projectName ?? "";
+  const mapped = conversations.flatMap((item) => {
+    const projectId = item.project_id ?? context.projectId;
+    if (!projectId) return [];
+    const projectName = context.projectNames?.[projectId] ?? context.projectName ?? "";
+    const when = relativeActivityTime(item.occurred_at, locale);
+    const detail = [projectName, when].filter(Boolean).join(" · ");
+    return [{
+      href: projectRoutePaths.projectChat(projectId, item.conversation_id),
+      label: item.title,
+      icon: MessageCircle,
+      active: context.conversationId === item.conversation_id,
+      detail,
+    }];
+  });
+  if (!mapped.length) return empty;
   return {
     label: "Recent",
     section: "recent",
-    items: conversations.map((item) => {
-      const when = relativeActivityTime(item.occurred_at, locale);
-      const detail = [projectName, when].filter(Boolean).join(" · ");
-      return {
-        href: projectRoutePaths.projectChat(projectId, item.conversation_id),
-        label: item.title,
-        icon: MessageCircle,
-        active: context.conversationId === item.conversation_id,
-        detail,
-        meta: `${conversationKindLabel(item.operation_kind, locale)} · ${activityStatusLabel(item.status, locale)}`,
-      };
-    }),
+    items: mapped,
   };
 }

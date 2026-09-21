@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Gauge } from "lucide-react";
 import type { AgentRunResponse } from "@veyra/api-contracts";
-import { EmptyState, ErrorState, LoadingState, MetricCard, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
+import { EmptyState, ErrorState, MetricCard, Panel, SectionHeading, Skeleton, StatusBadge, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
 
 const copy = {
@@ -44,7 +44,7 @@ export function AgentAnalysisPage({ projectId, agentId }: { projectId: string; a
       <div className="page-intro"><div><span className="ui-eyebrow">{current.eyebrow}</span><h2>{current.title}</h2><p>{current.description}</p></div></div>
       <Panel className="agent-analysis-panel">
         <SectionHeading eyebrow={current.metricsEyebrow} title={current.metricsTitle} detail={current.metricsDetail} />
-        {status === "loading" ? <LoadingState label={current.loading} /> : null}
+        {status === "loading" ? <div role="status" aria-label={current.loading}><Skeleton rows={4} /></div> : null}
         {status === "error" ? <ErrorState message={api.listAgentRuns ? current.retry : current.unavailable} onRetry={api.listAgentRuns ? () => void load() : undefined} /> : null}
         {status === "ready" && !runs.length ? <div className="agent-analysis-empty"><EmptyState icon={Gauge} title={current.emptyTitle} detail={current.emptyDetail} /></div> : null}
         {status === "ready" && runs.length ? <>

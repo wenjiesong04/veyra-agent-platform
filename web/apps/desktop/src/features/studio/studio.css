@@ -456,7 +456,10 @@
   gap: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   padding-right: 4px;
   overflow-wrap: anywhere;
   word-break: break-word;

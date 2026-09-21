@@ -1,14 +1,14 @@
 import * as React from "react";
 import { Boxes, FileText, Gauge, Globe2, MessageCirclePlus } from "lucide-react";
 import { desktopLoginHash, desktopPathAfterAuth, desktopRoutePaths, isDesktopPublicAuthRoute, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
-import { accountInitials, AuthLayout, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
-import { ApplicationShell, ThemeProvider, useLocale } from "@veyra/ui";
+import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
+import { ApplicationShell, BrandLoading, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
 import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { desktopHeader } from "./desktop-header";
-import { agentRecentNavigation, isAgentContextRoute, projectContextActiveHref, projectContextNavigation, projectTreeSelection, workspaceNavRoute } from "./features/agents/agent-navigation";
-import { useBuilderActivity } from "./features/builder/use-builder-activity";
+import { isAgentContextRoute, projectContextActiveHref, projectContextNavigation, projectTreeSelection, workspaceNavRoute } from "./features/agents/agent-navigation";
+import { useRecentConversationNavigation } from "./features/builder/recent-conversations";
 import { resourceLibraryHref, rememberProjectId } from "./features/resources/library-navigation";
 import { AccountPage } from "./pages/account";
 import { AgentAnalysisPage } from "./pages/agent-analysis";
@@ -33,6 +33,7 @@ import { useProjectNavigation } from "./features/projects/project-navigation";
 import { RunsPage } from "./pages/runs";
 import { SettingsPage } from "./pages/settings";
 import { StudioPage } from "./pages/studio";
+import { TrashPage } from "./pages/trash";
 
 const desktopCommunityApi = createCommunityApi({ baseUrl: "/community-api/api/v1" });
 
@@ -69,11 +70,7 @@ function useHashRoute(): DesktopRouteLocation {
 
 function AuthBootScreen() {
   const { locale } = useLocale();
-  return (
-    <AuthLayout>
-      <p role="status">{locale === "zh" ? "正在确认登录状态…" : "Checking sign-in…"}</p>
-    </AuthLayout>
-  );
+  return <BrandLoading fullscreen size={88} label={locale === "zh" ? "正在确认登录状态…" : "Checking sign-in…"} />;
 }
 
 function DesktopAuthPages({ route }: { route: DesktopRouteLocation }) {
@@ -138,7 +135,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "project-workflows") return <ProjectWorkflowsPage projectId={route.projectId} />;
   if (route.kind === "project-workflow") return <StudioPage projectId={route.projectId} workflowId={route.workflowId ?? ""} />;
   if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") return <ProjectKnowledgePage projectId={route.projectId} knowledgeId={route.knowledgeId} />;
-  if (route.kind === "project-files") return <FilesPage projectId={route.projectId} />;
+  if (route.kind === "project-files") return <ProjectDetailPage projectId={route.projectId} />;
   if (route.kind === "project-runs") return <RunsPage projectId={route.projectId} />;
   if (route.kind === "agent-detail") return <AgentDetailPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "agent-version") return <AgentVersionPage projectId={route.projectId} agentId={route.agentId ?? ""} versionId={route.versionId ?? ""} workflowId={route.workflowId} />;
@@ -157,6 +154,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "community-version") return <CommunityPage owner={route.owner} slug={route.slug} versionId={route.versionId} />;
   if (route.kind === "account") return <AccountPage />;
   if (route.kind === "settings") return <SettingsPage />;
+  if (route.kind === "trash") return <TrashPage />;
   if (route.kind === "not-found" && route.path.startsWith("#/community")) return <NotFoundPage backHref={desktopRoutePaths.community} backLabel={zh ? "返回社区" : "Back to Community"} />;
   if (route.kind === "not-found" && route.path.startsWith("#/components")) return <NotFoundPage backHref={desktopRoutePaths.components} backLabel={zh ? "返回组件库" : "Back to Components"} />;
   if (route.kind === "not-found" && route.path.startsWith("#/files")) return <NotFoundPage backHref={desktopRoutePaths.files} backLabel={zh ? "返回文件" : "Back to Files"} />;
@@ -176,7 +174,13 @@ function DesktopWorkspace() {
   const activeAgentId = agentContextRoute?.agentId;
   const conversationId = route.kind === "project-chat" ? route.conversationId : undefined;
   const scopedProject = projects.find((item) => item.project_id === scopedProjectId);
-  const recentItems = useBuilderActivity(scopedProjectId);
+  const { navigation: recentNavigation, dialogs: recentDialogs, conversationTitle } = useRecentConversationNavigation({
+    locale,
+    projectId: scopedProjectId,
+    projectName: scopedProject?.name,
+    projectNames: Object.fromEntries(projects.map((item) => [item.project_id, item.name])),
+    conversationId,
+  });
   React.useEffect(() => {
     if (scopedProjectId) rememberProjectId(scopedProjectId);
   }, [scopedProjectId]);
@@ -189,14 +193,14 @@ function DesktopWorkspace() {
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
         : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : (route.kind in desktopRoutePaths ? desktopRoutePaths[route.kind as keyof typeof desktopRoutePaths] : desktopRoutePaths.projects);
-  const suppressProjectTreeHighlight = Boolean(workspaceRoute && projectContextActiveHref(workspaceRoute));
+  const suppressProjectTreeHighlight = Boolean(workspaceRoute && workspaceRoute.kind !== "project" && workspaceRoute.kind !== "project-files" && projectContextActiveHref(workspaceRoute));
   const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId, selection: treeSelection, routeKey: route.path, suppressProjectHighlight: suppressProjectTreeHighlight });
-  const header = desktopHeader(route, projects, locale);
+  const header = desktopHeader(route, projects, locale, { conversationTitle });
   const historyHref = scopedProjectId ? projectRoutePaths.runs(scopedProjectId) : desktopRoutePaths.runs;
   const historyActive = route.kind === "runs" || route.kind === "project-runs";
   const navigation: NavigationGroup[] = workspaceRoute
-    ? [projectContextNavigation(workspaceRoute, locale), ...projectNavigation, agentRecentNavigation(locale, recentItems, { projectId: scopedProjectId, projectName: scopedProject?.name, conversationId })]
-    : [homeNavigation(libraryHref, locale), ...projectNavigation];
+    ? [projectContextNavigation(workspaceRoute, locale), ...projectNavigation, recentNavigation]
+    : [homeNavigation(libraryHref, locale), ...projectNavigation, recentNavigation];
 
   return (
     <ApplicationShell
@@ -215,6 +219,7 @@ function DesktopWorkspace() {
         authenticated: true,
         accountHref: desktopRoutePaths.account,
         settingsHref: desktopRoutePaths.settings,
+        trashHref: desktopRoutePaths.trash,
         onSignOut: () => {
           void logout().catch(() => undefined);
         },
@@ -225,12 +230,14 @@ function DesktopWorkspace() {
         authenticated: false,
         accountHref: desktopRoutePaths.account,
         settingsHref: desktopRoutePaths.settings,
+        trashHref: desktopRoutePaths.trash,
       }}
     >
       <PageErrorBoundary resetKey={route.path} locale={locale}>
         <PageContent route={route} />
       </PageErrorBoundary>
       {dialogs}
+      {recentDialogs}
     </ApplicationShell>
   );
 }

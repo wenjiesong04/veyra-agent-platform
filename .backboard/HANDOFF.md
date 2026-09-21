@@ -1,6 +1,175 @@
 # Veyra Development Handoff
 
-## Current checkpoint（2026-09-20，Builder Harness Receipt = complete）
+## Current checkpoint（2026-09-20，Builder Phase 2 Slice 4 = complete）
+
+- Branch：`codex/agent-platform` → `origin/codex/agent-platform`
+- HEAD：`4e3c2e6`（ProviderCapabilityProfile + Harness Receipt 已发布）
+- Slice 4 working tree dirty：`4e3c2e6-slice4-dirty`（**未 commit / 未 push**）
+- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`
+- 不要重开 Interaction Model V2 / Durable Conversation /
+  AgentSemanticPlanV1 / SemanticPlanCompiler / ProviderCapabilityProfile /
+  Harness Receipt / Slice 4
+- 暂停：autonomous Run、Community redesign、behavioral eval / LLM judge
+- 下一步：Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
+
+### 窄审计（实现前核对的真实连接点）
+
+1. Runtime start-run：`POST /api/v1/projects/{project}/agents/{agent}/run` →
+   `RuntimeService.run()`。Builder `start_test_run` 直接复用，不另建 Run store。
+2. Version boundary：`run()` 校验当前 Draft `source_file_hash`，按 fingerprint
+   复用或创建 **immutable Agent version**，Run 绑 `version_id`。不是匿名可变 Draft。
+3. Studio Test Run：同一 `run()` + Live Run / Run Detail。Builder 不发明第二套
+   Runtime 语义。
+4. Runtime model：host default → Project profile → Agent profile。`readiness.model`
+   给出 `required/configured/model_id/base_url`。
+5. 配置位置：`GET/PATCH /runtime-profile` 与
+   `/projects/{id}/agents/{id}/runtime-profile`；host `GET /runtime/status`。
+6. Run statuses（contract 事实，不是 queued/completed）：
+   `running | waiting | verified | unverified | failed | interrupted | cancelled`。
+7. Run events：canonical Runtime events（`run.created`、node/tool、approval 等）。
+8. Tool receipts / Knowledge evidence / approvals：只在 Runtime Run Detail。
+9. Failure：Runtime `error.code`。Builder 只投影 `RunObservation`。
+10. Retry/resume：仍走 Runtime V1 command；Builder Stop/Approve/Reject 转发
+    `runtime.command`。
+11. exact `run_id`：`GET /projects/{project}/agents/{agent}/runs/{run_id}`。
+12. BuilderOperation 本就有 `run_id`；Slice 4 写入实际 Runtime `run_id`。
+13. Builder Chat 此前没有 Runtime client；Test Agent 只调
+    `startBuilderTestRun` / `commandBuilderTestRun` / `proposeBuilderTestRepair`。
+
+### Test Run contract
+
+- 用户显式点击 **测试 Agent** 才 `POST .../test-runs`。Apply / Confirm /
+  Validate **不会**自动 Run。Repair Apply 后只 Validate；**再次运行**仍需手动。
+- 新 operation：`kind=test_agent`。不塞进先前 Build Activity。
+- Builder 只存：`run_id`、operation status、派生 `RunObservation`、
+  可选 `proposal_id`。
+- Runtime 仍是 events / tool receipts / Knowledge evidence / approvals /
+  model evidence / output / failure 的唯一事实源。
+- Chat 不复制 Runtime events；test operation 不写 `builder_harness_receipts`。
+- 未配置 Runtime model：typed `runtime_not_configured`，**不创建 Runtime 行**，
+  **不把 Builder Kimi 绑给 Agent**。
+
+`RunObservation`：`run_id`、`version_id`、Runtime status、`runtime_model_id` /
+`runtime_model_source`、`output_summary`、`failure_code`、`failed_node`、
+`tool_failure`、`knowledge_failure`、`approval_required`、`duration_ms`、
+`evidence_count`、`classification`、deterministic `explanation`、
+`repair_code`、`next_action`。
+
+### Runtime version semantics
+
+Studio `run()`：Draft fingerprint 匹配 → 已有 version 复用，否则插入
+immutable version → schedule execution。Builder Test Run 同一条路径。
+Observation 的 `version_id` 与 Run Detail 一致。
+
+### Builder Model ≠ Agent Runtime Model
+
+| | Builder Model | Agent Runtime Model |
+| --- | --- | --- |
+| 用途 | Intent / Semantic Plan / Builder 理解 | 真正执行用户 Agent |
+| 当前 live | Factory Moonshot / `kimi-k3` / profile `known`+`probe` | Host default Moonshot / `kimi-k3`（`/runtime/status`） |
+| 证据 | `BuilderHarnessReceipt` | Runtime Run events / output |
+| 429 | Factory / ProviderProfile domain | `runtime_rate_limited`，不改 Builder Profile，不写 Harness Receipt |
+
+两者现在碰巧都是 `kimi-k3`。UI 明确写「这是 Agent Runtime Model，不是
+Veyra Builder Model。」`runtime_model_source=default|project|agent`。
+
+### Repair classification
+
+- **repairable**：`tool_permission_denied` / `permission_denied` /
+  lock mismatch → `create_validation_repair` EditProposal；Confirm 后
+  Apply → Validate；不自动再 Run。
+- **user_action**：`runtime_not_configured`、unbound、stale knowledge、
+  missing secret → 解释 + next action，不假修。
+- **environment**：Runtime 429 / 5xx / timeout / stop → Retry later，
+  不改 Agent。Stop → Runtime `cancelled` + operation `succeeded` +
+  `builder.test_run.stopped`（不是 Builder operation failed）。
+- **semantic**：结构成功但行为不符 → 只解释，本 Slice 不改 prompt。
+- **waiting**：Runtime `waiting` + `approval.requested`。Builder 显示
+  等待批准，复用 Runtime Approve/Reject，不是 failure。
+
+### 证据
+
+- 后端 focused：`test_builder_test_run.py` + `test_builder_test_runs.py` +
+  `test_composition.py` → **32 passed**
+- Desktop focused：`BuilderTestRun.test.tsx` + `BuilderActivityBlock.test.tsx`
+  + `project-builder.test.tsx` + `local-client.test.ts` +
+  `workbench-phase.test.ts` + `factory-conversation.test.tsx` → **92 passed**
+- Desktop `tsc --noEmit` 通过
+- `ruff check` / `ruff format --check` / `mypy`（Slice 4 相关 3 files）/
+  `git diff --check`：clean
+- 未做全量 `make check`；未做 Playwright
+
+### 真实 acceptance
+
+**CASE 1**（已有简单 Agent + Runtime 已配置）：
+
+- Project：`New project`
+- Agent：`中英文翻译 Agent`
+- Explicit Test Run 输入：`Hello world`
+- `run_id=01a0bd7a-a87e-720a-9872-5ce075f38a63`
+- immutable `version_id=01a0bd7a-a87e-77fc-bf4f-1571a1c2a52e`
+- Runtime status `unverified`（canonical 成功，不是 queued/completed）
+- output：`你好，世界`
+- Runtime model：`kimi-k3` / `source=default`（Agent Runtime，不是 Builder 标签误用）
+- View Run Detail exact `run_id`：15 条 Runtime events
+- Builder receipts：`[]`；Chat messages：`[]`
+- Factory profile 仍是 `known` / `probe`（Runtime 调用未改 Builder Profile）
+
+**CASE 2**（构造 `runtime_not_configured`，验收后已恢复 Agent profile）：
+
+- 临时 Agent profile `api_key_env=VEYRA_SLICE4_MISSING_KEY`
+- Test Run：`run_id=null`，无假成功 Runtime 行
+- `failure_code=runtime_not_configured` / `classification=user_action` /
+  `next_action=open_runtime_settings`
+- 解释明确：Builder Kimi 不会自动成为这个 Agent 的 Runtime
+- Agent profile 已 PATCH 回 `null`，readiness 恢复 host default `configured=true`
+
+**CASE 3**（permission / readiness repair）：
+
+- 三个真实 Project 当前没有 `filesystem.read` pin，也没有 Tool-node Agent。
+- 未为了验收改现有 Draft、未读敏感文件。
+- 闭环由 focused integration
+  `test_no_automatic_run_after_apply_and_repair` 覆盖：
+  typed Observe → EditProposal repair → Confirm Apply → Validate →
+  Run 计数不变。
+
+### 四服务
+
+真实配置，无 temp DB / temp project root / loopback fake provider：
+
+- Desktop `5173` → 200
+- Community `5174` → 200
+- Local `8771` `build_sha=4e3c2e6-slice4-dirty` /
+  `local_0023_builder_harness_receipts` / `database_ready=true` / `status=ok`
+- Community API `8772` `build_sha=a719813-interaction-v2-dirty` /
+  `community_0008_plugin_registry` / `database_ready=true` / `status=ok`
+- **Builder Model**：Moonshot / `kimi-k3` / `known` + `source=probe` /
+  strict JSON Schema supported
+- **Agent Runtime Model**：host default Moonshot / `kimi-k3` /
+  `https://api.moonshot.cn/v1` / `configured=true`
+- 真实 Projects 仍在：`dddd` / `test` / `New project`
+
+### 剩余 Builder Phase 2 gaps
+
+- 模块尚未做最终 release gate / Playwright CASE 1–3
+- 现有工作区没有 Tool Agent，live permission repair 未在真实 Project 上点过
+- 旧 Factory「平台试跑」(`FactoryTestRun`) 仍在；Slice 4 是 Builder Test Agent
+- 不自动 behavioral repair、不 LLM judge、不 scheduled Run、不 Community publish
+
+闭环：
+
+```text
+Build → Validate → Explicit Test Run → Observe → Explain
+→ optional Repair Proposal → Confirm → Apply → Validate
+→ explicit Run again
+```
+
+Builder Model ≠ Agent Runtime Model。
+
+---
+
+## Historical checkpoint（2026-09-20，Builder Harness Receipt = complete）
+
 
 - Branch：`codex/agent-platform` → `origin/codex/agent-platform`
 - HEAD：`aba074d` 之上本 checkpoint 提交 ProviderCapabilityProfile +

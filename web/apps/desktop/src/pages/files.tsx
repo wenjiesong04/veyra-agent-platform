@@ -1,9 +1,56 @@
 import { ArrowLeft, FileCode2, FolderOpen } from "lucide-react";
 import { desktopRoutePaths, libraryRoutePaths, projectRoutePaths, type ProjectFileRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
-import { EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { EmptyState, ErrorState, LinkButton, ListSkeleton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useEffect, useMemo, useState } from "react";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { parseProjectFileId, projectFileId } from "../features/projects/agent-tree";
+
+export function ProjectFilesPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh";
+  const { api } = useProjectWorkspace();
+  const [files, setFiles] = useState<ProjectFileRecord[] | undefined>();
+  const [error, setError] = useState<string | null>(null);
+  const copy = zh
+    ? { files: "文件", count: "个文件", empty: "还没有项目文件", emptyDetail: "索引后的源文件、README、测试和 resources 会显示在这里。", loading: "正在加载文件…" }
+    : { files: "Files", count: "Files", empty: "No Project files yet", emptyDetail: "Indexed source files, READMEs, tests, and resources appear here.", loading: "Loading files…" };
+
+  useEffect(() => {
+    if (!api.listProjectFiles) {
+      setFiles([]);
+      return;
+    }
+    let current = true;
+    void api.listProjectFiles(projectId).then((response) => {
+      if (!current) return;
+      setFiles(response.files);
+      setError(null);
+    }).catch((cause: unknown) => {
+      if (current) setError(cause instanceof Error ? cause.message : copy.emptyDetail);
+    });
+    return () => { current = false; };
+  }, [api, copy.emptyDetail, projectId]);
+
+  return (
+    <Panel>
+      <SectionHeading eyebrow={projectName} title={files === undefined ? copy.files : `${files.length} ${copy.count}`} />
+      {error ? <ErrorState message={error} /> : null}
+      {files === undefined && !error ? <ListSkeleton label={copy.loading} /> : null}
+      {files && files.length === 0 && !error ? <EmptyState icon={FileCode2} title={copy.empty} detail={copy.emptyDetail} /> : null}
+      {files && files.length > 0 ? (
+        <div className="project-agent-list">
+          {files.map((file) => (
+            <a className="project-agent-row" href={libraryRoutePaths.file(projectFileId(projectId, file.path))} key={file.path}>
+              <span className="row-icon"><FileCode2 size={17} /></span>
+              <span className="row-copy"><strong>{file.path.split("/").at(-1)}</strong><small>{file.path}</small></span>
+              <Tag>{file.kind}</Tag>
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
 
 export function FilesPage({ fileId, projectId }: { fileId?: string; projectId?: string }) {
   const { locale } = useLocale();
@@ -14,9 +61,9 @@ export function FilesPage({ fileId, projectId }: { fileId?: string; projectId?: 
     [projectId, projects],
   );
   const copy = zh ? {
-    missing: "找不到文件", missingDetail: "请求的文件在已索引的项目源中不可用。", back: "返回文件", file: "文件", all: "全部文件", library: "知识库", title: "文件", description: "这里只列出项目里已索引的源文件、README、测试和 resources，不包含运行状态或密钥。", openProject: "打开项目", projectLibrary: "项目文件", count: "个文件", empty: "还没有项目文件", emptyDetail: "创建或打开一个项目后，这里会显示它的源文件树。", preview: "预览", identity: "文件身份", kind: "类型", size: "大小", project: "项目", path: "路径", runtime: "Runtime", useInAgent: "在 Agent 中使用此文件", useInAgentDetail: "只会把相对路径预填到 Agent 的 path/file/document 输入；是否读取由 Agent 的 Filesystem Tool 权限决定。", chooseAgent: "选择 Agent", openStudio: "打开 Agent Studio", noAgents: "此 Project 还没有 Agent。",
+    missing: "找不到文件", missingDetail: "请求的文件在已索引的项目源中不可用。", back: "返回文件", file: "文件", all: "全部文件", library: "知识库", title: "文件", description: "这里只列出项目里已索引的源文件、README、测试和 resources，不包含运行状态或密钥。", openProject: "打开项目", projectLibrary: "项目文件", count: "个文件", empty: "还没有项目文件", emptyDetail: "创建或打开一个项目后，这里会显示它的源文件树。", loading: "正在加载文件…", preview: "预览", identity: "文件身份", kind: "类型", size: "大小", project: "项目", path: "路径", runtime: "Runtime", useInAgent: "在 Agent 中使用此文件", useInAgentDetail: "只会把相对路径预填到 Agent 的 path/file/document 输入；是否读取由 Agent 的 Filesystem Tool 权限决定。", chooseAgent: "选择 Agent", openStudio: "打开 Agent Studio", noAgents: "此 Project 还没有 Agent。",
   } : {
-    missing: "File not found", missingDetail: "The requested file is not available in the indexed Project sources.", back: "Back to Files", file: "File", all: "All Files", library: "Knowledge base", title: "Files", description: "Indexed source files, READMEs, tests, and resources stay separate from run state and secrets.", openProject: "Open Project", projectLibrary: "Project files", count: "Files", empty: "No Project files yet", emptyDetail: "Create or open a Project to see its source file tree here.", preview: "Preview", identity: "File identity", kind: "Kind", size: "Size", project: "Project", path: "Path", runtime: "Runtime", useInAgent: "Use this file in an Agent", useInAgentDetail: "Only the relative path is prefilled into a path/file/document input; reading still depends on the Agent's authorized Filesystem Tool.", chooseAgent: "Choose an Agent", openStudio: "Open Agent Studio", noAgents: "This Project has no Agent yet.",
+    missing: "File not found", missingDetail: "The requested file is not available in the indexed Project sources.", back: "Back to Files", file: "File", all: "All Files", library: "Knowledge base", title: "Files", description: "Indexed source files, READMEs, tests, and resources stay separate from run state and secrets.", openProject: "Open Project", projectLibrary: "Project files", count: "Files", empty: "No Project files yet", emptyDetail: "Create or open a Project to see its source file tree here.", loading: "Loading files…", preview: "Preview", identity: "File identity", kind: "Kind", size: "Size", project: "Project", path: "Path", runtime: "Runtime", useInAgent: "Use this file in an Agent", useInAgentDetail: "Only the relative path is prefilled into a path/file/document input; reading still depends on the Agent's authorized Filesystem Tool.", chooseAgent: "Choose an Agent", openStudio: "Open Agent Studio", noAgents: "This Project has no Agent yet.",
   };
   const [listings, setListings] = useState<Record<string, ProjectFileRecord[]>>({});
   const [listingError, setListingError] = useState<string | null>(null);
@@ -42,11 +89,26 @@ export function FilesPage({ fileId, projectId }: { fileId?: string; projectId?: 
     return scopedProjects.flatMap((project) => (listings[project.project_id] ?? []).map((file) => ({ project, file })));
   }, [listings, scopedProjects]);
 
+  const waitingForListings = Boolean(api.listProjectFiles) && scopedProjects.length > 0 && !listingError && scopedProjects.some((project) => listings[project.project_id] === undefined);
+
   if (fileId) {
     return <FilePreviewPage fileId={fileId} selected={selected} projects={scopedProjects} copy={copy} />;
   }
 
-  if (status === "loading" && !scopedProjects.length) return <LoadingState label={zh ? "正在加载文件…" : "Loading files…"} />;
+  if ((status === "loading" && !scopedProjects.length) || waitingForListings) {
+    return (
+      <div className="page-stack">
+        <div className="page-intro">
+          <div>
+            <span className="ui-eyebrow">{copy.library}</span>
+            <h2>{copy.title}</h2>
+            <p>{copy.description}</p>
+          </div>
+        </div>
+        <Panel><ListSkeleton label={copy.loading} /></Panel>
+      </div>
+    );
+  }
   if (status === "error") return <ErrorState message={listingError || copy.missingDetail} />;
   const firstProject = scopedProjects[0];
 

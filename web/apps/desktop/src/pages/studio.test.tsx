@@ -186,7 +186,7 @@ describe("StudioPage source and conflict safety", () => {
     expect(screen.queryByRole("button", { name: /Unbound tool/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Stale tool/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Unavailable tool/ })).toBeDisabled();
-    expect(screen.getByText(/Missing Project resources: missing@1.0.0/)).toBeInTheDocument();
+    expect(screen.queryByText(/Missing Project resources:/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /GitHub Read/ })).toHaveTextContent("Configure");
     expect(screen.getByRole("button", { name: /GitHub Read/ })).toHaveTextContent("Configure host credential github.token.");
     expect(screen.getByRole("button", { name: /GitHub Read/ })).not.toHaveTextContent("Runnable");

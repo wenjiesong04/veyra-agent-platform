@@ -11,6 +11,9 @@ import {
 
 type Locale = "zh" | "en";
 
+const SCROLL_PIN_PX = 96;
+const COMPOSER_DOCK_FALLBACK = 128;
+
 function conversationCanvasCopy(locale: Locale) {
   return locale === "zh"
     ? {
@@ -18,13 +21,24 @@ function conversationCanvasCopy(locale: Locale) {
         expand: "展开画布",
         resizeWidth: "调整画布宽度",
         resizeHeight: "调整画布高度",
+        jump: "滚动到底部",
       }
     : {
         collapse: "Collapse canvas",
         expand: "Expand canvas",
         resizeWidth: "Resize canvas",
         resizeHeight: "Resize canvas height",
+        jump: "Scroll to bottom",
       };
+}
+
+function prefersReducedMotion() {
+  return Boolean(typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+}
+
+function scrollConversationToEnd(node: HTMLDivElement, behavior: ScrollBehavior) {
+  if (typeof node.scrollTo === "function") node.scrollTo({ top: node.scrollHeight, behavior });
+  else node.scrollTop = node.scrollHeight;
 }
 
 function useConversationCanvasFrame(open: boolean) {
@@ -71,6 +85,7 @@ export function ConversationStage({
   contextBar,
   composer,
   canvas,
+  forceStacked = false,
   children,
   ...props
 }: {
@@ -84,21 +99,56 @@ export function ConversationStage({
   contextBar?: React.ReactNode;
   composer?: React.ReactNode;
   canvas?: React.ReactNode;
+  forceStacked?: boolean;
   children?: React.ReactNode;
 } & React.HTMLAttributes<HTMLDivElement>) {
   const { locale } = useLocale();
   const labels = conversationCanvasCopy(locale);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const dockRef = React.useRef<HTMLDivElement>(null);
+  const pinnedRef = React.useRef(true);
+  const [dockHeight, setDockHeight] = React.useState(COMPOSER_DOCK_FALLBACK);
+  const [showJump, setShowJump] = React.useState(false);
   const { stageRef, layout, collapsed, setCollapsed, persist } = useConversationCanvasFrame(canvasOpen);
-  React.useEffect(() => {
-    if (empty) return;
+  const syncPin = React.useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
-    if (typeof node.scrollTo === "function") node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-    else node.scrollTop = node.scrollHeight;
-  }, [empty, children]);
-  const canvasLayout = canvasOpen ? (layout.stacked ? "stack" : "split") : undefined;
-  const FoldIcon = layout.stacked ? (collapsed ? ChevronsUp : ChevronsDown) : (collapsed ? ChevronsLeft : ChevronsRight);
+    const pinned = node.scrollHeight - node.scrollTop - node.clientHeight <= SCROLL_PIN_PX;
+    pinnedRef.current = pinned;
+    setShowJump((current) => {
+      const next = !pinned;
+      return current === next ? current : next;
+    });
+  }, []);
+  const stickToBottom = React.useCallback((behavior: ScrollBehavior = "auto") => {
+    const node = scrollRef.current;
+    if (!node) return;
+    pinnedRef.current = true;
+    setShowJump(false);
+    scrollConversationToEnd(node, behavior);
+  }, []);
+  React.useEffect(() => {
+    if (empty) return;
+    const node = dockRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const sync = () => {
+      const next = Math.ceil(node.getBoundingClientRect().height);
+      if (next > 0) setDockHeight(next);
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [empty]);
+  React.useEffect(() => {
+    if (empty || !pinnedRef.current) return;
+    const node = scrollRef.current;
+    if (!node) return;
+    scrollConversationToEnd(node, "auto");
+  }, [empty, children, dockHeight]);
+  const stacked = forceStacked || layout.stacked;
+  const canvasLayout = canvasOpen ? (stacked ? "stack" : "split") : undefined;
+  const FoldIcon = stacked ? (collapsed ? ChevronsUp : ChevronsDown) : (collapsed ? ChevronsLeft : ChevronsRight);
 
   return (
     <div
@@ -109,13 +159,14 @@ export function ConversationStage({
       data-canvas-collapsed={collapsed ? "true" : undefined}
       style={{
         ...props.style,
+        "--agent-convo-dock-space": `${dockHeight}px`,
         ...(canvasOpen
           ? {
               "--agent-convo-canvas-width": `${layout.width}px`,
               "--agent-convo-canvas-height": `${layout.height}px`,
-            } as React.CSSProperties
+            }
           : undefined),
-      }}
+      } as React.CSSProperties}
     >
       <div className="agent-conversation-main">
         {empty ? (
@@ -128,18 +179,29 @@ export function ConversationStage({
             {suggestions}
           </div>
         ) : (
-          <div className="agent-convo-scroll" ref={scrollRef}>
+          <div className="agent-convo-scroll" ref={scrollRef} onScroll={syncPin}>
             <div className="agent-convo-column">{children}</div>
+            <div className="agent-convo-end-space" style={{ height: dockHeight }} aria-hidden="true" />
           </div>
         )}
-        <div className="agent-convo-dock">
+        <div className="agent-convo-dock" ref={dockRef}>
+          {empty || !showJump ? null : (
+            <button
+              className="agent-convo-jump"
+              type="button"
+              aria-label={labels.jump}
+              onClick={() => stickToBottom(prefersReducedMotion() ? "auto" : "smooth")}
+            >
+              <ChevronsDown size={18} aria-hidden="true" />
+            </button>
+          )}
           {contextBar}
           {composer}
         </div>
       </div>
       {canvasOpen && canvas ? (
         <div className={`agent-convo-canvas-slot${collapsed ? " is-collapsed" : ""}`}>
-          {collapsed ? null : layout.stacked ? (
+          {collapsed ? null : stacked ? (
             <PaneResizeHandle
               label={labels.resizeHeight}
               edge="top"

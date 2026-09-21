@@ -1,6 +1,6 @@
 import { ArrowLeft, Download, GitFork, Globe2, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { communityRoutePaths, desktopRoutePaths, projectRoutePaths, type CommunityRegistryEntry } from "@veyra/api-contracts";
-import { Button, EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { Button, EmptyState, ErrorState, LinkButton, ListSkeleton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, toast, useLocale } from "@veyra/ui";
 import { useAuth } from "@veyra/connected-account";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { CommunityPublishPanel } from "../features/community/community-publish-panel";
@@ -91,8 +91,9 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
       link.download = `${selected.slug}-${selected.version}.vagent.yaml`;
       link.click();
       URL.revokeObjectURL(url);
+      toast.success(zh ? "已开始下载。" : "Download started.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "下载失败。" : "Download failed."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "下载失败。" : "Download failed."));
     } finally {
       setDownloading(false);
     }
@@ -115,9 +116,10 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
         },
       });
       void refreshProjects().catch(() => undefined);
+      toast.success(zh ? "已导入到 Project。" : "Imported into Project.");
       window.location.hash = projectRoutePaths.agentDesign(targetProjectId, imported.agent_id);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "导入本地 Project 失败。" : "Local Project import failed."));
+      toast.error(cause instanceof Error ? cause.message : (zh ? "导入本地 Project 失败。" : "Local Project import failed."));
     } finally {
       setImporting(false);
     }
@@ -145,7 +147,7 @@ export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug
         </div>
         <div className="intro-actions"><label className="resource-library-search"><Search size={15} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索 Agent" : "Search Agents"} aria-label={zh ? "搜索 Agent" : "Search Agents"} /></label><Button icon={RefreshCw} variant="ghost" onClick={() => void load()} disabled={loading}>{zh ? "刷新" : "Refresh"}</Button><LinkButton href={desktopRoutePaths.account} icon={Globe2} variant="ghost">{copy.openAccount}</LinkButton></div>
       </div>
-      {loading ? <Panel><LoadingState label={zh ? "正在读取社区目录…" : "Loading Community registry…"} /></Panel> : error ? <><ErrorState message={error} onRetry={() => void load()} /><Panel><EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} /></Panel></> : entries.length ? <Panel><SectionHeading eyebrow={zh ? "已发布" : "Published"} title={`${entries.length} ${zh ? "个版本" : "versions"}`} /><div className="run-list">{entries.map((entry) => <a className="run-row" href={communityRoutePaths.entry(entry.owner_handle, entry.slug)} key={`${entry.owner_handle}/${entry.slug}/${entry.version}`}><span className="run-state-icon"><Globe2 size={17} /></span><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle} · {entry.slug} · v{entry.version}</small><em>{entry.description}</em></span><StatusBadge label={entry.status} tone="good" /></a>)}</div></Panel> : <EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} />}
+      {loading ? <Panel><ListSkeleton label={zh ? "正在读取社区目录…" : "Loading Community registry…"} /></Panel> : error ? <><ErrorState message={error} onRetry={() => void load()} /><Panel><EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} /></Panel></> : entries.length ? <Panel><SectionHeading eyebrow={zh ? "已发布" : "Published"} title={`${entries.length} ${zh ? "个版本" : "versions"}`} /><div className="run-list">{entries.map((entry) => <a className="run-row" href={communityRoutePaths.entry(entry.owner_handle, entry.slug)} key={`${entry.owner_handle}/${entry.slug}/${entry.version}`}><span className="run-state-icon"><Globe2 size={17} /></span><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle} · {entry.slug} · v{entry.version}</small><em>{entry.description}</em></span><StatusBadge label={entry.status} tone="good" /></a>)}</div></Panel> : <EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} />}
       {!loading && !error ? <CommunityPublishPanel projects={projects} localApi={localApi} communityApi={api} onPublished={onPublished} /> : null}
       {!loading && !error ? <CommunityPluginPanel communityApi={api} localApi={localApi} /> : null}
       {!loading && !error ? <CommunityPluginModerationPanel communityApi={api} /> : null}

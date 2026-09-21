@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowUpRight, Clock3, Gauge, Play } from "lucide-react";
 import type { AgentRunResponse, RuntimeRunStatus, WorkflowRunResponse } from "@veyra/api-contracts";
 import { projectRoutePaths } from "@veyra/api-contracts";
-import { EmptyState, ErrorState, LinkButton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { EmptyState, ErrorState, LinkButton, ListSkeleton, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { withRunId } from "../features/runs/run-location";
 
@@ -144,7 +144,7 @@ export function RunsPage({ runId, projectId }: { runId?: string; projectId?: str
   return (
     <div className="page-stack">
       <div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{copy.title}</h2><p>{copy.description}</p></div><LinkButton href="#/monitor" icon={Play} variant="primary">{copy.openMonitor}</LinkButton></div>
-      {status === "loading" || workspaceStatus === "loading" ? <LoadingState label={copy.loading} /> : null}
+      {status === "loading" || workspaceStatus === "loading" ? <Panel><ListSkeleton label={copy.loading} /></Panel> : null}
       {status === "error" ? <ErrorState message={error || copy.retry} onRetry={() => void load()} /> : null}
       {status === "ready" && !rows.length ? <EmptyState icon={Gauge} title={copy.emptyTitle} detail={copy.emptyDetail} /> : null}
       {status === "ready" && runId && !selected ? <ErrorState message={zh ? "找不到指定运行。" : "The requested run was not found."} /> : null}

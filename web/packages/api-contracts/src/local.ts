@@ -233,6 +233,11 @@ export type BuilderOperationEventKind =
   | "builder.proposal.rejected"
   | "builder.apply.started"
   | "builder.apply.completed"
+  | "builder.test_run.started"
+  | "builder.test_run.waiting_approval"
+  | "builder.test_run.completed"
+  | "builder.test_run.failed"
+  | "builder.test_run.stopped"
   | "builder.operation.completed"
   | "builder.operation.failed";
 export type BuilderOperationEvent = {
@@ -320,6 +325,28 @@ export type BuilderConversationMessage = {
   created_at: string;
 };
 export type BuilderOperationStatus = "in_progress" | "waiting" | "succeeded" | "failed" | "rejected";
+export type BuilderRunClassification = "none" | "repairable" | "user_action" | "environment" | "semantic";
+export type BuilderRunObservation = {
+  run_id: string | null;
+  agent_id: string;
+  version_id: string | null;
+  status: string;
+  runtime_model_id: string;
+  runtime_model_source: string;
+  output_summary: string | null;
+  failure_code: string | null;
+  failed_node: string | null;
+  tool_failure: string | null;
+  knowledge_failure: string | null;
+  approval_required: boolean;
+  duration_ms: number | null;
+  evidence_count: number;
+  classification: BuilderRunClassification;
+  explanation: string;
+  repair_proposal_id: string | null;
+  repair_code: string | null;
+  next_action: string | null;
+};
 export type BuilderConversationOperation = {
   operation_id: string;
   conversation_id: string;
@@ -337,6 +364,19 @@ export type BuilderConversationOperation = {
   has_request: boolean;
   events: BuilderOperationEvent[];
   receipts: BuilderHarnessReceipt[];
+  run_observation?: BuilderRunObservation | null;
+};
+export type BuilderTestRunRequest = {
+  agent_id?: string;
+  inputs: Record<string, unknown>;
+  locale: "zh" | "en";
+};
+export type BuilderTestRunCommandRequest = {
+  command: "approve" | "reject" | "stop";
+  locale: "zh" | "en";
+};
+export type BuilderTestRepairRequest = {
+  locale: "zh" | "en";
 };
 export type BuilderConversationSummary = {
   conversation_id: string;
@@ -375,6 +415,7 @@ export type BuilderActivityItem = {
   kind: "conversation";
   id: string;
   conversation_id: string;
+  project_id?: string;
   title: string;
   status: string;
   operation_kind: string;
@@ -384,6 +425,38 @@ export type BuilderActivityResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   project_id: string;
   items: BuilderActivityItem[];
+};
+export type BuilderConversationRenameRequest = {
+  title: string;
+};
+export type BuilderConversationDeleted = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  conversation_id: string;
+  deleted: true;
+};
+
+export type WorkspaceTrashKind = "project" | "agent" | "workflow" | "knowledge" | "conversation" | "plugin";
+export type WorkspaceTrashItem = {
+  kind: WorkspaceTrashKind;
+  id: string;
+  name: string;
+  project_id: string | null;
+  project_name: string | null;
+  removed_at: string;
+  expires_at: string;
+  restorable: boolean;
+};
+export type ListWorkspaceTrashResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  retention_days: number;
+  items: WorkspaceTrashItem[];
+};
+export type WorkspaceTrashMutationResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  kind: WorkspaceTrashKind;
+  id: string;
+  restored?: true;
+  deleted?: true;
 };
 export type EditProposalCommand = "apply" | "reject" | "undo";
 export type CreateEditProposalRequest = {

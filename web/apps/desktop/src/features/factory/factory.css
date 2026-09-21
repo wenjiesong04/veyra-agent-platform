@@ -395,6 +395,11 @@
   gap: 8px;
 }
 
+.factory-assembly-embedded {
+  display: grid;
+  gap: 12px;
+}
+
 .factory-stage-track {
   display: flex;
   flex-wrap: wrap;

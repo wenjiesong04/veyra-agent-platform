@@ -14,9 +14,14 @@ from fastapi.responses import StreamingResponse
 from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.builder.conversation_service import (
+    BUILDER_ACTIVITY_MAX,
     BuilderConversationError,
     BuilderConversationService,
     RecordRequest,
+    RenameRequest,
+    TestRepairRequest,
+    TestRunCommandRequest,
+    TestRunRequest,
     TurnRequest,
 )
 from veyra_agent_platform.local.builder.resolution import (
@@ -68,6 +73,31 @@ def build_router() -> APIRouter:
             request, lambda: _conversations(request).get(project_id, conversation_id)
         )
 
+    @router.patch("/api/v1/projects/{project_id}/builder/conversations/{conversation_id}")
+    def rename_conversation(
+        project_id: str,
+        conversation_id: str,
+        payload: RenameRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).rename(
+                project_id, conversation_id, payload
+            ),
+        )
+
+    @router.delete(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+    )
+    def delete_conversation(
+        project_id: str, conversation_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).delete(project_id, conversation_id),
+        )
+
     @router.post(
         "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}/records"
     )
@@ -88,10 +118,19 @@ def build_router() -> APIRouter:
     def activity(
         project_id: str,
         request: Request,
-        limit: int = Query(default=5, ge=1, le=5),
+        limit: int | None = Query(default=None, ge=1, le=BUILDER_ACTIVITY_MAX),
     ) -> dict[str, Any]:
         return _conversation_translate(
             request, lambda: _conversations(request).activity(project_id, limit=limit)
+        )
+
+    @router.get("/api/v1/builder/activity")
+    def workspace_activity(
+        request: Request,
+        limit: int | None = Query(default=None, ge=1, le=BUILDER_ACTIVITY_MAX),
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request, lambda: _conversations(request).activity(limit=limit)
         )
 
     @router.get(
@@ -108,6 +147,58 @@ def build_router() -> APIRouter:
             request,
             lambda: _conversations(request).receipts(
                 project_id, conversation_id, operation_id
+            ),
+        )
+
+    @router.post(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}/test-runs"
+    )
+    def start_test_run(
+        project_id: str,
+        conversation_id: str,
+        payload: TestRunRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).start_test_run(
+                project_id, conversation_id, payload
+            ),
+        )
+
+    @router.post(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+        "/operations/{operation_id}/test-commands"
+    )
+    def command_test_run(
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        payload: TestRunCommandRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).command_test_run(
+                project_id, conversation_id, operation_id, payload
+            ),
+        )
+
+    @router.post(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+        "/operations/{operation_id}/test-repair"
+    )
+    def propose_test_repair(
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        payload: TestRepairRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).propose_test_repair(
+                project_id, conversation_id, operation_id, payload
             ),
         )
 

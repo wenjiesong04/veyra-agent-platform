@@ -1,4 +1,4 @@
-import { BookOpen, Bot, Box, ChevronDown, ChevronRight, FileArchive, FileText, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, Box, ChevronDown, FileArchive, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { ProjectAgentRecord, ProjectKnowledgeRecord, ProjectWorkflowRecord } from "@veyra/api-contracts";
 import type { NavigationGroup, NavigationItem } from "@veyra/ui";
@@ -157,7 +157,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
         tone: "instance",
         resourceKind: "agent",
         active: isCurrentAgent,
-        trailingAction: <span className="agent-row-actions"><button type="button" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={15} aria-hidden="true" /></button></span>,
+        trailingAction: <span className="agent-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={15} aria-hidden="true" /></button></span>,
       };
     };
     const toNavItem = (node: AgentTreeNode<ProjectAgentRecord>): NavigationItem => ({
@@ -172,7 +172,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       tone: "instance",
       resourceKind: "workflow",
       active: workflow.workflow_id === currentWorkflowId,
-      trailingAction: <span className="agent-row-actions"><button type="button" aria-label={`${t("workflowActions")}: ${workflow.name || workflow.slug}`} title={t("workflowActions")} aria-haspopup="menu" aria-expanded={isWorkflowPopoverOpen(workflow.workflow_id)} onClick={(event) => toggleWorkflowPopover(workflow, event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
+      trailingAction: <span className="agent-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("workflowActions")}: ${workflow.name || workflow.slug}`} title={t("workflowActions")} aria-haspopup="menu" aria-expanded={isWorkflowPopoverOpen(workflow.workflow_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleWorkflowPopover(workflow, event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
     });
     const knowledgeItem = (knowledge: ProjectKnowledgeRecord): NavigationItem => ({
       href: projectRoutePaths.knowledgeItem(project.project_id, knowledge.knowledge_id),
@@ -181,7 +181,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       tone: "instance",
       resourceKind: "knowledge",
       active: knowledge.knowledge_id === currentKnowledgeId,
-      trailingAction: <span className="agent-row-actions"><button type="button" aria-label={`${t("knowledgeActions")}: ${knowledge.name || knowledge.slug}`} title={t("knowledgeActions")} aria-haspopup="menu" aria-expanded={isKnowledgePopoverOpen(knowledge.knowledge_id)} onClick={(event) => toggleKnowledgePopover(knowledge, event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
+      trailingAction: <span className="agent-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("knowledgeActions")}: ${knowledge.name || knowledge.slug}`} title={t("knowledgeActions")} aria-haspopup="menu" aria-expanded={isKnowledgePopoverOpen(knowledge.knowledge_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleKnowledgePopover(knowledge, event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
     });
     const treeNodes = agentTree(project.agents);
     const workflows = sortPinnedFirst(project.workflows ?? [], projectPins?.workflow, (item) => item.workflow_id);
@@ -219,14 +219,6 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       trailingAction: <span className="kind-row-actions"><button type="button" aria-label={`${t("addKnowledge")}: ${project.name}`} title={`${t("addKnowledge")}: ${project.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); createKnowledge(project); }}><Plus size={15} aria-hidden="true" /></button></span>,
       children: knowledge.length ? knowledge.map(knowledgeItem) : undefined,
     };
-    const filesKind: NavigationItem = {
-      href: projectRoutePaths.files(project.project_id),
-      label: "Files",
-      icon: FileText,
-      tone: "collection",
-      resourceKind: "files",
-      ...kindState("files", false),
-    };
     return {
       href: projectRoutePaths.project(project.project_id),
       label: project.name,
@@ -235,9 +227,9 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       active: !suppressProjectHighlight && isProjectRoute,
       contextual: isScopedProject && suppressProjectHighlight && !resourceOpen,
       expanded,
-      leadingAction: <button type="button" aria-label={`${expanded ? t("collapseProject") : t("expandProject")}: ${project.name}`} aria-expanded={expanded} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setExpandedProjectIds((current) => { const next = new Set(current); if (next.has(project.project_id)) next.delete(project.project_id); else next.add(project.project_id); return next; }); }}>{expanded ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}</button>,
-      trailingAction: <span className="project-row-actions"><button type="button" aria-label={`${t("projectActions")}: ${project.name}`} title={t("projectActions")} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("project-actions")} onClick={(event) => toggleProjectPopover("project-actions", event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
-      children: [agentsKind, workflowsKind, knowledgeKind, filesKind],
+      leadingAction: <button type="button" className={`sidebar-fold-control${expanded ? " is-open" : ""}`} aria-label={`${expanded ? t("collapseProject") : t("expandProject")}: ${project.name}`} aria-expanded={expanded} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setExpandedProjectIds((current) => { const next = new Set(current); if (next.has(project.project_id)) next.delete(project.project_id); else next.add(project.project_id); return next; }); }}><ChevronDown className="sidebar-fold-icon" size={16} aria-hidden="true" /></button>,
+      trailingAction: <span className="project-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("projectActions")}: ${project.name}`} title={t("projectActions")} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("project-actions")} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleProjectPopover("project-actions", event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
+      children: [agentsKind, workflowsKind, knowledgeKind],
     };
   };
 
@@ -300,7 +292,7 @@ function AgentChooserPopover({ project, zh, onChoose }: { project: ProjectSummar
 }
 
 function SidebarMenuItem({ icon: Icon, title, detail, onClick, destructive = false }: { icon: LucideIcon; title: string; detail: string; onClick: () => void; destructive?: boolean }) {
-  return <button className={`sidebar-popover-item ${destructive ? "is-destructive" : ""}`} type="button" role="menuitem" aria-label={title} onClick={onClick}><span className="sidebar-popover-icon"><Icon size={15} aria-hidden="true" /></span><span className="sidebar-popover-copy"><strong>{title}</strong><small>{detail}</small></span></button>;
+  return <button className={`sidebar-popover-item ${destructive ? "is-destructive" : ""}`} type="button" role="menuitem" aria-label={title} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onClick(); }}><span className="sidebar-popover-icon"><Icon size={15} aria-hidden="true" /></span><span className="sidebar-popover-copy"><strong>{title}</strong><small>{detail}</small></span></button>;
 }
 
 function FixedSidebarPopover({ anchor, estimatedWidth, className, onClose, children }: { anchor: HTMLButtonElement; estimatedWidth: number; className: string; onClose: () => void; children: ReactNode }) {
@@ -308,15 +300,29 @@ function FixedSidebarPopover({ anchor, estimatedWidth, className, onClose, child
   const [position, setPosition] = useState(() => popoverPosition(anchor, estimatedWidth));
   useEffect(() => {
     const update = () => setPosition(popoverPosition(anchor, root.current?.offsetWidth || estimatedWidth));
-    const onPointerDown = (event: MouseEvent) => { if (!anchor.contains(event.target as Node) && !root.current?.contains(event.target as Node)) onClose(); };
+    const onPointerDown = (event: PointerEvent) => {
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      if (path.includes(anchor) || (root.current && path.includes(root.current))) return;
+      if (anchor.contains(event.target as Node) || root.current?.contains(event.target as Node)) return;
+      onClose();
+    };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     update();
     const observer = typeof ResizeObserver === "function" && root.current ? new ResizeObserver(update) : null;
     if (observer && root.current) observer.observe(root.current);
-    window.addEventListener("resize", update); window.addEventListener("scroll", update, true); document.addEventListener("mousedown", onPointerDown); document.addEventListener("keydown", onKeyDown);
-    return () => { observer?.disconnect(); window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); document.removeEventListener("mousedown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
   }, [anchor, estimatedWidth, onClose]);
-  return createPortal(<div ref={root} className={`sidebar-fixed-popover ${className}`} style={position}>{children}</div>, document.body);
+  return createPortal(<div ref={root} className={`sidebar-fixed-popover ${className}`} style={position} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>{children}</div>, document.body);
 }
 
 function popoverPosition(anchor: HTMLButtonElement, width: number): { top: number; left: number } {

@@ -96,7 +96,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
       void api.listProjectResources(projectId).then((response) => {
         if (!active) return;
         setCatalog(response.resources.filter((item) => item.scope === "project" || item.scope === "builtin"));
-        setResourceMessage(response.missing_references.length ? `Missing Project resources: ${response.missing_references.join(", ")}` : "");
+        setResourceMessage("");
       }).catch(() => { if (active) { setCatalog([]); setResourceMessage(locale === "zh" ? "Project 资源加载失败，请刷新重试。" : "Project resources unavailable. Refresh to retry."); } });
       return () => { active = false; };
     }

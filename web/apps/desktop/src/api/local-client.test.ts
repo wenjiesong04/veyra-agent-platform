@@ -726,6 +726,77 @@ describe("LocalApiClient Project requests", () => {
     });
   });
 
+  it("parses Builder run observations and posts explicit test-run commands", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "Test Agent",
+        status: "active",
+        created_at: "2026-09-20T00:00:00Z",
+        updated_at: "2026-09-20T00:00:01Z",
+        last_activity_at: "2026-09-20T00:00:01Z",
+        last_operation_status: "succeeded",
+      },
+      messages: [],
+      operations: [{
+        operation_id: "op-test",
+        conversation_id: "conv-1",
+        kind: "test_agent",
+        target_kind: "agent",
+        status: "succeeded",
+        retry_of: null,
+        error_code: null,
+        proposal_id: null,
+        run_id: "run-1",
+        factory_session_id: null,
+        created_at: "2026-09-20T00:00:00Z",
+        updated_at: "2026-09-20T00:00:01Z",
+        diagnostic: { version_id: "version-1" },
+        has_request: false,
+        events: [],
+        receipts: [],
+        run_observation: {
+          run_id: "run-1",
+          agent_id: "agent-1",
+          version_id: "version-1",
+          status: "unverified",
+          runtime_model_id: "kimi-k3",
+          runtime_model_source: "host",
+          output_summary: "你好，世界",
+          failure_code: null,
+          failed_node: null,
+          tool_failure: null,
+          knowledge_failure: null,
+          approval_required: false,
+          duration_ms: 12,
+          evidence_count: 0,
+          classification: "none",
+          explanation: "测试成功。",
+          repair_proposal_id: null,
+          repair_code: null,
+          next_action: null,
+        },
+      }],
+      resolution: null,
+      factory_session: null,
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(snapshot))
+      .mockResolvedValueOnce(response(snapshot))
+      .mockResolvedValueOnce(response(snapshot));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.startBuilderTestRun("project-1", "conv-1", { agent_id: "agent-1", inputs: { text: "Hello world" }, locale: "zh" })).resolves.toMatchObject({
+      operations: [{ kind: "test_agent", run_id: "run-1", run_observation: { runtime_model_id: "kimi-k3", output_summary: "你好，世界" } }],
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/builder/conversations/conv-1/test-runs");
+    await client.commandBuilderTestRun("project-1", "conv-1", "op-test", { command: "stop", locale: "zh" });
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/projects/project-1/builder/conversations/conv-1/operations/op-test/test-commands");
+    await client.proposeBuilderTestRepair("project-1", "conv-1", "op-test", { locale: "zh" });
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/v1/projects/project-1/builder/conversations/conv-1/operations/op-test/test-repair");
+  });
+
   it("keeps Builder conversation messages when Factory missing-capability payload is invalid", async () => {
     const snapshot = {
       schema_version: "1.0",
@@ -833,14 +904,15 @@ describe("LocalApiClient Project requests", () => {
   });
 
   it("drops Runtime runs from Builder Recent activity", async () => {
-    const fetcher = vi.fn().mockResolvedValue(response({
+    const payload = {
       schema_version: "1.0",
       project_id: "dddd",
       items: [
         { kind: "conversation", id: "conv-1", conversation_id: "conv-1", title: "礼物包装 Agent", status: "failed", operation_kind: "create_agent", occurred_at: "2026-09-18T00:00:01Z" },
         { kind: "run", id: "run-1", run_id: "run-1", title: "translation", status: "unverified", run_kind: "agent", occurred_at: "2026-09-12T00:00:00Z", agent_id: "agent-1" },
       ],
-    }));
+    };
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(response(payload)));
     const client = new LocalApiClient({ fetcher });
     await expect(client.listBuilderActivity("dddd")).resolves.toEqual({
       schema_version: "1.0",
@@ -849,6 +921,80 @@ describe("LocalApiClient Project requests", () => {
         { kind: "conversation", id: "conv-1", conversation_id: "conv-1", title: "礼物包装 Agent", status: "failed", operation_kind: "create_agent", occurred_at: "2026-09-18T00:00:01Z" },
       ],
     });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/dddd/builder/activity");
+    await expect(client.listBuilderActivity()).resolves.toEqual({
+      schema_version: "1.0",
+      project_id: "dddd",
+      items: [
+        { kind: "conversation", id: "conv-1", conversation_id: "conv-1", title: "礼物包装 Agent", status: "failed", operation_kind: "create_agent", occurred_at: "2026-09-18T00:00:01Z" },
+      ],
+    });
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/builder/activity");
+  });
+
+  it("renames and deletes a Builder conversation", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "日程提醒整理 Agent",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-20T00:00:00Z",
+        last_activity_at: "2026-09-20T00:00:00Z",
+        last_operation_status: "succeeded",
+      },
+      messages: [],
+      operations: [],
+      resolution: null,
+      factory_session: null,
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(snapshot))
+      .mockResolvedValueOnce(response({ schema_version: "1.0", conversation_id: "conv-1", deleted: true }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.renameBuilderConversation("project-1", "conv-1", { title: "日程提醒整理 Agent" })).resolves.toMatchObject({
+      conversation: { title: "日程提醒整理 Agent" },
+    });
+    await expect(client.deleteBuilderConversation("project-1", "conv-1")).resolves.toEqual({
+      schema_version: "1.0",
+      conversation_id: "conv-1",
+      deleted: true,
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/builder/conversations/conv-1");
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: "PATCH" });
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("lists and mutates workspace Trash with typed item identities", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({
+        schema_version: "1.0",
+        retention_days: 30,
+        items: [{
+          kind: "conversation",
+          id: "conv-1",
+          name: "日程提醒整理 Agent",
+          project_id: "project-1",
+          project_name: "Project One",
+          removed_at: "2026-09-20T00:00:00Z",
+          expires_at: "2026-10-20T00:00:00Z",
+          restorable: true,
+        }],
+      }))
+      .mockResolvedValueOnce(response({ schema_version: "1.0", kind: "conversation", id: "conv-1", restored: true }))
+      .mockResolvedValueOnce(response({ schema_version: "1.0", kind: "conversation", id: "conv-1", deleted: true }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.listWorkspaceTrash()).resolves.toMatchObject({
+      retention_days: 30,
+      items: [{ kind: "conversation", id: "conv-1", restorable: true }],
+    });
+    await expect(client.restoreWorkspaceTrash("conversation", "conv-1")).resolves.toMatchObject({ restored: true });
+    await expect(client.purgeWorkspaceTrash("conversation", "conv-1")).resolves.toMatchObject({ deleted: true });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/trash");
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/v1/trash/conversation/conv-1/restore");
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/v1/trash/conversation/conv-1/purge");
   });
 
   it("parses Runtime status without treating a host key as a user-owned Agent secret", async () => {

@@ -9,5 +9,6 @@
 @import "./features/community/community.css";
 @import "./features/account/account.css";
 @import "./features/settings/settings.css";
+@import "./features/trash/trash.css";
 @import "./features/resources/resource-library.css";
 @import "./features/knowledge/knowledge.css";

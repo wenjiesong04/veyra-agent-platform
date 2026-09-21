@@ -11,6 +11,7 @@ export const desktopRoutePaths = {
   community: "#/community",
   account: "#/account",
   settings: "#/settings",
+  trash: "#/trash",
 } as const;
 
 export type DesktopRoute = keyof typeof desktopRoutePaths;

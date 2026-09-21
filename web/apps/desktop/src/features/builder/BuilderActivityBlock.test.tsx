@@ -49,6 +49,7 @@ describe("BuilderActivityBlock", () => {
     const toggle = screen.getByRole("button", { name: /构建 Agent · 已完成/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("18s")).toBeInTheDocument();
+    expect(screen.getByText("已完成")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
     expect(screen.queryByText("理解需求")).not.toBeInTheDocument();
   });
@@ -96,6 +97,27 @@ describe("BuilderActivityBlock", () => {
     expect(screen.getByRole("button", { name: /构建 Agent · 失败/ })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("Rate limited")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeEnabled();
+  });
+
+  it("uses the event span for duration instead of a drifted operation clock", () => {
+    render(
+      <ThemeProvider>
+        <BuilderActivityBlock
+          operation={operation({
+            status: "succeeded",
+            created_at: "2026-09-18T00:00:00Z",
+            updated_at: "2026-09-18T14:11:52Z",
+            events: [
+              { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+              { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.operation.completed", label: "Completed", summary: "", facts: {}, created_at: "2026-09-18T00:00:18Z" },
+            ],
+          })}
+          locale="zh"
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.getByText("18s")).toBeInTheDocument();
+    expect(screen.queryByText(/50912s|14h/)).not.toBeInTheDocument();
   });
 });
 
@@ -243,5 +265,98 @@ describe("BuilderActivityBlock Build details", () => {
     fireEvent.click(screen.getByRole("button", { name: /Build details/ }));
     expect(screen.getByText("None")).toBeInTheDocument();
     expect(screen.queryByText(/No receipt found/i)).not.toBeInTheDocument();
+  });
+
+  it("renders a Test Agent activity from Runtime observation without harness receipts", () => {
+    render(
+      <ThemeProvider>
+        <BuilderActivityBlock
+          operation={operation({
+            kind: "test_agent",
+            status: "succeeded",
+            run_id: "run-1",
+            receipts: [],
+            run_observation: {
+              run_id: "run-1",
+              agent_id: "agent-1",
+              version_id: "version-1",
+              status: "unverified",
+              runtime_model_id: "translator-model",
+              runtime_model_source: "agent",
+              output_summary: "你好，世界",
+              failure_code: null,
+              failed_node: null,
+              tool_failure: null,
+              knowledge_failure: null,
+              approval_required: false,
+              duration_ms: 40,
+              evidence_count: 1,
+              classification: "none",
+              explanation: "测试成功。",
+              repair_proposal_id: null,
+              repair_code: null,
+              next_action: null,
+            },
+            events: [
+              { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+              { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.test_run.started", label: "Testing Agent", summary: "", facts: { runtime_model_id: "translator-model" }, created_at: "2026-09-18T00:00:01Z" },
+              { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.test_run.completed", label: "Test succeeded", summary: "", facts: { run_id: "run-1" }, created_at: "2026-09-18T00:00:02Z" },
+              { event_id: "e4", operation_id: "op-1", sequence: 3, kind: "builder.operation.completed", label: "Completed", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
+            ],
+          })}
+          locale="zh"
+        />
+      </ThemeProvider>,
+    );
+    const toggle = screen.getByRole("button", { name: /测试 Agent · 完成/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(screen.getByText("你好，世界")).toBeInTheDocument();
+    expect(screen.getByText("translator-model")).toBeInTheDocument();
+    expect(screen.queryByText("Kimi K3")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /构建详情/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps waiting approval expanded and does not treat it as failure", () => {
+    render(
+      <ThemeProvider>
+        <BuilderActivityBlock
+          operation={operation({
+            kind: "test_agent",
+            status: "waiting",
+            run_id: "run-wait",
+            run_observation: {
+              run_id: "run-wait",
+              agent_id: "agent-1",
+              version_id: "version-1",
+              status: "waiting",
+              runtime_model_id: "kimi-k3",
+              runtime_model_source: "host",
+              output_summary: null,
+              failure_code: null,
+              failed_node: null,
+              tool_failure: null,
+              knowledge_failure: null,
+              approval_required: true,
+              duration_ms: null,
+              evidence_count: 0,
+              classification: "none",
+              explanation: "等待人工批准。",
+              repair_proposal_id: null,
+              repair_code: null,
+              next_action: "approve_or_reject",
+            },
+            events: [
+              { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.test_run.started", label: "Testing Agent", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+              { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.test_run.waiting_approval", label: "Waiting for approval", summary: "", facts: {}, created_at: "2026-09-18T00:00:01Z" },
+            ],
+          })}
+          locale="zh"
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.getByRole("button", { name: /测试 Agent · 等待批准/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByText("等待批准").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
   });
 });

@@ -14,10 +14,20 @@ import {
   type BuilderTurnRequest,
   type BuilderConversationSnapshot,
   type BuilderConversationRecordRequest,
+  type BuilderConversationRenameRequest,
+  type BuilderConversationDeleted,
+  type ListWorkspaceTrashResponse,
+  type WorkspaceTrashKind,
+  type WorkspaceTrashMutationResponse,
+  type WorkspaceTrashItem,
   type BuilderActivityResponse,
   type BuilderConversationMessage,
   type BuilderConversationOperation,
   type BuilderHarnessReceipt,
+  type BuilderRunObservation,
+  type BuilderTestRepairRequest,
+  type BuilderTestRunCommandRequest,
+  type BuilderTestRunRequest,
   type BuilderConversationSummary,
   type BuilderMessageKind,
   type BuilderOperationEvent,
@@ -250,7 +260,15 @@ export type LocalProjectApi = {
   submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void }): Promise<BuilderConversationSnapshot>;
   getBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot>;
   recordBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRecordRequest): Promise<BuilderConversationSnapshot>;
-  listBuilderActivity?(projectId: string, limit?: number): Promise<BuilderActivityResponse>;
+  renameBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRenameRequest): Promise<BuilderConversationSnapshot>;
+  deleteBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationDeleted>;
+  listBuilderActivity?(projectId?: string, limit?: number): Promise<BuilderActivityResponse>;
+  listWorkspaceTrash?(): Promise<ListWorkspaceTrashResponse>;
+  restoreWorkspaceTrash?(kind: WorkspaceTrashKind, itemId: string, confirm?: boolean): Promise<WorkspaceTrashMutationResponse>;
+  purgeWorkspaceTrash?(kind: WorkspaceTrashKind, itemId: string, confirm?: boolean): Promise<WorkspaceTrashMutationResponse>;
+  startBuilderTestRun?(projectId: string, conversationId: string, input: BuilderTestRunRequest): Promise<BuilderConversationSnapshot>;
+  commandBuilderTestRun?(projectId: string, conversationId: string, operationId: string, input: BuilderTestRunCommandRequest): Promise<BuilderConversationSnapshot>;
+  proposeBuilderTestRepair?(projectId: string, conversationId: string, operationId: string, input?: BuilderTestRepairRequest): Promise<BuilderConversationSnapshot>;
   createEditProposal?(projectId: string, input: CreateEditProposalRequest): Promise<EditProposal>;
   createKnowledgeBindingProposal?(projectId: string, input: CreateKnowledgeBindingRequest): Promise<EditProposal>;
   createResourceBindingProposal?(projectId: string, input: CreateResourceBindingRequest): Promise<EditProposal>;
@@ -383,6 +401,11 @@ function asNumber(value: unknown, field: string, status = 502): number {
     });
   }
   return value;
+}
+
+function asOptionalNumber(value: unknown, field: string, status = 502): number | null {
+  if (value === null || value === undefined) return null;
+  return asNumber(value, field, status);
 }
 
 function asJsonValue(value: unknown, field: string, status = 502): JsonValue {
@@ -885,6 +908,11 @@ const builderEventKinds = new Set<BuilderOperationEventKind>([
   "builder.proposal.rejected",
   "builder.apply.started",
   "builder.apply.completed",
+  "builder.test_run.started",
+  "builder.test_run.waiting_approval",
+  "builder.test_run.completed",
+  "builder.test_run.failed",
+  "builder.test_run.stopped",
   "builder.operation.completed",
   "builder.operation.failed",
 ]);
@@ -1023,6 +1051,44 @@ function builderConversationOperation(value: unknown, status: number): BuilderCo
     has_request: asBoolean(record.has_request, "builder.has_request", status),
     events: asArray(record.events ?? [], "builder.operation.events", status).map((item) => builderOperationEvent(item, status)),
     receipts: asArray(record.receipts ?? [], "builder.operation.receipts", status).map((item) => builderHarnessReceipt(item, status)),
+    run_observation: record.run_observation === undefined || record.run_observation === null
+      ? null
+      : builderRunObservation(record.run_observation, status),
+  };
+}
+
+const builderRunClassifications = new Set(["none", "repairable", "user_action", "environment", "semantic"]);
+
+function builderRunObservation(value: unknown, status: number): BuilderRunObservation {
+  const record = asRecord(value, status);
+  const classification = asString(record.classification, "builder.observation.classification", status) as BuilderRunObservation["classification"];
+  if (!builderRunClassifications.has(classification)) {
+    throw new LocalApiClientError("Invalid Builder run observation", { status, code: "invalid_response" });
+  }
+  const output = record.output_summary;
+  if (output !== null && output !== undefined && typeof output !== "string") {
+    throw new LocalApiClientError("Invalid Builder run observation output", { status, code: "invalid_response" });
+  }
+  return {
+    run_id: optionalId(record.run_id, "builder.observation.run_id", status),
+    agent_id: asString(record.agent_id, "builder.observation.agent_id", status),
+    version_id: optionalId(record.version_id, "builder.observation.version_id", status),
+    status: asString(record.status, "builder.observation.status", status),
+    runtime_model_id: asText(record.runtime_model_id ?? "", "builder.observation.runtime_model_id", status),
+    runtime_model_source: asText(record.runtime_model_source ?? "", "builder.observation.runtime_model_source", status),
+    output_summary: output === undefined ? null : output,
+    failure_code: optionalId(record.failure_code, "builder.observation.failure_code", status),
+    failed_node: optionalId(record.failed_node, "builder.observation.failed_node", status),
+    tool_failure: optionalId(record.tool_failure, "builder.observation.tool_failure", status),
+    knowledge_failure: optionalId(record.knowledge_failure, "builder.observation.knowledge_failure", status),
+    approval_required: asBoolean(record.approval_required, "builder.observation.approval_required", status),
+    duration_ms: asOptionalNumber(record.duration_ms, "builder.observation.duration_ms", status),
+    evidence_count: asNumber(record.evidence_count, "builder.observation.evidence_count", status),
+    classification,
+    explanation: asText(record.explanation ?? "", "builder.observation.explanation", status),
+    repair_proposal_id: optionalId(record.repair_proposal_id, "builder.observation.repair_proposal_id", status),
+    repair_code: optionalId(record.repair_code, "builder.observation.repair_code", status),
+    next_action: optionalId(record.next_action, "builder.observation.next_action", status),
   };
 }
 
@@ -1064,6 +1130,18 @@ function builderConversationSnapshot(value: unknown, status = 502): BuilderConve
   };
 }
 
+function builderConversationDeleted(value: unknown, status = 502): BuilderConversationDeleted {
+  const record = schemaRecord(value, status);
+  if (record.deleted !== true) {
+    throw new LocalApiClientError("Invalid Builder conversation delete", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    conversation_id: asString(record.conversation_id, "builder.conversation_id", status),
+    deleted: true,
+  };
+}
+
 function builderActivityItem(value: unknown, status: number): BuilderActivityItem | null {
   const record = asRecord(value, status);
   if (record.kind === "run") return null;
@@ -1074,6 +1152,7 @@ function builderActivityItem(value: unknown, status: number): BuilderActivityIte
     kind: "conversation",
     id: asString(record.id, "activity.id", status),
     conversation_id: asString(record.conversation_id, "activity.conversation_id", status),
+    ...(typeof record.project_id === "string" && record.project_id ? { project_id: record.project_id } : {}),
     title: asText(record.title, "activity.title", status),
     status: asString(record.status, "activity.status", status),
     operation_kind: asString(record.operation_kind, "activity.operation_kind", status),
@@ -1085,7 +1164,7 @@ function builderActivityResponse(value: unknown, status = 502): BuilderActivityR
   const record = schemaRecord(value, status);
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
-    project_id: asString(record.project_id, "activity.project_id", status),
+    project_id: asText(record.project_id, "activity.project_id", status),
     items: asArray(record.items, "activity.items", status).flatMap((item) => {
       const parsed = builderActivityItem(item, status);
       return parsed ? [parsed] : [];
@@ -1689,6 +1768,55 @@ function listedPluginTrash(value: unknown, status = 502): ListPluginTrashRespons
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     plugins: asArray(record.plugins, "plugin trash", status).map((item) => pluginTrash(item, status)),
+  };
+}
+
+const workspaceTrashKinds = new Set<WorkspaceTrashKind>(["project", "agent", "workflow", "knowledge", "conversation", "plugin"]);
+
+function workspaceTrashItem(value: unknown, status = 502): WorkspaceTrashItem {
+  const record = asRecord(value, status);
+  const kind = asString(record.kind, "trash.kind", status) as WorkspaceTrashKind;
+  if (!workspaceTrashKinds.has(kind)) {
+    throw new LocalApiClientError("The local service returned an invalid trash kind.", { status, code: "invalid_response" });
+  }
+  return {
+    kind,
+    id: asString(record.id, "trash.id", status),
+    name: asString(record.name, "trash.name", status),
+    project_id: record.project_id === null || record.project_id === undefined ? null : asString(record.project_id, "trash.project_id", status),
+    project_name: record.project_name === null || record.project_name === undefined ? null : asString(record.project_name, "trash.project_name", status),
+    removed_at: asString(record.removed_at, "trash.removed_at", status),
+    expires_at: asString(record.expires_at, "trash.expires_at", status),
+    restorable: asBoolean(record.restorable, "trash.restorable", status),
+  };
+}
+
+function listedWorkspaceTrash(value: unknown, status = 502): ListWorkspaceTrashResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    retention_days: asNumber(record.retention_days, "trash.retention_days", status),
+    items: asArray(record.items, "trash.items", status).map((item) => workspaceTrashItem(item, status)),
+  };
+}
+
+function workspaceTrashMutation(value: unknown, status = 502): WorkspaceTrashMutationResponse {
+  const record = schemaRecord(value, status);
+  const kind = asString(record.kind, "trash.kind", status) as WorkspaceTrashKind;
+  if (!workspaceTrashKinds.has(kind)) {
+    throw new LocalApiClientError("The local service returned an invalid trash mutation kind.", { status, code: "invalid_response" });
+  }
+  const restored = record.restored === true;
+  const deleted = record.deleted === true;
+  if (!restored && !deleted) {
+    throw new LocalApiClientError("The local service returned an invalid trash mutation.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    kind,
+    id: asString(record.id, "trash.id", status),
+    ...(restored ? { restored: true as const } : {}),
+    ...(deleted ? { deleted: true as const } : {}),
   };
 }
 
@@ -3134,9 +3262,72 @@ export class LocalApiClient {
     );
   }
 
-  listBuilderActivity(projectId: string, limit = 5): Promise<BuilderActivityResponse> {
-    const query = new URLSearchParams({ limit: String(limit) });
-    return this.request(`projects/${encodeURIComponent(projectId)}/builder/activity?${query}`, builderActivityResponse);
+  renameBuilderConversation(projectId: string, conversationId: string, input: BuilderConversationRenameRequest): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}`,
+      builderConversationSnapshot,
+      { method: "PATCH", body: input },
+    );
+  }
+
+  deleteBuilderConversation(projectId: string, conversationId: string): Promise<BuilderConversationDeleted> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}`,
+      builderConversationDeleted,
+      { method: "DELETE" },
+    );
+  }
+
+  listBuilderActivity(projectId?: string, limit?: number): Promise<BuilderActivityResponse> {
+    const query = limit == null ? "" : `?${new URLSearchParams({ limit: String(limit) })}`;
+    const path = projectId
+      ? `projects/${encodeURIComponent(projectId)}/builder/activity${query}`
+      : `builder/activity${query}`;
+    return this.request(path, builderActivityResponse);
+  }
+
+  listWorkspaceTrash(): Promise<ListWorkspaceTrashResponse> {
+    return this.request("trash", listedWorkspaceTrash);
+  }
+
+  restoreWorkspaceTrash(kind: WorkspaceTrashKind, itemId: string, confirm = true): Promise<WorkspaceTrashMutationResponse> {
+    return this.request(
+      `trash/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/restore`,
+      workspaceTrashMutation,
+      { method: "POST", body: { confirm } },
+    );
+  }
+
+  purgeWorkspaceTrash(kind: WorkspaceTrashKind, itemId: string, confirm = true): Promise<WorkspaceTrashMutationResponse> {
+    return this.request(
+      `trash/${encodeURIComponent(kind)}/${encodeURIComponent(itemId)}/purge`,
+      workspaceTrashMutation,
+      { method: "POST", body: { confirm } },
+    );
+  }
+
+  startBuilderTestRun(projectId: string, conversationId: string, input: BuilderTestRunRequest): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/test-runs`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
+    );
+  }
+
+  commandBuilderTestRun(projectId: string, conversationId: string, operationId: string, input: BuilderTestRunCommandRequest): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/operations/${encodeURIComponent(operationId)}/test-commands`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
+    );
+  }
+
+  proposeBuilderTestRepair(projectId: string, conversationId: string, operationId: string, input: BuilderTestRepairRequest = { locale: "en" }): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/operations/${encodeURIComponent(operationId)}/test-repair`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
+    );
   }
 
   createEditProposal(projectId: string, input: CreateEditProposalRequest): Promise<EditProposal> {

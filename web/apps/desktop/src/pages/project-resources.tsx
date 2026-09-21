@@ -1,6 +1,6 @@
 import { CheckCircle2, CircleAlert, Plus, Trash2 } from "lucide-react";
 import type { ProjectResourceDescriptor, ProjectResourcesResponse, ResourceDescriptor } from "@veyra/api-contracts";
-import { Button, EmptyState, ErrorState, Panel, SectionHeading, StatusBadge, Tag, useLocale } from "@veyra/ui";
+import { Button, EmptyState, ErrorState, LoadingMask, LoadingState, Panel, SectionHeading, StatusBadge, Tag, toast, useLocale } from "@veyra/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
@@ -61,7 +61,6 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
   const [showCatalog, setShowCatalog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
   const generation = useRef(0);
@@ -100,15 +99,15 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
     busy.current = true;
     setPending(true);
     const request = ++generation.current;
-    setActionError(null);
     try {
       const next = await api.addProjectResource(projectId, { reference: resource.reference, content_hash: resource.content_hash });
       if (request !== generation.current) return;
       if (next.project_id !== projectId) throw new Error("Project identity mismatch");
       setData(next);
       setShowCatalog(false);
+      toast.success(zh ? "已加入项目。" : "Added to Project.");
     } catch (cause) {
-      if (request === generation.current) setActionError(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : (zh ? "无法加入项目资源。" : "Could not add the Project resource."));
+      toast.error(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : (zh ? "无法加入项目资源。" : "Could not add the Project resource."));
     } finally {
       busy.current = false;
       setPending(false);
@@ -120,21 +119,21 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
     busy.current = true;
     setPending(true);
     const request = ++generation.current;
-    setActionError(null);
     try {
       const next = await api.removeProjectResource(projectId, resource.resource_id, resource.version);
       if (request !== generation.current) return;
       if (next.project_id !== projectId) throw new Error("Project identity mismatch");
       setData(next);
+      toast.success(zh ? "已移除绑定。" : "Binding removed.");
     } catch (cause) {
-      if (request === generation.current) setActionError(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : (zh ? "无法移除项目资源。" : "Could not remove the Project resource."));
+      toast.error(cause instanceof LocalApiClientError ? `${cause.code}: ${cause.message}` : (zh ? "无法移除项目资源。" : "Could not remove the Project resource."));
     } finally {
       busy.current = false;
       setPending(false);
     }
   };
 
-  if (loading && !data) return <div className="page-stack"><Panel><p>{zh ? "正在加载项目资源…" : "Loading Project resources…"}</p></Panel></div>;
+  if (loading && !data) return <div className="page-stack"><Panel><LoadingState label={zh ? "正在加载项目资源…" : "Loading Project resources…"} /></Panel></div>;
   if (error && !data) return <div className="page-stack"><ErrorState message={error} onRetry={() => void load()} /></div>;
 
   const resources = (data?.resources ?? []).filter((item) => item.scope !== "builtin");
@@ -144,7 +143,6 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         <div><span className="ui-eyebrow">{zh ? "项目资源" : "Project resources"}</span><h2>{zh ? "项目资源" : "Project resources"}</h2><p>{zh ? "这里只显示这个 Project 声明、锁定或正在使用的资源。编辑器会从这里投影可用能力。" : "Only resources declared, locked, or used by this Project appear here. Studio projects the available capabilities from this set."}</p></div>
         <Button icon={Plus} variant="primary" onClick={() => setShowCatalog((value) => !value)}>{zh ? "从总目录添加" : "Add from Catalog"}</Button>
       </div>
-      {actionError ? <ErrorState message={actionError} onRetry={() => setActionError(null)} /> : null}
       <Button disabled={pending || loading} onClick={() => void load()}>{zh ? "刷新绑定" : "Refresh bindings"}</Button>
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
       <p>{zh ? "移除仅删除 Project 绑定，不删除 Catalog 资源。服务器会检查 source 和已保存版本引用。加入不授予权限，也不代表可运行。" : "Remove deletes only the Project binding, not the Catalog resource. The server checks source and saved-version usage. Adding grants no permissions and does not imply runnability."}</p>
@@ -155,8 +153,10 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         <div className={data?.stale_count ? "is-warning" : ""}><strong>{data?.stale_count ?? 0}</strong><span>{zh ? "版本已漂移" : "Stale bindings"}</span></div>
         <div><strong>{data?.builtin_count ?? 0}</strong><span>{zh ? "平台内置" : "Built-in primitives"}</span></div>
       </div>
+      <LoadingMask active={pending} label={zh ? "正在更新绑定…" : "Updating bindings…"}>
       {showCatalog ? <Panel className="project-resource-catalog-panel"><SectionHeading eyebrow={zh ? "总资源目录" : "Resource Catalog"} title={zh ? "选择要加入 Project 的资源" : "Choose resources to add"} detail={zh ? "平台内置 Primitive 无需加入。" : "Platform primitives are always available."} />{addable.length ? <div className="project-resource-catalog-list">{addable.map((resource) => <div className="project-resource-catalog-item" key={resource.reference}><div><strong>{resource.name}</strong><small>{kindLabel(resource.kind, zh)} · v{resource.version} · {resource.description}</small><StatusBadge label={availabilityLabel(resource.availability, zh)} tone={tone(resource.availability)} />{resource.blocking_reasons?.map((reason) => <small key={reason.code}>{reason.message}</small>)}</div><Button size="sm" variant="secondary" disabled={pending || loading} onClick={() => void addResource(resource)}>{zh ? "加入" : "Add"}</Button></div>)}</div> : <EmptyState icon={CheckCircle2} title={zh ? "没有可加入的新资源" : "No new resources to add"} detail={zh ? "当前项目已经包含目录中的可选资源。" : "This Project already contains the optional Catalog resources."} />}</Panel> : null}
       <Panel><SectionHeading eyebrow={zh ? "绑定与使用" : "Bindings and usage"} title={`${resources.length} ${zh ? "项资源" : "resources"}`} detail={zh ? "Project 固定版本不会自动升级；Catalog 身份按同一引用核对。" : "Project pins never auto-upgrade; Catalog identity is compared at the same reference."} />{resources.length ? <div className="project-resource-list">{resources.map((resource) => <ProjectResourceRow key={resource.reference} resource={resource} zh={zh} pending={pending} onRemove={(item) => void removeResource(item)} />)}</div> : <EmptyState icon={CircleAlert} title={zh ? "这个 Project 还没有可选资源" : "No optional resources yet"} detail={zh ? "从总目录加入 Tool、MCP、Skill、Policy 或 Composite Component。" : "Add a Tool, MCP, Skill, Policy, or Composite Component from the Catalog."} />}</Panel>
+      </LoadingMask>
       {data?.missing_bindings?.map((binding) => <Panel key={binding.reference}>
         <strong>{binding.reference}</strong><p>{zh ? "已绑定；Catalog 版本缺失，不可用" : "Bound; Catalog version missing, unavailable"}</p>
         <code>{binding.content_hash}</code>

@@ -1,0 +1,71 @@
+.trash-list {
+  display: grid;
+  gap: 0;
+  margin-top: 14px;
+}
+
+.trash-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 58px;
+  border-top: 1px solid var(--line);
+  padding: 10px 2px;
+}
+
+.trash-item:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.trash-item .row-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.trash-item .row-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 740;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-item .row-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-blocked {
+  color: var(--bad) !important;
+  white-space: normal !important;
+}
+
+.trash-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .trash-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .trash-item > .ui-tag,
+  .trash-item-actions {
+    grid-column: 2;
+  }
+
+  .trash-item-actions {
+    justify-content: flex-start;
+  }
+}

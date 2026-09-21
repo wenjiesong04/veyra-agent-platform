@@ -20,6 +20,11 @@ PROPOSAL_CONFIRMED = "builder.proposal.confirmed"
 PROPOSAL_REJECTED = "builder.proposal.rejected"
 APPLY_STARTED = "builder.apply.started"
 APPLY_COMPLETED = "builder.apply.completed"
+TEST_STARTED = "builder.test_run.started"
+TEST_WAITING_APPROVAL = "builder.test_run.waiting_approval"
+TEST_COMPLETED = "builder.test_run.completed"
+TEST_FAILED = "builder.test_run.failed"
+TEST_STOPPED = "builder.test_run.stopped"
 OPERATION_COMPLETED = "builder.operation.completed"
 OPERATION_FAILED = "builder.operation.failed"
 
@@ -41,6 +46,11 @@ EVENT_KINDS: Final[frozenset[str]] = frozenset(
         PROPOSAL_REJECTED,
         APPLY_STARTED,
         APPLY_COMPLETED,
+        TEST_STARTED,
+        TEST_WAITING_APPROVAL,
+        TEST_COMPLETED,
+        TEST_FAILED,
+        TEST_STOPPED,
         OPERATION_COMPLETED,
         OPERATION_FAILED,
     }
@@ -67,6 +77,11 @@ _LABELS: Final[dict[str, tuple[str, str]]] = {
     PROPOSAL_REJECTED: ("已拒绝", "Rejected"),
     APPLY_STARTED: ("创建 Draft", "Creating Draft"),
     APPLY_COMPLETED: ("创建 Draft", "Creating Draft"),
+    TEST_STARTED: ("测试 Agent", "Testing Agent"),
+    TEST_WAITING_APPROVAL: ("等待批准", "Waiting for approval"),
+    TEST_COMPLETED: ("测试成功", "Test succeeded"),
+    TEST_FAILED: ("测试失败", "Test failed"),
+    TEST_STOPPED: ("测试已停止", "Test stopped"),
     OPERATION_COMPLETED: ("完成", "Completed"),
     OPERATION_FAILED: ("失败", "Failed"),
 }

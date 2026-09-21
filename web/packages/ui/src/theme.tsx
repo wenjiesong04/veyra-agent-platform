@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import { LocaleProvider } from "./i18n";
+import { ToastHost } from "./toast";
 import type { ThemeChoice } from "./types";
 
 type ThemeContextValue = {
@@ -44,7 +45,7 @@ export function ThemeProvider({ children, storageKey = defaultStorageKey }: Prop
 
   const effectiveDark = theme === "dark" || (theme === "system" && systemDark);
   const value = useMemo(() => ({ theme, setTheme, effectiveDark }), [effectiveDark, theme]);
-  return <LocaleProvider><ThemeContext.Provider value={value}>{children}</ThemeContext.Provider></LocaleProvider>;
+  return <LocaleProvider><ThemeContext.Provider value={value}>{children}<ToastHost /></ThemeContext.Provider></LocaleProvider>;
 }
 
 export function useTheme(): ThemeContextValue {

@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { BrandLoading } from "./brand-loading";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md";
@@ -46,8 +47,11 @@ export function StatusBadge({ label, tone = "neutral" }: { label: string; tone?:
   return <span className={`ui-status ${tone}`}><span className="ui-status-dot" aria-hidden="true" />{label}</span>;
 }
 
-export function LoadingState({ label = "Loading" }: { label?: string }) {
-  return <div className="ui-loading" role="status"><span className="ui-spinner" aria-hidden="true" />{label}</div>;
+export function LoadingState({ label = "Loading", compact = false }: { label?: string; compact?: boolean }) {
+  if (compact) {
+    return <div className="ui-loading" role="status"><span className="ui-spinner" aria-hidden="true" />{label}</div>;
+  }
+  return <BrandLoading label={label} />;
 }
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
@@ -115,10 +119,14 @@ export function Alert({
 export function EmptyState({ icon: Icon, title, detail, action }: { icon?: LucideIcon; title: string; detail: string; action?: ReactNode }) {
   return (
     <div className="ui-empty">
-      {Icon ? <span className="ui-empty-icon"><Icon size={20} aria-hidden="true" /></span> : null}
+      <span className="ui-empty-figure" aria-hidden="true">
+        {Icon ? <span className="ui-empty-icon"><Icon size={28} /></span> : (
+          <span className="ui-empty-mark"><img src="/veyra-icon.png" alt="" /></span>
+        )}
+      </span>
       <strong>{title}</strong>
       <p>{detail}</p>
-      {action}
+      {action ? <div className="ui-empty-action">{action}</div> : null}
     </div>
   );
 }

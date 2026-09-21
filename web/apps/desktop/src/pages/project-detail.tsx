@@ -6,6 +6,7 @@ import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { AgentRelationGraph } from "../features/projects/AgentRelationGraph";
 import { agentTree, type AgentTreeNode } from "../features/projects/agent-tree";
+import { ProjectFilesPanel } from "./files";
 
 export function ProjectDetailPage({ projectId }: { projectId: string }) {
   const { locale } = useLocale();
@@ -51,6 +52,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     {error ? <ErrorState message={error} onRetry={() => void loadProject()} /> : null}
     <Panel><SectionHeading eyebrow={copy.agents} title={`${project.agents.length} ${copy.agents}`} />{tree.length === 0 ? <EmptyState icon={Bot} title={copy.noAgents} detail={copy.noAgentsDetail} /> : <div className="project-agent-tree">{tree.map((node) => <AgentTreeRows key={node.agent_id} projectId={project.project_id} node={node} />)}</div>}</Panel>
     <Panel><SectionHeading eyebrow={copy.graph} title={copy.graph} /><AgentRelationGraph projectId={project.project_id} agents={project.agents} emptyLabel={copy.noGraph} /></Panel>
+    <ProjectFilesPanel projectId={project.project_id} projectName={project.name} />
   </div>;
 }
 

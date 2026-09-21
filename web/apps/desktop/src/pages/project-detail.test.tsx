@@ -47,11 +47,17 @@ describe("ProjectDetailPage", () => {
       listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [summary] }),
       getProject: vi.fn().mockResolvedValue(summary),
       revealProject: vi.fn().mockResolvedValue({ schema_version: "1.0", status: "revealed", root_path: "/tmp/project-1" }),
+      listProjectFiles: vi.fn().mockResolvedValue({
+        schema_version: "1.0",
+        project_id: "project-1",
+        files: [{ path: "README.md", kind: "readme", byte_length: 12 }],
+      }),
     } as unknown as LocalProjectApi;
     renderPage(api);
     expect(await screen.findByText("agents/grand/agent.vagent.yaml")).toBeInTheDocument();
     expect(screen.getByText("grand child-of child")).toBeInTheDocument();
     expect(screen.getByText("child child-of parent")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /README.md/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show Project Location" })).toBeInTheDocument();
   });
 });

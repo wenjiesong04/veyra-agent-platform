@@ -11,6 +11,8 @@ from veyra_agent_platform.local.projects.service import ProjectError, ProjectSer
 
 from .catalog import ResourceCatalog, ResourceCatalogError
 
+_RUNTIME_PROFILE_LOCK_PREFIX = "veyra.runtime.profile@"
+
 
 class ProjectResourceError(ValueError):
     """A Project resource selection is invalid or conflicts with source usage."""
@@ -71,6 +73,8 @@ class ProjectResourceService:
         missing: list[str] = []
         missing_bindings: list[dict[str, Any]] = []
         for reference in sorted(references):
+            if reference.startswith(_RUNTIME_PROFILE_LOCK_PREFIX):
+                continue
             try:
                 descriptor = self.catalog.by_reference(reference)
             except ResourceCatalogError:

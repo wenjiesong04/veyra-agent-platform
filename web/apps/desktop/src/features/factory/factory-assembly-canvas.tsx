@@ -110,8 +110,8 @@ function BlueprintFlow({
   };
   return (
     <div className="agent-convo-flow-block">
-      <div className="agent-convo-flow" style={{ width, height }}>
-        <svg className="agent-convo-flow-edges" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <div className="agent-convo-flow" style={{ aspectRatio: `${width} / ${height}` }}>
+        <svg className="agent-convo-flow-edges" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
           {graph.transitions.map((edge) => {
             const from = center(edge.from);
             const to = center(edge.to);
@@ -124,7 +124,11 @@ function BlueprintFlow({
             key={node.id}
             className="agent-convo-flow-node"
             data-state="completed"
-            style={{ left: node.x, top: node.y, width: NODE_W }}
+            style={{
+              left: `${(node.x / width) * 100}%`,
+              top: `${(node.y / height) * 100}%`,
+              width: `${(NODE_W / width) * 100}%`,
+            }}
           >
             <strong>{node.component_type}</strong>
             <small>{node.id}</small>
@@ -171,6 +175,7 @@ export function FactoryAssemblyCanvas({
   onReject,
   onQuarantine,
   testRun,
+  embedded = false,
 }: {
   locale: Locale;
   session: FactorySession | null;
@@ -189,6 +194,7 @@ export function FactoryAssemblyCanvas({
   onReject?: () => void;
   onQuarantine?: () => void;
   testRun?: ReactNode;
+  embedded?: boolean;
 }) {
   const text = copy[locale];
   const resolvedPhase = phase ?? (
@@ -208,19 +214,8 @@ export function FactoryAssemblyCanvas({
   const showGenerate = Boolean(onGenerate);
   const showQuarantine = Boolean(onQuarantine) && Boolean(session?.missing_capabilities.length);
   const showActions = showApply || showReject || showStudio || showGenerate || showQuarantine;
-  return (
-    <aside className="agent-convo-canvas factory-assembly-canvas" aria-label={text.canvas}>
-      <header className="agent-convo-canvas-head">
-        <div>
-          <span className="ui-eyebrow">Workbench</span>
-          <h3>{stageLabel(resolvedPhase, locale)}</h3>
-        </div>
-        <div className="factory-canvas-head-actions">
-          {session ? <StatusBadge label={session.state} tone={session.state === "completed" ? "good" : session.state === "missing_capability" ? "bad" : "warn"} /> : null}
-          <IconButton icon={X} label={locale === "zh" ? "关闭工作台" : "Close workbench"} onClick={onClose} />
-        </div>
-      </header>
-      <div className="agent-convo-canvas-body">
+  const body = (
+      <>
         <ol className="factory-stage-track" aria-hidden="true">
           {stageOrder.map((item, index) => (
             <li key={item} data-active={index <= activeIndex ? "true" : "false"}>{stageLabel(item, locale)}</li>
@@ -276,9 +271,31 @@ export function FactoryAssemblyCanvas({
           {showStudio ? <LinkButton href={studioHref!}>{text.studio}</LinkButton> : null}
         </div> : null}
         {focusChild && canApply ? <p className="factory-canvas-kicker">{text.child}</p> : null}
-        {createdAgentId ? testRun : null}
+        {!embedded && createdAgentId ? testRun : null}
         <p className="factory-canvas-kicker">{text.noExecute}</p>
+      </>
+  );
+  if (embedded) {
+    return (
+      <div className="factory-assembly-embedded">
+        <h3>{stageLabel(resolvedPhase, locale)}</h3>
+        {body}
       </div>
+    );
+  }
+  return (
+    <aside className="agent-convo-canvas factory-assembly-canvas" aria-label={text.canvas}>
+      <header className="agent-convo-canvas-head">
+        <div>
+          <span className="ui-eyebrow">Workbench</span>
+          <h3>{stageLabel(resolvedPhase, locale)}</h3>
+        </div>
+        <div className="factory-canvas-head-actions">
+          {session ? <StatusBadge label={session.state} tone={session.state === "completed" ? "good" : session.state === "missing_capability" ? "bad" : "warn"} /> : null}
+          <IconButton icon={X} label={locale === "zh" ? "关闭工作台" : "Close workbench"} onClick={onClose} />
+        </div>
+      </header>
+      <div className="agent-convo-canvas-body">{body}</div>
     </aside>
   );
 }

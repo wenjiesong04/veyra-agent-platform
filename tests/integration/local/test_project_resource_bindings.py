@@ -133,6 +133,23 @@ def test_quarantine_drift_missing_preserve_pinned_identity(tmp_path: Path) -> No
         )
 
 
+def test_runtime_profile_lock_is_not_a_missing_project_resource(
+    tmp_path: Path,
+) -> None:
+    with client_for(tmp_path) as client:
+        project = client.post("/api/v1/projects", json={}).json()
+        project_id = project["project_id"]
+        agent = client.post(
+            f"/api/v1/projects/{project_id}/agents", json={"mode": "blank"}
+        ).json()
+        draft = client.get(
+            f"/api/v1/projects/{project_id}/agents/{agent['agent_id']}/draft"
+        ).json()
+        assert "veyra.runtime.profile@1.0.0" in draft["source"]["lock"]
+        payload = client.get(f"/api/v1/projects/{project_id}/resources").json()
+        assert payload["missing_references"] == []
+
+
 def test_remove_refuses_source_usage_and_unreadable_usage(tmp_path: Path) -> None:
     with client_for(tmp_path) as client:
         project = client.post("/api/v1/projects", json={}).json()

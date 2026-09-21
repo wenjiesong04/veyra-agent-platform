@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -25,6 +25,11 @@ from veyra_agent_platform.local.builder.operation_events import (
     PROPOSAL_CONFIRMED,
     PROPOSAL_READY,
     PROPOSAL_REJECTED,
+    TEST_COMPLETED,
+    TEST_FAILED,
+    TEST_STARTED,
+    TEST_STOPPED,
+    TEST_WAITING_APPROVAL,
     event_label,
 )
 from veyra_agent_platform.local.builder.receipts import (
@@ -37,9 +42,19 @@ from veyra_agent_platform.local.builder.resolution import (
     BuilderTarget,
     ResolveRequest,
 )
+from veyra_agent_platform.local.builder.test_run import (
+    not_configured_observation,
+    observe_run,
+    public_observation,
+)
 from veyra_agent_platform.local.factory.client import FactoryProviderError
+from veyra_agent_platform.local.factory.edit_service import EditProposalService
 from veyra_agent_platform.local.factory.service import FactoryError, FactoryService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
+from veyra_agent_platform.local.runtime.service import (
+    RuntimeError as RuntimeFailure,
+)
+from veyra_agent_platform.local.runtime.service import RuntimeService
 
 HISTORY_LIMIT = 18
 _TITLE_LIMIT = 32
@@ -129,6 +144,8 @@ _MESSAGE_KINDS = {
     "validation_summary",
     "result",
 }
+BUILDER_ACTIVITY_MAX = 200
+
 _RECORD_KINDS = {
     "proposal_reference",
     "reject",
@@ -173,6 +190,21 @@ class TurnRequest(ClosedModel):
         return self
 
 
+class TestRunRequest(ClosedModel):
+    agent_id: str | None = Field(default=None, min_length=1, max_length=64)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    locale: Literal["zh", "en"] = "en"
+
+
+class TestRunCommandRequest(ClosedModel):
+    command: Literal["approve", "reject", "stop"]
+    locale: Literal["zh", "en"] = "en"
+
+
+class TestRepairRequest(ClosedModel):
+    locale: Literal["zh", "en"] = "en"
+
+
 class RecordRequest(ClosedModel):
     kind: Literal[
         "proposal_reference",
@@ -185,6 +217,10 @@ class RecordRequest(ClosedModel):
     operation_id: str | None = Field(default=None, min_length=1, max_length=64)
     proposal_id: str | None = Field(default=None, min_length=1, max_length=64)
     details: dict[str, str] = Field(default_factory=dict, max_length=20)
+
+
+class RenameRequest(ClosedModel):
+    title: str = Field(min_length=1, max_length=80)
 
 
 class BuilderConversationError(Exception):
@@ -201,11 +237,16 @@ class BuilderConversationService:
         projects: ProjectService,
         resolution: BuilderResolutionService,
         factory: FactoryService,
+        *,
+        runtime: RuntimeService | None = None,
+        edits: EditProposalService | None = None,
     ) -> None:
         self.store = store
         self.projects = projects
         self.resolution = resolution
         self.factory = factory
+        self.runtime = runtime
+        self.edits = edits
 
     def turn(
         self,
@@ -325,9 +366,81 @@ class BuilderConversationService:
         self._require_project(project_id)
         return self.snapshot(project_id, conversation_id)
 
-    def activity(self, project_id: str, *, limit: int = 5) -> dict[str, Any]:
+    def rename(
+        self, project_id: str, conversation_id: str, request: RenameRequest
+    ) -> dict[str, Any]:
         self._require_project(project_id)
-        bound = max(1, min(limit, 5))
+        conversation = self.store.conversation(conversation_id, project_id)
+        if conversation is None:
+            raise BuilderConversationError(
+                "builder_conversation_not_found",
+                "Builder conversation was not found",
+                status_code=404,
+            )
+        title = _title(request.title)
+        if title == _TITLE_PLACEHOLDER:
+            raise BuilderConversationError(
+                "builder_title_invalid", "Conversation title is required"
+            )
+        self.store.touch(conversation_id, title=title, updated_at=_now())
+        return self.snapshot(project_id, conversation_id)
+
+    def delete(self, project_id: str, conversation_id: str) -> dict[str, Any]:
+        self._require_project(project_id)
+        if not self.store.delete_conversation(
+            conversation_id, project_id, removed_at=_now()
+        ):
+            raise BuilderConversationError(
+                "builder_conversation_not_found",
+                "Builder conversation was not found",
+                status_code=404,
+            )
+        return {
+            "schema_version": "1.0",
+            "conversation_id": conversation_id,
+            "deleted": True,
+        }
+
+    def list_trashed(self) -> list[dict[str, Any]]:
+        return self.store.trashed_conversations()
+
+    def restore_trashed(self, conversation_id: str) -> None:
+        trashed = next(
+            (
+                row
+                for row in self.store.trashed_conversations()
+                if row["id"] == conversation_id
+            ),
+            None,
+        )
+        if trashed is None:
+            raise BuilderConversationError(
+                "trash_not_found",
+                "Builder conversation was not found in Trash",
+                status_code=404,
+            )
+        self._require_project(str(trashed["project_id"]))
+        if not self.store.restore_trashed(conversation_id, restored_at=_now()):
+            raise BuilderConversationError(
+                "trash_not_found",
+                "Builder conversation was not found in Trash",
+                status_code=404,
+            )
+
+    def purge_trashed(self, conversation_id: str) -> None:
+        if not self.store.purge_trashed(conversation_id):
+            raise BuilderConversationError(
+                "trash_not_found",
+                "Builder conversation was not found in Trash",
+                status_code=404,
+            )
+
+    def activity(
+        self, project_id: str | None = None, *, limit: int | None = None
+    ) -> dict[str, Any]:
+        if project_id:
+            self._require_project(project_id)
+        bound = None if limit is None else max(1, min(limit, BUILDER_ACTIVITY_MAX))
         items: list[dict[str, Any]] = []
         for row in self.store.conversations(project_id, limit=bound):
             latest = self.store.latest_operation(row["conversation_id"])
@@ -336,6 +449,7 @@ class BuilderConversationService:
                     "kind": "conversation",
                     "id": row["conversation_id"],
                     "conversation_id": row["conversation_id"],
+                    "project_id": row["project_id"],
                     "title": self._ensure_readable_title(
                         row["conversation_id"], row["title"]
                     ),
@@ -346,8 +460,8 @@ class BuilderConversationService:
             )
         return {
             "schema_version": "1.0",
-            "project_id": project_id,
-            "items": items[:bound],
+            "project_id": project_id or "",
+            "items": items,
         }
 
     def record(
@@ -442,6 +556,9 @@ class BuilderConversationService:
                 "Builder conversation was not found",
                 status_code=404,
             )
+        for row in self.store.operations(conversation_id):
+            if row["kind"] == "test_agent" and row["run_id"]:
+                self._sync_test_run(project_id, conversation_id, row)
         operations = [
             self._public_operation(row, project_id)
             for row in self.store.operations(conversation_id)
@@ -922,6 +1039,395 @@ class BuilderConversationService:
             ],
         }
 
+    def start_test_run(
+        self, project_id: str, conversation_id: str, request: TestRunRequest
+    ) -> dict[str, Any]:
+        self._require_project(project_id)
+        conversation = self.store.conversation(conversation_id, project_id)
+        if conversation is None:
+            created_at = _now()
+            self.store.create_conversation(
+                conversation_id=conversation_id,
+                project_id=project_id,
+                title="测试 Agent" if request.locale == "zh" else "Test Agent",
+                created_at=created_at,
+            )
+            conversation = self.store.conversation(conversation_id, project_id)
+        if conversation is None:
+            raise BuilderConversationError(
+                "builder_conversation_not_found",
+                "Builder conversation was not found",
+                status_code=404,
+            )
+        if self.runtime is None:
+            raise BuilderConversationError(
+                "runtime_unavailable", "Local Runtime is not connected"
+            )
+        locale = request.locale
+        agent_id = request.agent_id or self._conversation_agent_id(conversation_id)
+        if not agent_id:
+            raise BuilderConversationError(
+                "builder_test_agent_missing",
+                "Confirm and create an Agent before starting a test run",
+            )
+        try:
+            self.runtime.library._agent_in_project(project_id, agent_id)
+        except ProjectError as exc:
+            raise BuilderConversationError(
+                exc.code or "unknown_agent", str(exc), status_code=404
+            ) from exc
+        created_at = _now()
+        operation_id = new_uuid7()
+        self.store.create_operation(
+            conversation_id=conversation_id,
+            operation_id=operation_id,
+            kind="test_agent",
+            retry_of=None,
+            input_payload={
+                "agent_id": agent_id,
+                "locale": locale,
+                "inputs": json.dumps(
+                    request.inputs, ensure_ascii=False, sort_keys=True
+                ),
+            },
+            created_at=created_at,
+        )
+        self._emit(
+            operation_id, OPERATION_STARTED, locale, facts={"agent_id": agent_id}
+        )
+        readiness = self.runtime.readiness(project_id, agent_id)
+        raw_model = readiness.get("model")
+        model = raw_model if isinstance(raw_model, dict) else {}
+        if bool(model.get("required")) and not bool(model.get("configured")):
+            observation = not_configured_observation(
+                agent_id=agent_id,
+                locale=locale,
+                runtime_model_id=str(model.get("model_id") or ""),
+                runtime_model_source=str(readiness.get("profile_source") or "host"),
+            )
+            self._emit(
+                operation_id,
+                TEST_STARTED,
+                locale,
+                facts={
+                    "agent_id": agent_id,
+                    "runtime_model_id": observation["runtime_model_id"],
+                },
+            )
+            self._fail_test_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="runtime_not_configured",
+                message=str(observation["explanation"]),
+                observation=observation,
+            )
+            return self.snapshot(project_id, conversation_id)
+        self._emit(
+            operation_id,
+            TEST_STARTED,
+            locale,
+            facts={
+                "agent_id": agent_id,
+                "runtime_model_id": str(model.get("model_id") or ""),
+            },
+        )
+        try:
+            started = self.runtime.run(
+                project_id,
+                agent_id,
+                request.inputs,
+                new_uuid7(),
+                conversation_id=None,
+                append_user=True,
+            )
+        except (ProjectError, RuntimeFailure) as exc:
+            self._fail_test_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code=exc.code,
+                message=str(exc),
+                observation={
+                    "classification": "user_action"
+                    if exc.code in {"inputs_invalid", "source_changed"}
+                    else "environment",
+                    "runtime_model_id": str(model.get("model_id") or ""),
+                },
+            )
+            return self.snapshot(project_id, conversation_id)
+        self.store.update_operation(
+            operation_id,
+            status="in_progress",
+            updated_at=_now(),
+            run_id=started["run_id"],
+            diagnostic={
+                "agent_id": agent_id,
+                "version_id": str(started.get("version_id") or ""),
+                "runtime_model_id": str(model.get("model_id") or ""),
+            },
+        )
+        row = self.store.operation(operation_id, conversation_id)
+        if row is not None:
+            self._sync_test_run(project_id, conversation_id, row)
+        return self.snapshot(project_id, conversation_id)
+
+    def command_test_run(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        request: TestRunCommandRequest,
+    ) -> dict[str, Any]:
+        self._require_project(project_id)
+        operation = self._require_test_operation(
+            project_id, conversation_id, operation_id
+        )
+        if self.runtime is None or not operation.get("run_id"):
+            raise BuilderConversationError(
+                "builder_test_run_missing", "No Runtime run is attached to this test"
+            )
+        payload = _load_object(operation.get("input_json"))
+        agent_id = payload.get("agent_id") or self._conversation_agent_id(
+            conversation_id
+        )
+        if not agent_id:
+            raise BuilderConversationError(
+                "builder_test_agent_missing", "The test operation is missing its Agent"
+            )
+        try:
+            self.runtime.command(
+                project_id,
+                agent_id,
+                str(operation["run_id"]),
+                request.command,
+                new_uuid7(),
+            )
+        except (ProjectError, RuntimeFailure) as exc:
+            raise BuilderConversationError(exc.code, str(exc)) from exc
+        row = self.store.operation(operation_id, conversation_id)
+        if row is not None:
+            self._sync_test_run(project_id, conversation_id, row)
+        return self.snapshot(project_id, conversation_id)
+
+    def propose_test_repair(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        request: TestRepairRequest,
+    ) -> dict[str, Any]:
+        self._require_project(project_id)
+        operation = self._require_test_operation(
+            project_id, conversation_id, operation_id
+        )
+        if self.edits is None or self.runtime is None:
+            raise BuilderConversationError(
+                "builder_test_repair_unavailable",
+                "Repair proposals are unavailable",
+            )
+        payload = _load_object(operation.get("input_json"))
+        agent_id = payload.get("agent_id") or ""
+        observation = self._observation_for(project_id, operation, request.locale)
+        if observation is None or observation.get("classification") != "repairable":
+            raise BuilderConversationError(
+                "builder_test_not_repairable",
+                "This Runtime failure cannot be repaired as an EditProposal",
+            )
+        reference = str(observation.get("repair_reference") or "")
+        code = str(observation.get("repair_code") or "")
+        if not reference or not code:
+            raise BuilderConversationError(
+                "builder_test_not_repairable",
+                "This Runtime failure cannot be repaired as an EditProposal",
+            )
+        draft = self.edits.draft(project_id, "agent", agent_id)
+        proposal = self.edits.create_validation_repair(
+            project_id,
+            agent_id,
+            reference,
+            code,
+            int(draft["revision"]),
+            str(draft["etag"]),
+        )
+        self.store.update_operation(
+            operation_id,
+            status=str(operation["status"]),
+            updated_at=_now(),
+            proposal_id=str(proposal["proposal_id"]),
+        )
+        return self.snapshot(project_id, conversation_id)
+
+    def _require_test_operation(
+        self, project_id: str, conversation_id: str, operation_id: str
+    ) -> dict[str, Any]:
+        conversation = self.store.conversation(conversation_id, project_id)
+        if conversation is None:
+            raise BuilderConversationError(
+                "builder_conversation_not_found",
+                "Builder conversation was not found",
+                status_code=404,
+            )
+        operation = self.store.operation(operation_id, conversation_id)
+        if operation is None or operation["kind"] != "test_agent":
+            raise BuilderConversationError(
+                "builder_operation_not_found",
+                "Builder test operation was not found",
+                status_code=404,
+            )
+        return operation
+
+    def _conversation_agent_id(self, conversation_id: str) -> str | None:
+        for row in reversed(self.store.operations(conversation_id)):
+            payload = _load_object(row.get("input_json"))
+            if payload.get("agent_id"):
+                return payload["agent_id"]
+            for event in reversed(self.store.events(row["operation_id"])):
+                facts = _facts(_load_object(event.get("facts_json")))
+                if facts.get("agent_id"):
+                    return facts["agent_id"]
+        return None
+
+    def _sync_test_run(
+        self, project_id: str, conversation_id: str, row: Mapping[str, Any]
+    ) -> None:
+        if self.runtime is None or not row.get("run_id"):
+            return
+        payload = _load_object(row.get("input_json"))
+        locale: Literal["zh", "en"] = "zh" if payload.get("locale") == "zh" else "en"
+        agent_id = payload.get("agent_id") or ""
+        try:
+            observation = observe_run(
+                self.runtime,
+                project_id,
+                agent_id,
+                str(row["run_id"]),
+                locale=locale,
+                repair_proposal_id=row.get("proposal_id"),
+            )
+        except ProjectError:
+            return
+        status = str(observation.get("status") or "")
+        existing = {
+            item["kind"] for item in self.store.events(str(row["operation_id"]))
+        }
+        if status == "waiting" and TEST_WAITING_APPROVAL not in existing:
+            self._emit(
+                str(row["operation_id"]),
+                TEST_WAITING_APPROVAL,
+                locale,
+                facts={"run_id": str(row["run_id"])},
+            )
+            self.store.update_operation(
+                str(row["operation_id"]), status="waiting", updated_at=_now()
+            )
+            return
+        if status in {"verified", "unverified"} and OPERATION_COMPLETED not in existing:
+            self._emit(
+                str(row["operation_id"]),
+                TEST_COMPLETED,
+                locale,
+                facts={
+                    "run_id": str(row["run_id"]),
+                    "version_id": str(observation.get("version_id") or ""),
+                },
+            )
+            self._emit(str(row["operation_id"]), OPERATION_COMPLETED, locale)
+            self._complete_operation(str(row["operation_id"]), "succeeded")
+            return
+        if (
+            status in {"cancelled", "interrupted"}
+            and OPERATION_COMPLETED not in existing
+        ):
+            self._emit(
+                str(row["operation_id"]),
+                TEST_STOPPED,
+                locale,
+                facts={"run_id": str(row["run_id"])},
+            )
+            self._emit(str(row["operation_id"]), OPERATION_COMPLETED, locale)
+            self._complete_operation(str(row["operation_id"]), "succeeded")
+            return
+        if status == "failed" and OPERATION_FAILED not in existing:
+            self._fail_test_operation(
+                conversation_id,
+                str(row["operation_id"]),
+                locale,
+                code=str(observation.get("failure_code") or "runtime_provider_error"),
+                message=str(observation.get("explanation") or ""),
+                observation=observation,
+                run_id=str(row["run_id"]),
+            )
+
+    def _fail_test_operation(
+        self,
+        _conversation_id: str,
+        operation_id: str,
+        locale: Literal["zh", "en"],
+        *,
+        code: str,
+        message: str,
+        observation: Mapping[str, Any],
+        run_id: str | None = None,
+    ) -> None:
+        existing = {item["kind"] for item in self.store.events(operation_id)}
+        if TEST_FAILED not in existing:
+            self._emit(
+                operation_id,
+                TEST_FAILED,
+                locale,
+                summary=message[:240],
+                facts={
+                    "error_code": code,
+                    "classification": str(observation.get("classification") or ""),
+                },
+            )
+        if OPERATION_FAILED not in existing:
+            self._emit(operation_id, OPERATION_FAILED, locale, summary=message[:240])
+        self.store.update_operation(
+            operation_id,
+            status="failed",
+            updated_at=_now(),
+            error_code=code,
+            diagnostic={
+                "error_code": code,
+                "classification": str(observation.get("classification") or ""),
+                "runtime_model_id": str(observation.get("runtime_model_id") or ""),
+            },
+            run_id=run_id,
+        )
+        # Keep Runtime test explanations on the operation observation.
+        # Do not copy them into Chat messages.
+
+    def _observation_for(
+        self,
+        project_id: str,
+        row: Mapping[str, Any],
+        locale: Literal["zh", "en"],
+    ) -> dict[str, Any] | None:
+        payload = _load_object(row.get("input_json"))
+        agent_id = payload.get("agent_id") or ""
+        if row.get("run_id") and self.runtime is not None and agent_id:
+            try:
+                return observe_run(
+                    self.runtime,
+                    project_id,
+                    agent_id,
+                    str(row["run_id"]),
+                    locale=locale,
+                    repair_proposal_id=row.get("proposal_id"),
+                )
+            except ProjectError:
+                return None
+        if row.get("error_code") == "runtime_not_configured":
+            return not_configured_observation(
+                agent_id=agent_id,
+                locale=locale,
+                runtime_model_id="",
+                runtime_model_source="host",
+            )
+        return None
+
     def _public_operation(self, row: dict[str, Any], project_id: str) -> dict[str, Any]:
         diagnostic = _load_object(row.get("diagnostic_json"))
         payload = _load_object(row.get("input_json"))
@@ -929,13 +1435,19 @@ class BuilderConversationService:
             self._public_event(item) for item in self.store.events(row["operation_id"])
         ]
         kind = str(row["kind"] or "")
-        target_kind = "agent" if kind == "create_agent" else None
+        target_kind = "agent" if kind in {"create_agent", "test_agent"} else None
         if kind == "create_workflow":
             target_kind = "workflow"
         if kind == "edit":
             focus_kind = payload.get("focus_kind")
             if focus_kind in {"agent", "workflow"}:
                 target_kind = focus_kind
+        locale: Literal["zh", "en"] = "zh" if payload.get("locale") == "zh" else "en"
+        observation = (
+            self._observation_for(project_id, row, locale)
+            if kind == "test_agent"
+            else None
+        )
         return {
             "operation_id": row["operation_id"],
             "conversation_id": row["conversation_id"],
@@ -960,6 +1472,7 @@ class BuilderConversationService:
                     operation_id=str(row["operation_id"]),
                 )
             ],
+            "run_observation": public_observation(observation),
         }
 
     def _public_event(self, row: dict[str, Any]) -> dict[str, Any]:

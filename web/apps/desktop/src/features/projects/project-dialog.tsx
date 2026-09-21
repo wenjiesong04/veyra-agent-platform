@@ -1,6 +1,6 @@
 import { Box, FileArchive, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
 import type { AgentImportRecord, AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, RuntimeApiProfileInput, WorkflowSource } from "@veyra/api-contracts";
-import { Button, StatusBadge, useLocale } from "@veyra/ui";
+import { Button, StatusBadge, toast, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LocalApiClientError } from "../../api/local-client";
@@ -119,7 +119,9 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
           : archiveFile && api.importProject
             ? await api.importProject(archiveFile)
             : await api.openProject({ root_path: selectedPath! });
-      upsertProject(project); onClose(); void refresh().catch(() => undefined);
+      upsertProject(project);
+      toast.success(mode === "create" ? (zh ? "项目已创建。" : "Project created.") : archiveFile || archivePath ? (zh ? "项目已导入。" : "Project imported.") : (zh ? "项目已打开。" : "Project opened."));
+      onClose(); void refresh().catch(() => undefined);
     } catch (cause) {
       setError(mode === "create" ? createError(cause) : openError(cause));
     } finally { setSaving(false); }
@@ -178,6 +180,7 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
       const updated = await api.updateProject(project.project_id, { name: name.trim(), description: description.trim(), ...(runtimeProfileDirty ? { runtime_profile: runtimeProfile } : {}) });
       upsertProject(updated);
       setAllocatedName(updated.name);
+      toast.success(zh ? "项目已更新。" : "Project updated.");
     } catch {
       setError(copy.failed);
     } finally { setSaving(false); }
@@ -203,7 +206,7 @@ export function ProjectDeleteDialog({ project, onClose, onDeleted }: { project: 
   const copy = zh ? { title: "删除项目？", detail: `将从此 Desktop 工作区移除“${project.name}”。`, cancel: "取消", remove: "删除项目", close: "关闭对话框", failed: "无法删除项目，请重试。" } : { title: "Delete Project?", detail: `This removes “${project.name}” from this Desktop workspace.`, cancel: "Cancel", remove: "Delete Project", close: "Close dialog", failed: "The Project could not be deleted. Try again." };
   const remove = async () => {
     setDeleting(true); setError(null);
-    try { await api.deleteProject(project.project_id); removeProject(project.project_id); onDeleted?.(); onClose(); } catch { setError(copy.failed); } finally { setDeleting(false); }
+    try { await api.deleteProject(project.project_id); removeProject(project.project_id); toast.success(zh ? "项目已移入回收站。" : "Project moved to Trash."); onDeleted?.(); onClose(); } catch { setError(copy.failed); } finally { setDeleting(false); }
   };
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
     <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
@@ -272,6 +275,7 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
       setRevision(saved.revision);
       setEtag(saved.etag);
       try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, agents: project.agents.map((item) => item.agent_id === agent.agent_id ? { ...item, name: saved.source.name, description: saved.source.description } : item) }); }
+      toast.success(zh ? "Agent 已更新。" : "Agent updated.");
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : copy.failed);
@@ -297,7 +301,7 @@ export function AgentDeleteDialog({ project, agent, onClose, onDeleted }: { proj
   const copy = zh ? { title: "删除 Agent？", detail: `将“${agent.name || agent.slug}”移到 Veyra 回收区，历史版本和运行记录会保留。`, cancel: "取消", remove: "删除 Agent", close: "关闭对话框", failed: "无法删除 Agent，请重试。" } : { title: "Delete Agent?", detail: `Move “${agent.name || agent.slug}” to Veyra Trash. Immutable versions and Runs are retained.`, cancel: "Cancel", remove: "Delete Agent", close: "Close dialog", failed: "The Agent could not be deleted. Try again." };
   const remove = async () => {
     setDeleting(true); setError(null);
-    try { const result = await api.deleteAgent(project.project_id, agent.agent_id); upsertProject(result.project); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
+    try { const result = await api.deleteAgent(project.project_id, agent.agent_id); upsertProject(result.project); toast.success(zh ? "Agent 已移入回收站。" : "Agent moved to Trash."); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
   };
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
     <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
@@ -355,6 +359,7 @@ export function WorkflowEditDialog({ project, workflow, onClose }: { project: Pr
       setRevision(saved.revision);
       setEtag(saved.etag);
       try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, workflows: (project.workflows ?? []).map((item) => item.workflow_id === workflow.workflow_id ? { ...item, name: saved.source.name, description: saved.source.description } : item) }); }
+      toast.success(zh ? "工作流已更新。" : "Workflow updated.");
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : copy.failed);
@@ -381,7 +386,7 @@ export function WorkflowDeleteDialog({ project, workflow, onClose, onDeleted }: 
   const remove = async () => {
     if (!api.deleteWorkflow) return setError(copy.unavailable);
     setDeleting(true); setError(null);
-    try { const result = await api.deleteWorkflow(project.project_id, workflow.workflow_id); upsertProject(result.project); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
+    try { const result = await api.deleteWorkflow(project.project_id, workflow.workflow_id); upsertProject(result.project); toast.success(zh ? "工作流已移入回收站。" : "Workflow moved to Trash."); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
   };
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
     <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
@@ -415,6 +420,7 @@ export function KnowledgeEditDialog({ project, knowledge, onClose }: { project: 
     try {
       const saved = await api.updateKnowledge(project.project_id, knowledge.knowledge_id, { name: nextName, description: description.trim() });
       try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, knowledge: (project.knowledge ?? []).map((item) => item.knowledge_id === knowledge.knowledge_id ? { ...item, name: saved.name, description: saved.description } : item) }); }
+      toast.success(zh ? "知识已更新。" : "Knowledge updated.");
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : copy.failed);
@@ -441,7 +447,7 @@ export function KnowledgeDeleteDialog({ project, knowledge, onClose, onDeleted }
   const remove = async () => {
     if (!api.deleteKnowledge) return setError(copy.unavailable);
     setDeleting(true); setError(null);
-    try { const result = await api.deleteKnowledge(project.project_id, knowledge.knowledge_id); upsertProject(result.project); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
+    try { const result = await api.deleteKnowledge(project.project_id, knowledge.knowledge_id); upsertProject(result.project); toast.success(zh ? "知识已移入回收站。" : "Knowledge moved to Trash."); onDeleted?.(); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : copy.failed); } finally { setDeleting(false); }
   };
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={deleting}>
     <div className="project-delete-copy"><p>{copy.detail}</p>{error ? <p className="project-form-error" role="alert">{error}</p> : null}</div>
@@ -569,6 +575,7 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
         /* Creation succeeded; open the Agent even if the tree refresh fails. */
       }
       onCreated(project.project_id, agentId);
+      toast.success(mode === "blank" ? (zh ? "Agent 已创建。" : "Agent created.") : (zh ? "Agent 已导入。" : "Agent imported."));
       onClose();
       void refresh().catch(() => undefined);
     } catch (cause) {

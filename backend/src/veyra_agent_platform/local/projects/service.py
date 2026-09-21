@@ -72,6 +72,7 @@ _EXCLUDED_DIRECTORIES = {".git", "node_modules", "build", "cache", "runtime"}
 _FORBIDDEN_SECRET_NAMES = {".env", "id_rsa", "credentials.json"}
 _FORBIDDEN_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".token"}
 _UNSAFE_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RUNTIME_PROFILE_LOCK_PREFIX = "veyra.runtime.profile@"
 
 
 class ProjectError(ValueError):
@@ -489,6 +490,8 @@ class ProjectService:
                 if isinstance(binding, Mapping) and binding.get("reference"):
                     references.add(binding["reference"])
             for reference in references:
+                if str(reference).startswith(_RUNTIME_PROFILE_LOCK_PREFIX):
+                    continue
                 usage.setdefault(reference, []).append(
                     {"kind": kind, "resource_id": resource_id, "name": source.name}
                 )

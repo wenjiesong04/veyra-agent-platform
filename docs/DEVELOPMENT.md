@@ -130,11 +130,11 @@ GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地
 
 ## 5. Builder Phase 2（进行中）
 
-HEAD：`aba074d` 之上本 checkpoint 发布 ProviderCapabilityProfile 与
-BuilderHarnessReceipt。Slice 1（Knowledge binding）、Slice 2
-（Project `filesystem.read` binding）与 Slice 3（typed validation repair）
-已随先前 Interaction Model V2 提交落地。Phase 2 模块整体仍未做最终
-release gate。
+HEAD：`4e3c2e6`。Slice 4 Test Run 已在 working tree 落地（未提交）。
+Slice 1（Knowledge binding）、Slice 2（Project `filesystem.read` binding）
+与 Slice 3（typed validation repair）已随先前 Interaction Model V2 提交落地。
+ProviderCapabilityProfile 与 BuilderHarnessReceipt 已随 `4e3c2e6` 发布。
+Phase 2 模块整体仍未做最终 release gate。
 
 已落地：
 
@@ -249,26 +249,35 @@ hash 只在 Technical details。Chat 不刷 Receipt。无模型调用的
 operation 不报 “No receipt found”。历史 Receipt 在 Recheck 后不变。
 API 只走 Project-scoped conversation/operation。
 
-明确未完成：Slice 4 Test Run、Catalog → Project mutation from Chat、
-Builder Phase 2 release。
+明确未完成：Builder Phase 2 最终 release gate、Catalog → Project
+mutation from Chat。
+
+**Builder Phase 2 Slice 4 = complete**（未发布）。
+
+闭环：
+
+`Build → Validate → Explicit Test Run → Observe → Explain → optional
+Repair Proposal → Confirm → Apply → Validate → explicit Run again`
+
+Builder 只关联 `run_id` + 有界 `RunObservation`。Runtime V1 仍是
+Run / events / evidence / approvals 的唯一 store。Test Agent 必须用户
+显式点击；Apply / Repair 后不自动 Run。未配置 Runtime model 返回
+`runtime_not_configured`，不把 Builder Kimi 绑给 Agent。
+
+Builder Model ≠ Agent Runtime Model。当前 live 两者碰巧都是 Moonshot
+`kimi-k3`：Factory 是 Builder；host default Runtime profile 是 Agent
+执行模型。UI 不得把 Builder Kimi 标成 Agent Runtime，除非该 Agent 的
+有效 Runtime 确实是 Kimi。
 
 ## 6. 下一步
 
-Builder Harness Receipt 已收口。下一步按顺序，不要跳：
+Slice 4 explicit Test Run 已收口。下一步按顺序，不要跳：
 
-1. Slice 4 explicit Test Run / observe / repair
-2. Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
-
-Slice 4 现已恢复为下一步：
-
-**Builder Phase 2 Slice 4 — explicit Test Run → observe typed
-Runtime failure → Builder explanation → optional repair Proposal。**
-
-Runtime API 已足够稳定（Studio `runAgent` / SSE / `error.code` 已存在）。
-Builder 目前完全不调用 Run。不要自动 Test Run，也不要静默 apply。
+1. Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
+2. Community 分享闭环
 
 不要重开 Knowledge V1、Resource Library V1、Runtime V1、Builder Phase 1，
-也不要扩展 PDF / embedding。
+也不要扩展 PDF / embedding。不要开始 autonomous loop。
 
 Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Community 分享闭环**：
 
@@ -285,9 +294,9 @@ Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Comm
 - 没有真实外部 Provider，就不能宣称 Runtime 已在生产网络下验证
 - Builder 不能一次修改多个对象，也不是全 Project 操作入口
 - Builder Phase 2 仍未发布。Durable Conversation、Semantic Plan Compiler、
-  Interaction Model V2、ProviderCapabilityProfile 与 Harness Receipt 已落地。
-  完整 Playwright CASE 1–3 留到最终 release gate。下一步是 Slice 4
-  Test Run，不是模块发布
+  Interaction Model V2、ProviderCapabilityProfile、Harness Receipt 与
+  Slice 4 Test Run 已落地。完整 Playwright CASE 1–3 留到最终 release gate。
+  下一步是模块发布门禁，不是下一个 Builder Slice
 - 公开 Community 目录仍有静态样例，不能当成真实注册表
 
 ## 8. 提交规则

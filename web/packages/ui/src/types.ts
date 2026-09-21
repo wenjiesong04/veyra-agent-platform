@@ -62,5 +62,6 @@ export type AccountMenuConfig = {
   authenticated?: boolean;
   accountHref: string;
   settingsHref?: string;
+  trashHref?: string;
   onSignOut?: () => void;
 };

@@ -8,32 +8,30 @@ export function notifyBuilderActivity(): void {
   window.dispatchEvent(new Event(BUILDER_ACTIVITY_EVENT));
 }
 
-export function useBuilderActivity(projectId?: string): BuilderActivityItem[] {
+export function useBuilderActivity(): BuilderActivityItem[] {
   const { api } = useProjectWorkspace();
   const [items, setItems] = React.useState<BuilderActivityItem[]>([]);
 
   React.useEffect(() => {
-    if (!projectId || !api.listBuilderActivity) {
+    if (!api.listBuilderActivity) {
       setItems([]);
       return;
     }
     let active = true;
     const load = () => {
-      void api.listBuilderActivity!(projectId, 5).then((result) => {
+      void api.listBuilderActivity!().then((result) => {
         if (active) setItems(result.items);
       }).catch(() => {
         if (active) setItems([]);
       });
     };
     load();
-    window.addEventListener("hashchange", load);
     window.addEventListener(BUILDER_ACTIVITY_EVENT, load);
     return () => {
       active = false;
-      window.removeEventListener("hashchange", load);
       window.removeEventListener(BUILDER_ACTIVITY_EVENT, load);
     };
-  }, [api, projectId]);
+  }, [api]);
 
   return items;
 }

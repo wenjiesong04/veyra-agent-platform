@@ -8,7 +8,8 @@
     "./styles/tokens.css": "./src/styles/tokens.css",
     "./styles/base.css": "./src/styles/base.css",
     "./styles/shell.css": "./src/styles/shell.css",
-    "./styles/primitives.css": "./src/styles/primitives.css"
+    "./styles/primitives.css": "./src/styles/primitives.css",
+    "./styles/feedback.css": "./src/styles/feedback.css"
   },
   "peerDependencies": {
     "react": ">=19.0.0",
