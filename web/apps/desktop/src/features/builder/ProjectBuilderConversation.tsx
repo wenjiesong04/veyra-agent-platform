@@ -17,8 +17,10 @@ import { notifyBuilderActivity } from "./use-builder-activity";
 import { BuilderValidationIssues } from "./BuilderValidationIssues";
 import { BuilderActivityBlock } from "./BuilderActivityBlock";
 import { EditProposalPanel } from "./EditProposalPanel";
-import { BuilderTestRun, latestTestOperation } from "./BuilderTestRun";
+import { BuilderComponentProposal } from "./BuilderComponentProposal";
+import { BuilderTestRun, latestWorkspaceTestOperation } from "./BuilderTestRun";
 import { BuilderWorkspaceDock, type BuilderWorkspaceTab } from "./BuilderWorkspaceDock";
+import { RunExecutionCanvas } from "../studio/RunExecutionCanvas";
 import { builderValidationFailed, builderValidationIssues } from "./validation-feedback";
 import { planFacts, workbenchPhase } from "./workbench-phase";
 import "./builder.css";
@@ -356,9 +358,20 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     const agentId = operation ? operationAgentId(operation, messages) : selected?.id ?? createdAgentId;
     const ownsSession = Boolean(session && operation && (operation.factory_session_id === session.session_id || (!operation.factory_session_id && operation.operation_id === latestOperation?.operation_id)));
     const phase = workbenchPhase(operation ?? latestOperation, ownsSession ? session : null, agentId ?? null);
+    const componentProposalPending = Boolean(
+      operation?.proposal_id
+      && operation.events.some((event) => event.facts.proposal_id === operation.proposal_id
+        && event.facts.proposal_kind === "create_custom_component")
+      && !(ownsSession && session?.state === "review"),
+    );
     const live = busy || operation?.status === "in_progress" || operation?.status === "waiting";
     const tab = workspaceTabs[workspaceId] ?? "workbench";
-    const workbench = operation?.kind === "edit" || (!operation && selected)
+    const workspaceTest = agentId ? latestWorkspaceTestOperation(operations, workspaceId) : undefined;
+    const workbench = componentProposalPending && operation
+      ? <BuilderComponentProposal api={api} projectId={project.project_id} conversationId={activeConversationId} operation={operation} locale={locale} onSnapshot={applySnapshot} />
+      : workspaceTest?.run_observation?.run_id && agentId
+        ? <RunExecutionCanvas api={api} projectId={project.project_id} agentId={agentId} runId={workspaceTest.run_observation.run_id} locale={locale} />
+      : operation?.kind === "edit" || (!operation && selected)
       ? <BuilderTarget key={agentId ?? workspaceId} projectId={project.project_id} kind={(operation?.target_kind ?? selected?.kind ?? "agent") as EditTargetKind} targetId={agentId ?? selected?.id ?? ""} targetName={selected?.name ?? agentId ?? ""} locale={locale} incoming={incoming && (!operation?.proposal_id || incoming.proposal_id === operation.proposal_id) ? incoming : undefined} resolving={busy} resolutionBlocked={blocked} onReload={() => setBlocked(false)} onPersisted={(kind, text, extra) => void persistRecord(kind, text, extra)} />
       : <FactoryAssemblyCanvas embedded locale={locale} session={ownsSession ? session : null} busy={busy ? "generate" : null} phase={phase} planSummary={planFacts((operation ?? latestOperation)?.events ?? [])} canGenerate={false} canApply={Boolean(ownsSession && session?.state === "review")} studioHref={agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} createdAgentId={agentId ?? null} drafted={false} focusChild={false} onClose={() => setCollapsedWorkspaces((current) => ({ ...current, [workspaceId]: true }))} onApply={() => void applyCreation()} onReject={ownsSession && session?.state === "review" ? () => void rejectCreation() : undefined} />;
     return <BuilderWorkspaceDock
@@ -375,7 +388,7 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
         setCollapsedWorkspaces((current) => ({ ...current, [workspaceId]: true }));
       }}
       workbench={workbench}
-      test={agentId ? <BuilderTestRun api={api} projectId={project.project_id} agentId={agentId} conversationId={activeConversationId} locale={locale} operation={latestTestOperation(operations.filter((item) => item.kind === "test_agent" && (item.diagnostic.agent_id === agentId || item.run_observation?.agent_id === agentId || !item.diagnostic.agent_id)))} onSnapshot={applySnapshot} /> : null}
+      test={agentId ? <BuilderTestRun api={api} projectId={project.project_id} agentId={agentId} workspaceId={workspaceId} conversationId={activeConversationId} locale={locale} operation={workspaceTest} onSnapshot={applySnapshot} /> : null}
     />;
   };
   return <ConversationStage
@@ -413,7 +426,11 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
         const messageRetry = !busy && !activityHasRetry && index === lastChatAbs && retry && (item.message.kind === "assistant" || item.message.kind === "clarification" || item.message.kind === "result") ? retry : undefined;
         const related = operationId ? operations.find((entry) => entry.operation_id === operationId) : undefined;
         const agentId = (related ? operationAgentId(related, messages) : null) ?? createdAgentId;
-        row = <BuilderTranscriptMessage key={item.message.message_id} item={item.message} locale={locale} studioHref={item.message.kind === "result" && agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} onRetry={messageRetry ? () => void send("", messageRetry.operation_id) : undefined} />;
+        const resourceHref = item.message.kind === "result"
+          && typeof item.message.payload.component_id === "string"
+          ? projectRoutePaths.projectResources(project.project_id)
+          : null;
+        row = <BuilderTranscriptMessage key={item.message.message_id} item={item.message} locale={locale} studioHref={item.message.kind === "result" && agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} resourceHref={resourceHref} onRetry={messageRetry ? () => void send("", messageRetry.operation_id) : undefined} />;
       }
       if (!embed || !operationId) return row;
       return <React.Fragment key={`turn-${operationId}-${index}`}>
@@ -437,7 +454,7 @@ function isActivityOperation(operation: BuilderConversationOperation): boolean {
 
 function isWorkspaceOperation(operation: BuilderConversationOperation): boolean {
   if (operation.kind === "test_agent") return false;
-  if (operation.kind === "create_agent" || operation.kind === "edit") return true;
+  if (operation.kind === "create_agent" || operation.kind === "create_component" || operation.kind === "edit") return true;
   return operation.target_kind === "agent";
 }
 
@@ -476,7 +493,7 @@ function transcriptItems(messages: BuilderConversationMessage[], operations: Bui
   return items;
 }
 
-function BuilderTranscriptMessage({ item, locale, onRetry, studioHref }: { item: BuilderConversationMessage; locale: "zh" | "en"; onRetry?: () => void; studioHref?: string | null }) {
+function BuilderTranscriptMessage({ item, locale, onRetry, studioHref, resourceHref }: { item: BuilderConversationMessage; locale: "zh" | "en"; onRetry?: () => void; studioHref?: string | null; resourceHref?: string | null }) {
   const zh = locale === "zh";
   const actionable = item.kind === "user" || item.kind === "assistant" || item.kind === "clarification" || item.kind === "result";
   let bubble: React.ReactNode;
@@ -489,6 +506,7 @@ function BuilderTranscriptMessage({ item, locale, onRetry, studioHref }: { item:
       <span>Veyra Agent</span>
       <p>{item.content}</p>
       {item.kind === "result" && studioHref ? <p><a href={studioHref}>{zh ? "打开 Studio" : "Open Studio"}</a></p> : null}
+      {item.kind === "result" && resourceHref ? <p><a href={resourceHref}>{zh ? "查看项目资源" : "View Project resources"}</a></p> : null}
     </article>;
   }
   return (

@@ -3,6 +3,7 @@ import { Background, Controls, ReactFlow } from "@xyflow/react";
 import { compactFieldType, projectRoutePaths, type AgentVersionSnapshot } from "@veyra/api-contracts";
 import { Button, LinkButton, Panel, SectionHeading, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { layoutExecutionGraph } from "../features/studio/graph-layout";
 
 export function AgentVersionPage({ projectId, agentId, versionId, workflowId }: { projectId: string; agentId: string; versionId: string; workflowId?: string }) {
   const { api } = useProjectWorkspace();
@@ -12,6 +13,13 @@ export function AgentVersionPage({ projectId, agentId, versionId, workflowId }: 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
+  const canvasPositions = snapshot
+    ? layoutExecutionGraph(
+      snapshot.source.nodes.map((node) => ({ id: node.id, component_type: node.component_type })),
+      snapshot.source.transitions,
+      snapshot.source.ui.positions,
+    )
+    : {};
   useEffect(() => {
     let cancelled = false;
     setSnapshot(null); setError(""); setLoading(true);
@@ -38,7 +46,7 @@ export function AgentVersionPage({ projectId, agentId, versionId, workflowId }: 
         <p>{zh ? "版本" : "Version"}: <code>{snapshot.version_id}</code></p><p>Source SHA-256: <code>{snapshot.source_hash}</code></p>
       </Panel>
       <div style={{ height: 360 }} aria-label={zh ? "版本画布（只读）" : "Version canvas (read only)"}>
-        <ReactFlow key={versionId} nodes={snapshot.source.nodes.map((node, index) => ({ id: node.id, position: snapshot.source.ui.positions[node.id] ?? { x: index * 200, y: 60 }, data: { label: `${node.component_type === "Agent" ? "Model" : node.component_type} · ${node.id}` } }))} edges={snapshot.source.transitions.map((edge, index) => ({ id: String(index), source: edge.from, target: edge.to, label: edge.port }))} nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null} fitView proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /></ReactFlow>
+        <ReactFlow key={versionId} nodes={snapshot.source.nodes.map((node) => ({ id: node.id, position: canvasPositions[node.id] ?? { x: 0, y: 0 }, data: { label: `${node.component_type === "Agent" ? "Model" : node.component_type} · ${node.id}` } }))} edges={snapshot.source.transitions.map((edge, index) => ({ id: String(index), source: edge.from, target: edge.to, label: edge.port }))} nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null} fitView proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /></ReactFlow>
       </div>
       <Panel><SectionHeading title={zh ? "调用接口" : "Call interface"} /><p>{zh ? "输入" : "Inputs"}: {Object.entries(snapshot.source.inputs).map(([name, spec]) => `${name}: ${compactFieldType(spec)}`).join(", ")}</p><p>{zh ? "输出" : "Outputs"}: {Object.entries(snapshot.source.outputs).map(([name, spec]) => `${name}: ${compactFieldType(spec)}`).join(", ")}</p><details><summary>{zh ? "查看完整定义" : "Inspect full definition"}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(snapshot.source, null, 2)}</pre></details></Panel>
     </> : null}

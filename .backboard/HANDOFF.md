@@ -1,16 +1,38 @@
 # Veyra Development Handoff
 
-## Current checkpoint（2026-09-22，Typed I/O + Artifact Runtime released）
+## Current checkpoint（2026-09-22，Agent Composition Slice 5 locally verified）
 
 - Branch：`codex/agent-platform` → `origin/codex/agent-platform`
-- Graph Compiler V2 checkpoint：`8bef91c9cd546717b30134059172c74ceedc6289`
-- Typed I/O + Artifact Runtime：**released** by `feat: add typed agent IO and runtime artifacts`
+- 权威 release HEAD：`5f8e8a8bda0946b1f29cdae38ee4cedaa3560fbe`
+- Graph Compiler V2：`8bef91c9cd546717b30134059172c74ceedc6289`
+- Typed I/O + Artifact Runtime：**released** at `5f8e8a8`
+- Builder Workspace/Test 位于每次 Builder operation 的 Conversation 历史中，
+  不是固定右侧栏
 - 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`、`$DB`，
   也不误改无关的 `shell.tsx` / `shell.css` / `app.test.tsx`
-- 不要重开 Graph Compiler V2
-- 不要开始完整 Playground、Workflow Builder Compiler、Chat attachment 统一
-- 暂停：autonomous Run、Community redesign、behavioral eval / LLM judge
-- 下一步：**Agent Playground**（Studio / Playground / Runs）。现在不要开始它。
+- 不要重开 Graph Compiler V2、Typed I/O、Conversation Test 布局或 Slice 1
+- 不要创建独立 Playground，不要把 Conversation Artifact Binding 当主任务
+- 暂停：autonomous Run、Community redesign、behavioral eval / LLM judge、
+  unsandboxed AI code、fake Vision/PDF/image gen、Workflow Builder Compiler
+- 当前状态：Agent Composition & Capability System V1 Slice 1–5 已本地实现并通过当前本地门禁；
+  Slice 5 尚待真实浏览器/Provider/sidecar 验收与 release checkpoint
+- Conda 环境 `veyra-agent-platform` 下 `env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check`
+  通过：695 passed；Ruff format/check、mypy、dependency/lock checks 通过
+- Web 全量测试通过：Desktop 59 files / 463 tests，Community 3 files / 15 tests；
+  两应用 typecheck 与双应用 production build 通过（Desktop 主 JS chunk 超过 500 KB）
+- Slice 5 聚焦 Desktop 测试：133 passed；新增 Studio/Builder 共用 Runtime Canvas、
+  immutable version 恢复、workspace Run 隔离、审批继续、SSE reconnect 与安全 inspector 覆盖
+- `git diff --check` 通过；没有真实浏览器 E2E、真实 Provider/sidecar 或 release 验收
+- Slice 1–5 仍未提交/推送，不代表已发布
+- 不提交、不推送，也不做 reset/checkout/clean/stash/restore/rebase
+
+Slice 1 reference baseline（本轮不重做）：
+
+- 单职责翻译/摘要仍允许 Start → Model → Output
+- 多职责 `steps` 不再静默压成一个 Model prompt
+- `step_intents` 可带 `capability_requirement`（Project-bound name/id）
+- 优先复用已绑定、ready、唯一匹配的 Project Resource Library 能力
+- 不 Catalog auto-install，不静默造 Tool，不假装 vision ready
 
 原则：
 
@@ -18,6 +40,7 @@
 - Binary values are ArtifactRefs, not inline Run JSON.
 - Declared modality does not imply runtime capability.
 - Missing parser/renderer/generator must remain a truthful missing capability.
+- Manual Canvas and AI Builder compile the same canonical AgentSource.
 
 ### Typed I/O Slice E
 
@@ -1642,9 +1665,313 @@ Canonical truth 仍是 AgentBlueprint / AgentSource。
 1. Read `AGENTS.md` → `docs/AI_DEVELOPMENT_BRIEF.md` → `docs/PROJECT_DESIGN.md` →
    `docs/DEVELOPMENT.md` → this file.
 2. `git status -sb`、`git diff --stat`、`git diff --name-status`。
-3. 工作树保留 Slice 1–3 + Factory MFJS 兼容桥 + Durable Conversation +
+3. 工作树保留 Slice 1–4 + Factory MFJS 兼容桥 + Durable Conversation +
    Semantic Plan/Compiler + Interaction Model V2 + ProviderCapabilityProfile。
-4. **下一步：在 Desktop 已登录会话里重跑浏览器 CASE 1–3**（等 Moonshot 429 解除），
-   或由用户选择 ProviderCapabilityProfile / Harness Receipt / Slice 4。
-   不要开工 Slice 4，除非用户明确恢复。
-5. 不 commit、不 push、不重做 Slice 1–3、不改右上 Runtime History 语义。
+4. 当前交付边界：Slice 4 已本地完成；停止于此，不开始 Slice 5。
+5. 不 commit、不 push、不重做 Slice 1–4、不改右上 Runtime History 语义。
+
+## Agent Composition V1 — Slice 3（2026-09-22，已实现并通过本地门禁；未发布）
+
+本节记录 **Agent Composition & Capability System V1** 的 Slice 3 状态，不覆盖
+Builder Phase 2 历史编号的 Slice 3 记录。Slice 1/2 与此前工作区改动均保留；
+Slice 4 已由后续交接记录完成。不要 commit 或 push。
+
+### 已实现行为
+
+- Capability resolution 仅考虑当前 Project 已 pin 且 ready、supported 的
+  Component。唯一匹配时复用；多个匹配时先澄清；若匹配项为
+  `requires_configuration`，则提示配置，不静默创建重复项。
+- 缺少受支持能力时，经现有 EditProposal、Builder operation/event 和
+  Workbench 流程创建 Component proposal；不另建一套 proposal service，
+  proposal 生成本身不改动或发布资源。
+- Component review 展示输入/输出、实现方式、依赖、权限与 readiness，以及
+  预期 Agent 步骤。确认是显式操作并检查过期状态；Reject 后 Component 和
+  Agent 均不变。
+- 直接 `create_component` 只进入独立确认的 Component 流程，不创建 Agent；
+  创建结果可跳转到 Project Resource Library。
+- Agent 请求因缺少能力而阻塞时，确认 Component 只会发布 Component。系统随后
+  基于当前 Project Resource Library 重新 resolution 原 semantic plan，再单独
+  展示 Agent Blueprint review 和确认。Component 精确的
+  `resource_id@version` 与 hash 会传入编译、resource plan、`AgentSource.lock`
+  和 export。
+- 发布成功后的重试复用现有 Component，避免重复创建。Apply、validation 或
+  continuation 失败会记录为失败的 Builder operation/event，并停止后续流程。
+- 实现范围限制为安全的 `model_recipe`、`transform`，或精确引用已绑定到当前
+  Project 的 `tool_wrapper`。不执行任意代码、不创建 Tool、不自动从 Catalog
+  安装，也不虚报能力。Composite graph 仍是 design-only；图像/PDF 等尚不支持的
+  artifact 能力会明确保持 unresolved。
+- Desktop 进入 Project Resource Library 时读取项目资源，并能在那里看到新建的
+  Component；相关路由和 scaffold wiring 有回归测试。
+
+### 本地验证
+
+- `env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check`：通过；后端
+  **693 passed**，dependency/lock 检查、Ruff format/check、mypy 均通过。
+- `npm test --workspace=@veyra/desktop`：通过，**55 files / 439 tests**。
+- `npm run typecheck --workspace=@veyra/desktop`：通过。
+- Builder/Component/Resource/client/Studio 聚焦测试：**6 个文件共 107 passed**；
+  最后修正 provenance/route scope 后，另一次后端定向回归 **5 tests passed**。
+- `git diff --check`：通过。
+
+以上是本地自动化检查，不等于浏览器产品验收或发布证明。目前没有完成真实浏览器
+端到端验收、真实 Provider/sidecar 验收、当前修订的 GitHub CI 或 release
+checkpoint。不要称 Slice 3 已发布或已通过生产验收。当前设计与状态见
+`docs/DEVELOPMENT.md` 和 `docs/PROJECT_DESIGN.md`。
+
+## Agent Composition V1 — Slice 4（2026-09-22，已实现并通过本地门禁；未发布）
+
+Slice 4 范围为 **Graph Layout + Default Note centered placement**。保留 Slice 1–3
+以及工作树中独立 UI 改动；不开始 Slice 5，不提交、不推送。所有变化仍是本地
+未提交实现，不代表发布或真实产品验收。
+
+### 已实现行为
+
+- 新增共享、确定性的 DAG 分层布局：按最长前驱深度放置节点，稳定排序分支与合流，
+  为 true/approved/passed 与 false/rejected/failed 路径提供可读分支位置；布局只写
+  坐标，不增删节点/边，不改端口、顺序或执行语义。
+- Studio/Workflow 缺失位置时使用该布局；已有保存坐标作为固定位置保留。Auto Layout
+  是显式操作，不会因为页面挂载而重排旧图。
+- Builder `FactoryAssemblyCanvas` 与 Studio/Workflow 共用布局 helper，显示语义化边标签；
+  Approval 与 Custom Component 按估算节点尺寸参与排布。
+- Default Note 放在执行图 bounding box 上方居中，并排除在执行图 bbox 计算之外；
+  fit view 范围包含 Note 和执行图。Note 仍可编辑/删除，不带执行 handles。
+- 默认 Note 使用可选的 `ui.notes[].manual_position` 标记手动定位；用户拖动后保存/重载及
+  Auto Layout 均保留位置。旧的默认 Note 自动坐标可重新居中，旧的自定义坐标视为手动位置。
+- Agent 与 Workflow contract/schema 接受该可选布尔标记；Contract 测试证明 Note 坐标/标记
+  改变 source hash，但不改变 behavior hash。Builder Blueprint schema parity 一并覆盖。
+- 补有 3 节点、分支/合流、7/14 节点确定性与无重叠测试，并覆盖节点尺寸和固定坐标。
+
+### 本地验证
+
+- Conda 环境 `veyra-agent-platform`：
+  `env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check` 通过，**695 passed**；
+  dependency/lock checks、Ruff format/check、mypy 均通过。
+- Web 全量测试：Desktop **56 files / 450 tests**，Community **3 files / 15 tests**；
+  两应用 typecheck 与 production build 通过。Desktop build 报告大 chunk 提示，构建成功。
+- Blueprint/schema parity 定向测试 **4 passed**；最终 `git diff --check` clean。
+
+### 未完成验收与边界
+
+自动化门禁不等于真实浏览器产品验收。目前没有 Slice 4 真实浏览器 E2E、真实
+Provider/sidecar 验收、当前修订的 GitHub CI 或 release checkpoint。Slice 1–4
+仍未提交/推送；Slice 5 Runtime Execution Overlay 明确未开始。工作树中的
+`.backboard/sessions/`、`.backboard/settings.json`、`$DB` 与用户标出的独立 UI 文件
+均按约束保留，不在本 Slice 清理或回滚。
+
+## Agent Composition V1 — Slice 5 Runtime event audit（2026-09-22，实施前审计）
+
+本审计以当前 dirty checkout 的 Runtime 与 Desktop 代码为准。当前 Slice 5 已获用户
+明确授权；旧 checkpoint 中“不要开始 Slice 5”的状态已被本次请求取代。此处是审计
+结论，不是运行态 overlay 已实现的声明。
+
+### Runtime canonical facts
+
+1. Agent Runtime 实际发出的节点事件为 `node.started`、`node.completed`、
+   `node.failed`；HumanApproval 另发 `node.waiting`。Tool、Model delta、Verifier、
+   Artifact、Approval 和 checkpoint 也各有持久化事件。`RunEventKind` 还声明了
+   `node.queued`、`node.state_changed`、`node.output`、`node.skipped`、
+   `node.cancelled`，但当前 Agent/Workflow 执行器没有实际发出这些节点事件；不能据此
+   显示 queued/skipped/cancelled node 事实。
+2. Condition 在服务端执行 `_condition` 后选择 `true` 或 `false` port；对应
+   `node.completed.payload.port` 是真实 outcome。一般节点完成也写入实际选出的 port；
+   HumanApproval 的完成 port 为 `approved` 或 `rejected`。
+3. 没有 edge-level Runtime event，也没有 `edge_id`。但每个已完成节点的实际 port 与
+   immutable run version graph 足以通过唯一 `(from node, port, to node)` transition
+   确定 traversed edge；Condition 未选中的另一 port 对应边必须保持 idle。无需增加后端事件。
+4. Approval wait 的事实组合是 Run `status=waiting`、`node.waiting`（reason=`approval`）、
+   `approval.requested`、持久化 approval request 与 checkpoint。Approve/Reject 走
+   canonical Run command API；对 Agent HumanApproval，decision 写入
+   `approval.resolved` 与 `node.completed.payload.port`，同一个 `run_id` 从所选后继节点
+   继续执行。
+5. Stop 的事实是 `run.cancelled` 且 Run `status=cancelled`，不是 failed；当前执行器不发
+   `node.cancelled`。因此只有已 start、尚无 completed/failed 的当前节点可在 cancelled
+   Run 中呈现 stopped；从未执行的节点保持 idle，不推断 skipped。
+6. `retry` 创建新 `run_id`，新 Run 的 `run.created` 带 `retry_of_run_id`；失败/中断后的
+   checkpoint `resume` 也创建 child `run_id`，带 `resume_of_run_id`。只有 Approval
+   decision 在原 `run_id` 上继续。新 Run 不能合并旧 Run 的事件。
+7. Run detail 返回持久化事件；事件在存储中按 `(run_id, sequence)` 追加，读取按 sequence
+   排序。SSE 支持 `after` / `Last-Event-ID` 回放。浏览器 `EventSource` 可以原生重连，
+   但当前前端 `watchAgentRunEvents` 在 `onerror` 主动关闭连接，实际会禁用原生重连。
+
+### 当前前端连接情况
+
+- Studio Agent Canvas 的 `live-run.ts` 已从真实事件生成有限 `pending/running/waiting/
+  completed/failed` 状态；`StudioWorkbench` 将它们映射到 React Flow 节点的 `data-state`
+  和现有样式。这是基础节点显示，不是空白实现；尚无 edge 状态、stopped/skipped/queued
+  语义或通用共享 projection。`run_id` 写入 Studio URL，但页面刷新后当前路由进入 Run
+  Detail，而不是恢复 Canvas；SSE 当前也不会自动重连。
+- Studio 的 `RunDetail` 确实消费 canonical Run events；其 Run Event list 是事件证据视图，
+  不是节点/边 Canvas projection。Workflow Run Panel 目前以短间隔读取 workflow Run
+  snapshot 并展示节点列表，不是 Agent live Canvas 的事件流实现。
+- Builder Test operation 保存 canonical `run_id`，服务端 `observe_run` 仅生成摘要；
+  Builder 测试启动/审批/拒绝/停止最终委托现有 Runtime。Desktop `BuilderTestRun` 只
+  通过 `getAgentRun` 一次读取最终 result，没有 watch SSE，也不把 Run events 投影到
+  Workbench Canvas。目前每个历史 Workspace 的 Test operation 是按 Agent 取最新项，
+  没有绑定到该 workspace，存在同一 Agent 多个历史卡片串用 Run 的风险。
+- Builder 的 Factory proposal Canvas 在 Apply 前是设计提案，不拥有 Runtime Run；没有
+  canonical `run_id` / immutable Agent version 时不得展示执行态。运行态图必须从真实 Run
+  的 `project_id + agent_id + version_id + run_id` 取回对应版本结构和该 Run 的 events。
+
+实现边界：下一步增加一个共享、纯函数的 event projection；Agent Studio 与 Builder
+Workspace 消费同一 projection。仅真实事件驱动节点/边；不改 Runtime scheduler、不添加
+推测性事件、不展开 Custom Component 内部图、不改变 Slice 4 坐标或 Note。Inspector
+只展示 Run/event contract 已存在且经过 allowlist 的安全事实。
+
+## Agent Composition V1 — Slice 5 Runtime Execution Overlay implementation（2026-09-22）
+
+### 已实现
+
+- 新增共享纯函数 Runtime event projection：按 sequence 排序并去重；只接纳当前 Run
+  的事件；节点状态覆盖 idle/queued/running/waiting approval/completed/failed/stopped/
+  skipped；只有 `node.completed.payload.port` 对应的真实 transition 会显示 traversed，
+  后继正在 running 时该边显示 active。取消 Run 不会把未开始节点伪装成 skipped。
+- Studio Run URL 刷新后恢复只读执行画布，从 `run_id` 读取 canonical Run，再按其
+  `version_id` 读取 immutable Agent source；缺少对应版本时显示安全错误，不回退到最新 Draft。
+  Canvas 展示节点/边运行状态、Note、审批与停止操作、Runtime inspector 和 Run Detail 入口。
+- Builder Workspace 使用同一执行画布和 projection。Test operation 新增可选
+  `workspace_id` 元数据并在历史操作读回；每个 workspace 只选自身的最新 Test Run，
+  同一 Agent 的其它历史卡片不会串用 Run。
+- 前端 EventSource 网络错误时不再关闭处于 CONNECTING 状态的连接，保留浏览器原生
+  Last-Event-ID 重连；快照合并按 sequence 去重。
+- 没有新增 Runtime event、migration 或推测性事件，也没有改变 scheduler、Run command
+  语义、Slice 4 的 graph coordinate / Note 布局。Inspector 只显示格式受限的错误 code、
+  时间、duration，以及 Tool receipt / artifact evidence 是否存在，不回显 payload message。
+
+### 本地验收证据
+
+- `env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check`：**695 passed**；Ruff format/check、
+  mypy、dependency/lock checks 均通过；运行环境为 Conda `veyra-agent-platform`。
+- `npm test`：Desktop **59 files / 463 tests**，Community **3 files / 15 tests**。
+- `npm run typecheck`：Desktop、Community 均通过。
+- `npm run build`：Desktop、Community 均通过；Desktop 有 >500 KB 主 chunk 提示。
+- Slice 5 focused Desktop suite：**8 files / 133 tests passed**；`git diff --check` clean。
+
+### 手工浏览器 / Runtime 验收（2026-09-22）
+
+- 在现有已登录 Chrome 中检查 Studio：画布保留 Default Note，既有 Run 的只读画布使用
+  该 Run 的 immutable version；刷新后恢复同一 Run，点击 Model 节点可见 Runtime inspector
+  和 Run Detail 入口。此为真实 UI 手工检查，不是自动化 E2E。
+- 使用一条合成输入 `这是 Veyra 的本地运行测试。` 创建了一次真实 Runtime Test Run
+  (`01a0ca02-b540-70c3-aa20-034d7da9479a`)。执行时观察到 Model 从 running 到 completed，
+  Start / Model / Output 最终均 completed；配置 Provider 输出
+  `This is a local runtime test for Veyra.`。Run 最终状态为 `unverified`，表示没有 verifier
+  证据，不把它描述为已验证结果。刷新后同一 Run 和节点状态仍可恢复。该合成 Run 留在
+  本地 `test` Project 中，未删除。
+- 当前项目没有可安全复用的 Approval、Condition branch、Custom Component 或 Component
+  Proposal 验收样例；本轮没有修改既有 Agent 来制造样例，也没有创建/发布 Component。
+- 本轮没有重发 Builder Provider prompt：这会把新提示发送给配置的模型服务并持久化 Project
+  Chat 对话，需要用户对这一次具体发送动作明确确认。Development 文档记录的先前 Builder
+  请求曾以 `factory_rate_limited` / HTTP 429 失败；本轮没有重试。没有发送账号信息、Run 日志
+  或私有项目资料。
+
+### 剩余证明缺口
+
+因此，本地 Runtime 配置 Provider 请求已经有一笔成功执行的手工 smoke，但 Builder
+Provider、正式浏览器 E2E、Approval/Condition/Component UI 闭环、GitHub CI、commit/push
+及 release checkpoint 仍缺。以上只证明当前 dirty checkout 的本地门禁和有限手工路径；
+Slice 1–5 均未发布。
+
+## Agent Composition V1 — 本轮 Builder 与 Custom Components 追记（2026-09-22）
+
+- 用户确认后，本轮只发送了一次指定的合成 Builder 请求；Provider 成功返回，未遇到
+  429，因此没有 retry。检查真实 Proposal 后未 Confirm / Apply：图里有一个 Condition 和
+  两个 HumanApproval，但 Condition 实际只分空/非空，审批与 Transform 顺序串联而非
+  urgent/routine 两条分支，Transform 输出 request，output contract 只有 `result`，不符合
+  `{priority, summary}`。Note 声称的 branch/output 与图不一致。此 Proposal 不通过验收。
+  无 fake capability、Custom Component 提案、Tool 或额外权限，也未改动 Agent。
+- Provider receipt 的自动上下文包括 Project/Agent、Workflow、Knowledge 的 metadata、
+  resource bindings、Catalog capabilities、Project file metadata 与 Project config；
+  Interview/Semantic Plan 还携带当前对话消息。Receipt 标记未包含 Knowledge/file 正文、
+  credentials/secrets、Runtime events、隐藏推理或 Provider response body。以后不得将这笔
+  请求描述成完全不附带 Project metadata。
+- 用户截图的 `Not Found` 根因已复核：本机 8771 health `build_sha=5f8e8a8`、数据库
+  revision `local_0025_project_artifacts`，组件列表 GET 为 404；当前工作区的
+  `projects/routes.py` 已有该路由。用临时 SQLite 的 TestClient lifecycle 集成测试通过。
+- 修复 Custom Components 面板的故障态：列表 API loading/error 时禁止修改表单、保存、
+  校验、发布及其它生命周期操作；404 给出服务接口不可用说明；Retry 成功后恢复操作。
+  Focused Desktop tests 3/3、隔离 backend lifecycle integration 1/1、Desktop typecheck
+  均通过。以上不是 browser E2E。
+- 本轮未重启 8771；按用户发布顺序，服务重启在可接受提交之后。因 Builder semantic
+  proposal 不符合契约，当前不能提交/push，也未重启四个服务。当前 screenshot 真实服务
+  仍会返回 404，需在后续获准的发布/重启步骤更新 sidecar 后验证 API 和浏览器界面。
+
+## Agent Composition V1 — 8771 current-dirty restart + Custom Components smoke（2026-09-22）
+
+- 用户随后明确授权只重启 `8771`，并禁止 commit/push/stage/reset/checkout/clean/stash/restore/rebase
+  及真实 Project 数据修改。本轮只停掉原监听 PID，再从项目根目录以 Conda Python 启动：
+  在仓库根目录的 Conda 环境执行 `env PYTHONPATH=backend/src VEYRA_BUILD_SHA=5f8e8a8-dirty python -m uvicorn veyra_agent_platform.local.app:app --host 127.0.0.1 --port 8771`。
+- 沿用 repo-root host config 和真实 Local database/Project root；没有使用 temp DB、E2E root、
+  fake/loopback provider。没有查看、打印或改写 `.env` 内容；正常应用启动 loader 读取配置。
+  health=`200`，`build_sha=5f8e8a8-dirty`，`database_revision=local_0026_builder_semantic_plan`，
+  `database_ready=true`。真实 DB 从 `local_0025_project_artifacts` 升级；migration 只给
+  `factory_sessions` 添加 nullable `semantic_plan_json` 列并按启动逻辑保留 pre-migration copy，
+  未改变 Project files/resources/records。
+- 对既有 test Project 的只读 Custom Components GET=`200`，Project id 匹配，组件数为 0；
+  没有写入真实 Component/Project 资源。
+- Chrome 手工刷新后：404 和 `组件列表不可用` 消失；空列表正确显示 `还没有自定义组件`；
+  New Component、表单、typed I/O JSON 可用。未保存状态下把 implementation kind 切为
+  `transform`，确认实现模板联动；之后刷新清空表单，API 再读仍为 0。Draft/Save/Publish
+  未执行；空白表单中的 Publish 控件现已 disabled，且没有保存/发布真实 Project 数据。
+  没有找到可确认隔离的既有 Project，所以未做隔离 lifecycle browser smoke。
+- API error 状态已在重启前观察：404 时表单锁定、列表标为 unavailable；API 正常后错误消失、
+  真空列表显示空态。相关自动化 panel tests 3/3、隔离后端 lifecycle test 1/1、Desktop
+  typecheck 通过；这些不是 lifecycle Browser E2E。
+- `5173`、`5174`、`8772` 未重启，当前分别 HTTP 200、HTTP 200、Community ready（SHA
+  `5f8e8a8`）。`8771` 当前由 Conda uvicorn 进程监听。
+- 当前 Builder real-provider Proposal 仍 semantic failed；未 Confirm/Apply、未再次调用
+  Provider。Agent Composition V1 不 complete。没有 Git stage/commit/push 或其它 Git 状态操作；
+  仓库既有 Slice 与独立 UI 改动保留，仅按用户要求更新两份开发记录。
+
+## Agent Composition V1 — Branch Semantics & Output Wiring hardening（2026-09-23）
+
+- 本轮没有调用真实 Builder Provider、没有 Confirm/Apply、没有重启服务、没有 stage/commit/
+  push，也没有修改真实 Project。现有失败 Proposal 仍只作为 bug evidence。
+- 根因是旧 SemanticPlan 只有线性 `depends_on`，Compiler 将 sibling branch steps 按拓扑
+  顺序串联；顶层 outputs 虽存在，Transform fallback 只映射第一个 output。现已增加通用
+  `SemanticBranch(key,label)`、`branch_condition`/`branch_key` 和 Transform `output_mapping`。
+  Condition 必须有两个 semantic branches；当前 Runtime 双端口 contract 将声明顺序映射到
+  `true`/`false`，labels 保留在 `ui.branch_labels` 和 Note/Canvas edge label；不支持的三分支
+  或 malformed topology fail closed，不按样例关键词猜测。
+- Branched compiler 现在按真实 dependency DAG 编译：每条 branch 的 Approval 只指向自身
+  branch downstream，Transform 可组装全部 declared typed outputs，terminal branches 可
+  真实汇入同一个 Output；共享 successor 只有在 declared dependencies 存在时才合并。新增
+  compiler invariants 防止 sibling dependency、multiple roots/successors 和 ambiguous
+  Condition targets；semantic compile errors 不进入 ready/review success。
+- Provider prompt、repair、strict schema、MFJS projection 已同步；原先“不要 emit branches”
+  的指令已移除。非 Condition 的 malformed branch metadata 只做有诊断的 bounded repair；
+  Condition branch 数量、identity、branch-local dependency 错误拒绝。未增加 migration，
+  contract extension 保持 schema version `1.0`。
+- 空白 Custom Component Publish gate 已修复：无 persisted draft identity 或未成功 Validate
+  时 disabled；Save/Update 清掉 validation gate，Validate 成功后才 enabled；focused panel
+  tests 覆盖该状态。
+- Focused results：Backend semantic/compiler/factory/runtime/contracts **169 passed**；
+  Desktop overlay/resource focused **36 passed**；Desktop typecheck、Ruff format/check、
+  touched production mypy（8 files）通过。首次包含旧测试文件的 mypy 运行暴露既有 test
+  typing debt，未修改或混报为本轮生产错误。Runtime fixture 已实测 True/False 两 branch
+  只执行各自 Approval/Transform 并保留双字段 Output；Browser/Provider acceptance 仍未做。
+
+## Agent Composition V1 — live 8771 branch browser acceptance（2026-09-23）
+
+- 只重启 `8771` 到当前 working tree：`build_sha=5f8e8a8-dirty`、health 200、
+  `database_ready=true`、`local_0026_builder_semantic_plan`。5173/5174/8772 未重启；没有
+  读取/打印 `.env` secret，也没有真实 Builder Provider 调用。
+- 创建隔离真实 Local Project `Browser Branch Fixture - 2026-09-23`，ID
+  `01a0ca52-c8d1-7582-a773-7b4f3d6bf2c8`，fixture Agent ID
+  `01a0ca52-c8d1-763d-876f-9fd2c7e8514f`。仅使用 `mode=alpha|beta`，未改动 `test` Project
+  或其已有 Agent；fixture 和 Run 保留，未删除。
+- Alpha manual browser acceptance：Run
+  `01a0ca53-a2bf-7b24-957a-86dcd8c8a0f8` 在 `approval_alpha` waiting，Beta approval
+  未开始；Approve 后同一 Run 完成 `transform_alpha`/Output，Beta transform 未开始，Run
+  result 为 `{branch: alpha, summary: Alpha summary for alpha}`。
+- Beta manual browser acceptance：Run
+  `01a0ca54-c517-787b-bd8d-d4034403f38c` 在 `approval_beta` waiting，Alpha approval
+  未开始；Approve 后同一 Run 完成 `transform_beta`/Output，Alpha transform 未开始，Run
+  result 为 `{branch: beta, summary: Beta summary for beta}`。
+- Canvas overlay 截图与 event list 一致：实际 waiting node、completed nodes、选中 edge 和
+  未选 edge 正确；未出现双 branch 同时高亮。两个 completed Run 刷新 `run_id` URL 后均恢复
+  immutable Run 的 graph/status。
+- Canvas 显示真实 edge labels `Alpha`、`Beta`；Note 描述与实际 graph 一致。Resource Library
+  空白 Component 表单手工确认 Save Draft enabled、Validate disabled、Publish disabled；没有
+  写入 Component。以上是 manual browser evidence，不把 unit/integration 当 browser E2E。
+- 本轮结束点：未开始 Community/Workflow/新功能；无 bug hotfix；没有 commit/push/stage，
+  当前 Builder real-provider semantic blocker 仍保留，真实 Provider acceptance 仍需以后单独授权。

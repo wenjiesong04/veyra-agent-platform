@@ -1079,9 +1079,17 @@
   height: 100%;
 }
 
-.agent-convo-flow-edges line {
+.agent-convo-flow-edges line,
+.agent-convo-flow-edges path {
   stroke: color-mix(in srgb, var(--accent) 45%, var(--line));
   stroke-width: 1.6;
+  fill: none;
+}
+.agent-convo-flow-edges text {
+  fill: var(--subtle);
+  stroke: none;
+  font-size: 10px;
+  text-anchor: middle;
 }
 
 .agent-convo-flow-node {
@@ -1096,6 +1104,25 @@
 
 .agent-convo-flow-node > strong { font-size: 12px; }
 .agent-convo-flow-node > small { color: var(--subtle); font-size: 10px; }
+.agent-convo-flow-note {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line));
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--warn-soft) 88%, var(--surface));
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.agent-convo-flow-note.color-teal { border-color: color-mix(in srgb, var(--accent) 32%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 88%, var(--surface)); }
+.agent-convo-flow-note.color-violet { border-color: color-mix(in srgb, var(--kind-workflow) 36%, var(--line)); background: color-mix(in srgb, var(--kind-workflow) 12%, var(--surface)); }
+.agent-convo-flow-note.color-slate { border-color: var(--line-strong); background: var(--surface-soft); }
+.agent-convo-flow-note.color-amber { border-color: color-mix(in srgb, var(--warn) 28%, var(--line)); background: color-mix(in srgb, var(--warn-soft) 88%, var(--surface)); }
 .agent-convo-flow-node[data-state="running"],
 .agent-convo-flow-node[data-state="waiting"] {
   border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--line));

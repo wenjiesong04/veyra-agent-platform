@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from veyra_agent_platform.contracts.agent import AgentBlueprint
+from veyra_agent_platform.contracts.agent import AgentBlueprint, ComponentType
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
 from veyra_agent_platform.local.builder.harness import BuilderHarness, BuilderMode
@@ -28,6 +28,9 @@ from veyra_agent_platform.local.builder.receipts import (
     HarnessReceiptRecorder,
     InvocationKind,
     structured_mode_of,
+)
+from veyra_agent_platform.local.builder.resource_binding import (
+    project_capability_catalog,
 )
 from veyra_agent_platform.local.builder.semantic_compiler import (
     BuilderProjectContext,
@@ -58,6 +61,7 @@ from .compiler import (
     BlueprintCompileError,
     agent_candidate_identity,
     compile_blueprint,
+    is_pinned_project_component,
     resource_plan,
     run_availability,
 )
@@ -111,11 +115,16 @@ class FactoryService:
         catalog: ResourceCatalog,
         client: KimiClient,
         profiles: ProviderCapabilityStore | None = None,
+        *,
+        project_resources: ProjectResourceService | None = None,
     ) -> None:
         self.store = store
         self.projects = projects
         self.catalog = catalog
         self.client = client
+        self.project_resources = project_resources or ProjectResourceService(
+            projects, catalog
+        )
         self.profiles = profiles or ProviderCapabilityStore(store.database_path)
         self.harness = BuilderHarness(projects, catalog)
         self._writer_lock = threading.RLock()
@@ -280,15 +289,8 @@ class FactoryService:
                 ],
                 {
                     "role": "user",
-                    "content": (
-                        "Generate the AgentSemanticPlanV1 JSON for this requirement. "
-                        "Use step_intents for every real duty. operation_kind must "
-                        "be one of model, capability, transform, condition, "
-                        "approval, verification. Human confirmation is approval. "
-                        "A check after a result is verification. A branch is "
-                        "condition. Put tool policy in user_constraints, not "
-                        "capability_intents. Do not emit branches or node IDs. "
-                        "A simple one-duty Agent may use a single model step."
+                    "content": _planning_user_content(
+                        self._project_capability_catalog(project_id)
                     ),
                 },
             ]
@@ -369,6 +371,19 @@ class FactoryService:
                             step.operation_kind for step in plan.step_intents
                         ),
                         approval_points=plan.approval_points,
+                        reusable_capability=any(
+                            step.reusable_capability for step in plan.step_intents
+                        ),
+                        branch_intent=any(
+                            step.branches or step.branch_condition
+                            for step in plan.step_intents
+                        ),
+                    )
+                    self._set_state(
+                        session_id,
+                        "generating",
+                        semantic_plan=plan.to_dict(),
+                        diagnostics=diagnostics,
                     )
                 except (
                     json.JSONDecodeError,
@@ -413,6 +428,20 @@ class FactoryService:
                 compiled = compile_semantic_plan(
                     plan, self._project_context(project_id)
                 )
+                if compiled.status == "compile_error":
+                    diagnostic = "semantic_compile_failed: " + (
+                        compiled.error or "canonical graph could not be represented"
+                    )
+                    diagnostics.append(f"attempt {attempt}: {diagnostic}")
+                    messages.append(completion.assistant_message)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _repair_prompt(diagnostics, schema=plan_schema),
+                        }
+                    )
+                    attempt += 1
+                    continue
                 if compiled.status == "clarification":
                     self._set_state(
                         session_id,
@@ -449,7 +478,7 @@ class FactoryService:
                     return self.get_session(project_id, session_id)
                 blueprint = compiled.blueprint
                 assert blueprint is not None
-                missing = self._missing_capabilities(blueprint)
+                missing = self._missing_capabilities(blueprint, project_id)
                 if missing:
                     self._set_state(
                         session_id,
@@ -457,7 +486,11 @@ class FactoryService:
                         blueprint=blueprint.to_dict(),
                         diagnostics=[],
                         missing_capabilities=missing,
-                        resource_plan=resource_plan(blueprint, self.catalog),
+                        resource_plan=resource_plan(
+                            blueprint,
+                            self.catalog,
+                            project_resources=self._project_resource_list(project_id),
+                        ),
                         identity={"name": display, "slug": slug},
                     )
                     return self.get_session(project_id, session_id)
@@ -465,7 +498,13 @@ class FactoryService:
                 stage(COMPILE_COMPLETED)
                 stage(VALIDATION_STARTED)
                 try:
-                    compile_blueprint(blueprint, self.catalog, name=display, slug=slug)
+                    compile_blueprint(
+                        blueprint,
+                        self.catalog,
+                        project_resources=self._project_resource_list(project_id),
+                        name=display,
+                        slug=slug,
+                    )
                 except BlueprintCompileError as exc:
                     diagnostics.extend(
                         f"attempt {attempt}: {item}" for item in exc.diagnostics
@@ -491,7 +530,11 @@ class FactoryService:
                     blueprint=blueprint.to_dict(),
                     diagnostics=[],
                     missing_capabilities=[],
-                    resource_plan=resource_plan(blueprint, self.catalog),
+                    resource_plan=resource_plan(
+                        blueprint,
+                        self.catalog,
+                        project_resources=self._project_resource_list(project_id),
+                    ),
                     identity={"name": display, "slug": slug},
                 )
                 return self.get_session(project_id, session_id)
@@ -506,6 +549,142 @@ class FactoryService:
                 "factory_generation_invalid",
                 "Factory could not produce a valid Semantic Plan after three attempts",
             )
+
+    def resume_after_component(
+        self,
+        project_id: str,
+        session_id: str,
+        *,
+        on_stage: Callable[[str, dict[str, str]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Recompile the stored plan after a separately confirmed Component write."""
+
+        session = self._row(project_id, session_id)
+        raw_plan = session["semantic_plan_json"]
+        if not raw_plan:
+            raise FactoryError(
+                "factory_continuation_unavailable",
+                "The original semantic plan is unavailable; no Agent was created.",
+            )
+        try:
+            plan = AgentSemanticPlanV1.from_dict(json.loads(raw_plan))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise FactoryError(
+                "factory_continuation_invalid",
+                "The stored semantic plan could not be safely recompiled.",
+            ) from exc
+
+        identity = json.loads(session["identity_json"] or "{}")
+        display, slug = agent_candidate_identity(
+            str(identity.get("name") or plan.suggested_name)
+        )
+
+        def stage(kind: str, facts: dict[str, str] | None = None) -> None:
+            if on_stage is not None:
+                on_stage(kind, facts or {})
+
+        stage(CAPABILITIES_STARTED)
+        compiled = compile_semantic_plan(plan, self._project_context(project_id))
+        if compiled.status == "compile_error":
+            raise FactoryError(
+                "factory_continuation_invalid",
+                "The stored semantic plan could not be compiled without losing "
+                "graph semantics: "
+                + (compiled.error or "unknown semantic compile error"),
+            )
+        if compiled.status == "clarification":
+            self._set_state(
+                session_id,
+                "ready",
+                ready=True,
+                next_prompt=compiled.question or _READY_PROMPT,
+                blueprint=None,
+                diagnostics=[],
+                missing_capabilities=[],
+                resource_plan=[],
+                semantic_plan=plan.to_dict(),
+                identity={"name": display, "slug": slug},
+            )
+            return self.get_session(project_id, session_id)
+
+        stage(
+            "builder.capabilities.resolved",
+            {
+                "tool_count": str(len(compiled.tools)),
+                "knowledge_count": str(len(compiled.documents)),
+                "missing_count": str(len(compiled.missing)),
+            },
+        )
+        if compiled.status == "missing_capability":
+            self._set_state(
+                session_id,
+                "missing_capability",
+                diagnostics=[],
+                missing_capabilities=list(compiled.missing),
+                resource_plan=[],
+                semantic_plan=plan.to_dict(),
+                identity={"name": display, "slug": slug},
+            )
+            return self.get_session(project_id, session_id)
+
+        blueprint = compiled.blueprint
+        assert blueprint is not None
+        missing = self._missing_capabilities(blueprint, project_id)
+        if missing:
+            self._set_state(
+                session_id,
+                "missing_capability",
+                blueprint=blueprint.to_dict(),
+                diagnostics=[],
+                missing_capabilities=missing,
+                resource_plan=resource_plan(
+                    blueprint,
+                    self.catalog,
+                    project_resources=self._project_resource_list(project_id),
+                ),
+                semantic_plan=plan.to_dict(),
+                identity={"name": display, "slug": slug},
+            )
+            return self.get_session(project_id, session_id)
+
+        stage(COMPILE_STARTED)
+        stage(COMPILE_COMPLETED)
+        stage(VALIDATION_STARTED)
+        try:
+            compile_blueprint(
+                blueprint,
+                self.catalog,
+                project_resources=self._project_resource_list(project_id),
+                name=display,
+                slug=slug,
+            )
+        except BlueprintCompileError as exc:
+            raise FactoryError(
+                "factory_continuation_invalid",
+                "The Agent candidate failed validation after Component creation: "
+                + "; ".join(exc.diagnostics),
+            ) from exc
+        stage(VALIDATION_COMPLETED)
+        self._set_state(
+            session_id,
+            "review",
+            ready=True,
+            next_prompt=(
+                "The confirmed Component is pinned. Review the Agent Blueprint and "
+                "Resource Plan, then explicitly confirm Agent Draft creation."
+            ),
+            blueprint=blueprint.to_dict(),
+            diagnostics=[],
+            missing_capabilities=[],
+            resource_plan=resource_plan(
+                blueprint,
+                self.catalog,
+                project_resources=self._project_resource_list(project_id),
+            ),
+            semantic_plan=plan.to_dict(),
+            identity={"name": display, "slug": slug},
+        )
+        return self.get_session(project_id, session_id)
 
     def apply_draft(
         self,
@@ -541,7 +720,7 @@ class FactoryService:
                     "factory_blueprint_invalid",
                     "The stored Blueprint is no longer valid",
                 ) from exc
-            if self._missing_capabilities(blueprint):
+            if self._missing_capabilities(blueprint, project_id):
                 raise FactoryError(
                     "factory_missing_capability",
                     "The Blueprint references resources that are not available",
@@ -553,6 +732,7 @@ class FactoryService:
                 source, _, _ = compile_blueprint(
                     blueprint,
                     self.catalog,
+                    project_resources=self._project_resource_list(project_id),
                     name=applied_name,
                     slug=applied_slug,
                     description=description,
@@ -679,13 +859,45 @@ class FactoryService:
             receipts.succeed(receipt_id, provider_request_id=completion.request_id)
         return completion
 
-    def _missing_capabilities(self, blueprint: AgentBlueprint) -> list[dict[str, Any]]:
+    def _missing_capabilities(
+        self, blueprint: AgentBlueprint, project_id: str
+    ) -> list[dict[str, Any]]:
         missing: list[dict[str, Any]] = []
+        project_resources = self._project_resource_list(project_id)
+        project_components = {
+            str(resource.get("reference")): resource
+            for resource in project_resources
+            if resource.get("kind") == "component"
+            and resource.get("component_class") == "composite"
+            and resource.get("scope") == "project"
+        }
+        for node in blueprint.nodes:
+            if node.component_type is not ComponentType.CUSTOM_COMPONENT:
+                continue
+            resource = project_components.get(node.uses or "")
+            if resource is None:
+                missing.append(
+                    _missing_item(
+                        "component",
+                        node.uses or "CustomComponent",
+                        "resource is not a current Project component",
+                    )
+                )
+            elif not is_pinned_project_component(resource):
+                missing.append(
+                    _missing_item(
+                        "component",
+                        node.uses or "CustomComponent",
+                        "resource is not a ready, current Project pin",
+                    )
+                )
         components = {
             resource["name"]: resource
             for resource in self.catalog.resources(kind="component")["resources"]
         }
         for component_type in blueprint.required_capabilities.component_types:
+            if component_type is ComponentType.CUSTOM_COMPONENT:
+                continue
             resource = components.get(component_type.value)
             if resource is None or not resource["factory_selectable"]:
                 missing.append(
@@ -703,17 +915,38 @@ class FactoryService:
         )
         for kind, references in grouped:
             for reference in references:
-                item = self._missing_reference(kind, reference, expected_kinds[kind])
+                item = self._missing_reference(
+                    kind, reference, expected_kinds[kind], project_resources
+                )
                 if item is not None:
                     missing.append(item)
         return missing
 
     def _missing_reference(
-        self, kind: str, reference: str, expected_kinds: set[str]
+        self,
+        kind: str,
+        reference: str,
+        expected_kinds: set[str],
+        project_resources: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         try:
             resource = self.catalog.by_reference(reference)
         except ResourceCatalogError:
+            project_resource = next(
+                (
+                    item
+                    for item in project_resources
+                    if item.get("reference") == reference
+                    and item.get("kind") == "component"
+                    and item.get("component_class") == "composite"
+                    and item.get("scope") == "project"
+                ),
+                None,
+            )
+            if project_resource is not None and kind == "tool":
+                if is_pinned_project_component(project_resource):
+                    return None
+                return _missing_item(kind, reference, "resource is not selectable")
             return _missing_item(kind, reference, "resource is not registered")
         if resource["kind"] not in expected_kinds:
             return _missing_item(kind, reference, "resource kind does not match")
@@ -725,14 +958,21 @@ class FactoryService:
         return None
 
     def _project_context(self, project_id: str) -> BuilderProjectContext:
-        listed = ProjectResourceService(self.projects, self.catalog).list(project_id)
+        project_resources = self._project_resource_list(project_id)
         summary = self.projects.project_summary(project_id)
         return builder_project_context(
             project_id=project_id,
             knowledge=list(summary.get("knowledge") or []),
-            project_resources=list(listed.get("resources") or []),
+            project_resources=project_resources,
             catalog_resources=list(self.catalog.resources().get("resources") or []),
         )
+
+    def _project_resource_list(self, project_id: str) -> list[dict[str, Any]]:
+        listed = self.project_resources.list(project_id)
+        return list(listed.get("resources") or [])
+
+    def _project_capability_catalog(self, project_id: str) -> list[dict[str, str]]:
+        return project_capability_catalog(self._project_resource_list(project_id))
 
     def _run_availability(self, payload: dict[str, Any]) -> str:
         plan = payload.get("resource_plan")
@@ -879,14 +1119,53 @@ def _repair_prompt(
         "Repair only the invalid AgentSemanticPlanV1 fields. Keep the original "
         "user requirement. operation_kind must be exactly model, capability, "
         "transform, condition, approval, or verification. Human confirmation is "
-        "approval. A later check is verification. A branch is condition. Do not "
-        "emit branches, node IDs, resource hashes, Knowledge UUIDs, canvas "
-        "positions, source.lock, or permissions. Do not omit approval, "
-        "condition, verification, or transform step_intents once they were "
-        "required. Do not copy policy sentences into capability_intents. "
+        "approval. A later check is verification. A branch is condition. "
+        "capability_requirement is only for capability steps and copies a "
+        "Project-bound tool name or resource_id. For every condition, emit exactly "
+        "two branches with semantic key and label. Every branch-local step must "
+        "carry branch_condition and branch_key and depend only on its own branch. "
+        "For deterministic transforms, output_mapping may map declared output "
+        "field names to literals or {{input_field}} references. Do not emit node IDs, "
+        "resource hashes, Knowledge UUIDs, canvas positions, source.lock, or "
+        "permissions. Do not omit approval, condition, verification, transform, "
+        "capability, or multiple model step_intents once they were required. Do "
+        "not copy policy sentences into capability_intents. "
         + (f"step_intents schema: {excerpt}. " if excerpt else "")
         + "Diagnostics: "
         + "; ".join(diagnostics)
+    )
+
+
+def _planning_user_content(catalog: list[dict[str, str]]) -> str:
+    if catalog:
+        available = json.dumps(catalog, ensure_ascii=False)
+        library = (
+            "Project-bound capabilities to reuse by exact name or resource_id: "
+            + available
+            + ". Do not invent a duplicate. "
+        )
+    else:
+        library = (
+            "This Project has no bound tools. Leave capability_intents empty "
+            "unless the user named an external tool that must be reported as "
+            "missing. "
+        )
+    return (
+        "Generate the AgentSemanticPlanV1 JSON for this requirement. "
+        "Use step_intents for every real duty. operation_kind must be one of "
+        "model, capability, transform, condition, approval, verification. "
+        "Human confirmation is approval. A check after a result is "
+        "verification. A branch is condition. Put tool policy in "
+        "user_constraints, not capability_intents. "
+        + library
+        + "capability_requirement copies a bound tool name or resource_id when "
+        "operation_kind is capability. For every condition, emit exactly two "
+        "semantic branches. Mark every branch-local duty with branch_condition "
+        "and branch_key; never linearize sibling branches through depends_on. "
+        "Use output_mapping on deterministic transforms when multiple declared "
+        "output fields must be assembled. Do not emit node IDs, hashes, or "
+        "versions. A simple one-duty Agent may use a single model step. Distinct "
+        "duties must remain distinct step_intents."
     )
 
 

@@ -19,7 +19,7 @@ def test_platform_node_packages_are_the_only_catalog_source() -> None:
     packages = load_node_packages()
 
     assert not (root / "catalog.v1.json").exists()
-    assert len(packages) == 34
+    assert len(packages) == 35
     assert {package.path.name for package in packages} == {"node.yaml"}
     assert node_definition("veyra.tool.filesystem.read", "1.0.0")["kind"] == "tool"
     with pytest.raises(NodePackageError, match="unknown node package"):

@@ -142,6 +142,79 @@ def resolve_project_resource(
     )
 
 
+_IDENTITY_NOISE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalized_identity(value: object) -> str:
+    return _IDENTITY_NOISE.sub(" ", str(value or "").casefold()).strip()
+
+
+def _resource_identity_keys(resource: dict[str, Any]) -> set[str]:
+    reference = str(resource.get("reference") or "")
+    resource_id = str(resource.get("resource_id") or "")
+    keys = {
+        _normalized_identity(resource.get("name")),
+        _normalized_identity(resource_id),
+        _normalized_identity(reference),
+        _normalized_identity(reference.split("@", 1)[0]),
+    }
+    parts = [part for part in resource_id.split(".") if part]
+    if len(parts) >= 2:
+        keys.add(_normalized_identity(" ".join(parts[-2:])))
+    return {key for key in keys if len(key) >= 4}
+
+
+def _unique_by_reference(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for resource in resources:
+        reference = str(resource.get("reference") or "")
+        if not reference or reference in seen:
+            continue
+        seen.add(reference)
+        unique.append(resource)
+    return unique
+
+
+def _prefer_ready(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ready = [
+        resource
+        for resource in matches
+        if resource_readiness(resource)["readiness"] == "ready"
+    ]
+    return ready or matches
+
+
+def project_capability_catalog(
+    project_resources: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Provider-safe Project capability names. No hashes, pins, or versions."""
+
+    catalog: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for resource in project_resources:
+        if resource.get("scope") != "project":
+            continue
+        if resource.get("kind") not in {"tool", "mcp_tool"} and not (
+            resource.get("kind") == "component"
+            and resource.get("component_class") == "composite"
+        ):
+            continue
+        resource_id = str(resource.get("resource_id") or "")
+        if not resource_id or resource_id in seen:
+            continue
+        seen.add(resource_id)
+        catalog.append(
+            {
+                "name": str(resource.get("name") or resource_id),
+                "resource_id": resource_id,
+                "kind": str(resource.get("kind") or "tool"),
+                "readiness": str(resource_readiness(resource)["readiness"]),
+            }
+        )
+    return catalog
+
+
 def resolve_capability_intent(
     project_resources: list[dict[str, Any]],
     catalog_resources: list[dict[str, Any]],
@@ -161,10 +234,17 @@ def resolve_capability_intent(
         resource
         for resource in project_resources
         if resource.get("scope") == "project"
-        and resource.get("kind") in {"tool", "mcp_tool"}
         and resource.get("binding_status") != "stale"
+        and (
+            resource.get("kind") in {"tool", "mcp_tool"}
+            or (
+                resource.get("kind") == "component"
+                and resource.get("component_class") == "composite"
+            )
+        )
     ]
     folded = instruction.casefold()
+    identity = _normalized_identity(instruction)
     exact_reference = [
         resource
         for resource in project_owned
@@ -186,12 +266,27 @@ def resolve_capability_intent(
     ]
     if len(exact_name) == 1:
         return ResourceMatch("resolved", exact_name[0], (exact_name[0],))
+    identical = [
+        resource
+        for resource in project_owned
+        if identity and identity in _resource_identity_keys(resource)
+    ]
+    identical = _unique_by_reference(identical)
+    if len(identical) == 1:
+        return ResourceMatch("resolved", identical[0], (identical[0],))
+    if len(identical) > 1:
+        return ResourceMatch("ambiguous", None, tuple(identical))
     named = [
         resource
         for resource in project_owned
-        if str(resource.get("name") or "").casefold() in folded
+        if any(
+            len(key) >= 8 and key in identity
+            for key in _resource_identity_keys(resource)
+        )
+        or str(resource.get("name") or "").casefold() in folded
         or str(resource.get("resource_id") or "").casefold() in folded
     ]
+    named = _unique_by_reference(named)
     if len(named) == 1:
         return ResourceMatch("resolved", named[0], (named[0],))
     if len(named) > 1:

@@ -72,6 +72,109 @@ def test_compile_uses_goal_when_optional_description_is_blank() -> None:
     assert source.description == "Prepare a research brief from a question."
 
 
+def test_compile_locks_exact_ready_project_custom_component_pin() -> None:
+    reference = "01a0c9a5-e95a-7323-b81b-5069d9db2f1a@1.0.0"
+    digest = "a" * 64
+    payload = _blueprint()
+    payload["nodes"] = [
+        {"id": "start", "component_type": "Start"},
+        {
+            "id": "normalize",
+            "component_type": "CustomComponent",
+            "uses": reference,
+        },
+        {
+            "id": "analyze",
+            "component_type": "Agent",
+            "model_ref": "model.primary",
+            "system_prompt": "Prepare the normalized brief.",
+        },
+        {"id": "output", "component_type": "Output", "output_name": "brief"},
+    ]
+    payload["transitions"] = [
+        {"from": "start", "port": "next", "to": "normalize"},
+        {"from": "normalize", "port": "next", "to": "analyze"},
+        {"from": "analyze", "port": "next", "to": "output"},
+    ]
+    payload["required_capabilities"] = {
+        **payload["required_capabilities"],
+        "component_types": ["Start", "CustomComponent", "Agent", "Output"],
+    }
+    component = {
+        "reference": reference,
+        "kind": "component",
+        "component_class": "composite",
+        "scope": "project",
+        "binding_status": "current",
+        "factory_selectable": True,
+        "availability": "ready",
+        "runtime_status": "supported",
+        "content_hash": digest,
+        "bound_content_hash": digest,
+        "required_permissions": {
+            "network_hosts": [],
+            "tools": [],
+            "filesystem_read_roots": [],
+            "filesystem_write_roots": [],
+            "shell_workspace_only": False,
+        },
+        "spec": {},
+    }
+
+    source, plan, availability = compile_blueprint(
+        AgentBlueprint.from_dict(payload),
+        ResourceCatalog(),
+        project_resources=[component],
+    )
+
+    assert source.lock[reference] == digest
+    assert any(node.component_type.value == "CustomComponent" for node in source.nodes)
+    assert {item["reference"] for item in plan} >= {reference}
+    assert (
+        next(item for item in plan if item["reference"] == reference)["availability"]
+        == "ready"
+    )
+    assert availability == "requires_configuration"
+
+
+def test_compile_rejects_stale_project_custom_component_pin() -> None:
+    reference = "01a0c9a5-e95a-7323-b81b-5069d9db2f1a@1.0.0"
+    digest = "a" * 64
+    payload = _blueprint()
+    payload["nodes"] = [
+        {"id": "start", "component_type": "Start"},
+        {"id": "normalize", "component_type": "CustomComponent", "uses": reference},
+        {"id": "output", "component_type": "Output", "output_name": "brief"},
+    ]
+    payload["transitions"] = [
+        {"from": "start", "port": "next", "to": "normalize"},
+        {"from": "normalize", "port": "next", "to": "output"},
+    ]
+    payload["required_capabilities"] = {
+        **payload["required_capabilities"],
+        "component_types": ["Start", "CustomComponent", "Output"],
+    }
+    stale_component = {
+        "reference": reference,
+        "kind": "component",
+        "component_class": "composite",
+        "scope": "project",
+        "binding_status": "stale",
+        "factory_selectable": True,
+        "availability": "ready",
+        "runtime_status": "supported",
+        "content_hash": digest,
+        "bound_content_hash": "b" * 64,
+    }
+
+    with pytest.raises(BlueprintCompileError, match="current, ready Project pin"):
+        compile_blueprint(
+            AgentBlueprint.from_dict(payload),
+            ResourceCatalog(),
+            project_resources=[stale_component],
+        )
+
+
 def test_compile_resolves_read_tool_and_derives_full_permission_id() -> None:
     payload = _blueprint()
     payload["nodes"] = [

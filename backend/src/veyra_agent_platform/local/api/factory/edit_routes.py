@@ -12,6 +12,7 @@ from veyra_agent_platform.local.factory.edit_service import (
     EditCommand,
     EditProposalService,
     KnowledgeBindingUnresolved,
+    ProposalTargetKind,
     ResourceBindingUnresolved,
     TargetKind,
 )
@@ -172,7 +173,10 @@ def build_router() -> APIRouter:
 
     @router.get("")
     def list_proposals(
-        project_id: str, target_kind: TargetKind, target_id: str, request: Request
+        project_id: str,
+        target_kind: ProposalTargetKind,
+        target_id: str,
+        request: Request,
     ) -> dict[str, Any]:
         return _translate(
             lambda: _service(request).list(project_id, target_kind, target_id)

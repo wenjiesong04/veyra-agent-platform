@@ -402,6 +402,41 @@
         }
       }
     },
+    "custom_component_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "uses"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "CustomComponent"
+        },
+        "uses": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "input_mapping": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "output_mapping": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "node": {
       "oneOf": [
         {
@@ -430,6 +465,9 @@
         },
         {
           "$ref": "#/$defs/output_node"
+        },
+        {
+          "$ref": "#/$defs/custom_component_node"
         }
       ]
     },
@@ -564,6 +602,9 @@
                 "type": "integer",
                 "minimum": 160,
                 "maximum": 640
+              },
+              "manual_position": {
+                "type": "boolean"
               }
             }
           }
@@ -577,6 +618,21 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 80
+          }
+        },
+        "branch_labels": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["true", "false"],
+            "properties": {
+              "true": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "false": { "type": "string", "minLength": 1, "maxLength": 80 }
+            }
           }
         }
       }

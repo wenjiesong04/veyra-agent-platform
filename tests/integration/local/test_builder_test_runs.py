@@ -111,10 +111,14 @@ def _test_run(
     agent_id: str,
     inputs: dict[str, object],
     locale: str = "en",
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
+    body: dict[str, object] = {"agent_id": agent_id, "inputs": inputs, "locale": locale}
+    if workspace_id is not None:
+        body["workspace_id"] = workspace_id
     response = client.post(
         f"/api/v1/projects/{project_id}/builder/conversations/{conversation_id}/test-runs",
-        json={"agent_id": agent_id, "inputs": inputs, "locale": locale},
+        json=body,
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -162,10 +166,16 @@ def test_explicit_test_required_and_canonical_run_linked(tmp_path: Path) -> None
         conversation_id = _conversation(client, project_id)
         assert _runs(client, project_id, agent_id) == []
         started = _test_run(
-            client, project_id, conversation_id, agent_id, {"text": "世界"}
+            client,
+            project_id,
+            conversation_id,
+            agent_id,
+            {"text": "世界"},
+            workspace_id="workspace-card-1",
         )
         operation = _test_op(started)
         assert operation["kind"] == "test_agent"
+        assert operation["workspace_id"] == "workspace-card-1"
         assert operation["run_id"]
         snapshot = _await_test(client, project_id, conversation_id)
         operation = _test_op(snapshot)
@@ -201,6 +211,7 @@ def test_explicit_test_required_and_canonical_run_linked(tmp_path: Path) -> None
             f"/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
         ).json()
         assert _test_op(refreshed)["run_id"] == operation["run_id"]
+        assert _test_op(refreshed)["workspace_id"] == "workspace-card-1"
         assert _test_op(refreshed)["status"] == "succeeded"
 
 

@@ -4,6 +4,7 @@ import { Button, EmptyState, ErrorState, LoadingMask, LoadingState, Panel, Secti
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { CustomComponentsPanel } from "../features/resources/custom-components-panel";
 
 function availabilityLabel(value: ResourceDescriptor["availability"], zh: boolean): string {
   return zh
@@ -153,6 +154,7 @@ export function ProjectResourcesPage({ projectId }: { projectId: string }) {
         <div className={data?.stale_count ? "is-warning" : ""}><strong>{data?.stale_count ?? 0}</strong><span>{zh ? "版本已漂移" : "Stale bindings"}</span></div>
         <div><strong>{data?.builtin_count ?? 0}</strong><span>{zh ? "平台内置" : "Built-in primitives"}</span></div>
       </div>
+      <CustomComponentsPanel api={api} projectId={projectId} onChanged={load} />
       <LoadingMask active={pending} label={zh ? "正在更新绑定…" : "Updating bindings…"}>
       {showCatalog ? <Panel className="project-resource-catalog-panel"><SectionHeading eyebrow={zh ? "总资源目录" : "Resource Catalog"} title={zh ? "选择要加入 Project 的资源" : "Choose resources to add"} detail={zh ? "平台内置 Primitive 无需加入。" : "Platform primitives are always available."} />{addable.length ? <div className="project-resource-catalog-list">{addable.map((resource) => <div className="project-resource-catalog-item" key={resource.reference}><div><strong>{resource.name}</strong><small>{kindLabel(resource.kind, zh)} · v{resource.version} · {resource.description}</small><StatusBadge label={availabilityLabel(resource.availability, zh)} tone={tone(resource.availability)} />{resource.blocking_reasons?.map((reason) => <small key={reason.code}>{reason.message}</small>)}</div><Button size="sm" variant="secondary" disabled={pending || loading} onClick={() => void addResource(resource)}>{zh ? "加入" : "Add"}</Button></div>)}</div> : <EmptyState icon={CheckCircle2} title={zh ? "没有可加入的新资源" : "No new resources to add"} detail={zh ? "当前项目已经包含目录中的可选资源。" : "This Project already contains the optional Catalog resources."} />}</Panel> : null}
       <Panel><SectionHeading eyebrow={zh ? "绑定与使用" : "Bindings and usage"} title={`${resources.length} ${zh ? "项资源" : "resources"}`} detail={zh ? "Project 固定版本不会自动升级；Catalog 身份按同一引用核对。" : "Project pins never auto-upgrade; Catalog identity is compared at the same reference."} />{resources.length ? <div className="project-resource-list">{resources.map((resource) => <ProjectResourceRow key={resource.reference} resource={resource} zh={zh} pending={pending} onRemove={(item) => void removeResource(item)} />)}</div> : <EmptyState icon={CircleAlert} title={zh ? "这个 Project 还没有可选资源" : "No optional resources yet"} detail={zh ? "从总目录加入 Tool、MCP、Skill、Policy 或 Composite Component。" : "Add a Tool, MCP, Skill, Policy, or Composite Component from the Catalog."} />}</Panel>

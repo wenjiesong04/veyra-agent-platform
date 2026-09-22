@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://veyra.local/contracts/agent-semantic-plan.schema.json",
   "title": "AgentSemanticPlanV1",
-  "description": "Provider-facing semantic plan. Models describe intent and optional step graph intent; Veyra compiles canonical objects. Do not emit node IDs, hashes, permissions, source.lock, or canvas positions.",
+  "description": "Provider-facing semantic plan. Models describe intent, dependencies, two-way semantic branches, and typed output mappings; Veyra compiles canonical objects. Do not emit node IDs, hashes, permissions, source.lock, or canvas positions.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -139,7 +139,7 @@
     },
     "step_intents": {
       "type": "array",
-      "description": "Optional duty graph. Omit only for a simple one-model Agent. Include one object per real duty. Use depends_on for order. The server compiles nodes and extra ports. Do not emit branches, node IDs, hashes, or canvas data.",
+      "description": "Optional duty graph. Omit only for a simple one-model Agent. Include one object per real duty. Use depends_on for order. A condition must declare exactly two semantic branches with key and label. Every branch-local duty must set branch_condition to the condition semantic_key and branch_key to one declared branch; its dependencies must stay in that branch. A transform may use output_mapping to map declared output field names to deterministic literals or {{input_field}} references. A reusable_capability explicitly requests a Project-reusable semantic capability and must include capability_requirement plus typed inputs and outputs. dependency_requirement may name an existing Project-bound Tool for a reusable capability step. The server resolves names, chooses a safe implementation, and compiles nodes. Do not emit IDs, hashes, versions, permissions, or canvas data.",
       "maxItems": 12,
       "items": {
         "type": "object",
@@ -151,7 +151,7 @@
           "purpose": { "type": "string", "minLength": 1, "maxLength": 240 },
           "operation_kind": {
             "type": "string",
-            "description": "model=LLM duty. capability=Project tool. transform=field mapping. condition=branch; server expands true/false. approval=human must confirm. verification=deterministic check such as non-empty output; do not invent a verifier implementation.",
+            "description": "model=LLM duty. capability=Project tool. transform=field mapping. condition=branch with exactly two semantic branches; the server maps them deterministically to true/false runtime ports. approval=human must confirm. verification=deterministic check such as non-empty output; do not invent a verifier implementation.",
             "enum": [
               "model",
               "capability",
@@ -166,6 +166,90 @@
             "description": "semantic_key values that must complete first.",
             "maxItems": 8,
             "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          },
+          "capability_requirement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Semantic capability name. For operation_kind=capability, name a Project-bound capability. For reusable_capability, describe the reusable capability without IDs, hashes, or versions."
+          },
+          "dependency_requirement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Optional name of an exact Project-bound Tool dependency for a reusable tool wrapper."
+          },
+          "reusable_capability": {
+            "type": "boolean",
+            "description": "True only when the request needs this duty as a reusable Project capability. Requires capability_requirement, typed inputs, and typed outputs."
+          },
+          "inputs": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "type"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+                "type": { "type": "string", "enum": ["string", "number", "integer", "boolean", "object", "array", "table", "image", "pdf", "document", "file", "audio", "video"] },
+                "description": { "type": "string", "maxLength": 240 },
+                "multiple": { "type": "boolean" }
+              }
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "type"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+                "type": { "type": "string", "enum": ["string", "number", "integer", "boolean", "object", "array", "table", "image", "pdf", "document", "file", "audio", "video"] },
+                "description": { "type": "string", "maxLength": 240 },
+                "multiple": { "type": "boolean" }
+              }
+            }
+          },
+          "branches": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Exactly two semantic branches for a condition. The server chooses runtime ports.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "label"],
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "label": { "type": "string", "minLength": 1, "maxLength": 80 }
+              }
+            }
+          },
+          "branch_condition": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Semantic key of the parent condition for a branch-local duty."
+          },
+          "branch_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Semantic branch key declared by branch_condition."
+          },
+          "output_mapping": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 8,
+            "description": "Transform mapping from declared output field names to literals or {{input_field}} references.",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
           }
         }
       }

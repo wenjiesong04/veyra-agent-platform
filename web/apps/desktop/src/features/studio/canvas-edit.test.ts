@@ -141,6 +141,34 @@ describe("canvas copy paste and delete", () => {
     expect(pasteClipboard(agent, clip!)).toBeNull();
   });
 
+  it("copies and pastes a Custom Component node without losing its exact reference or mappings", () => {
+    const reference = "custom-component-1@1.0.0";
+    const source: AgentSource = {
+      ...agent,
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "component", component_type: "CustomComponent", uses: reference, input_mapping: { text: "request" }, output_mapping: { summary: "result" } },
+        { id: "out", component_type: "Output", output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next", to: "component" },
+        { from: "component", port: "next", to: "out" },
+      ],
+      ui: { positions: { start: { x: 0, y: 0 }, component: { x: 120, y: 0 }, out: { x: 240, y: 0 } } },
+      lock: { [reference]: "d".repeat(64) },
+    };
+    const clip = copySelection(source, ["component"]);
+    const pasted = pasteClipboard(source, clip!);
+    const pastedNode = pasted?.source.nodes.find((node) => pasted.selectedIds.includes(node.id));
+    expect(pastedNode).toEqual(expect.objectContaining({
+      component_type: "CustomComponent",
+      uses: reference,
+      input_mapping: { text: "request" },
+      output_mapping: { summary: "result" },
+    }));
+    expect(pasted?.source.lock[reference]).toBe("d".repeat(64));
+  });
+
   it("deletes selected nodes and edges but keeps Start and Output", () => {
     const next = deleteSelection(agent, ["start", "model", "out", "note_a"], ["start:next:model"]);
     expect(next.nodes.map((node) => node.id)).toEqual(["start", "out"]);

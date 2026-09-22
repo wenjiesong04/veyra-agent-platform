@@ -49,6 +49,32 @@ class BlueprintSchemaParityTests(unittest.TestCase):
             verification_condition["then"]["properties"]["checks"]["minItems"], 1
         )
 
+    def test_default_note_manual_position_is_supported_by_python_and_schema(
+        self,
+    ) -> None:
+        payload = json.loads((FIXTURES / "valid-agent-blueprint.json").read_text())
+        payload["ui_suggestions"]["notes"] = {
+            "note_intro": {
+                "x": 0,
+                "y": -220,
+                "text": "Blueprint note",
+                "width": 420,
+                "manual_position": False,
+            }
+        }
+        parsed = AgentBlueprint.from_dict(payload)
+        self.assertIs(
+            parsed.ui_suggestions["notes"]["note_intro"]["manual_position"], False
+        )
+        schema = json.loads(SCHEMA_PATH.read_text())
+        note_schema = schema["$defs"]["ui_suggestions"]["properties"]["notes"]
+        self.assertEqual(
+            note_schema["additionalProperties"]["properties"]["manual_position"][
+                "type"
+            ],
+            "boolean",
+        )
+
     @unittest.skipUnless(
         importlib.util.find_spec("jsonschema"),
         "jsonschema is installed by the runtime integration",
@@ -61,6 +87,22 @@ class BlueprintSchemaParityTests(unittest.TestCase):
         invalid = json.loads(
             (FIXTURES / "invalid-empty-transform-agent-blueprint.json").read_text()
         )
+        noted = {
+            **valid,
+            "ui_suggestions": {
+                **valid["ui_suggestions"],
+                "notes": {
+                    "note_intro": {
+                        "x": 0,
+                        "y": -220,
+                        "text": "Blueprint note",
+                        "width": 420,
+                        "manual_position": False,
+                    }
+                },
+            },
+        }
         jsonschema.Draft202012Validator(schema).validate(valid)
+        jsonschema.Draft202012Validator(schema).validate(noted)
         with self.assertRaises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(schema).validate(invalid)

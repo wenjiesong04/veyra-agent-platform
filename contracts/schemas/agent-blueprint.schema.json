@@ -588,6 +588,9 @@
                 "type": "integer",
                 "minimum": 160,
                 "maximum": 640
+              },
+              "manual_position": {
+                "type": "boolean"
               }
             }
           }
@@ -601,6 +604,21 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 80
+          }
+        },
+        "branch_labels": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["true", "false"],
+            "properties": {
+              "true": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "false": { "type": "string", "minLength": 1, "maxLength": 80 }
+            }
           }
         }
       }

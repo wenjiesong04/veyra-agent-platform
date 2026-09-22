@@ -10,6 +10,14 @@ export function NoteNode({ id, data, selected }: NodeProps<Node<CanvasNodeData, 
   const note = data.note;
   if (!note) return null;
   const zh = actions?.locale === "zh";
+  if (data.readOnly) {
+    return (
+      <div className={`canvas-note color-${note.color ?? "amber"}`} style={{ width: note.width ?? 220 }}>
+        <div className="canvas-note-toolbar"><span>{zh ? "文字卡片" : "Note"}</span></div>
+        <p className="canvas-note__text">{note.text}</p>
+      </div>
+    );
+  }
   return (
     <div className={`canvas-note color-${note.color ?? "amber"}${selected ? " selected" : ""}`} style={{ width: note.width ?? 220 }}>
       <div className="canvas-note-toolbar">

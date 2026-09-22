@@ -160,12 +160,18 @@ def test_workflow_canvas_notes_do_not_change_behavior_hash() -> None:
             "text": "hello",
             "color": "amber",
             "width": 220,
+            "manual_position": False,
         }
     }
     noted = WorkflowSource.from_dict(payload)
     assert noted.ui["notes"]["note_intro"]["text"] == "hello"
     assert original.behavior_hash == noted.behavior_hash
     assert original.source_hash != noted.source_hash
+    payload["ui"]["notes"]["note_intro"]["x"] = 640  # type: ignore[index]
+    payload["ui"]["notes"]["note_intro"]["manual_position"] = True  # type: ignore[index]
+    moved = WorkflowSource.from_dict(payload)
+    assert moved.behavior_hash == noted.behavior_hash
+    assert moved.source_hash != noted.source_hash
 
 
 def test_workflow_notes_cannot_reuse_flow_node_ids() -> None:

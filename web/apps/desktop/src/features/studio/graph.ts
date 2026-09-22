@@ -3,13 +3,16 @@ import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import { agentCallRef, parseAgentCallRef } from "./agent-call";
 import { catalogToolRequiresApproval } from "./palette";
 import { componentFor } from "./registry";
-import type { NodeRunState } from "./live-run";
+import type { NodeExecutionState } from "./execution-state";
+import { centerNoteAboveGraph, estimatedNodeSize, layoutExecutionGraph } from "./graph-layout";
 
 export type CanvasNodeData = {
   flow?: FlowNode;
   binding?: Omit<CatalogBinding, "x" | "y">;
   note?: Omit<StudioNote, "x" | "y">;
-  runState?: NodeRunState;
+  runState?: NodeExecutionState;
+  runStateLabel?: string;
+  readOnly?: boolean;
   title?: string;
 };
 
@@ -25,6 +28,7 @@ export type GraphDiagnosticCode =
   | "verifier_required"
   | "node_fields_missing"
   | "tool_not_permitted_or_locked"
+  | "custom_component_not_locked"
   | "write_requires_approval"
   | "transition_unknown_node"
   | "transition_invalid_port"
@@ -98,7 +102,7 @@ export function repairInvalidNodeIds(source: StudioSource): StudioSource {
 }
 
 const componentTypes = new Set<FlowNode["component_type"]>([
-  "Start", "Agent", "Model", "AgentCall", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
+  "Start", "Agent", "Model", "AgentCall", "Tool", "CustomComponent", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
 ]);
 const ports = new Set<FlowTransition["port"]>(["next", "true", "false", "approved", "rejected", "passed", "failed"]);
 
@@ -134,6 +138,7 @@ function canvasNotesValid(ui: Record<string, unknown>): boolean {
       || typeof note.y !== "number" || !Number.isFinite(note.y)) return false;
     if ("color" in note && (typeof note.color !== "string" || !colors.has(note.color))) return false;
     if ("width" in note && (typeof note.width !== "number" || !Number.isFinite(note.width) || note.width < 160 || note.width > 640)) return false;
+    if ("manual_position" in note && typeof note.manual_position !== "boolean") return false;
   }
   return true;
 }
@@ -204,26 +209,40 @@ export function isWorkflowSourceCandidate(value: unknown): value is WorkflowSour
     && typeof position.y === "number" && Number.isFinite(position.y));
 }
 
-function flowEdge(transition: FlowTransition): Edge {
+function flowEdge(
+  transition: FlowTransition,
+  branchLabels?: Record<string, { true: string; false: string }>,
+): Edge {
+  const label = branchLabels?.[transition.from]?.[transition.port as "true" | "false"];
   return {
     id: `${transition.from}:${transition.port}:${transition.to}`,
     source: transition.from,
     target: transition.to,
     sourceHandle: transition.port,
     type: "flowEdge",
-    data: { port: transition.port },
+    data: { port: transition.port, ...(label ? { label } : {}) },
     markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
   };
 }
 
 export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
-  const flowNodes = source.nodes.map((flow, index) => ({
+  const layoutNodes = source.nodes.map((flow) => ({ id: flow.id, component_type: flow.component_type }));
+  const layoutPositions = layoutExecutionGraph(layoutNodes, source.transitions, source.ui.positions);
+  const defaultNote = source.ui.notes?.note_intro;
+  const defaultNoteUsesAutomaticPosition = defaultNote !== undefined
+    && defaultNote.manual_position !== true
+    && (defaultNote.manual_position === false || (defaultNote.x === 0 && defaultNote.y === -220));
+  const automaticNotePosition = defaultNoteUsesAutomaticPosition
+    ? centerNoteAboveGraph(layoutNodes, layoutPositions, defaultNote?.width ?? 420)
+    : undefined;
+  const flowNodes = source.nodes.map((flow) => ({
     id: flow.id,
     type: "agentNode",
-    position: source.ui.positions[flow.id] ?? { x: 90 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 170 },
+    position: layoutPositions[flow.id] ?? { x: 0, y: 0 },
+    style: { width: estimatedNodeSize(flow.component_type).width, minHeight: estimatedNodeSize(flow.component_type).height },
     data: {
       flow,
-      runState: "pending" as const,
+      runState: "idle" as const,
       title: source.ui.labels?.[flow.id],
     },
   }));
@@ -236,15 +255,48 @@ export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[];
   const noteNodes = Object.entries(source.ui.notes ?? {}).map(([id, note]) => ({
     id,
     type: "noteNode",
-    position: { x: note.x, y: note.y },
-    data: { note: { text: note.text, color: note.color ?? "amber", width: note.width ?? 220 } },
+    position: id === "note_intro" && automaticNotePosition ? automaticNotePosition : { x: note.x, y: note.y },
+    data: { note: {
+      text: note.text,
+      color: note.color ?? "amber",
+      width: note.width ?? (id === "note_intro" ? 420 : 220),
+      manual_position: note.manual_position ?? (id === "note_intro" ? !defaultNoteUsesAutomaticPosition : undefined),
+    } },
     draggable: true,
     connectable: false,
   }));
   return {
     nodes: [...flowNodes, ...bindingNodes, ...noteNodes],
-    edges: source.transitions.map(flowEdge),
+    edges: source.transitions.map((transition) => flowEdge(transition, source.ui.branch_labels)),
   };
+}
+
+export function autoLayoutCanvasNodes(nodes: Node<CanvasNodeData>[], edges: Edge[]): Node<CanvasNodeData>[] {
+  const flowNodes = nodes.filter((node) => node.data.flow);
+  const layoutNodes = flowNodes.map((node) => ({
+    id: node.id,
+    component_type: node.data.flow!.component_type,
+  }));
+  const positions = layoutExecutionGraph(layoutNodes, edges.map((edge) => ({
+    from: edge.source,
+    to: edge.target,
+    port: typeof edge.sourceHandle === "string" ? edge.sourceHandle : undefined,
+  })));
+  const defaultNote = nodes.find((node) => node.id === "note_intro" && node.data.note);
+  const notePosition = defaultNote && defaultNote.data.note?.manual_position !== true
+    ? centerNoteAboveGraph(layoutNodes, positions, defaultNote.data.note?.width ?? 420)
+    : undefined;
+  return nodes.map((node) => {
+    const position = positions[node.id];
+    if (position && node.data.flow) {
+      const size = estimatedNodeSize(node.data.flow.component_type);
+      return { ...node, position, style: { ...node.style, width: size.width, minHeight: size.height } };
+    }
+    if (node.id === "note_intro" && notePosition && node.data.note) {
+      return { ...node, position: notePosition };
+    }
+    return node;
+  });
 }
 
 function persistLabels(source: StudioSource, nodeIds: string[]): Record<string, string> | undefined {
@@ -258,7 +310,14 @@ function persistLabels(source: StudioSource, nodeIds: string[]): Record<string, 
 function persistNotes(nodes: Node<CanvasNodeData>[]): Record<string, StudioNote> | undefined {
   const notes = Object.fromEntries(nodes.filter((node) => node.data.note && !node.data.flow).map((node) => {
     const note = node.data.note as NonNullable<CanvasNodeData["note"]>;
-    return [node.id, { x: Math.round(node.position.x), y: Math.round(node.position.y), text: note.text, color: note.color, width: note.width }];
+    return [node.id, {
+      x: Math.round(node.position.x),
+      y: Math.round(node.position.y),
+      text: note.text,
+      color: note.color,
+      width: note.width,
+      ...(note.manual_position === undefined ? {} : { manual_position: note.manual_position }),
+    }];
   }));
   return Object.keys(notes).length ? notes : undefined;
 }
@@ -436,9 +495,10 @@ export function graphDiagnostics(source: StudioSource, catalog: ResourceDescript
         if (malformed || wrongFields || unknownInput || duplicateOutput) problems.push({ code: "agent_mapping_invalid", params });
       }
     }
-    const required = node.component_type === "Agent" || node.component_type === "Model" ? [node.model_ref, node.system_prompt] : node.component_type === "Tool" ? [node.uses] : node.component_type === "Condition" ? [node.expression] : node.component_type === "Transform" ? [node.mapping && Object.keys(node.mapping).length] : node.component_type === "HumanApproval" ? [node.prompt] : node.component_type === "Verifier" ? [node.checks?.length] : node.component_type === "Output" ? [node.output_name] : [];
+    const required = node.component_type === "Agent" || node.component_type === "Model" ? [node.model_ref, node.system_prompt] : node.component_type === "Tool" || node.component_type === "CustomComponent" ? [node.uses] : node.component_type === "Condition" ? [node.expression] : node.component_type === "Transform" ? [node.mapping && Object.keys(node.mapping).length] : node.component_type === "HumanApproval" ? [node.prompt] : node.component_type === "Verifier" ? [node.checks?.length] : node.component_type === "Output" ? [node.output_name] : [];
     if (required.some((value) => !value)) problems.push({ code: "node_fields_missing", params: { nodeId: node.id, componentType: node.component_type } });
     if (node.component_type === "Tool" && node.uses && (!source.extensions.veyra.permissions.tools.includes(node.uses.split("@").slice(0, -1).join("@")) || !(node.uses in source.lock))) problems.push({ code: "tool_not_permitted_or_locked", params: { nodeId: node.id } });
+    if (node.component_type === "CustomComponent" && node.uses && !/^[0-9a-f]{64}$/.test(source.lock[node.uses] ?? "")) problems.push({ code: "custom_component_not_locked", params: { nodeId: node.id } });
     if (node.component_type === "Tool" && node.uses && approvalRequired.has(node.uses) && !hasApproval) {
       problems.push({ code: "write_requires_approval", params: { nodeId: node.id } });
     }

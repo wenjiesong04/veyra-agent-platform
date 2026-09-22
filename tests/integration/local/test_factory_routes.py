@@ -477,10 +477,11 @@ def test_generate_sends_moonshot_compatible_schema_without_creating_draft(
         assert schema["properties"]["suggested_name"]["type"] == "string"
         items = schema["properties"]["capability_intents"]["items"]
         assert items["type"] == "string"
-        assert (
-            "branches"
-            not in schema["properties"]["step_intents"]["items"]["properties"]
-        )
+        step_properties = schema["properties"]["step_intents"]["items"]["properties"]
+        assert "branches" in step_properties
+        assert "branch_condition" in step_properties
+        assert "branch_key" in step_properties
+        assert "output_mapping" in step_properties
         kinds = schema["properties"]["step_intents"]["items"]["properties"][
             "operation_kind"
         ]

@@ -752,7 +752,80 @@ remains installed and is not overwritten.
 The reference tree is under `examples/plugin-packs/research/`. A pack can be
 assembled with `zip -r research.vplugin.zip plugin.vplugin.yaml skills mcp.json`.
 
-### 5.5.3 External Agent Import V1
+### 5.5.3 Project-owned Custom Component V1
+
+Custom Components are Project-owned composite resources, not new hard-coded
+`ComponentType` values. The Resource Library owns their drafts and immutable
+versions; AgentSource refers to a published component by exact
+`component_id@semver` and locks its content hash. They are available to Agent
+Canvas only when the matching version is present in that Project's Library.
+They are not Workflow nodes, global Catalog entries, or executable code
+packages.
+
+V1 accepts four declarative implementation kinds:
+
+- `model_recipe` — an instruction that uses the configured Runtime
+  `model.primary`;
+- `tool_wrapper` — a typed facade over one exact Project-bound Tool reference
+  and content hash; its permissions/readiness are derived from that Tool;
+- `transform` — a bounded string-template mapping over typed inputs/outputs;
+- `composite_graph` — a declarative graph definition, reported as
+  `design_only` until graph composition is supported by the Runtime.
+
+Arbitrary Python, JavaScript, Shell, WASM, or eval/script implementations are
+rejected. Metadata is string-only and rejects secret-like values, secret-named
+keys, and absolute host paths. Dependency pins are exact and Project-scoped;
+Catalog lookup alone is not enough to publish a Tool wrapper.
+
+The lifecycle is `draft → validate → publish → deprecate`. Editing a published
+component creates a draft based on the selected latest version; it never
+mutates a published version or silently upgrades an Agent. Publishing creates
+an immutable semver reference and hash. Deprecation disables that version for
+new resolution without deleting its source; only a draft may be deleted, and
+the service checks existing references before removing an unpublished-only
+component. Resource readiness is recomputed from the effective Runtime and
+Project-bound dependencies; saving or binding a resource does not configure
+host credentials or make an unsupported implementation runnable.
+
+Studio projects each current Project-bound Custom Component as a dynamic
+`CustomComponent` node whose `uses` value and lock are the exact version
+reference and bound hash. Selecting it declares the component's derived
+permissions in AgentSource; the backend remains authoritative for dependency
+resolution and Runtime authorization. No automatic latest-version selection,
+Catalog install, or silent permission widening is allowed.
+
+Builder capability composition follows a strict resolution order: use a core
+primitive where it directly expresses the duty; otherwise reuse the unique,
+ready compatible capability already in the current Project Resource Library;
+clarify if multiple candidates match; and report `requires_configuration`
+without creating a duplicate when a matching capability is not ready. Only a
+missing capability that the bounded Custom Component contract can honestly
+implement may become a Component Proposal. Unsupported modalities such as
+image or PDF parsing remain missing capabilities; they must not be disguised
+as text-only `model_recipe` implementations.
+
+A Component Proposal reuses the persisted Builder operation and existing
+proposal/Workbench protocol. It is one explicit mutation: review the typed
+inputs/outputs, implementation, exact dependencies, derived permissions,
+readiness, and Agent step; then explicitly confirm or reject. Reject creates
+nothing and cannot silently downgrade the Agent. Confirm runs the existing
+`draft → validate → publish` lifecycle. Validation or continuation failure is
+recorded on the operation and stops that continuation. Builder provenance
+stores conversation/operation/proposal identity only, never the full
+conversation or hidden prompt.
+
+For Agent creation, the server re-reads Project resources after Component
+publication and recompiles the original stored Semantic Plan. The resulting
+Agent Blueprint is a separate review and requires a separate confirmation
+before any Agent Draft is created. Its `CustomComponent` node pins the exact
+published `component_id@version` and content hash. A direct `create_component`
+request follows the same proposal and lifecycle but has no Agent continuation.
+`tool_wrapper` is allowed only over an exact, already Project-bound Tool;
+`transform` stays within the current bounded grammar; `composite_graph` remains
+`design_only`. No arbitrary code generation, Tool creation, or Catalog
+auto-install is permitted.
+
+### 5.5.4 External Agent Import V1
 
 External Agent import has three input forms: a generic YAML file, a selected
 folder, and a ZIP archive. ZIP is only a transport; it is validated and then
@@ -966,8 +1039,10 @@ The model produces a small `AgentSemanticPlanV1` describing user intent:
 - inputs/outputs
 - summary steps
 - optional `step_intents` graph intent (`semantic_key`, `name`, `purpose`,
-  `operation_kind`, `depends_on`). Provider-facing plans do not emit branch
-  objects; the server expands extra ports.
+  `operation_kind`, `depends_on`, optional `capability_requirement`).
+  Provider-facing plans do not emit branch objects; the server expands extra
+  ports. `capability_requirement` names a Project-bound tool; it is not a
+  node ID, hash, version pin, or canvas coordinate.
 - capability intents and knowledge intents
 - approval points, success criteria, user constraints
 
@@ -977,17 +1052,21 @@ paths, runtime adapters, or credentials.
 
 `SemanticPlanCompiler` then compiles a canonical `AgentBlueprint` candidate by
 reusing the deterministic Project Knowledge and Project Resource resolvers.
-V1 plans without `step_intents` remain a simple Start → optional Project Tool →
-one Model → Output graph. V2 `step_intents` compile real Model, Tool,
-Transform, Condition, HumanApproval, Verifier, and Output nodes. The compiler
-never emits AgentCall inside an Agent, never hallucinates Tools, never
-auto-installs Catalog resources, never silently upgrades pins, and never
-overgrants permissions. HumanApproval becomes a real node when the plan asks
-for confirmation. Verifier is emitted only when a check maps to an existing
+A V1 plan without `step_intents` stays a simple Start → optional Project Tool →
+one Model → Output graph only when it has a single summary step. Multiple
+summary steps are sequential Model duties, not one collapsed prompt. V2
+`step_intents` compile real Model, Tool, Transform, Condition, HumanApproval,
+Verifier, and Output nodes. Bound, ready, uniquely matching Project Resource
+Library capabilities are reused; Catalog-only resources are never
+auto-installed. The compiler never emits AgentCall inside an Agent, never
+hallucinates Tools, never silently upgrades pins, and never overgrants
+permissions. HumanApproval becomes a real node when the plan asks for
+confirmation. Verifier is emitted only when a check maps to an existing
 contract (`output.not_empty`); unmapped verification becomes a Model plus a
 warning, never a fake Verifier. If `step_intents` already expressed approval,
-condition, verification, or transform, generation must not silently fall
-back to a V1 one-model graph.
+condition, verification, transform, capability, or more than one Model duty,
+generation must not silently fall back to a V1 one-model graph. Unready
+bindings compile as designable graphs with a truthful readiness warning.
 The server owns node/edge IDs, Tool/Knowledge refs, `source.lock`, required
 permissions, graph wiring and verification defaults. Ambiguous mentions become
 clarification. Unbound capabilities become `missing_capability`. Catalog
@@ -1247,9 +1326,9 @@ workspace per layer, not one Canvas for every page.
 | Layer | Workspace | What the user does |
 |---|---|---|
 | Project | Dashboard | Status, resource counts, and settings. No graph editing. |
-| Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output plus an optional canvas Note. Left palette projects Model, Tool, Condition, Transform, HumanApproval, Verifier, Knowledge bindings, and Notes. AgentCall is not an Agent node. Right inspector edits parameters and shows component type; canvas titles prefer semantic labels. Bottom panel test-runs. |
+| Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output plus an optional canvas Note. Left palette projects Model, Project-bound Tool and Custom Component nodes, Condition, Transform, HumanApproval, Verifier, Knowledge bindings, and Notes. AgentCall is not an Agent node. Right inspector edits parameters and shows component type; canvas titles prefer semantic labels. Bottom panel test-runs. |
 | Workflow | Same Canvas shell | Declares its own inputs and outputs. Palette is AgentCall plus control flow (Condition, Transform, HumanApproval, Verifier). No Model or Tool nodes. Blank Workflows also receive a default optional Note. Existing Agents are not renamed into Workflows. |
-| Component | Resource Catalog + Project Resource Library | Global Catalog owns description, version, examples, and references; Project Resource Library owns selected versions and usage. Not a flowchart. Primitive vs composite stays a required class. |
+| Component | Resource Catalog + Project Resource Library | Global Catalog owns platform resources; Project Resource Library owns selected versions and usage, plus Project-owned Custom Component drafts and immutable lifecycle. Primitive vs composite stays a required class. Not a separate flowchart editor. |
 | Knowledge | Library + preview | Project documents, metadata, and citations. A document can be explicitly bound to an Agent from its detail page. Not a flowchart. |
 | Files / Assets | File manager | Raw indexed files, separate from Knowledge documents; a file can open an Agent Studio run with its relative path prefilled. |
 | Runs | List + timeline + logs | Inspect steps, outputs, and replay. No editing. |

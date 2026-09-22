@@ -17,6 +17,7 @@ import { DependencyReport } from "../features/studio/DependencyReport";
 import { NotFoundPage } from "./not-found";
 import { RunDetail } from "../features/runs/RunDetail";
 import { useRunQuery } from "../features/runs/run-location";
+import { RunExecutionCanvas } from "../features/studio/RunExecutionCanvas";
 
 type StudioView = "canvas" | "form" | "source";
 
@@ -55,6 +56,11 @@ export function StudioPage(props: StudioPageProps) {
   const runId = useRunQuery().get("run_id");
   const { api } = useProjectWorkspace();
   const { locale } = useLocale();
+  const path = window.location.hash.split("?")[0] ?? "";
+  const isAgentDesignRoute = Boolean(props.agentId && path.endsWith("/design"));
+  if (runId && isAgentDesignRoute && props.agentId) {
+    return <RunExecutionCanvas api={api} projectId={props.projectId} agentId={props.agentId} runId={runId} locale={locale} />;
+  }
   if (runId) return <Panel><RunDetail api={api} {...props} runId={runId} locale={locale} /></Panel>;
   return <StudioEditor key={`${props.projectId}:${props.agentId ?? props.workflowId}`} {...props} />;
 }
@@ -275,7 +281,7 @@ function FormView({ source, onChange, onBufferValidity }: EditorProps) {
   const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow";
   const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value });
   return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} typedFields onValid={(inputs) => onChange({ ...source, inputs: inputs as TypedFields })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} typedFields onValid={(outputs) => onChange({ ...source, outputs: outputs as TypedFields })} /></div>
-    {!workflow ? source.nodes.filter((node) => node.component_type === "Tool").map((node) => <fieldset key={node.id}><legend>Tool · {node.id}</legend><label>{zh ? "资源引用" : "Resource reference"}<input readOnly value={node.uses ?? ""} /></label><label>{zh ? "固定哈希" : "Pinned hash"}<input readOnly value={source.lock[node.uses ?? ""] ?? ""} /></label>{(["input_mapping", "output_mapping"] as const).map((field) => <JsonField key={field} field={`${node.id}:${field}`} onBufferValidity={onBufferValidity} label={`${node.id} ${field}`} value={node[field] ?? {}} onValid={(mapping) => onChange({ ...source, nodes: source.nodes.map((item) => item.id === node.id ? { ...item, [field]: mapping } : item) })} />)}</fieldset>) : null}
+    {!workflow ? source.nodes.filter((node) => node.component_type === "Tool" || node.component_type === "CustomComponent").map((node) => <fieldset key={node.id}><legend>{node.component_type === "CustomComponent" ? (zh ? "自定义组件" : "Custom Component") : "Tool"} · {node.id}</legend><label>{zh ? "资源引用" : "Resource reference"}<input readOnly value={node.uses ?? ""} /></label><label>{zh ? "固定哈希" : "Pinned hash"}<input readOnly value={source.lock[node.uses ?? ""] ?? ""} /></label>{(["input_mapping", "output_mapping"] as const).map((field) => <JsonField key={field} field={`${node.id}:${field}`} onBufferValidity={onBufferValidity} label={`${node.id} ${field}`} value={node[field] ?? {}} onValid={(mapping) => onChange({ ...source, nodes: source.nodes.map((item) => item.id === node.id ? { ...item, [field]: mapping } : item) })} />)}</fieldset>) : null}
   </Panel>;
 }
 
@@ -313,6 +319,7 @@ function graphDiagnosticText(diagnostic: GraphDiagnostic, locale: "zh" | "en"): 
     case "verifier_required": return zh ? "要求验证时必须添加 Verifier 节点。" : "Required verification needs a Verifier node.";
     case "node_fields_missing": return zh ? `${p.nodeId} 缺少必填的 ${p.componentType} 字段。` : `${p.nodeId} is missing required ${p.componentType} fields.`;
     case "tool_not_permitted_or_locked": return zh ? `${p.nodeId} 必须被授权并已锁定后才能保存。` : `${p.nodeId} must be permitted and locked before it can be saved.`;
+    case "custom_component_not_locked": return zh ? `${p.nodeId} 的自定义组件没有固定到有效版本哈希。请从当前 Project 资源库重新添加该组件。` : `${p.nodeId} is not pinned to a valid Custom Component version hash. Re-add it from this Project's Resource Library.`;
     case "write_requires_approval": return zh ? `${p.nodeId} 写入前必须有人工审批节点，否则运行会失败而不是假成功。` : `${p.nodeId} needs a Human approval node before a write can run.`;
     case "transition_unknown_node": return zh ? `连线 ${p.from} → ${p.to} 引用了未知节点。` : `Transition ${p.from} → ${p.to} has an unknown node.`;
     case "transition_invalid_port": return zh ? `端口 ${p.port} 不适用于 ${p.nodeId}。` : `Port ${p.port} is not valid for ${p.nodeId}.`;

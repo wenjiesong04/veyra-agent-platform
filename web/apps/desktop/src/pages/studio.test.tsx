@@ -55,6 +55,18 @@ function stubCompactViewport(compact: boolean) {
 }
 
 describe("StudioPage source and conflict safety", () => {
+  it("exposes Auto layout and saves only canvas positions", async () => {
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("button", { name: "Auto layout" }));
+    await user.click(screen.getByRole("tab", { name: "Source" }));
+    const changed = JSON.parse((screen.getByRole("textbox", { name: "Agent source" }) as HTMLTextAreaElement).value) as AgentSource;
+    expect(changed.ui.positions.out.x).not.toBe(source.ui.positions.out.x);
+    expect(changed.ui.positions.out.x).toBeGreaterThan(changed.ui.positions.start.x);
+    expect(changed.transitions).toEqual(source.transitions);
+  });
+
   it("keeps structurally incomplete JSON in the Source text buffer without crashing the graph", async () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
     const user = userEvent.setup();

@@ -4,7 +4,7 @@ import { newFlowNodeId } from "./graph";
 export const CANVAS_CLIPBOARD_KIND = "veyra.studio.clipboard";
 
 const WORKFLOW_TYPES = new Set(["AgentCall", "Condition", "Transform", "HumanApproval", "Verifier"]);
-const AGENT_TYPES = new Set(["Agent", "Model", "Tool", "Condition", "Transform", "HumanApproval", "Verifier"]);
+const AGENT_TYPES = new Set(["Agent", "Model", "Tool", "CustomComponent", "Condition", "Transform", "HumanApproval", "Verifier"]);
 
 export type CanvasClipboard = {
   kind: typeof CANVAS_CLIPBOARD_KIND;

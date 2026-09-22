@@ -11,7 +11,11 @@ from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.contracts.custom_component import CustomComponentDefinition
 from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.builder.component_planning import (
+    matching_existing_component,
+)
 from veyra_agent_platform.local.builder.harness import BuilderHarness
 from veyra_agent_platform.local.builder.knowledge_binding import (
     bind_knowledge,
@@ -38,6 +42,10 @@ from veyra_agent_platform.local.library.service import DraftConflict, LibrarySer
 from veyra_agent_platform.local.library.workflow_dependencies import (
     resolve_workflow_calls,
 )
+from veyra_agent_platform.local.projects.custom_components import (
+    CustomComponentError,
+    CustomComponentService,
+)
 from veyra_agent_platform.local.projects.service import ProjectError
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.resources.project import ProjectResourceService
@@ -48,6 +56,8 @@ from .edit_store import EditProposalStore
 from .service import FactoryError
 
 TargetKind = Literal["agent", "workflow"]
+ProposalTargetKind = Literal["agent", "workflow", "custom_component"]
+COMPONENT_PROPOSAL_KIND = "create_custom_component"
 EditCommand = Literal["apply", "reject", "undo"]
 MAX_SOURCE_BYTES = 200_000
 
@@ -93,6 +103,7 @@ class EditProposalService:
         *,
         project_resources: ProjectResourceService,
         resource_readiness: ResourceReadiness,
+        custom_components: CustomComponentService,
     ) -> None:
         self.store = store
         self.library = library
@@ -100,7 +111,308 @@ class EditProposalService:
         self.client = client
         self.project_resources = project_resources
         self.resource_readiness = resource_readiness
+        self.custom_components = custom_components
         self.harness = BuilderHarness(library.projects, catalog)
+
+    def create_component_proposal(
+        self,
+        project_id: str,
+        component_plan: dict[str, Any],
+        *,
+        conversation_id: str,
+        operation_id: str,
+        factory_session_id: str | None,
+        continuation: Literal["agent", "direct_component"],
+    ) -> dict[str, Any]:
+        plan = deepcopy(component_plan)
+        implementation = plan.get("implementation")
+        if not isinstance(implementation, dict):
+            raise FactoryError(
+                "component_plan_invalid", "Component implementation is missing"
+            )
+        if implementation.get("kind") == "model_recipe":
+            configured = self.custom_components.model_recipe_configured
+            plan["readiness_expectation"] = (
+                "ready"
+                if configured is None or configured()
+                else "requires_configuration"
+            )
+        elif plan.get("readiness_expectation") == "runtime_dependent":
+            plan["readiness_expectation"] = "unavailable"
+
+        proposal_id = new_uuid7()
+        plan["component_id"] = new_uuid7()
+        capability_name = str(
+            plan.get("capability_requirement")
+            or plan.get("display_name")
+            or "Custom Component"
+        )[:240]
+        proposal: dict[str, Any] = {
+            "schema_version": "1.0",
+            "proposal_id": proposal_id,
+            "proposal_kind": COMPONENT_PROPOSAL_KIND,
+            "project_id": project_id,
+            "target_kind": "custom_component",
+            "target_id": proposal_id,
+            "instruction": f"Create reusable capability: {capability_name}",
+            "created_at": datetime.now(UTC).isoformat(),
+            "component_plan": plan,
+            "continuation": continuation,
+            "conversation_id": conversation_id,
+            "operation_id": operation_id,
+            "factory_session_id": factory_session_id,
+            "changes": [],
+            "permission_changes": [],
+            "impact": {
+                "target_kind": "custom_component",
+                "target_id": proposal_id,
+                "scope": "project_resource",
+                "immutable_versions_changed": False,
+                "runs_started": False,
+                "creates_component": True,
+            },
+            "validation": {
+                "valid": True,
+                "readiness_expectation": plan["readiness_expectation"],
+                "dependencies": deepcopy(plan.get("dependencies") or []),
+            },
+            "state": "review",
+        }
+        self._validate_component_draft_plan(project_id, proposal)
+        self.store.create(proposal)
+        return self.get(project_id, proposal_id)
+
+    def get_proposal(self, project_id: str, proposal_id: str) -> dict[str, Any]:
+        return self.get(project_id, proposal_id)
+
+    def _validate_component_draft_plan(
+        self, project_id: str, proposal: dict[str, Any]
+    ) -> None:
+        plan = proposal.get("component_plan")
+        allowed = {
+            "component_id",
+            "display_name",
+            "description",
+            "capability_requirement",
+            "agent_step",
+            "agent_step_key",
+            "inputs",
+            "outputs",
+            "implementation",
+            "dependencies",
+            "required_permissions",
+            "readiness_expectation",
+            "why",
+        }
+        if not isinstance(plan, dict) or set(plan) - allowed:
+            raise FactoryError(
+                "component_plan_invalid", "Component plan contains unsupported fields"
+            )
+        if not {
+            "component_id",
+            "display_name",
+            "description",
+            "inputs",
+            "outputs",
+            "implementation",
+            "dependencies",
+            "required_permissions",
+            "readiness_expectation",
+        } <= set(plan):
+            raise FactoryError(
+                "component_plan_invalid", "Component plan is missing required fields"
+            )
+        if plan["readiness_expectation"] not in {
+            "ready",
+            "requires_configuration",
+        }:
+            raise FactoryError(
+                "component_plan_invalid", "Component readiness expectation is invalid"
+            )
+        now = datetime.now(UTC).isoformat()
+        try:
+            definition = CustomComponentDefinition.from_dict(
+                {
+                    "schema_version": "1.0",
+                    "component_id": plan["component_id"],
+                    "project_id": project_id,
+                    "slug": "component-proposal",
+                    "display_name": plan["display_name"],
+                    "description": plan["description"],
+                    "version": "0.0.0",
+                    "inputs": plan["inputs"],
+                    "outputs": plan["outputs"],
+                    "implementation": plan["implementation"],
+                    "metadata": {},
+                    "dependencies": plan["dependencies"],
+                    "required_permissions": plan["required_permissions"],
+                    "provenance": "builder",
+                    "lifecycle": "draft",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        except (ContractValidationError, TypeError, ValueError) as exc:
+            raise FactoryError(
+                "component_plan_invalid", "Component plan failed contract validation"
+            ) from exc
+
+        implementation = definition.implementation
+        dependencies = [item.to_dict() for item in definition.dependencies]
+        if implementation.kind.value == "tool_wrapper":
+            if (
+                len(dependencies) != 1
+                or dependencies[0]["reference"] != implementation.tool_reference
+            ):
+                raise FactoryError(
+                    "component_plan_invalid", "Tool wrapper needs one exact Tool pin"
+                )
+            resource = next(
+                (
+                    item
+                    for item in self.project_resources.list(project_id)["resources"]
+                    if item.get("scope") == "project"
+                    and item.get("reference") == implementation.tool_reference
+                ),
+                None,
+            )
+            if (
+                resource is None
+                or resource.get("bound_content_hash") != dependencies[0]["content_hash"]
+                or resource.get("required_permissions")
+                != definition.required_permissions.to_dict()
+            ):
+                raise FactoryError(
+                    "component_plan_stale", "The exact Project-bound Tool pin changed"
+                )
+        elif dependencies or any(definition.required_permissions.to_dict().values()):
+            raise FactoryError(
+                "component_plan_invalid",
+                "Model and Transform components must have no external "
+                "dependencies or permissions",
+            )
+
+    def _component_proposal_stale(
+        self, project_id: str, proposal: dict[str, Any]
+    ) -> bool:
+        if self.custom_components.find_builder_proposal(
+            project_id, proposal["proposal_id"]
+        ):
+            return False
+        plan = proposal["component_plan"]
+        requirement = str(plan.get("capability_requirement") or plan["display_name"])
+        if matching_existing_component(
+            self.project_resources.list(project_id)["resources"], requirement
+        ):
+            return True
+        implementation = plan["implementation"]
+        if implementation.get("kind") == "model_recipe":
+            configured = self.custom_components.model_recipe_configured
+            current = (
+                "ready"
+                if configured is None or configured()
+                else "requires_configuration"
+            )
+            if current != plan["readiness_expectation"]:
+                return True
+        try:
+            self._validate_component_draft_plan(project_id, proposal)
+        except (FactoryError, ContractValidationError, ProjectError):
+            return True
+        return False
+
+    def _apply_component_proposal(
+        self, project_id: str, proposal: dict[str, Any]
+    ) -> None:
+        plan = proposal["component_plan"]
+        self._validate_component_draft_plan(project_id, proposal)
+        existing = self.custom_components.find_builder_proposal(
+            project_id, proposal["proposal_id"]
+        )
+        if existing is not None and existing.get("version") != "0.0.0":
+            return
+        if existing is None:
+            if self._component_proposal_stale(project_id, proposal):
+                raise DraftConflict(
+                    "Project capabilities or Runtime readiness changed; "
+                    "review a new Component proposal"
+                )
+            metadata = {
+                "builder.proposal_id": proposal["proposal_id"],
+                "builder.conversation_id": proposal["conversation_id"],
+                "builder.operation_id": proposal["operation_id"],
+            }
+            payload = {
+                "display_name": plan["display_name"],
+                "description": plan["description"],
+                "inputs": plan["inputs"],
+                "outputs": plan["outputs"],
+                "implementation": plan["implementation"],
+                "dependencies": plan["dependencies"],
+                "required_permissions": plan["required_permissions"],
+                "provenance": "builder",
+                "metadata": metadata,
+            }
+            draft = self.custom_components.create_draft(
+                project_id,
+                payload,
+                component_id=plan["component_id"],
+            )
+            component_id = str(draft["component_id"])
+        else:
+            component_id = str(existing["component_id"])
+            if not self._component_definition_matches_plan(
+                existing, plan, proposal_id=str(proposal["proposal_id"])
+            ):
+                raise DraftConflict(
+                    "The Component draft changed after proposal review; "
+                    "create a new proposal"
+                )
+
+        try:
+            validated = self.custom_components.validate(project_id, component_id)
+            if validated.get("readiness") != plan["readiness_expectation"]:
+                self.custom_components.delete_draft(project_id, component_id)
+                raise DraftConflict(
+                    "Runtime readiness changed since review; no Component was published"
+                )
+            self.custom_components.publish(project_id, component_id)
+        except DraftConflict:
+            raise
+        except (CustomComponentError, ContractValidationError, ProjectError) as exc:
+            with suppress(CustomComponentError):
+                draft_now = self.custom_components.get(
+                    project_id, component_id, version="0.0.0"
+                )
+                if (
+                    draft_now.get("metadata", {}).get("builder.proposal_id")
+                    == proposal["proposal_id"]
+                ):
+                    self.custom_components.delete_draft(project_id, component_id)
+            raise FactoryError(
+                "component_validation_failed",
+                "The Component did not pass validation and was not published.",
+            ) from exc
+
+    @staticmethod
+    def _component_definition_matches_plan(
+        existing: dict[str, Any], plan: dict[str, Any], *, proposal_id: str
+    ) -> bool:
+        return (
+            all(
+                existing.get(key) == plan.get(key)
+                for key in (
+                    "component_id",
+                    "display_name",
+                    "description",
+                    "inputs",
+                    "outputs",
+                    "implementation",
+                    "dependencies",
+                )
+            )
+            and existing.get("metadata", {}).get("builder.proposal_id") == proposal_id
+        )
 
     def draft(
         self, project_id: str, kind: TargetKind, target_id: str
@@ -518,6 +830,37 @@ class EditProposalService:
         proposal = self.store.get(project_id, proposal_id)
         if proposal is None:
             raise FactoryError("edit_proposal_not_found", "Edit proposal was not found")
+        if proposal.get("proposal_kind") == COMPONENT_PROPOSAL_KIND:
+            created = self.custom_components.find_builder_proposal(
+                project_id, proposal_id
+            )
+            published = bool(
+                created
+                and created.get("version") != "0.0.0"
+                and created.get("lifecycle") == "active"
+            )
+            if published:
+                proposal["state"] = "applied"
+            proposal["created_component"] = (
+                {
+                    "component_id": created["component_id"],
+                    "display_name": created["display_name"],
+                    "version": created["version"],
+                    "reference": created["reference"],
+                    "content_hash": created["content_hash"],
+                    "readiness": created["readiness"],
+                    "implementation_kind": created["implementation"]["kind"],
+                }
+                if published and created is not None
+                else None
+            )
+            proposal["stale"] = (
+                False
+                if published or proposal["state"] == "rejected"
+                else self._component_proposal_stale(project_id, proposal)
+            )
+            proposal["applied_revision"] = None
+            return proposal
         try:
             current = self.draft(
                 project_id, proposal["target_kind"], proposal["target_id"]
@@ -544,9 +887,12 @@ class EditProposalService:
         proposal.pop("previous_source")
         return proposal
 
-    def list(self, project_id: str, kind: TargetKind, target_id: str) -> dict[str, Any]:
-        with suppress(DraftConflict):
-            self.draft(project_id, kind, target_id)
+    def list(
+        self, project_id: str, kind: ProposalTargetKind, target_id: str
+    ) -> dict[str, Any]:
+        if kind != "custom_component":
+            with suppress(DraftConflict):
+                self.draft(project_id, kind, target_id)
         return {
             "schema_version": "1.0",
             "proposals": [
@@ -566,6 +912,32 @@ class EditProposalService:
             view = self.get(project_id, proposal_id)
             proposal = self.store.get(project_id, proposal_id)
             assert proposal is not None
+            if proposal.get("proposal_kind") == COMPONENT_PROPOSAL_KIND:
+                if command == "undo":
+                    raise FactoryError(
+                        "component_proposal_undo_unsupported",
+                        "Published Custom Component versions are immutable; "
+                        "create a new version instead.",
+                    )
+                if view["state"] == "rejected" and command == "reject":
+                    return view
+                if view["state"] == "applied" and command == "apply":
+                    return view
+                if view["state"] != "review":
+                    raise FactoryError(
+                        "edit_proposal_closed",
+                        "This proposal cannot accept that command",
+                    )
+                if command == "reject":
+                    self.store.reject(proposal_id)
+                else:
+                    if view["stale"]:
+                        raise DraftConflict(
+                            "Project capabilities or Runtime readiness changed; "
+                            "review a new proposal"
+                        )
+                    self._apply_component_proposal(project_id, proposal)
+                return self.get(project_id, proposal_id)
             desired = {"apply": "applied", "reject": "rejected", "undo": "undone"}[
                 command
             ]

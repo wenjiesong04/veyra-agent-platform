@@ -87,10 +87,18 @@ export function latestTestOperation(operations: BuilderConversationOperation[]):
   return [...operations].reverse().find((item) => item.kind === "test_agent");
 }
 
+export function latestWorkspaceTestOperation(
+  operations: BuilderConversationOperation[],
+  workspaceId: string,
+): BuilderConversationOperation | undefined {
+  return latestTestOperation(operations.filter((item) => item.kind === "test_agent" && item.workspace_id === workspaceId));
+}
+
 export function BuilderTestRun({
   api,
   projectId,
   agentId,
+  workspaceId,
   conversationId,
   locale,
   operation,
@@ -100,6 +108,7 @@ export function BuilderTestRun({
   api: LocalProjectApi;
   projectId: string;
   agentId: string;
+  workspaceId: string;
   conversationId: string;
   locale: Locale;
   operation?: BuilderConversationOperation;
@@ -184,6 +193,7 @@ export function BuilderTestRun({
     try {
       onSnapshot(await api.startBuilderTestRun(projectId, conversation, {
         agent_id: agentId,
+        workspace_id: workspaceId,
         inputs: values,
         locale,
       }));

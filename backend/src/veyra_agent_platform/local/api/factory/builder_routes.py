@@ -17,6 +17,7 @@ from veyra_agent_platform.local.builder.conversation_service import (
     BUILDER_ACTIVITY_MAX,
     BuilderConversationError,
     BuilderConversationService,
+    ComponentProposalCommandRequest,
     RecordRequest,
     RenameRequest,
     TestRepairRequest,
@@ -183,6 +184,31 @@ def build_router() -> APIRouter:
             request,
             lambda: _conversations(request).command_test_run(
                 project_id, conversation_id, operation_id, payload
+            ),
+        )
+
+    @router.post(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+        "/operations/{operation_id}/component-proposals/{proposal_id}/commands"
+    )
+    def command_component_proposal(
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        proposal_id: str,
+        payload: ComponentProposalCommandRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).command_component_proposal(
+                project_id,
+                conversation_id,
+                operation_id,
+                proposal_id,
+                payload.command,
+                confirm=payload.confirm,
+                locale=payload.locale,
             ),
         )
 

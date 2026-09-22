@@ -15,6 +15,9 @@ COMPILE_STARTED = "builder.compile.started"
 COMPILE_COMPLETED = "builder.compile.completed"
 VALIDATION_STARTED = "builder.validation.started"
 VALIDATION_COMPLETED = "builder.validation.completed"
+COMPONENT_DESIGN_STARTED = "builder.component_design.started"
+COMPONENT_DESIGN_COMPLETED = "builder.component_design.completed"
+COMPONENT_CREATED = "builder.component.created"
 PROPOSAL_READY = "builder.proposal.ready"
 PROPOSAL_CONFIRMED = "builder.proposal.confirmed"
 PROPOSAL_REJECTED = "builder.proposal.rejected"
@@ -41,6 +44,9 @@ EVENT_KINDS: Final[frozenset[str]] = frozenset(
         COMPILE_COMPLETED,
         VALIDATION_STARTED,
         VALIDATION_COMPLETED,
+        COMPONENT_DESIGN_STARTED,
+        COMPONENT_DESIGN_COMPLETED,
+        COMPONENT_CREATED,
         PROPOSAL_READY,
         PROPOSAL_CONFIRMED,
         PROPOSAL_REJECTED,
@@ -72,6 +78,9 @@ _LABELS: Final[dict[str, tuple[str, str]]] = {
     COMPILE_COMPLETED: ("编译 Agent", "Compiling Agent"),
     VALIDATION_STARTED: ("验证结构", "Validating"),
     VALIDATION_COMPLETED: ("验证结构", "Validating"),
+    COMPONENT_DESIGN_STARTED: ("设计可复用组件", "Designing reusable component"),
+    COMPONENT_DESIGN_COMPLETED: ("组件方案已就绪", "Component plan ready"),
+    COMPONENT_CREATED: ("组件已发布", "Component published"),
     PROPOSAL_READY: ("等待确认", "Preparing review"),
     PROPOSAL_CONFIRMED: ("用户确认", "Confirmed"),
     PROPOSAL_REJECTED: ("已拒绝", "Rejected"),

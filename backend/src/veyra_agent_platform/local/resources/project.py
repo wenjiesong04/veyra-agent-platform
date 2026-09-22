@@ -7,6 +7,10 @@ from copy import deepcopy
 from typing import Any
 
 from veyra_agent_platform.contracts.resource import ProjectResourceBinding
+from veyra_agent_platform.local.projects.custom_components import (
+    CustomComponentError,
+    CustomComponentService,
+)
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 
 from .catalog import ResourceCatalog, ResourceCatalogError
@@ -25,9 +29,15 @@ class ProjectResourceError(ValueError):
 class ProjectResourceService:
     """Manage portable Project bindings without mutating the global Catalog."""
 
-    def __init__(self, projects: ProjectService, catalog: ResourceCatalog) -> None:
+    def __init__(
+        self,
+        projects: ProjectService,
+        catalog: ResourceCatalog,
+        custom_components: CustomComponentService | None = None,
+    ) -> None:
         self.projects = projects
         self.catalog = catalog
+        self.custom_components = custom_components
 
     def resolve_pin(
         self, project_id: str, reference: str, locked_hash: str | None
@@ -69,11 +79,18 @@ class ProjectResourceService:
 
         binding_by_reference = {binding.reference: binding for binding in bindings}
         references = set(binding_by_reference) | set(usage)
+        custom_by_ref = self._custom_descriptors(project_id)
         resources: list[dict[str, Any]] = []
         missing: list[str] = []
         missing_bindings: list[dict[str, Any]] = []
+        seen_custom: set[str] = set()
         for reference in sorted(references):
             if reference.startswith(_RUNTIME_PROFILE_LOCK_PREFIX):
+                continue
+            custom = custom_by_ref.get(reference)
+            if custom is not None:
+                resources.append(custom)
+                seen_custom.add(reference)
                 continue
             try:
                 descriptor = self.catalog.by_reference(reference)
@@ -108,6 +125,10 @@ class ProjectResourceService:
                     )
                 )
 
+        for reference, descriptor in custom_by_ref.items():
+            if reference not in seen_custom:
+                resources.append(descriptor)
+
         resources.sort(
             key=lambda item: (
                 {"project": 0, "used_unbound": 1, "builtin": 2}[item["scope"]],
@@ -122,7 +143,7 @@ class ProjectResourceService:
             "resources": resources,
             "missing_references": missing,
             "missing_bindings": missing_bindings,
-            "project_count": len(bindings),
+            "project_count": len(bindings) + len(custom_by_ref),
             "used_count": sum(bool(item["used_by"]) for item in resources),
             "unbound_count": sum(item["scope"] == "used_unbound" for item in resources),
             "builtin_count": sum(item["scope"] == "builtin" for item in resources),
@@ -257,3 +278,17 @@ class ProjectResourceService:
             }
         )
         return result
+
+    def _custom_descriptors(self, project_id: str) -> dict[str, dict[str, Any]]:
+        if self.custom_components is None:
+            return {}
+        try:
+            return {
+                item["reference"]: item
+                for item in self.custom_components.descriptors(project_id)
+            }
+        except (ProjectError, CustomComponentError) as exc:
+            code = getattr(exc, "code", "component_invalid")
+            raise ProjectResourceError(
+                code, "Project Custom Component state is invalid"
+            ) from exc

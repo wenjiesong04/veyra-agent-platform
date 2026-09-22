@@ -19,6 +19,7 @@ from veyra_agent_platform.local.factory.client import (
     KimiCompletion,
 )
 from veyra_agent_platform.local.factory.compiler import agent_candidate_identity
+from veyra_agent_platform.local.factory.service import FactoryError
 
 
 class InspectingTransport:
@@ -707,6 +708,343 @@ def test_missing_capability_keeps_failed_operation_without_creating_agent(
                 "executable"
             ]
             is False
+        )
+
+
+def test_direct_component_proposal_requires_confirmation_and_never_creates_agent(
+    tmp_path: Path,
+) -> None:
+    direct_component_intent = intent(
+        intent="create_component",
+        create_kind="custom_component",
+        instruction="Create a reusable text normalization component.",
+        message="I can propose a reusable text normalization component.",
+        plan=["Normalize the supplied string."],
+        component_plan={
+            "capability_requirement": "Text normalization",
+            "purpose": "normalized: {{text}}",
+            "operation_kind": "transform",
+            "dependency_requirement": "",
+            "inputs": [{"name": "text", "type": "string"}],
+            "outputs": [{"name": "normalized", "type": "string"}],
+        },
+    )
+    transport = ScriptedKimiTransport(
+        [_completion(json.dumps(direct_component_intent))]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        before = client.get(f"/api/v1/projects/{project}").json()
+        snapshot = _turn(
+            client,
+            project,
+            content="创建一个可复用的文本规范化组件。",
+            locale="zh",
+        ).json()
+        operation = snapshot["operations"][0]
+        assert operation["kind"] == "create_component"
+        assert operation["status"] == "waiting"
+        assert operation["proposal_id"]
+        assert operation["events"][-1]["facts"]["proposal_kind"] == (
+            "create_custom_component"
+        )
+        proposal_url = (
+            f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
+        )
+        proposal = client.get(proposal_url)
+        assert proposal.status_code == 200, proposal.text
+        assert proposal.json()["state"] == "review"
+        assert proposal.json()["continuation"] == "direct_component"
+        assert proposal.json()["component_plan"]["implementation"]["kind"] == (
+            "transform"
+        )
+        assert (
+            client.get(f"/api/v1/projects/{project}/custom-components").json()[
+                "components"
+            ]
+            == []
+        )
+
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{snapshot['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/component-proposals/"
+            f"{operation['proposal_id']}/commands"
+        )
+        denied = client.post(
+            command_url,
+            json={"command": "apply", "confirm": False, "locale": "zh"},
+        )
+        assert denied.status_code == 422
+        assert client.get(proposal_url).json()["state"] == "review"
+
+        applied = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert applied.status_code == 200, applied.text
+        final = applied.json()
+        assert final["operations"][0]["status"] == "succeeded"
+        assert final["factory_session"] is None
+        created = client.get(proposal_url).json()["created_component"]
+        assert created["reference"].endswith("@1.0.0")
+        components = client.get(f"/api/v1/projects/{project}/custom-components").json()[
+            "components"
+        ]
+        assert len(components) == 1
+        builder_version = components[0]["versions"][0]
+        assert builder_version["content_hash"] == created["content_hash"]
+        builder_component = client.get(
+            f"/api/v1/projects/{project}/custom-components/"
+            f"{created['component_id']}?version=1.0.0"
+        ).json()
+        assert builder_component["provenance"] == "builder"
+        assert builder_component["metadata"] == {
+            "builder.conversation_id": snapshot["conversation"]["conversation_id"],
+            "builder.operation_id": operation["operation_id"],
+            "builder.proposal_id": operation["proposal_id"],
+        }
+        library = client.get(f"/api/v1/projects/{project}/resources").json()
+        assert any(
+            resource["reference"] == created["reference"]
+            and resource["availability"] == "ready"
+            for resource in library["resources"]
+        )
+        retried = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert retried.status_code == 200, retried.text
+        retry_component = client.get(proposal_url).json()["created_component"]
+        assert retry_component["reference"] == created["reference"]
+        assert (
+            len(
+                client.get(f"/api/v1/projects/{project}/custom-components").json()[
+                    "components"
+                ]
+            )
+            == 1
+        )
+        after = client.get(f"/api/v1/projects/{project}").json()
+        assert after["agent_count"] == before["agent_count"]
+
+
+def test_rejecting_component_proposal_creates_nothing_and_does_not_downgrade(
+    tmp_path: Path,
+) -> None:
+    component_intent = intent(
+        intent="create_component",
+        create_kind="custom_component",
+        instruction="Create a reusable text normalization component.",
+        message="I can propose a reusable text normalization component.",
+        plan=["Normalize the supplied string."],
+        component_plan={
+            "capability_requirement": "Text normalization",
+            "purpose": "normalized: {{text}}",
+            "operation_kind": "transform",
+            "dependency_requirement": "",
+            "inputs": [{"name": "text", "type": "string"}],
+            "outputs": [{"name": "normalized", "type": "string"}],
+        },
+    )
+    transport = ScriptedKimiTransport([_completion(json.dumps(component_intent))])
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        before = client.get(f"/api/v1/projects/{project}").json()
+        snapshot = _turn(
+            client, project, content="创建一个可复用的文本规范化组件。", locale="zh"
+        ).json()
+        operation = snapshot["operations"][0]
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{snapshot['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/component-proposals/"
+            f"{operation['proposal_id']}/commands"
+        )
+
+        rejected = client.post(
+            command_url,
+            json={"command": "reject", "confirm": True, "locale": "zh"},
+        )
+
+        assert rejected.status_code == 200, rejected.text
+        payload = rejected.json()
+        assert payload["operations"][0]["status"] == "rejected"
+        assert "builder.proposal.rejected" in _event_kinds(payload)
+        assert (
+            client.get(f"/api/v1/projects/{project}/custom-components").json()[
+                "components"
+            ]
+            == []
+        )
+        assert (
+            client.get(f"/api/v1/projects/{project}").json()["agent_count"]
+            == (before["agent_count"])
+        )
+        assert "不会静默降级创建 Agent" in payload["messages"][-1]["content"]
+
+
+def test_component_apply_failure_is_recorded_on_builder_operation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    component_intent = intent(
+        intent="create_component",
+        create_kind="custom_component",
+        instruction="Create a reusable text normalization component.",
+        message="I can propose a reusable text normalization component.",
+        plan=["Normalize the supplied string."],
+        component_plan={
+            "capability_requirement": "Text normalization",
+            "purpose": "normalized: {{text}}",
+            "operation_kind": "transform",
+            "dependency_requirement": "",
+            "inputs": [{"name": "text", "type": "string"}],
+            "outputs": [{"name": "normalized", "type": "string"}],
+        },
+    )
+    transport = ScriptedKimiTransport([_completion(json.dumps(component_intent))])
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        before = client.get(f"/api/v1/projects/{project}").json()
+        snapshot = _turn(
+            client, project, content="创建一个可复用的文本规范化组件。", locale="zh"
+        ).json()
+        operation = snapshot["operations"][0]
+        edits = client.app.state.builder_conversations.edits
+
+        def fail_apply(*args: Any, **kwargs: Any) -> None:
+            raise FactoryError(
+                "component_validation_failed",
+                "The Component did not pass validation and was not published.",
+            )
+
+        monkeypatch.setattr(edits, "command", fail_apply)
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{snapshot['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/component-proposals/"
+            f"{operation['proposal_id']}/commands"
+        )
+
+        failed = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+
+        assert failed.status_code == 200, failed.text
+        payload = failed.json()
+        assert payload["operations"][0]["status"] == "failed"
+        assert payload["operations"][0]["error_code"] == "component_validation_failed"
+        assert _event_kinds(payload)[-1] == "builder.operation.failed"
+        assert (
+            client.get(f"/api/v1/projects/{project}/custom-components").json()[
+                "components"
+            ]
+            == []
+        )
+        assert (
+            client.get(f"/api/v1/projects/{project}").json()["agent_count"]
+            == (before["agent_count"])
+        )
+
+
+def test_reusable_component_confirmation_resumes_original_agent_plan(
+    tmp_path: Path,
+) -> None:
+    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
+    plan.update(
+        inputs=[{"name": "text", "type": "string"}],
+        outputs=[{"name": "normalized", "type": "string"}],
+        steps=["Normalize the text"],
+        step_intents=[
+            {
+                "semantic_key": "normalize",
+                "name": "Normalize text",
+                "purpose": "normalized: {{text}}",
+                "operation_kind": "transform",
+                "capability_requirement": "Text normalization",
+                "reusable_capability": True,
+                "inputs": [{"name": "text", "type": "string"}],
+                "outputs": [{"name": "normalized", "type": "string"}],
+            }
+        ],
+    )
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+            _completion(json.dumps(plan)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        before = client.get(f"/api/v1/projects/{project}").json()
+        snapshot = _turn(
+            client,
+            project,
+            content="创建一个会先做文本规范化的 Agent。",
+            locale="zh",
+        ).json()
+        operation = snapshot["operations"][0]
+        assert snapshot["factory_session"]["state"] == "missing_capability"
+        assert operation["proposal_id"]
+        proposal_url = (
+            f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
+        )
+        proposal = client.get(proposal_url).json()
+        assert proposal["continuation"] == "agent"
+        assert proposal["component_plan"]["capability_requirement"] == (
+            "Text normalization"
+        )
+
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{snapshot['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/component-proposals/"
+            f"{operation['proposal_id']}/commands"
+        )
+        resumed = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert resumed.status_code == 200, resumed.text
+        result = resumed.json()
+        assert result["factory_session"]["state"] == "review"
+        assert result["factory_session"]["candidate"]["name"] == "礼物包装 Agent"
+        assert result["operations"][0]["status"] == "waiting"
+        assert result["operations"][0]["proposal_id"] == operation["proposal_id"]
+        published_proposal = client.get(proposal_url).json()
+        component = published_proposal["created_component"]
+        assert any(
+            item["reference"] == component["reference"]
+            for item in result["factory_session"]["resource_plan"]
+        )
+        assert (
+            client.get(f"/api/v1/projects/{project}").json()["agent_count"]
+            == (before["agent_count"])
+        )
+
+        created = client.post(
+            f"/api/v1/projects/{project}/factory/sessions/"
+            f"{result['factory_session']['session_id']}/apply-draft",
+            json={"confirm": True},
+        )
+        assert created.status_code == 200, created.text
+        agent_id = created.json()["agent"]["agent_id"]
+        exported = client.get(
+            f"/api/v1/projects/{project}/agents/{agent_id}/export"
+        ).json()
+        assert (
+            exported["source"]["lock"][component["reference"]]
+            == component["content_hash"]
+        )
+        assert any(
+            node["component_type"] == "CustomComponent"
+            and node["uses"] == component["reference"]
+            for node in exported["source"]["nodes"]
+        )
+        assert client.get(f"/api/v1/projects/{project}").json()["agent_count"] == (
+            before["agent_count"] + 1
         )
 
 

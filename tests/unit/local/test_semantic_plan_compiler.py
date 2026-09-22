@@ -9,6 +9,8 @@ from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
 from veyra_agent_platform.local.builder.knowledge_binding import knowledge_reference
 from veyra_agent_platform.local.builder.resource_binding import (
     FILESYSTEM_READ_RESOURCE_ID,
+    project_capability_catalog,
+    resolve_capability_intent,
 )
 from veyra_agent_platform.local.builder.semantic_compiler import (
     builder_project_context,
@@ -21,6 +23,27 @@ from veyra_agent_platform.local.resources import ResourceCatalog
 REFERENCE = "veyra.tool.filesystem.read@1.0.0"
 BOUND_HASH = "a" * 64
 CATALOG_HASH = "c" * 64
+
+
+def _simple_plan(**changes: object) -> AgentSemanticPlanV1:
+    payload = deepcopy(VALID_SEMANTIC_PLAN)
+    payload.update(
+        {
+            "goal": "Translate the source text into the target language.",
+            "suggested_name": "翻译 Agent",
+            "description": "Translate user text.",
+            "inputs": [{"name": "text", "type": "string"}],
+            "outputs": [{"name": "translation", "type": "string"}],
+            "steps": ["翻译"],
+            "capability_intents": [],
+            "knowledge_intents": [],
+            "approval_points": [],
+            "success_criteria": ["Accurate translation"],
+            "user_constraints": [],
+        }
+    )
+    payload.update(changes)
+    return AgentSemanticPlanV1.from_dict(payload)
 
 
 def _plan(**changes: object) -> AgentSemanticPlanV1:
@@ -187,7 +210,7 @@ def test_translation_plan_compiles_without_gift_wrap_keywords() -> None:
             description="Translate user text.",
             inputs=[{"name": "text", "type": "string"}],
             outputs=[{"name": "translation", "type": "string"}],
-            steps=["Detect language", "Translate"],
+            steps=["Translate"],
             capability_intents=[],
             knowledge_intents=[],
             success_criteria=["Accurate translation"],
@@ -204,6 +227,11 @@ def test_translation_plan_compiles_without_gift_wrap_keywords() -> None:
     payload = compiled.blueprint.to_dict()
     assert payload["inputs"] == {"text": "string"}
     assert payload["outputs"] == {"translation": "string"}
+    assert [node["component_type"] for node in payload["nodes"]] == [
+        "Start",
+        "Model",
+        "Output",
+    ]
     prompt = payload["nodes"][1]["system_prompt"]
     assert "包装" not in prompt
     assert "Translate" in prompt
@@ -242,7 +270,13 @@ def test_meeting_notes_plan_compiles_structured_io() -> None:
         "decisions": "string",
         "todos": "string",
     }
-    prompt = payload["nodes"][1]["system_prompt"]
+    types = [node["component_type"] for node in payload["nodes"]]
+    assert types.count("Model") == 3
+    prompt = "\n".join(
+        node["system_prompt"]
+        for node in payload["nodes"]
+        if node["component_type"] == "Model"
+    )
     assert "包装" not in prompt
     assert "decisions" in prompt
     assert "todos" in prompt
@@ -277,7 +311,13 @@ def test_meeting_notes_keeps_chinese_extra_outputs_in_prompt() -> None:
     payload = compiled.blueprint.to_dict()
     assert len(payload["outputs"]) == 3
     assert set(payload["outputs"].values()) == {"string"}
-    prompt = payload["nodes"][1]["system_prompt"]
+    types = [node["component_type"] for node in payload["nodes"]]
+    assert types.count("Model") == 3
+    prompt = "\n".join(
+        node["system_prompt"]
+        for node in payload["nodes"]
+        if node["component_type"] == "Model"
+    )
     assert "摘要" in prompt
     assert "决定" in prompt
     assert "待办" in prompt
@@ -325,6 +365,7 @@ def _step(
     purpose: str,
     kind: str,
     depends_on: list[str] | None = None,
+    capability_requirement: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "semantic_key": key,
@@ -334,6 +375,8 @@ def _step(
     }
     if depends_on:
         payload["depends_on"] = depends_on
+    if capability_requirement:
+        payload["capability_requirement"] = capability_requirement
     return payload
 
 
@@ -347,7 +390,7 @@ def _empty_context() -> object:
 
 
 def test_v1_plan_without_step_intents_stays_three_nodes() -> None:
-    compiled = compile_semantic_plan(_plan(), _empty_context())
+    compiled = compile_semantic_plan(_simple_plan(), _empty_context())
     assert compiled.status == "compiled"
     assert compiled.blueprint is not None
     types = [node["component_type"] for node in compiled.blueprint.to_dict()["nodes"]]
@@ -571,13 +614,19 @@ def test_transform_and_condition_compile_canonical_nodes() -> None:
             outputs=[{"name": "result", "type": "string"}],
             step_intents=[
                 _step("shape", "整理字段", "result: {{text}}", "transform"),
-                _step(
-                    "gate",
-                    "是否就绪",
-                    "ready == true",
-                    "condition",
-                    depends_on=["shape"],
-                ),
+                {
+                    **_step(
+                        "gate",
+                        "是否就绪",
+                        "ready == true",
+                        "condition",
+                        depends_on=["shape"],
+                    ),
+                    "branches": [
+                        {"key": "ready", "label": "Ready"},
+                        {"key": "not_ready", "label": "Not ready"},
+                    ],
+                },
                 _step(
                     "answer",
                     "生成结果",
@@ -605,6 +654,110 @@ def test_transform_and_condition_compile_canonical_nodes() -> None:
     ports = {(item["from"], item["port"]) for item in payload["transitions"]}
     assert ("gate", "true") in ports
     assert ("gate", "false") in ports
+
+
+def test_two_branch_condition_keeps_branch_local_nodes_and_typed_outputs() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "request", "type": "string"}],
+            outputs=[
+                {"name": "kind", "type": "string"},
+                {"name": "detail", "type": "string"},
+            ],
+            step_intents=[
+                {
+                    **_step("classify", "分类", 'request != ""', "condition"),
+                    "branches": [
+                        {"key": "alpha", "label": "Alpha"},
+                        {"key": "beta", "label": "Beta"},
+                    ],
+                },
+                {
+                    **_step(
+                        "approve_alpha",
+                        "Alpha approval",
+                        "Approve Alpha handling",
+                        "approval",
+                        depends_on=["classify"],
+                    ),
+                    "branch_condition": "classify",
+                    "branch_key": "alpha",
+                },
+                {
+                    **_step(
+                        "shape_alpha",
+                        "Alpha result",
+                        "Build Alpha result",
+                        "transform",
+                        depends_on=["approve_alpha"],
+                    ),
+                    "branch_condition": "classify",
+                    "branch_key": "alpha",
+                    "output_mapping": {
+                        "kind": "alpha",
+                        "detail": "{{request}}",
+                    },
+                },
+                {
+                    **_step(
+                        "approve_beta",
+                        "Beta approval",
+                        "Approve Beta handling",
+                        "approval",
+                        depends_on=["classify"],
+                    ),
+                    "branch_condition": "classify",
+                    "branch_key": "beta",
+                },
+                {
+                    **_step(
+                        "shape_beta",
+                        "Beta result",
+                        "Build Beta result",
+                        "transform",
+                        depends_on=["approve_beta"],
+                    ),
+                    "branch_condition": "classify",
+                    "branch_key": "beta",
+                    "output_mapping": {
+                        "kind": "beta",
+                        "detail": "{{request}}",
+                    },
+                },
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    types = [node["component_type"] for node in payload["nodes"]]
+    assert types == [
+        "Start",
+        "Condition",
+        "HumanApproval",
+        "Transform",
+        "HumanApproval",
+        "Transform",
+        "Output",
+    ]
+    assert payload["outputs"] == {"kind": "string", "detail": "string"}
+    edges = {
+        (item["from"], item["port"], item["to"]) for item in payload["transitions"]
+    }
+    assert ("classify", "true", "approve_alpha") in edges
+    assert ("classify", "false", "approve_beta") in edges
+    assert ("approve_alpha", "approved", "shape_alpha") in edges
+    assert ("approve_beta", "approved", "shape_beta") in edges
+    assert ("shape_alpha", "next", "output") in edges
+    assert ("shape_beta", "next", "output") in edges
+    assert ("approve_alpha", "approved", "approve_beta") not in edges
+    assert payload["ui_suggestions"]["branch_labels"]["classify"] == {
+        "true": "Alpha",
+        "false": "Beta",
+    }
+    note = payload["ui_suggestions"]["notes"]["note_intro"]["text"]
+    assert "Alpha" in note and "Beta" in note
 
 
 def test_default_note_does_not_change_behavior_hash() -> None:
@@ -691,6 +844,7 @@ def test_image_to_text_keeps_image_input() -> None:
         _plan(
             inputs=[{"name": "product_image", "type": "image"}],
             outputs=[{"name": "description", "type": "string"}],
+            steps=["描述图片"],
             capability_intents=[],
         ),
         _empty_context(),
@@ -772,6 +926,7 @@ def test_multiple_image_inputs_compile_to_artifact_descriptor() -> None:
         _plan(
             inputs=[{"name": "photos", "type": "image", "multiple": True}],
             outputs=[{"name": "analysis", "type": "object"}],
+            steps=["分析图片"],
             capability_intents=[],
         ),
         _empty_context(),
@@ -784,4 +939,229 @@ def test_multiple_image_inputs_compile_to_artifact_descriptor() -> None:
             "artifact_kind": "image",
             "multiple": True,
         }
+    }
+
+
+def test_multi_step_v1_plan_compiles_separate_model_nodes() -> None:
+    compiled = compile_semantic_plan(_plan(), _empty_context())
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    types = [node["component_type"] for node in compiled.blueprint.to_dict()["nodes"]]
+    assert types == ["Start", "Model", "Model", "Output"]
+    labels = compiled.blueprint.to_dict()["ui_suggestions"]["labels"]
+    assert "理解礼物与对象" in labels.values()
+    assert "给出材料与步骤" in labels.values()
+
+
+def test_duplicate_capability_intents_reuse_one_project_tool() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            steps=["读取文件", "总结内容"],
+            capability_intents=["Filesystem Read", "veyra.tool.filesystem.read"],
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[_tool()],
+            catalog_resources=[_tool(bound=False)],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    tools = [node for node in payload["nodes"] if node["component_type"] == "Tool"]
+    assert len(tools) == 1
+    assert tools[0]["uses"] == REFERENCE
+    assert payload["requested_permissions"]["tools"] == ["veyra.tool.filesystem.read"]
+
+
+def test_capability_requirement_reuses_unique_project_tool() -> None:
+    http = _tool(bound=True, reference="veyra.tool.http.request@1.0.0")
+    http["resource_id"] = "veyra.tool.http.request"
+    http["name"] = "HTTP Request"
+    http["required_permissions"] = {
+        "network_hosts": ["example.com"],
+        "tools": ["veyra.tool.http.request"],
+        "filesystem_read_roots": [],
+        "filesystem_write_roots": [],
+        "shell_workspace_only": False,
+    }
+    catalog = dict(http)
+    catalog["scope"] = "used_unbound"
+    catalog["bound_content_hash"] = None
+    catalog["binding_status"] = "unbound"
+    compiled = compile_semantic_plan(
+        _plan(
+            step_intents=[
+                _step(
+                    "quote",
+                    "运费查询",
+                    "查询运费",
+                    "capability",
+                    capability_requirement="HTTP Request",
+                ),
+                _step(
+                    "summarize",
+                    "总结报价",
+                    "总结报价",
+                    "model",
+                    depends_on=["quote"],
+                ),
+            ]
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[http],
+            catalog_resources=[catalog],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    tools = [node for node in payload["nodes"] if node["component_type"] == "Tool"]
+    assert [node["component_type"] for node in payload["nodes"]] == [
+        "Start",
+        "Tool",
+        "Model",
+        "Output",
+    ]
+    assert tools[0]["uses"] == "veyra.tool.http.request@1.0.0"
+    assert payload["requested_permissions"]["tools"] == ["veyra.tool.http.request"]
+    assert payload["ui_suggestions"]["labels"][tools[0]["id"]] == "运费查询"
+
+
+def test_unready_project_capability_is_not_pretended_ready() -> None:
+    resource = _tool()
+    resource["availability"] = "requires_configuration"
+    compiled = compile_semantic_plan(
+        _simple_plan(capability_intents=["Filesystem Read"]),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[resource],
+            catalog_resources=[_tool(bound=False)],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    assert any("requires_configuration" in item for item in compiled.warnings)
+    tools = [
+        node
+        for node in compiled.blueprint.to_dict()["nodes"]
+        if node["component_type"] == "Tool"
+    ]
+    assert len(tools) == 1
+
+
+def test_capability_requirement_rejected_on_model_step() -> None:
+    payload = deepcopy(VALID_SEMANTIC_PLAN)
+    payload["step_intents"] = [
+        _step(
+            "summary",
+            "总结",
+            "总结资料",
+            "model",
+            capability_requirement="HTTP Request",
+        )
+    ]
+    try:
+        AgentSemanticPlanV1.from_dict(payload)
+    except ContractValidationError as exc:
+        assert "capability_requirement" in str(exc)
+        return
+    raise AssertionError("capability_requirement must not appear on model steps")
+
+
+def _custom_component(*, version: str = "1.0.0") -> dict[str, object]:
+    component_id = "018f4c2d-7b3a-7abc-8def-0123456789ab"
+    return {
+        "scope": "project",
+        "binding_status": "current",
+        "bound_content_hash": "b" * 64,
+        "content_hash": "b" * 64,
+        "kind": "component",
+        "component_class": "composite",
+        "resource_id": component_id,
+        "reference": f"{component_id}@{version}",
+        "version": version,
+        "name": "Material Estimate",
+        "availability": "ready",
+        "runtime_status": "supported",
+        "required_permissions": {
+            "network_hosts": [],
+            "tools": [],
+            "filesystem_read_roots": [],
+            "filesystem_write_roots": [],
+            "shell_workspace_only": False,
+        },
+        "spec": {
+            "implementation_kind": "transform",
+            "inputs": {"quantity": "number"},
+            "outputs": {"estimate": "number"},
+        },
+    }
+
+
+def test_custom_component_capability_compiles_to_generic_locked_node() -> None:
+    component = _custom_component()
+    selected = resolve_capability_intent([component], [], "Material Estimate")
+    assert selected.status == "resolved"
+    assert selected.selected == component
+    assert project_capability_catalog([component]) == [
+        {
+            "name": "Material Estimate",
+            "resource_id": component["resource_id"],
+            "kind": "component",
+            "readiness": "ready",
+        }
+    ]
+
+    compiled = compile_semantic_plan(
+        _plan(
+            step_intents=[
+                _step(
+                    "estimate",
+                    "材料估算",
+                    "估算材料数量",
+                    "capability",
+                    capability_requirement="Material Estimate",
+                ),
+                _step(
+                    "report",
+                    "生成报告",
+                    "输出估算结果",
+                    "model",
+                    depends_on=["estimate"],
+                ),
+            ]
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[component],
+            catalog_resources=[],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    blueprint = compiled.blueprint.to_dict()
+    custom_nodes = [
+        node
+        for node in blueprint["nodes"]
+        if node["component_type"] == "CustomComponent"
+    ]
+    assert len(custom_nodes) == 1
+    assert custom_nodes[0]["uses"] == component["reference"]
+    assert blueprint["required_capabilities"]["tool_refs"] == []
+
+
+def test_custom_component_versions_are_not_silently_preferred() -> None:
+    first = _custom_component(version="1.0.0")
+    second = _custom_component(version="1.0.1")
+    match = resolve_capability_intent([first, second], [], "Material Estimate")
+    assert match.status == "ambiguous"
+    assert {item["reference"] for item in match.candidates} == {
+        first["reference"],
+        second["reference"],
     }

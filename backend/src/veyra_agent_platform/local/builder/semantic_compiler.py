@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource
@@ -19,6 +19,9 @@ from veyra_agent_platform.contracts.semantic_plan import (
     SemanticStepIntent,
 )
 from veyra_agent_platform.contracts.typed_io import ARTIFACT_KINDS
+from veyra_agent_platform.local.builder.component_planning import (
+    resolve_reusable_capabilities,
+)
 from veyra_agent_platform.local.builder.knowledge_binding import (
     bind_knowledge,
     knowledge_reference,
@@ -28,7 +31,7 @@ from veyra_agent_platform.local.builder.resource_binding import (
     FILESYSTEM_READ_RESOURCE_ID,
     grant_required_permissions,
     resolve_capability_intent,
-    resolve_project_resource,
+    resource_readiness,
 )
 from veyra_agent_platform.local.projects.layout import (
     attach_default_canvas_note,
@@ -75,7 +78,9 @@ _CONDITION_EXPR = re.compile(
     r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|true|false|[0-9]+)$"
 )
 _RESERVED_NODE_IDS = {"start", "output", "note_intro"}
-CompileStatus = Literal["compiled", "clarification", "missing_capability"]
+CompileStatus = Literal[
+    "compiled", "clarification", "missing_capability", "compile_error"
+]
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,11 @@ class SemanticCompileResult:
     tools: tuple[dict[str, Any], ...]
     documents: tuple[dict[str, Any], ...]
     warnings: tuple[str, ...] = ()
+    error: str | None = None
+
+
+class SemanticGraphError(ValueError):
+    """A semantic graph cannot be represented without losing its meaning."""
 
 
 def compile_semantic_plan(
@@ -108,9 +118,27 @@ def compile_semantic_plan(
             "clarification", None, knowledge_question, (), (), ()
         )
 
-    if plan.step_intents:
-        return _compile_graph_intent(plan, context, documents)
-    return _compile_v1(plan, context, documents)
+    reusable = resolve_reusable_capabilities(plan, list(context.project_resources))
+    if reusable.clarification is not None:
+        return SemanticCompileResult(
+            "clarification", None, reusable.clarification, (), (), ()
+        )
+    effective = _with_synthesized_intents(reusable.plan)
+    if effective.step_intents:
+        compiled = _compile_graph_intent(effective, context, documents)
+    else:
+        compiled = _compile_v1(effective, context, documents)
+    if reusable.missing:
+        return SemanticCompileResult(
+            "missing_capability",
+            None,
+            None,
+            tuple(_merge_missing(list(reusable.missing), list(compiled.missing))),
+            compiled.tools,
+            compiled.documents,
+            compiled.warnings,
+        )
+    return compiled
 
 
 def finalize_compiled_source(
@@ -163,6 +191,81 @@ def builder_project_context(
     )
 
 
+def _with_synthesized_intents(plan: AgentSemanticPlanV1) -> AgentSemanticPlanV1:
+    if plan.step_intents or len(plan.steps) <= 1:
+        return plan
+    return replace(plan, step_intents=_sequential_model_intents(plan.steps))
+
+
+def _sequential_model_intents(steps: tuple[str, ...]) -> tuple[SemanticStepIntent, ...]:
+    used = set(_RESERVED_NODE_IDS)
+    intents: list[SemanticStepIntent] = []
+    previous: str | None = None
+    for phrase in steps:
+        key = _unique_id(_node_id_from_key(phrase), used)
+        intents.append(
+            SemanticStepIntent(
+                semantic_key=key,
+                name=phrase[:80],
+                purpose=phrase[:240],
+                operation_kind="model",
+                depends_on=(previous,) if previous else (),
+            )
+        )
+        previous = key
+    return tuple(intents)
+
+
+def _capability_query(step: SemanticStepIntent) -> str:
+    if step.capability_requirement:
+        return step.capability_requirement
+    return " ".join(part for part in (step.name, step.purpose) if part).strip()
+
+
+def _matching_tool(
+    step: SemanticStepIntent, tools: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    if not tools:
+        return None
+    match = resolve_capability_intent(tools, [], _capability_query(step))
+    if match.status == "resolved" and match.selected is not None:
+        reference = str(match.selected.get("reference") or "")
+        for resource in tools:
+            if str(resource.get("reference") or "") == reference:
+                return resource
+    return None
+
+
+def _readiness_warnings(tools: list[dict[str, Any]]) -> tuple[str, ...]:
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for resource in tools:
+        state = str(resource_readiness(resource)["readiness"])
+        if state == "ready":
+            continue
+        name = str(resource.get("name") or resource.get("resource_id") or "tool")
+        token = f"capability_{state}:{name}"
+        if token not in seen:
+            seen.add(token)
+            warnings.append(token)
+    return tuple(warnings)
+
+
+def _merge_missing(
+    current: list[dict[str, Any]], extra: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged = list(current)
+    seen = {str(item.get("reference") or "") for item in merged}
+    for item in extra:
+        reference = str(item.get("reference") or "")
+        if reference and reference not in seen:
+            merged.append(item)
+            seen.add(reference)
+        elif not reference:
+            merged.append(item)
+    return merged
+
+
 def _compile_v1(
     plan: AgentSemanticPlanV1,
     context: BuilderProjectContext,
@@ -182,6 +285,7 @@ def _compile_v1(
             "missing_capability", None, None, tuple(missing), (), ()
         )
     tools = _merge_tools(tools, modality_tools)
+    warnings = modality_warnings + _readiness_warnings(tools)
     payload = _linear_blueprint(
         plan,
         tools,
@@ -196,7 +300,7 @@ def _compile_v1(
             )
         ],
         extra_approvals=plan.approval_points,
-        warnings=modality_warnings,
+        warnings=warnings,
         collapse_models=True,
     )
     return SemanticCompileResult(
@@ -206,7 +310,7 @@ def _compile_v1(
         (),
         tuple(tools),
         tuple(documents),
-        modality_warnings,
+        warnings,
     )
 
 
@@ -225,7 +329,7 @@ def _compile_graph_intent(
         match = resolve_capability_intent(
             list(context.project_resources),
             list(context.catalog_resources),
-            step.purpose,
+            _capability_query(step),
         )
         if match.status == "resolved" and match.selected is not None:
             reference = str(match.selected["reference"])
@@ -245,7 +349,7 @@ def _compile_graph_intent(
         missing.append(
             _missing_capability(
                 "tool",
-                step.purpose,
+                _capability_query(step),
                 "Requested capability is not bound to this Project",
             )
         )
@@ -260,11 +364,11 @@ def _compile_graph_intent(
         if reference not in seen:
             tools.append(resource)
             seen.add(reference)
-    missing.extend(extra_missing)
+    missing = _merge_missing(missing, extra_missing)
     modality_missing, modality_tools, modality_warnings = _modality_requirements(
         plan, context
     )
-    missing.extend(modality_missing)
+    missing = _merge_missing(missing, modality_missing)
     tools = _merge_tools(tools, modality_tools)
     if missing:
         return SemanticCompileResult(
@@ -274,16 +378,41 @@ def _compile_graph_intent(
         extra_approvals: tuple[str, ...] = ()
     else:
         extra_approvals = plan.approval_points
-    warnings = _verification_warnings(plan) + modality_warnings
-    payload = _linear_blueprint(
-        plan,
-        tools,
-        documents,
-        model_steps=list(plan.step_intents),
-        extra_approvals=extra_approvals,
-        warnings=warnings,
-        collapse_models=False,
+    warnings = (
+        _verification_warnings(plan) + modality_warnings + _readiness_warnings(tools)
     )
+    try:
+        payload = _linear_blueprint(
+            plan,
+            tools,
+            documents,
+            model_steps=list(plan.step_intents),
+            extra_approvals=extra_approvals,
+            warnings=warnings,
+            collapse_models=False,
+        )
+    except SemanticGraphError as exc:
+        return SemanticCompileResult(
+            "compile_error",
+            None,
+            None,
+            (),
+            tuple(tools),
+            tuple(documents),
+            warnings,
+            error=str(exc),
+        )
+    except (TypeError, ValueError) as exc:
+        return SemanticCompileResult(
+            "compile_error",
+            None,
+            None,
+            (),
+            tuple(tools),
+            tuple(documents),
+            warnings,
+            error=str(exc),
+        )
     return SemanticCompileResult(
         "compiled",
         AgentBlueprint.from_dict(payload),
@@ -319,18 +448,23 @@ def _linear_blueprint(
         (name for name, kind in inputs.items() if kind == "string" and "path" in name),
         None,
     )
-    filesystem_tools = [resource for resource in tools if _is_filesystem_tool(resource)]
+    filesystem_tools = [
+        resource
+        for resource in tools
+        if resource.get("kind") in {"tool", "mcp_tool"}
+        and _is_filesystem_tool(resource)
+    ]
     if filesystem_tools and path_input is None:
         path_input = _field_slug("path", used_fields, "input")
         inputs[path_input] = "string"
 
     nodes: list[dict[str, Any]] = [{"id": "start", "component_type": "Start"}]
     transitions: list[dict[str, str]] = []
-    positions = {"start": {"x": 0, "y": 80}}
+    # Builder proposals are laid out by the shared Studio/Factory DAG layout.
+    positions: dict[str, dict[str, int]] = {}
     labels: dict[str, str] = {}
     previous = "start"
     previous_port = "next"
-    cursor_x = 0
     permissions = {
         "network_hosts": [],
         "tools": [],
@@ -347,18 +481,16 @@ def _linear_blueprint(
             node_id = _unique_id(
                 "filesystem_read" if index == 0 else f"tool_{index + 1}", used_ids
             )
-            mapping = {"path": path_input} if path_input else {}
-            tool_node: dict[str, Any] = {
-                "id": node_id,
-                "component_type": "Tool",
-                "uses": resource["reference"],
-            }
+            tool_node = _resource_node(resource, node_id)
+            mapping = (
+                {"path": path_input}
+                if tool_node.get("component_type") == "Tool" and path_input
+                else _component_input_mapping(resource, inputs, path_input)
+            )
             if mapping:
                 tool_node["input_mapping"] = mapping
             nodes.append(tool_node)
             labels[node_id] = str(resource.get("name") or "Tool")[:80]
-            cursor_x += 240
-            positions[node_id] = {"x": cursor_x, "y": 80}
             transitions.append({"from": previous, "port": previous_port, "to": node_id})
             previous = node_id
             previous_port = "next"
@@ -366,6 +498,27 @@ def _linear_blueprint(
                 permissions, resource["required_permissions"]
             )
         pending_tools = []
+
+    if any(step.branches or step.branch_condition for step in ordered):
+        return _branched_blueprint_payload(
+            plan,
+            tools=tools,
+            documents=documents,
+            extra_outputs=extra_outputs,
+            inputs=inputs,
+            outputs=outputs,
+            path_input=path_input,
+            ordered=ordered,
+            extra_approvals=extra_approvals,
+            warnings=warnings,
+            nodes=nodes,
+            transitions=transitions,
+            labels=labels,
+            permissions=permissions,
+            used_ids=used_ids,
+            previous=previous,
+            previous_port=previous_port,
+        )
 
     for step in ordered:
         node, extras, consumed = _compile_step(
@@ -375,11 +528,13 @@ def _linear_blueprint(
             inputs=inputs,
             outputs=outputs,
             path_input=path_input,
-            tools=pending_tools if step.operation_kind == "capability" else [],
+            tools=tools if step.operation_kind == "capability" else [],
             used_ids=used_ids,
             include_all_steps=collapse_models,
         )
-        if consumed is not None:
+        if consumed is not None and not any(
+            item.operation_kind == "capability" for item in ordered
+        ):
             pending_tools = [
                 resource
                 for resource in pending_tools
@@ -390,8 +545,6 @@ def _linear_blueprint(
         node_id = str(node["id"])
         nodes.append(node)
         labels[node_id] = step.name[:80]
-        cursor_x += 240
-        positions[node_id] = {"x": cursor_x, "y": 80}
         transitions.append({"from": previous, "port": previous_port, "to": node_id})
         component = str(node["component_type"])
         extra_ports = {
@@ -426,31 +579,265 @@ def _linear_blueprint(
             }
         )
         labels[node_id] = prompt[:80]
-        cursor_x += 240
-        positions[node_id] = {"x": cursor_x, "y": 80}
         transitions.append({"from": previous, "port": previous_port, "to": node_id})
         transitions.append({"from": node_id, "port": "rejected", "to": "output"})
         previous = node_id
         previous_port = "approved"
 
     output_name = next(iter(outputs))
-    cursor_x += 240
     nodes.append(
         {"id": "output", "component_type": "Output", "output_name": output_name}
     )
     transitions.append({"from": previous, "port": previous_port, "to": "output"})
-    positions["output"] = {"x": cursor_x, "y": 80}
     labels["output"] = output_name[:80]
 
+    return _finalize_blueprint_payload(
+        plan,
+        inputs=inputs,
+        outputs=outputs,
+        nodes=nodes,
+        transitions=transitions,
+        permissions=permissions,
+        documents=documents,
+        warnings=warnings,
+        positions=positions,
+        labels=labels,
+    )
+
+
+def _branched_blueprint_payload(
+    plan: AgentSemanticPlanV1,
+    *,
+    tools: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+    extra_outputs: list[str],
+    inputs: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+    path_input: str | None,
+    ordered: list[SemanticStepIntent],
+    extra_approvals: tuple[str, ...],
+    warnings: tuple[str, ...],
+    nodes: list[dict[str, Any]],
+    transitions: list[dict[str, str]],
+    labels: dict[str, str],
+    permissions: dict[str, Any],
+    used_ids: set[str],
+    previous: str,
+    previous_port: str,
+) -> dict[str, Any]:
+    """Compile semantic branches as a DAG, never as an ordered step list."""
+
+    branched_conditions = [step for step in ordered if step.branches]
+    if len(branched_conditions) != 1:
+        raise SemanticGraphError(
+            "V1 supports one branched Condition per Agent graph; nested or sibling "
+            "branched Conditions need an explicit graph compiler"
+        )
+    condition = branched_conditions[0]
+    condition_key = condition.semantic_key.casefold()
+    node_by_key: dict[str, dict[str, Any]] = {}
+    for step in ordered:
+        try:
+            node, extras, consumed = _compile_step(
+                step,
+                plan,
+                extra_outputs=extra_outputs,
+                inputs=inputs,
+                outputs=outputs,
+                path_input=path_input,
+                tools=tools if step.operation_kind == "capability" else [],
+                used_ids=used_ids,
+                include_all_steps=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise SemanticGraphError(str(exc)) from exc
+        if node is None:
+            raise SemanticGraphError(
+                f"semantic step {step.semantic_key} could not be compiled"
+            )
+        node_by_key[step.semantic_key.casefold()] = node
+        nodes.append(node)
+        labels[str(node["id"])] = step.name[:80]
+        nodes.extend(extras)
+        if consumed is not None:
+            matched = next(
+                (
+                    resource
+                    for resource in tools
+                    if str(resource["reference"]) == consumed
+                ),
+                None,
+            )
+            if matched is not None:
+                permissions = grant_required_permissions(
+                    permissions, matched["required_permissions"]
+                )
+
+    dependents: dict[str, list[SemanticStepIntent]] = {
+        step.semantic_key.casefold(): [] for step in ordered
+    }
+    for step in ordered:
+        for dependency in step.depends_on:
+            dependent = dependents.get(dependency.casefold())
+            if dependent is None:
+                raise SemanticGraphError(
+                    f"semantic dependency {dependency} is not present in the graph"
+                )
+            dependent.append(step)
+
+    output_name = next(iter(outputs))
+    global_approval_ids: list[str] = []
+    for index, prompt in enumerate(extra_approvals):
+        node_id = _unique_id(f"approval_{index + 1}", used_ids)
+        global_approval_ids.append(node_id)
+        nodes.append(
+            {
+                "id": node_id,
+                "component_type": "HumanApproval",
+                "prompt": prompt,
+            }
+        )
+        labels[node_id] = prompt[:80]
+    final_success = global_approval_ids[0] if global_approval_ids else "output"
+
+    def branch_roots(branch_key: str) -> list[SemanticStepIntent]:
+        return [
+            step
+            for step in ordered
+            if step.branch_condition.casefold() == condition_key
+            and step.branch_key.casefold() == branch_key.casefold()
+            and not any(
+                dependency.casefold() != condition_key for dependency in step.depends_on
+            )
+        ]
+
+    branch_targets: dict[str, str] = {}
+    branch_labels: dict[str, dict[str, str]] = {
+        str(node_by_key[condition_key]["id"]): {}
+    }
+    for port, branch in zip(("true", "false"), condition.branches, strict=True):
+        roots = branch_roots(branch.key)
+        if len(roots) > 1:
+            raise SemanticGraphError(
+                f"branch {branch.key} has multiple roots; add a merge step"
+            )
+        if roots:
+            target = str(node_by_key[roots[0].semantic_key.casefold()]["id"])
+        else:
+            shared = [
+                step for step in dependents[condition_key] if not step.branch_condition
+            ]
+            if len(shared) > 1:
+                raise SemanticGraphError(
+                    f"Condition {condition.semantic_key} has ambiguous shared "
+                    "successors"
+                )
+            target = (
+                str(node_by_key[shared[0].semantic_key.casefold()]["id"])
+                if shared
+                else final_success
+            )
+        branch_targets[port] = target
+        branch_labels[str(node_by_key[condition_key]["id"])][port] = branch.label
+
+    def success_target(step: SemanticStepIntent) -> str:
+        children = dependents[step.semantic_key.casefold()]
+        if step.operation_kind == "condition":
+            return final_success
+        if len(children) > 1:
+            raise SemanticGraphError(
+                f"semantic step {step.semantic_key} has multiple successors on "
+                "one runtime port"
+            )
+        if children:
+            return str(node_by_key[children[0].semantic_key.casefold()]["id"])
+        return final_success
+
+    roots = [
+        step for step in ordered if not step.depends_on and not step.branch_condition
+    ]
+    if len(roots) != 1:
+        raise SemanticGraphError(
+            "branched graph needs exactly one shared entry path before Condition"
+        )
+    transitions.append(
+        {
+            "from": previous,
+            "port": previous_port,
+            "to": str(node_by_key[roots[0].semantic_key.casefold()]["id"]),
+        }
+    )
+
+    for step in ordered:
+        node = node_by_key[step.semantic_key.casefold()]
+        node_id = str(node["id"])
+        component = str(node["component_type"])
+        if component == "Condition":
+            transitions.extend(
+                {"from": node_id, "port": port, "to": branch_targets[port]}
+                for port in ("true", "false")
+            )
+        elif component == "HumanApproval":
+            transitions.append(
+                {"from": node_id, "port": "approved", "to": success_target(step)}
+            )
+            transitions.append({"from": node_id, "port": "rejected", "to": "output"})
+        elif component == "Verifier":
+            transitions.append(
+                {"from": node_id, "port": "passed", "to": success_target(step)}
+            )
+            transitions.append({"from": node_id, "port": "failed", "to": "output"})
+        else:
+            transitions.append(
+                {"from": node_id, "port": "next", "to": success_target(step)}
+            )
+
+    for index, node_id in enumerate(global_approval_ids):
+        next_node = (
+            global_approval_ids[index + 1]
+            if index + 1 < len(global_approval_ids)
+            else "output"
+        )
+        transitions.append({"from": node_id, "port": "approved", "to": next_node})
+        transitions.append({"from": node_id, "port": "rejected", "to": "output"})
+
+    nodes.append(
+        {"id": "output", "component_type": "Output", "output_name": output_name}
+    )
+    labels["output"] = output_name[:80]
+    return _finalize_blueprint_payload(
+        plan,
+        inputs=inputs,
+        outputs=outputs,
+        nodes=nodes,
+        transitions=transitions,
+        permissions=permissions,
+        documents=documents,
+        warnings=warnings,
+        positions={},
+        labels=labels,
+        branch_labels=branch_labels,
+    )
+
+
+def _finalize_blueprint_payload(
+    plan: AgentSemanticPlanV1,
+    *,
+    inputs: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+    nodes: list[dict[str, Any]],
+    transitions: list[dict[str, str]],
+    permissions: dict[str, Any],
+    documents: list[dict[str, Any]],
+    warnings: tuple[str, ...],
+    positions: Mapping[str, Mapping[str, int]],
+    labels: Mapping[str, str],
+    branch_labels: Mapping[str, Mapping[str, str]] | None = None,
+) -> dict[str, Any]:
     verifier_checks: list[str] = []
     for node in nodes:
         if node.get("component_type") == "Verifier":
             verifier_checks.extend(str(item) for item in node.get("checks") or [])
-    verification = {
-        "required": bool(verifier_checks),
-        "checks": list(dict.fromkeys(verifier_checks)),
-    }
-
     bindings: dict[str, dict[str, Any]] = {}
     for index, document in enumerate(documents):
         identity = f"knowledge_{index + 1}"
@@ -460,36 +847,46 @@ def _linear_blueprint(
             "x": -260,
             "y": 80 + index * 140,
         }
-
     component_types = list(dict.fromkeys(str(node["component_type"]) for node in nodes))
     if any(node["component_type"] == "AgentCall" for node in nodes):
-        raise RuntimeError("AgentCall is not allowed inside an Agent graph")
+        raise SemanticGraphError("AgentCall is not allowed inside an Agent graph")
+    note = _note_text(plan, branch_labels=branch_labels or {})
     ui: dict[str, Any] = {
-        "positions": positions,
-        "labels": labels,
-        "notes": {
-            "note_intro": default_canvas_note(_note_text(plan)),
-        },
+        "positions": dict(positions),
+        "labels": dict(labels),
+        "notes": {"note_intro": default_canvas_note(note)},
     }
     if bindings:
         ui["bindings"] = bindings
-    ui = attach_default_canvas_note(ui, _note_text(plan))
+    if branch_labels:
+        ui["branch_labels"] = {
+            condition_id: dict(port_labels)
+            for condition_id, port_labels in branch_labels.items()
+        }
+    ui = attach_default_canvas_note(ui, note)
     _ = warnings
     return {
         "schema_version": "1.0",
         "goal": plan.goal,
-        "inputs": inputs,
-        "outputs": outputs,
+        "inputs": dict(inputs),
+        "outputs": dict(outputs),
         "nodes": nodes,
         "transitions": transitions,
         "required_capabilities": {
             "component_types": component_types,
-            "tool_refs": [resource["reference"] for resource in tools],
+            "tool_refs": [
+                str(node["uses"])
+                for node in nodes
+                if node.get("component_type") == "Tool" and node.get("uses")
+            ],
             "skill_refs": [],
             "policy_refs": [],
         },
         "requested_permissions": permissions,
-        "verification": verification,
+        "verification": {
+            "required": bool(verifier_checks),
+            "checks": list(dict.fromkeys(verifier_checks)),
+        },
         "ui_suggestions": ui,
     }
 
@@ -525,15 +922,14 @@ def _compile_step(
             None,
         )
     if kind == "capability":
-        if not tools:
+        resource = _matching_tool(step, tools)
+        if resource is None:
             return None, [], None
-        resource = tools[0]
-        mapping = {"path": path_input} if path_input else {}
-        node: dict[str, Any] = {
-            "id": node_id,
-            "component_type": "Tool",
-            "uses": resource["reference"],
-        }
+        node = _resource_node(resource, node_id)
+        if node["component_type"] == "Tool":
+            mapping = {"path": path_input} if path_input else {}
+        else:
+            mapping = _component_input_mapping(resource, inputs, path_input)
         if mapping:
             node["input_mapping"] = mapping
         return node, [], str(resource["reference"])
@@ -598,6 +994,46 @@ def _compile_step(
     return None, [], None
 
 
+def _resource_node(resource: Mapping[str, Any], node_id: str) -> dict[str, Any]:
+    is_custom_component = (
+        resource.get("kind") == "component"
+        and resource.get("component_class") == "composite"
+    )
+    return {
+        "id": node_id,
+        "component_type": "CustomComponent" if is_custom_component else "Tool",
+        "uses": resource["reference"],
+    }
+
+
+def _component_input_mapping(
+    resource: Mapping[str, Any], inputs: Mapping[str, Any], path_input: str | None
+) -> dict[str, str]:
+    spec = resource.get("spec")
+    component_inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
+    if not isinstance(component_inputs, Mapping):
+        return {}
+    mapping = {name: name for name in component_inputs if name in inputs}
+    if path_input is None or len(mapping) == len(component_inputs):
+        return mapping
+    candidates = [
+        name
+        for name, field in component_inputs.items()
+        if name not in mapping
+        and (
+            name == "path"
+            or (
+                isinstance(field, Mapping)
+                and field.get("type") == "string"
+                and "path" in name.casefold()
+            )
+        )
+    ]
+    if len(candidates) == 1:
+        mapping[candidates[0]] = path_input
+    return mapping
+
+
 def _ordered_steps(
     steps: list[SemanticStepIntent], *, collapse_models: bool
 ) -> list[SemanticStepIntent]:
@@ -654,7 +1090,7 @@ def _resolve_capability_intents(
     missing: list[dict[str, Any]] = []
     seen: set[str] = set()
     for intent in intents:
-        match = resolve_project_resource(
+        match = resolve_capability_intent(
             list(context.project_resources),
             list(context.catalog_resources),
             intent,
@@ -680,6 +1116,14 @@ def _resolve_capability_intents(
                         "Tool is not bound to this Project",
                     )
                 )
+            elif _EXTERNAL_TOOL.search(intent):
+                missing.append(
+                    _missing_capability(
+                        "tool",
+                        intent,
+                        "Requested capability is not bound to this Project",
+                    )
+                )
             continue
         if _is_regurgitated_policy(intent):
             continue
@@ -694,7 +1138,11 @@ def _resolve_capability_intents(
     return tools, missing, None
 
 
-def _note_text(plan: AgentSemanticPlanV1) -> str:
+def _note_text(
+    plan: AgentSemanticPlanV1,
+    *,
+    branch_labels: Mapping[str, Mapping[str, str]] | None = None,
+) -> str:
     chinese = bool(_CJK.search(plan.goal) or _CJK.search(plan.suggested_name))
     purpose = "目的" if chinese else "Purpose"
     inputs = "输入" if chinese else "Inputs"
@@ -712,6 +1160,13 @@ def _note_text(plan: AgentSemanticPlanV1) -> str:
     ]
     named = [step.name for step in plan.step_intents] or list(plan.steps)
     lines.extend(f"{index}. {name}" for index, name in enumerate(named, start=1))
+    if branch_labels:
+        lines.extend(("", "Branches:"))
+        for condition_id, ports in branch_labels.items():
+            labels = ", ".join(
+                f"{port}={label}" for port, label in sorted(ports.items())
+            )
+            lines.append(f"{condition_id}: {labels}")
     return "\n".join(lines)[:4000]
 
 
@@ -747,12 +1202,34 @@ def _model_prompt(
 def _transform_mapping(
     step: SemanticStepIntent, inputs: Mapping[str, Any], outputs: Mapping[str, Any]
 ) -> dict[str, str]:
+    if step.output_mapping:
+        input_names = {str(name).casefold(): str(name) for name in inputs}
+        output_names = {str(name).casefold(): str(name) for name in outputs}
+        mapping: dict[str, str] = {}
+        for target, template in step.output_mapping:
+            wire_target = output_names.get(target.casefold())
+            if wire_target is None:
+                raise ValueError(
+                    f"transform {step.semantic_key} maps unknown output field {target}"
+                )
+            for token in re.findall(r"\{\{([^{}]+)\}\}", template):
+                if token.casefold() not in input_names:
+                    raise ValueError(
+                        f"transform {step.semantic_key} references unknown input "
+                        f"field {token}"
+                    )
+            mapping[wire_target] = template
+        return mapping
     purpose = step.purpose.strip()
     if "{{" in purpose and "}}" in purpose and ":" in purpose:
         name, template = purpose.split(":", 1)
         slug = _SLUG_NOISE.sub("-", name.casefold()).strip("-")
         if slug:
             return {slug: template.strip()}
+    if len(outputs) > 1:
+        raise ValueError(
+            f"transform {step.semantic_key} needs output_mapping for multiple outputs"
+        )
     target = next(iter(outputs))
     source = next(iter(inputs))
     return {target: f"{{{{{source}}}}}"}

@@ -62,6 +62,8 @@ class EditProposalStore:
             )
 
     def receipt(self, proposal: dict[str, Any], *, undo: bool = False) -> Any:
+        if proposal.get("proposal_kind") == "create_custom_component":
+            return None
         prefix = "workflow-draft" if proposal["target_kind"] == "workflow" else "draft"
         scope = f"{prefix}:{proposal['project_id']}:{proposal['target_id']}"
         key = (

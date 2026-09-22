@@ -2,7 +2,7 @@ import * as React from "react";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import { Plus, Trash2 } from "lucide-react";
 
-export type FlowEdgeData = { port?: string };
+export type FlowEdgeData = { port?: string; label?: string; executionState?: "idle" | "active" | "traversed" | "failed"; readOnly?: boolean };
 
 type CanvasEdgeActions = {
   locale: "zh" | "en";
@@ -40,7 +40,8 @@ export function FlowEdge({
   const [labelHover, setLabelHover] = React.useState(false);
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const port = data?.port ?? "";
-  const showPort = Boolean(port && port !== "next");
+  const edgeLabel = data?.label ?? (port && port !== "next" ? port : "");
+  const showPort = Boolean(edgeLabel);
   const hovered = labelHover || actions?.hoveredEdgeId === id;
   const active = Boolean(selected || hovered);
   const zh = actions?.locale === "zh";
@@ -53,6 +54,7 @@ export function FlowEdge({
         interactionWidth={52}
         style={{ ...style, strokeWidth: selected ? 2.8 : active ? 2.4 : 2 }}
       />
+      {data?.readOnly ? null : (
       <EdgeLabelRenderer>
         <div
           className={`canvas-edge-label nodrag nopan${active ? " is-active" : ""}${selected ? " is-selected" : ""}`}
@@ -65,7 +67,7 @@ export function FlowEdge({
             actions?.onSelect(id);
           }}
         >
-          {showPort ? <span className="canvas-edge-port">{port}</span> : null}
+          {showPort ? <span className="canvas-edge-port">{edgeLabel}</span> : null}
           <div className="canvas-edge-chrome">
             <button
               type="button"
@@ -100,6 +102,7 @@ export function FlowEdge({
           </div>
         </div>
       </EdgeLabelRenderer>
+      )}
     </>
   );
 }

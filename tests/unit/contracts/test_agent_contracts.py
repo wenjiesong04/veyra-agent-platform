@@ -129,6 +129,24 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(original.behavior_hash, moved.behavior_hash)
         self.assertEqual(original.lock_hash, moved.lock_hash)
 
+    def test_default_note_position_metadata_is_presentation_only(self) -> None:
+        data = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
+        data["ui"]["notes"] = {  # type: ignore[index]
+            "note_intro": {
+                "x": 0,
+                "y": -220,
+                "text": "Canvas-only note",
+                "width": 420,
+                "manual_position": False,
+            }
+        }
+        original = AgentSource.from_dict(data)
+        data["ui"]["notes"]["note_intro"]["x"] = 640  # type: ignore[index]
+        data["ui"]["notes"]["note_intro"]["manual_position"] = True  # type: ignore[index]
+        moved = AgentSource.from_dict(data)
+        self.assertNotEqual(original.source_hash, moved.source_hash)
+        self.assertEqual(original.behavior_hash, moved.behavior_hash)
+
     def test_ui_bindings_move_without_changing_behavior_hash(self) -> None:
         data = read_json_yaml(FIXTURES / "valid" / "github-triage.vagent.yaml")
         data["extensions"]["veyra"]["skill_refs"] = [  # type: ignore[index]

@@ -2,14 +2,12 @@ import type { ReactNode } from "react";
 import { LayoutPanelTop, X } from "lucide-react";
 import type { FactoryResourcePlanItem, FactorySession } from "@veyra/api-contracts";
 import { Alert, Button, IconButton, LinkButton, StatusBadge } from "@veyra/ui";
-import { blueprintGraph } from "./factory-blueprint";
+import { blueprintGraph, blueprintPresentation } from "./factory-blueprint";
 import type { WorkbenchPhase } from "../builder/workbench-phase";
+import { centerNoteAboveGraph, estimatedNodeSize, layoutExecutionGraph } from "../studio/graph-layout";
 
 type Locale = "zh" | "en";
 type Busy = "message" | "generate" | "apply" | "draft" | null;
-
-const NODE_W = 148;
-const NODE_H = 58;
 
 const copy = {
   zh: {
@@ -96,17 +94,28 @@ function BlueprintFlow({
 }) {
   const graph = blueprintGraph(session?.blueprint);
   if (!graph.nodes.length) return null;
-  const placed = graph.nodes.map((node, index) => ({
+  const presentation = blueprintPresentation(session?.blueprint);
+  const layoutNodes = graph.nodes.map((node) => ({ id: node.id, component_type: node.component_type }));
+  const positions = layoutExecutionGraph(layoutNodes, graph.transitions);
+  const placed = graph.nodes.map((node) => ({
     ...node,
-    x: 24 + (index % 3) * 180,
-    y: 24 + Math.floor(index / 3) * 88,
+    ...positions[node.id],
+    ...estimatedNodeSize(node.component_type),
   }));
-  const width = Math.max(...placed.map((node) => node.x)) + NODE_W + 24;
-  const height = Math.max(...placed.map((node) => node.y)) + NODE_H + 24;
+  const graphRight = Math.max(...placed.map((node) => node.x + node.width));
+  const graphBottom = Math.max(...placed.map((node) => node.y + node.height));
+  const note = presentation.note;
+  const noteHeight = note ? 154 : 0;
+  const margin = 24;
+  const noteGap = 48;
+  const width = Math.max(graphRight, note?.width ?? 0) + margin * 2;
+  const graphTop = margin + (note ? noteHeight + noteGap : 0);
+  const height = graphBottom + graphTop + margin;
+  const notePosition = note ? centerNoteAboveGraph(layoutNodes, positions, note.width, noteHeight, noteGap) : null;
   const center = (id: string) => {
     const node = placed.find((item) => item.id === id);
     if (!node) return null;
-    return { x: node.x + NODE_W / 2, y: node.y + NODE_H / 2 };
+    return { x: margin + node.x + node.width / 2, y: graphTop + node.y + node.height / 2 };
   };
   return (
     <div className="agent-convo-flow-block">
@@ -116,21 +125,45 @@ function BlueprintFlow({
             const from = center(edge.from);
             const to = center(edge.to);
             if (!from || !to) return null;
-            return <line key={`${edge.from}:${edge.port}:${edge.to}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />;
+            const source = placed.find((node) => node.id === edge.from)!;
+            const target = placed.find((node) => node.id === edge.to)!;
+            const startX = margin + source.x + source.width;
+            const endX = margin + target.x;
+            const curveX = (startX + endX) / 2;
+            return (
+              <g key={`${edge.from}:${edge.port}:${edge.to}`}>
+                <path d={`M ${startX} ${from.y} C ${curveX} ${from.y}, ${curveX} ${to.y}, ${endX} ${to.y}`} />
+                {edge.port !== "next" ? <text x={curveX} y={(from.y + to.y) / 2 - 7}>{edge.port}</text> : null}
+              </g>
+            );
           })}
         </svg>
+        {note && notePosition ? (
+          <div
+            className={`agent-convo-flow-note color-${note.color}`}
+            style={{
+              left: `${((notePosition.x + margin) / width) * 100}%`,
+              top: `${margin / height * 100}%`,
+              width: `${(note.width / width) * 100}%`,
+              height: `${(noteHeight / height) * 100}%`,
+            }}
+            >
+            <strong>{note.text}</strong>
+          </div>
+        ) : null}
         {placed.map((node) => (
           <div
             key={node.id}
             className="agent-convo-flow-node"
             data-state="completed"
             style={{
-              left: `${(node.x / width) * 100}%`,
-              top: `${(node.y / height) * 100}%`,
-              width: `${(NODE_W / width) * 100}%`,
+              left: `${((margin + node.x) / width) * 100}%`,
+              top: `${((graphTop + node.y) / height) * 100}%`,
+              width: `${(node.width / width) * 100}%`,
+              height: `${(node.height / height) * 100}%`,
             }}
           >
-            <strong>{node.component_type}</strong>
+            <strong>{presentation.labels[node.id] ?? node.component_type}</strong>
             <small>{node.id}</small>
           </div>
         ))}

@@ -46,6 +46,7 @@ from .mcp.transport import TransportFactory
 from .orchestrator import OrchestratorService, OrchestratorStore
 from .plugins import PluginService
 from .projects import ProjectService
+from .projects.custom_components import CustomComponentService
 from .resources import ResourceCatalog, ResourceWorkshop
 from .resources.project import ProjectResourceService
 from .runtime import (
@@ -133,7 +134,11 @@ def create_app(
         application.state.agent_imports = AgentImportService(
             database_path.parent / "agent-imports", projects, catalog
         )
-        application.state.project_resources = ProjectResourceService(projects, catalog)
+        custom_components = CustomComponentService(projects, catalog)
+        application.state.custom_components = custom_components
+        application.state.project_resources = ProjectResourceService(
+            projects, catalog, custom_components
+        )
         application.state.library = LibraryService(repository, projects, catalog)
         application.state.conversations = AgentConversationService(
             repository, application.state.library
@@ -149,6 +154,7 @@ def create_app(
                 factory_transport,
                 secret_store=resolved_secret_store,
             ),
+            project_resources=application.state.project_resources,
         )
         mcp = McpService(
             McpServerStore(database_path),
@@ -179,6 +185,7 @@ def create_app(
             application.state.conversations,
             project_resources=application.state.project_resources,
             artifacts=application.state.artifacts,
+            custom_components=custom_components,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime
@@ -193,6 +200,7 @@ def create_app(
             application.state.factory.client,
             project_resources=application.state.project_resources,
             resource_readiness=application.state.resource_readiness,
+            custom_components=custom_components,
         )
         application.state.builder = BuilderResolutionService(
             application.state.edit_proposals

@@ -54,8 +54,8 @@ class FactorySessionRepository:
                 session_id, project_id, state, ready, next_prompt,
                 resource_plan_json, blueprint_json, diagnostics_json,
                 missing_capabilities_json, identity_json, revision,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '{}', 0, ?, ?)""",
+                semantic_plan_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '{}', 0, NULL, ?, ?)""",
             (
                 session_id,
                 project_id,
@@ -123,6 +123,7 @@ class FactorySessionRepository:
         diagnostics: list[str] | None = None,
         missing_capabilities: list[dict[str, Any]] | None = None,
         identity: Mapping[str, str] | None = None,
+        semantic_plan: Mapping[str, Any] | None = None,
         revision: int | None = None,
         updated_at: str,
     ) -> None:
@@ -171,6 +172,11 @@ class FactorySessionRepository:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
+            "semantic_plan_json": (
+                json.dumps(semantic_plan, ensure_ascii=False, sort_keys=True)
+                if semantic_plan is not None
+                else current["semantic_plan_json"]
+            ),
             "revision": revision
             if revision is not None
             else int(current["revision"]) + 1,
@@ -183,6 +189,7 @@ class FactorySessionRepository:
                blueprint_json = :blueprint_json, diagnostics_json = :diagnostics_json,
                missing_capabilities_json = :missing_capabilities_json,
                identity_json = :identity_json,
+               semantic_plan_json = :semantic_plan_json,
                revision = :revision, updated_at = :updated_at
                WHERE session_id = :session_id""",
             values,

@@ -17,7 +17,7 @@ from veyra_agent_platform.contracts.workflow import WorkflowSource
 DEFAULT_CANVAS_NOTE_ID = "note_intro"
 DEFAULT_CANVAS_NOTE_X = 0
 DEFAULT_CANVAS_NOTE_Y = -220
-DEFAULT_CANVAS_NOTE_WIDTH = 280
+DEFAULT_CANVAS_NOTE_WIDTH = 420
 BLANK_AGENT_NOTE_TEXT = "描述此 Agent 的用途、输入、输出和使用说明。"
 BLANK_WORKFLOW_NOTE_TEXT = "描述此 Workflow 的用途、编排的 Agent，以及何时运行。"
 
@@ -166,6 +166,7 @@ def default_canvas_note(text: str, *, color: str = "amber") -> dict[str, Any]:
         "text": text[:4000],
         "color": color,
         "width": DEFAULT_CANVAS_NOTE_WIDTH,
+        "manual_position": False,
     }
 
 

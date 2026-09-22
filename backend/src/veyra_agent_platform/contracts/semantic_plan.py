@@ -1,9 +1,9 @@
 """Provider-facing AgentSemanticPlan. Canonical storage remains AgentBlueprint.
 
-V1 plans describe intent with `steps: string[]`. V2 graph intent adds optional
-`step_intents` so the model can name duties and `depends_on` order without
-emitting node IDs, edges, locks, permissions, canvas coordinates, or branch
-objects. The server expands extra ports.
+V1 plans describe intent with ``steps: string[]``. Graph intent adds
+``step_intents`` so the model can name duties, dependencies, semantic branches,
+and typed output mappings without emitting node IDs, edges, locks, permissions,
+or canvas coordinates. The server owns canonical IDs, ports, and transitions.
 """
 
 from __future__ import annotations
@@ -47,8 +47,17 @@ _STEP_INTENT_FIELDS = {
     "purpose",
     "operation_kind",
     "depends_on",
+    "capability_requirement",
+    "dependency_requirement",
+    "reusable_capability",
+    "inputs",
+    "outputs",
     "branches",
+    "branch_condition",
+    "branch_key",
+    "output_mapping",
 }
+_BRANCH_FIELDS = {"key", "label"}
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _UUID7 = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -80,12 +89,32 @@ class SemanticField:
 
 
 @dataclass(frozen=True)
+class SemanticBranch:
+    """A provider-named branch of one semantic Condition intent."""
+
+    key: str
+    label: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"key": self.key, "label": self.label}
+
+
+@dataclass(frozen=True)
 class SemanticStepIntent:
     semantic_key: str
     name: str
     purpose: str
     operation_kind: OperationKind
     depends_on: tuple[str, ...]
+    capability_requirement: str = ""
+    dependency_requirement: str = ""
+    reusable_capability: bool = False
+    inputs: tuple[SemanticField, ...] = ()
+    outputs: tuple[SemanticField, ...] = ()
+    branches: tuple[SemanticBranch, ...] = ()
+    branch_condition: str = ""
+    branch_key: str = ""
+    output_mapping: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -96,6 +125,24 @@ class SemanticStepIntent:
         }
         if self.depends_on:
             payload["depends_on"] = list(self.depends_on)
+        if self.capability_requirement:
+            payload["capability_requirement"] = self.capability_requirement
+        if self.dependency_requirement:
+            payload["dependency_requirement"] = self.dependency_requirement
+        if self.reusable_capability:
+            payload["reusable_capability"] = True
+        if self.inputs:
+            payload["inputs"] = [item.to_dict() for item in self.inputs]
+        if self.outputs:
+            payload["outputs"] = [item.to_dict() for item in self.outputs]
+        if self.branches:
+            payload["branches"] = [item.to_dict() for item in self.branches]
+        if self.branch_condition:
+            payload["branch_condition"] = self.branch_condition
+        if self.branch_key:
+            payload["branch_key"] = self.branch_key
+        if self.output_mapping:
+            payload["output_mapping"] = dict(self.output_mapping)
         return payload
 
 
@@ -210,6 +257,66 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
             f"step_intents[{index}].depends_on",
             8,
         )
+        requirement = _optional_text(
+            record.get("capability_requirement"),
+            f"step_intents[{index}].capability_requirement",
+            240,
+        )
+        reusable = record.get("reusable_capability", False)
+        if not isinstance(reusable, bool):
+            raise ContractValidationError(
+                f"step_intents[{index}].reusable_capability must be a boolean"
+            )
+        dependency_requirement = _optional_text(
+            record.get("dependency_requirement"),
+            f"step_intents[{index}].dependency_requirement",
+            240,
+        )
+        inputs = _fields(record.get("inputs", []), f"step_intents[{index}].inputs", 16)
+        outputs = _fields(
+            record.get("outputs", []), f"step_intents[{index}].outputs", 8
+        )
+        branches = _branches(record.get("branches"), f"step_intents[{index}].branches")
+        if branches and kind != "condition":
+            raise ContractValidationError(
+                f"step_intents[{index}].branches is only valid for condition steps"
+            )
+        branch_condition = _optional_text(
+            record.get("branch_condition"),
+            f"step_intents[{index}].branch_condition",
+            64,
+        )
+        branch_key = _optional_text(
+            record.get("branch_key"), f"step_intents[{index}].branch_key", 64
+        )
+        if bool(branch_condition) != bool(branch_key):
+            raise ContractValidationError(
+                f"step_intents[{index}] must provide both branch_condition "
+                "and branch_key"
+            )
+        output_mapping = _output_mapping(
+            record.get("output_mapping"), f"step_intents[{index}].output_mapping"
+        )
+        if output_mapping and kind != "transform":
+            raise ContractValidationError(
+                f"step_intents[{index}].output_mapping is only valid for "
+                "transform steps"
+            )
+        if requirement and kind != "capability" and not reusable:
+            raise ContractValidationError(
+                f"step_intents[{index}].capability_requirement is only valid "
+                "for operation_kind=capability or reusable capabilities"
+            )
+        if dependency_requirement and (not reusable or kind != "capability"):
+            raise ContractValidationError(
+                f"step_intents[{index}].dependency_requirement is only valid "
+                "for reusable capability steps"
+            )
+        if reusable and (not requirement or not inputs or not outputs):
+            raise ContractValidationError(
+                f"step_intents[{index}] reusable capability needs a semantic "
+                "requirement, inputs, and outputs"
+            )
         parsed.append(
             SemanticStepIntent(
                 semantic_key=key,
@@ -217,10 +324,28 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
                 purpose=_text(record["purpose"], f"step_intents[{index}].purpose", 240),
                 operation_kind=cast(OperationKind, kind),
                 depends_on=depends_on,
+                capability_requirement=requirement,
+                dependency_requirement=dependency_requirement,
+                reusable_capability=reusable,
+                inputs=inputs,
+                outputs=outputs,
+                branches=branches,
+                branch_condition=branch_condition,
+                branch_key=branch_key,
+                output_mapping=output_mapping,
             )
         )
     keys = {item.semantic_key.casefold(): item.semantic_key for item in parsed}
     for item in parsed:
+        if item.operation_kind == "condition" and not item.branches:
+            raise ContractValidationError(
+                f"step_intents[{item.semantic_key}] condition must declare "
+                "exactly two branches"
+            )
+        if item.branches and len(item.branches) != 2:
+            raise ContractValidationError(
+                f"step_intents[{item.semantic_key}] must declare exactly two branches"
+            )
         for dependency in item.depends_on:
             if dependency.casefold() not in keys:
                 raise ContractValidationError(
@@ -231,7 +356,88 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
                 raise ContractValidationError(
                     f"step_intents[{item.semantic_key}] cannot depend on itself"
                 )
+        if item.branch_condition:
+            condition = keys.get(item.branch_condition.casefold())
+            if condition is None:
+                raise ContractValidationError(
+                    f"step_intents[{item.semantic_key}].branch_condition references "
+                    f"unknown key {item.branch_condition}"
+                )
+            parent = next(step for step in parsed if step.semantic_key == condition)
+            if parent.operation_kind != "condition":
+                raise ContractValidationError(
+                    f"step_intents[{item.semantic_key}].branch_condition must "
+                    "reference a condition"
+                )
+            branch_keys = {branch.key.casefold() for branch in parent.branches}
+            if item.branch_key.casefold() not in branch_keys:
+                raise ContractValidationError(
+                    f"step_intents[{item.semantic_key}].branch_key is not declared by "
+                    f"{parent.semantic_key}"
+                )
+            same_branch = {
+                step.semantic_key.casefold()
+                for step in parsed
+                if step.branch_condition.casefold() == parent.semantic_key.casefold()
+                and step.branch_key.casefold() == item.branch_key.casefold()
+            }
+            for dependency in item.depends_on:
+                if dependency.casefold() == parent.semantic_key.casefold():
+                    continue
+                if dependency.casefold() not in same_branch:
+                    raise ContractValidationError(
+                        f"step_intents[{item.semantic_key}] cannot depend on a "
+                        "sibling branch"
+                    )
     _reject_cycles(parsed)
+    return tuple(parsed)
+
+
+def _branches(value: Any, field: str) -> tuple[SemanticBranch, ...]:
+    if value is None:
+        return ()
+    items = require_list(value, field)
+    if len(items) != 2:
+        raise ContractValidationError(f"{field} must contain exactly two branches")
+    parsed: list[SemanticBranch] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        record = require_mapping(item, f"{field}[{index}]")
+        require_keys(
+            record,
+            allowed=_BRANCH_FIELDS,
+            required=_BRANCH_FIELDS,
+            field=f"{field}[{index}]",
+        )
+        key = _text(record["key"], f"{field}[{index}].key", 64)
+        folded = key.casefold()
+        if folded in seen:
+            raise ContractValidationError(f"{field} branch keys must be unique")
+        seen.add(folded)
+        parsed.append(
+            SemanticBranch(
+                key=key,
+                label=_text(record["label"], f"{field}[{index}].label", 80),
+            )
+        )
+    return tuple(parsed)
+
+
+def _output_mapping(value: Any, field: str) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    record = require_mapping(value, field)
+    if not record or len(record) > 8:
+        raise ContractValidationError(f"{field} must contain 1 to 8 mappings")
+    parsed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key, template in record.items():
+        name = _text(key, f"{field} key", 80)
+        folded = name.casefold()
+        if folded in seen:
+            raise ContractValidationError(f"{field} keys must be unique")
+        seen.add(folded)
+        parsed.append((name, _text(template, f"{field}.{name}", 240)))
     return tuple(parsed)
 
 

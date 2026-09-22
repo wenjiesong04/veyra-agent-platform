@@ -40,14 +40,45 @@ class TargetEvidence(BuilderTarget):
     mention: str = Field(max_length=200)
 
 
+class ComponentIntentField(ClosedModel):
+    name: str = Field(min_length=1, max_length=80)
+    type: Literal[
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "object",
+        "array",
+        "table",
+        "image",
+        "pdf",
+        "document",
+        "file",
+        "audio",
+        "video",
+    ]
+    description: str = Field(default="", max_length=240)
+    multiple: bool = False
+
+
+class DirectComponentIntent(ClosedModel):
+    capability_requirement: str = Field(min_length=1, max_length=240)
+    purpose: str = Field(min_length=1, max_length=240)
+    operation_kind: Literal["model", "transform", "capability"]
+    dependency_requirement: str = Field(default="", max_length=240)
+    inputs: list[ComponentIntentField] = Field(min_length=1, max_length=16)
+    outputs: list[ComponentIntentField] = Field(min_length=1, max_length=8)
+
+
 class Intent(ClosedModel):
-    intent: Literal["create", "edit", "discuss", "clarify"]
-    create_kind: Literal["agent", "workflow", "resource"] | None
+    intent: Literal["create", "create_component", "edit", "discuss", "clarify"]
+    create_kind: Literal["agent", "workflow", "resource", "custom_component"] | None
     targets: list[TargetEvidence] = Field(max_length=20)
     multi_object: bool
     instruction: str = Field(max_length=10_000)
     message: str = Field(min_length=1, max_length=4000)
     plan: list[str] = Field(max_length=12)
+    component_plan: DirectComponentIntent | None = None
 
 
 class BuilderResolutionService:
@@ -129,6 +160,8 @@ class BuilderResolutionService:
             "plan": intent.plan,
             "targets": [],
         }
+        if intent.component_plan is not None:
+            result["component_plan"] = intent.component_plan.model_dump()
         latest = request.content.casefold()
         mentioned = [
             item
@@ -250,6 +283,32 @@ class BuilderResolutionService:
                 target = result["targets"][0]
                 draft = indexed[(target["kind"], target["target_id"])]["draft"]
                 target.update(revision=draft["revision"], etag=draft["etag"])
+        elif intent.intent == "create_component" or (
+            intent.intent == "create" and intent.create_kind == "custom_component"
+        ):
+            if intent.multi_object or intent.targets:
+                result["status"] = "unsupported"
+                result["message"] = (
+                    "组件创建一次只处理一个独立能力；当前请求包含多个对象，请拆分后逐个确认。"
+                    if request.locale == "zh"
+                    else (
+                        "Component creation is one independent capability at a time. "
+                        "Split this multi-object request."
+                    )
+                )
+            elif intent.component_plan is None:
+                result.update(status="clarification", intent="clarify")
+                result["message"] = (
+                    "请说明这个可复用组件的输入、输出和要完成的具体能力。"
+                    if request.locale == "zh"
+                    else (
+                        "Please specify the reusable component's inputs, outputs, "
+                        "and specific capability."
+                    )
+                )
+            else:
+                result.update(status="resolved", create_kind="custom_component")
+                result["intent"] = "create_component"
         elif intent.intent == "create" and (
             intent.create_kind != "agent" or intent.multi_object or intent.targets
         ):

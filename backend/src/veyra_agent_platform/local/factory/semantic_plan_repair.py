@@ -23,7 +23,9 @@ _OPERATION_KINDS = {
     "approval",
     "verification",
 }
-_COMPLEX_KINDS = frozenset({"transform", "condition", "approval", "verification"})
+_COMPLEX_KINDS = frozenset(
+    {"transform", "condition", "approval", "verification", "capability"}
+)
 _KIND_ALIASES = {
     "human_approval": "approval",
     "humanapproval": "approval",
@@ -37,6 +39,15 @@ _STEP_FIELDS = {
     "purpose",
     "operation_kind",
     "depends_on",
+    "capability_requirement",
+    "dependency_requirement",
+    "reusable_capability",
+    "inputs",
+    "outputs",
+    "branches",
+    "branch_condition",
+    "branch_key",
+    "output_mapping",
 }
 _SHAPE_KEYS = (
     "schema_version",
@@ -77,12 +88,20 @@ def bounded_repair_semantic_plan(
             notes.append(f"dropped_malformed_step:{index}")
             continue
         step = {key: value for key, value in item.items() if key in _STEP_FIELDS}
-        if "branches" in item:
-            notes.append(f"dropped_branches:{index}")
         kind = _normalized_kind(step.get("operation_kind"))
         if kind is not None and kind != step.get("operation_kind"):
             notes.append(f"aliased_operation_kind:{index}")
             step["operation_kind"] = kind
+        if "branches" in step and kind != "condition":
+            step.pop("branches", None)
+            notes.append(f"dropped_invalid_branches:{index}")
+        if (
+            step.get("capability_requirement")
+            and step.get("operation_kind") != "capability"
+            and step.get("reusable_capability") is not True
+        ):
+            step.pop("capability_requirement", None)
+            notes.append(f"dropped_capability_requirement:{index}")
         key = step.get("semantic_key")
         if not _non_empty_string(key):
             generated = _key_from_name(step.get("name"), index, seen)
@@ -92,6 +111,12 @@ def bounded_repair_semantic_plan(
                 key = generated
         if _non_empty_string(key):
             seen.add(str(key).casefold())
+        if "branches" in step and not isinstance(step["branches"], list):
+            step.pop("branches", None)
+            notes.append(f"dropped_malformed_branches:{index}")
+        if "output_mapping" in step and not isinstance(step["output_mapping"], Mapping):
+            step.pop("output_mapping", None)
+            notes.append(f"dropped_malformed_output_mapping:{index}")
         depends = step.get("depends_on")
         if isinstance(depends, list):
             remapped, dropped = _remap_depends_on(depends, known_keys)
@@ -113,6 +138,7 @@ def graph_obligations(payload: Mapping[str, Any]) -> frozenset[str]:
 
     kinds: set[str] = set()
     raw_steps = payload.get("step_intents")
+    model_count = 0
     if isinstance(raw_steps, list):
         for item in raw_steps:
             if not isinstance(item, Mapping):
@@ -120,6 +146,14 @@ def graph_obligations(payload: Mapping[str, Any]) -> frozenset[str]:
             kind = _normalized_kind(item.get("operation_kind"))
             if kind in _COMPLEX_KINDS:
                 kinds.add(kind)
+            if item.get("reusable_capability") is True:
+                kinds.add("reusable_capability")
+            if kind == "condition" and item.get("branches"):
+                kinds.add("branch")
+            if kind == "model":
+                model_count += 1
+        if model_count >= 2:
+            kinds.add("multi_model")
     points = payload.get("approval_points")
     if isinstance(points, list) and any(_non_empty_string(item) for item in points):
         kinds.add("approval")
@@ -131,10 +165,18 @@ def reject_silent_v1_degradation(
     obligations: frozenset[str],
     operation_kinds: tuple[str, ...],
     approval_points: tuple[str, ...],
+    reusable_capability: bool = False,
+    branch_intent: bool = False,
 ) -> None:
     present = set(operation_kinds)
     if approval_points:
         present.add("approval")
+    if sum(1 for kind in operation_kinds if kind == "model") >= 2:
+        present.add("multi_model")
+    if reusable_capability:
+        present.add("reusable_capability")
+    if branch_intent:
+        present.add("branch")
     missing = sorted(kind for kind in obligations if kind not in present)
     if missing:
         raise ContractValidationError(
@@ -191,6 +233,9 @@ def semantic_plan_shape(payload: Any) -> dict[str, Any]:
             kinds.append(str(kind) if isinstance(kind, str) else "missing")
             if item.get("branches"):
                 branch_count += 1
+                kinds.append("branch")
+            if item.get("branch_condition") or item.get("branch_key"):
+                kinds.append("branch_local")
             if not _non_empty_string(item.get("semantic_key")):
                 missing_key_count += 1
         shape["step_intent_count"] = len(raw_steps)

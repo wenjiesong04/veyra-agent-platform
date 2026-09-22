@@ -21,6 +21,10 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
+from veyra_agent_platform.local.projects.custom_components import (
+    CustomComponentError,
+    CustomComponentService,
+)
 from veyra_agent_platform.local.projects.knowledge_ingest import (
     MAX_KNOWLEDGE_UPLOAD_BYTES,
 )
@@ -134,6 +138,41 @@ class UpdateKnowledgeRequest(_ClosedModel):
         if not self.model_fields_set:
             raise ValueError("at least one Knowledge field is required")
         return self
+
+
+class CreateCustomComponentRequest(_ClosedModel):
+    display_name: str | None = None
+    name: str | None = None
+    description: str | None = None
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    implementation: dict[str, Any] | None = None
+    metadata: dict[str, str] | None = None
+    dependencies: list[dict[str, Any]] | None = None
+    required_permissions: dict[str, Any] | None = None
+    provenance: Literal["manual", "builder", "imported"] = "manual"
+
+
+class UpdateCustomComponentRequest(_ClosedModel):
+    display_name: str | None = None
+    description: str | None = None
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    implementation: dict[str, Any] | None = None
+    metadata: dict[str, str] | None = None
+    dependencies: list[dict[str, Any]] | None = None
+    required_permissions: dict[str, Any] | None = None
+    provenance: Literal["manual", "builder", "imported"] | None = None
+
+    @model_validator(mode="after")
+    def require_update(self) -> UpdateCustomComponentRequest:
+        if not self.model_fields_set:
+            raise ValueError("at least one Custom Component field is required")
+        return self
+
+
+class PublishCustomComponentRequest(_ClosedModel):
+    version: str | None = Field(default=None, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 class UpdateAgentRequest(_ClosedModel):
@@ -789,6 +828,87 @@ def build_router() -> APIRouter:
 
         return _translate(operation)
 
+    @router.get("/{project_id}/custom-components")
+    def list_custom_components(project_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _custom_components(request).list(project_id))
+
+    @router.post("/{project_id}/custom-components", status_code=status.HTTP_201_CREATED)
+    def create_custom_component(
+        project_id: str, payload: CreateCustomComponentRequest, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).create_draft(
+                project_id, payload.model_dump(exclude_none=True)
+            )
+        )
+
+    @router.get("/{project_id}/custom-components/{component_id}")
+    def get_custom_component(
+        project_id: str,
+        component_id: str,
+        request: Request,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).get(
+                project_id, component_id, version=version
+            )
+        )
+
+    @router.patch("/{project_id}/custom-components/{component_id}")
+    def update_custom_component(
+        project_id: str,
+        component_id: str,
+        payload: UpdateCustomComponentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).update_draft(
+                project_id, component_id, payload.model_dump(exclude_none=True)
+            )
+        )
+
+    @router.post("/{project_id}/custom-components/{component_id}/validate")
+    def validate_custom_component(
+        project_id: str, component_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).validate(project_id, component_id)
+        )
+
+    @router.post("/{project_id}/custom-components/{component_id}/versions")
+    def publish_custom_component(
+        project_id: str,
+        component_id: str,
+        payload: PublishCustomComponentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).publish(
+                project_id, component_id, version=payload.version
+            )
+        )
+
+    @router.post(
+        "/{project_id}/custom-components/{component_id}/versions/{version}/deprecate"
+    )
+    def deprecate_custom_component(
+        project_id: str, component_id: str, version: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).deprecate(
+                project_id, component_id, version
+            )
+        )
+
+    @router.delete("/{project_id}/custom-components/{component_id}")
+    def delete_custom_component(
+        project_id: str, component_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _custom_components(request).delete_draft(project_id, component_id)
+        )
+
     return router
 
 
@@ -842,6 +962,12 @@ def _resource_projection(request: Request, payload: dict[str, Any]) -> dict[str,
     return cast(ResourceReadiness, request.app.state.resource_readiness).response(
         payload
     )
+
+
+def _custom_components(request: Request) -> CustomComponentService:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(CustomComponentService, request.app.state.custom_components)
 
 
 def _project_resources(request: Request) -> ProjectResourceService:
@@ -924,6 +1050,15 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
                 "resource_binding_conflict",
                 "resource_identity_conflict",
             }
+            else 422
+        )
+        raise TypedApiError(status_code, exc.code, str(exc)) from exc
+    except CustomComponentError as exc:
+        status_code = (
+            409
+            if exc.code in {"component_in_use", "component_version_exists"}
+            else 404
+            if exc.code in {"component_not_found", "component_draft_missing"}
             else 422
         )
         raise TypedApiError(status_code, exc.code, str(exc)) from exc

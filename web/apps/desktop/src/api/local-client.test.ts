@@ -174,6 +174,88 @@ describe("LocalApiClient Project requests", () => {
     expect(fetcher.mock.calls[2]?.[0]).toBe("/api/v1/projects/project-1/resources/veyra.filesystem.read/versions/1.0.0");
   });
 
+  it("parses Project-owned Custom Component lifecycles and resource origin", async () => {
+    const definition = {
+      schema_version: "1.0",
+      component_id: "01900000-0000-7000-8000-000000000001",
+      project_id: "project-1",
+      slug: "invoice-extractor",
+      display_name: "Invoice Extractor",
+      description: "Extract invoice fields.",
+      version: "0.0.0",
+      reference: "custom.component.01900000-0000-7000-8000-000000000001@0.0.0",
+      content_hash: "a".repeat(64),
+      inputs: { text: "string" },
+      outputs: { invoice: "object" },
+      implementation: { kind: "model_recipe", instruction: "Extract fields", model_ref: "model.primary" },
+      metadata: { owner: "finance" },
+      dependencies: [],
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      readiness: "ready",
+      provenance: "manual",
+      lifecycle: "draft",
+      deprecated: false,
+      created_at: "2026-09-22T00:00:00Z",
+      updated_at: "2026-09-22T00:00:00Z",
+    };
+    const resource = {
+      schema_version: "1.0",
+      resource_id: definition.component_id,
+      kind: "component",
+      component_class: "composite",
+      version: "1.0.0",
+      reference: `${definition.component_id}@1.0.0`,
+      name: definition.display_name,
+      description: definition.description,
+      origin: "project",
+      content_hash: "b".repeat(64),
+      availability: "ready",
+      factory_selectable: true,
+      runtime_status: "supported",
+      required_permissions: definition.required_permissions,
+      tags: ["custom-component", "model_recipe"],
+      spec: { implementation_kind: "model_recipe" },
+      scope: "project",
+      binding_status: "current",
+      binding_source: "manual",
+      bound_content_hash: "b".repeat(64),
+      used_by: [],
+    };
+    const summary = {
+      schema_version: "1.0",
+      component_id: definition.component_id,
+      project_id: "project-1",
+      slug: definition.slug,
+      display_name: definition.display_name,
+      description: definition.description,
+      draft: definition,
+      latest_version: null,
+      versions: [],
+    };
+    const listPayload = { schema_version: "1.0", project_id: "project-1", components: [summary] };
+    const resourcesPayload = { schema_version: "1.0", project_id: "project-1", resources: [resource], missing_references: [], missing_bindings: [], project_count: 1, used_count: 0, unbound_count: 0, builtin_count: 0 };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(listPayload))
+      .mockResolvedValueOnce(response(definition, 201))
+      .mockResolvedValueOnce(response(resourcesPayload));
+    const client = new LocalApiClient({ fetcher });
+
+    await expect(client.listCustomComponents("project-1")).resolves.toMatchObject({ components: [{ draft: { component_id: definition.component_id, metadata: { owner: "finance" } } }] });
+    await expect(client.createCustomComponent("project-1", {
+      display_name: definition.display_name,
+      description: definition.description,
+      inputs: definition.inputs,
+      outputs: definition.outputs,
+      implementation: definition.implementation,
+      metadata: definition.metadata,
+    })).resolves.toMatchObject({ reference: definition.reference, lifecycle: "draft" });
+    await expect(client.listProjectResources("project-1")).resolves.toMatchObject({ resources: [{ kind: "component", origin: "project", component_class: "composite" }] });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/custom-components");
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toMatchObject({ display_name: "Invoice Extractor", implementation: { kind: "model_recipe" } });
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/v1/projects/project-1/resources");
+  });
+
   it("reveals an indexed Project folder through the desktop intent header", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", status: "revealed", root_path: "/tmp/Inside" }));
     const client = new LocalApiClient({ fetcher });
@@ -366,10 +448,14 @@ describe("LocalApiClient Project requests", () => {
       timestamp: "2026-08-28T10:00:00Z",
     };
     const listeners: Record<string, (event: MessageEvent) => void> = {};
-    let created: { url: string; closed: boolean } | undefined;
+    let created: { url: string; closed: boolean; readyState: number; onerror: ((event: Event) => void) | null } | undefined;
     class FakeEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
       url: string;
       closed = false;
+      readyState = FakeEventSource.OPEN;
       onerror: ((event: Event) => void) | null = null;
       constructor(url: string) {
         this.url = url;
@@ -394,6 +480,9 @@ describe("LocalApiClient Project requests", () => {
     const failed = { ...event, event_id: "event-2", sequence: 3, kind: "tool.failed", node_id: "lookup", payload: { output_digest: null, schema_validation: { input: "failed", output: "not_checked" } } };
     listeners.runtime({ data: JSON.stringify(failed) } as MessageEvent);
     expect(onEvent).toHaveBeenCalledWith(failed);
+    expect(onError).not.toHaveBeenCalled();
+    created?.onerror?.(new Event("error"));
+    expect(created?.closed).toBe(false);
     expect(onError).not.toHaveBeenCalled();
     listeners.done({ data: JSON.stringify({ status: "failed" }) } as MessageEvent);
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ kind: "run.created", sequence: 1 }));

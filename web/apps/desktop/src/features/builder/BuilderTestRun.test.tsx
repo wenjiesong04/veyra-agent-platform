@@ -4,7 +4,7 @@ import type { BuilderConversationOperation, BuilderConversationSnapshot } from "
 import { ThemeProvider } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { editAgent, editDraft } from "../../test/edit-proposals";
-import { BuilderTestRun } from "./BuilderTestRun";
+import { BuilderTestRun, latestWorkspaceTestOperation } from "./BuilderTestRun";
 
 afterEach(() => cleanup());
 
@@ -108,13 +108,14 @@ describe("BuilderTestRun", () => {
     const onSnapshot = vi.fn();
     render(
       <ThemeProvider>
-        <BuilderTestRun api={apiFor({ startBuilderTestRun })} projectId="project-1" agentId="agent-1" conversationId="conv-1" locale="zh" onSnapshot={onSnapshot} />
+        <BuilderTestRun api={apiFor({ startBuilderTestRun })} projectId="project-1" agentId="agent-1" workspaceId="workspace-1" conversationId="conv-1" locale="zh" onSnapshot={onSnapshot} />
       </ThemeProvider>,
     );
     fireEvent.change(await screen.findByLabelText("text"), { target: { value: "Hello world" } });
     fireEvent.click(screen.getByRole("button", { name: "测试 Agent" }));
     await waitFor(() => expect(startBuilderTestRun).toHaveBeenCalledWith("project-1", "conv-1", {
       agent_id: "agent-1",
+      workspace_id: "workspace-1",
       inputs: { text: "Hello world" },
       locale: "zh",
     }));
@@ -128,7 +129,7 @@ describe("BuilderTestRun", () => {
     });
     render(
       <ThemeProvider>
-        <BuilderTestRun api={api} projectId="project-1" agentId="agent-1" conversationId="conv-1" locale="zh" onSnapshot={() => undefined} />
+        <BuilderTestRun api={api} projectId="project-1" agentId="agent-1" workspaceId="workspace-1" conversationId="conv-1" locale="zh" onSnapshot={() => undefined} />
       </ThemeProvider>,
     );
     expect(await screen.findByText("请先完成结构验证，再测试 Agent。")).toBeInTheDocument();
@@ -176,6 +177,7 @@ describe("BuilderTestRun", () => {
           })}
           projectId="project-1"
           agentId="agent-1"
+          workspaceId="workspace-1"
           conversationId="conv-1"
           locale="zh"
           operation={failed}
@@ -215,6 +217,7 @@ describe("BuilderTestRun", () => {
           api={apiFor({ startBuilderTestRun, proposeBuilderTestRepair, listEditProposals })}
           projectId="project-1"
           agentId="agent-1"
+          workspaceId="workspace-1"
           conversationId="conv-1"
           locale="zh"
           operation={failed}
@@ -243,11 +246,20 @@ describe("BuilderTestRun", () => {
     });
     render(
       <ThemeProvider>
-        <BuilderTestRun api={apiFor({ startBuilderTestRun: vi.fn() })} projectId="project-1" agentId="agent-1" conversationId="conv-1" locale="zh" operation={failed} onSnapshot={() => undefined} />
+        <BuilderTestRun api={apiFor({ startBuilderTestRun: vi.fn() })} projectId="project-1" agentId="agent-1" workspaceId="workspace-1" conversationId="conv-1" locale="zh" operation={failed} onSnapshot={() => undefined} />
       </ThemeProvider>,
     );
     expect(await screen.findByText(/限流/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "创建修复提案" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看运行详情" })).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/run?run_id=run-1");
+  });
+});
+
+describe("Builder Test Run workspace identity", () => {
+  it("does not reuse another workspace's test even for the same Agent", () => {
+    const workspaceA = operation({ operation_id: "test-a", workspace_id: "workspace-a" });
+    const workspaceB = operation({ operation_id: "test-b", workspace_id: "workspace-b" });
+    expect(latestWorkspaceTestOperation([workspaceA, workspaceB], "workspace-a")?.operation_id).toBe("test-a");
+    expect(latestWorkspaceTestOperation([workspaceA, workspaceB], "workspace-c")).toBeUndefined();
   });
 });

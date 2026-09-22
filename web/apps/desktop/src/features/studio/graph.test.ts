@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachFlowNodeOnEdge, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
+import type { AgentSource, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
+import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
 
@@ -17,6 +17,26 @@ describe("Studio graph adapter", () => {
     expect(graphDiagnostics({ ...source, nodes: [{ id: "agent", component_type: "Agent" }], transitions: [] })).toEqual(expect.arrayContaining([
       { code: "start_count" }, { code: "output_missing" }, { code: "node_fields_missing", params: { nodeId: "agent", componentType: "Agent" } },
     ]));
+  });
+
+  it("requires Custom Component nodes to carry an exact pinned version lock", () => {
+    const reference = "custom-component-1@1.0.0";
+    const graph = {
+      ...source,
+      nodes: [
+        { id: "start", component_type: "Start" as const },
+        { id: "custom", component_type: "CustomComponent" as const, uses: reference },
+        { id: "out", component_type: "Output" as const, output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next" as const, to: "custom" },
+        { from: "custom", port: "next" as const, to: "out" },
+      ],
+      lock: {},
+    };
+    expect(graphDiagnostics(graph)).toContainEqual({ code: "custom_component_not_locked", params: { nodeId: "custom" } });
+    expect(graphDiagnostics({ ...graph, lock: { [reference]: "a".repeat(64) } })).not.toContainEqual({ code: "custom_component_not_locked", params: { nodeId: "custom" } });
+    expect(isAgentSourceCandidate(graph)).toBe(true);
   });
 
   it("serializes a connection from a newly added canvas node and removes a deleted edge", () => {
@@ -154,15 +174,20 @@ describe("Studio graph adapter", () => {
     expect(next.ui.labels).toEqual({ start: "入口", out: "结果" });
   });
 
-  it("keeps a default canvas note above the flow and valid after deletion", () => {
+  it("centers the default canvas note above the graph and keeps it optional", () => {
     const noted = {
       ...source,
-      ui: { positions: { start: { x: 0, y: 80 }, out: { x: 240, y: 80 } }, notes: { note_intro: { x: 0, y: -220, text: "说明", color: "amber" as const, width: 280 } } },
+      ui: { positions: { start: { x: 0, y: 80 }, out: { x: 600, y: 80 } }, notes: { note_intro: { x: 0, y: -220, text: "说明", color: "amber" as const, width: 420 } } },
     };
     const graph = toCanvas(noted);
     const note = graph.nodes.find((node) => node.id === "note_intro");
-    const flowY = Math.min(...graph.nodes.filter((node) => node.data.flow).map((node) => node.position.y));
+    const flowNodes = graph.nodes.filter((node) => node.data.flow);
+    const flowY = Math.min(...flowNodes.map((node) => node.position.y));
+    const graphLeft = Math.min(...flowNodes.map((node) => node.position.x));
+    const graphRight = Math.max(...flowNodes.map((node) => node.position.x + Number(node.style?.width)));
     expect(note?.position.y).toBeLessThan(flowY);
+    expect(note?.position.x).toBe(Math.round((graphLeft + graphRight - 420) / 2));
+    expect(note?.data.note?.manual_position).toBe(false);
     const withoutNote = sourceWithGraph(noted, graph.nodes.filter((node) => node.id !== "note_intro"), graph.edges);
     expect(withoutNote.ui.notes).toBeUndefined();
     expect(withoutNote.nodes.map((node) => node.id)).toEqual(["start", "out"]);
@@ -175,9 +200,73 @@ describe("Studio graph adapter", () => {
     };
     const graph = toCanvas(noted);
     expect(graph.nodes.some((node) => node.id === "note_intro" && node.type === "noteNode")).toBe(true);
-    const next = sourceWithGraph(noted, graph.nodes.map((node) => node.id === "note_intro" ? { ...node, position: { x: 40.4, y: 80.6 }, data: { ...node.data, note: { text: "Moved", color: "teal" as const, width: 240 } } } : node), graph.edges);
+    const next = sourceWithGraph(noted, graph.nodes.map((node) => node.id === "note_intro" ? { ...node, position: { x: 40.4, y: 80.6 }, data: { ...node.data, note: { text: "Moved", color: "teal" as const, width: 240, manual_position: true } } } : node), graph.edges);
     expect(next.nodes.map((node) => node.id)).toEqual(["start", "out"]);
-    expect(next.ui.notes?.note_intro).toEqual({ x: 40, y: 81, text: "Moved", color: "teal", width: 240 });
+    expect(next.ui.notes?.note_intro).toEqual({ x: 40, y: 81, text: "Moved", color: "teal", width: 240, manual_position: true });
+    expect(toCanvas(next).nodes.find((node) => node.id === "note_intro")?.position).toEqual({ x: 40, y: 81 });
+  });
+
+  it("preserves legacy custom default-note coordinates as a manual placement", () => {
+    const noted = {
+      ...source,
+      ui: { positions: source.ui.positions, notes: { note_intro: { x: 840, y: -30, text: "User placed", width: 320 } } },
+    };
+    expect(toCanvas(noted).nodes.find((node) => node.id === "note_intro")).toMatchObject({
+      position: { x: 840, y: -30 },
+      data: { note: { manual_position: true } },
+    });
+  });
+
+  it("auto-layouts execution nodes while preserving a manually placed default note", () => {
+    const noted = {
+      ...source,
+      ui: {
+        positions: source.ui.positions,
+        notes: { note_intro: { x: 730, y: -90, text: "Keep here", width: 420, manual_position: true } },
+      },
+    };
+    const initial = toCanvas(noted);
+    const next = autoLayoutCanvasNodes(initial.nodes, initial.edges);
+    expect(next.find((node) => node.id === "start")?.position).toEqual({ x: 0, y: 1 });
+    expect(next.find((node) => node.id === "out")?.position.x).toBeGreaterThan(0);
+    expect(next.find((node) => node.id === "note_intro")?.position).toEqual({ x: 730, y: -90 });
+    expect(sourceWithGraph(noted, next, initial.edges).ui.notes?.note_intro).toMatchObject({
+      x: 730,
+      y: -90,
+      manual_position: true,
+    });
+  });
+
+  it("uses the same default-note layout behavior for Workflow canvases", () => {
+    const workflow: WorkflowSource = {
+      schema_version: "1.0",
+      component_type: "Workflow",
+      workflow_id: "01900000-0000-7000-8000-000000000099",
+      slug: "review-path",
+      name: "Review path",
+      description: "",
+      inputs: {},
+      outputs: { result: "string" },
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "call", component_type: "AgentCall", agent_ref: "01900000-0000-7000-8000-000000000098@1.0.0" },
+        { id: "out", component_type: "Output", output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next", to: "call" },
+        { from: "call", port: "next", to: "out" },
+      ],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: {}, notes: { note_intro: { x: 0, y: -220, text: "Workflow note", width: 420, manual_position: false } } },
+      lock: {},
+    };
+    const graph = toCanvas(workflow);
+    const note = graph.nodes.find((node) => node.id === "note_intro");
+    const flow = graph.nodes.filter((node) => node.data.flow);
+    const minY = Math.min(...flow.map((node) => node.position.y));
+    expect(note?.position.y).toBeLessThan(minY);
+    const saved = sourceWithGraph(workflow, graph.nodes, graph.edges);
+    expect(saved.ui.notes?.note_intro).toMatchObject({ manual_position: false, width: 420 });
   });
 
   it("inserts a Flow node by splitting an existing edge", () => {

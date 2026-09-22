@@ -1,5 +1,5 @@
 import * as React from "react";
-import { addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, reconnectEdge, SelectionMode, type Connection, type Edge, type Node, type NodeProps, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
+import { addEdge, Background, Controls, MiniMap, ReactFlow, reconnectEdge, SelectionMode, type Connection, type Edge, type Node, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
   BadgeCheck,
@@ -27,16 +27,17 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import { projectRoutePaths, type AgentVersionSnapshot, type FlowNode, type ProjectAgentRecord, type ProjectKnowledgeRecord, type ResourceDescriptor, type StudioSource } from "@veyra/api-contracts";
+import { projectRoutePaths, type AgentVersionSnapshot, type FlowNode, type ProjectAgentRecord, type ProjectKnowledgeRecord, type ResourceDescriptor, type RuntimeEvent, type StudioSource } from "@veyra/api-contracts";
 import { Button, Panel, SectionHeading, Tag } from "@veyra/ui";
-import { attachFlowNodeOnEdge, defaultSpliceEdgeId, flowNodeOutgoingPort, insertFlowNodeOnEdge, newFlowNodeId, portHandleTop, shouldSplicePaletteItem, sourceWithGraph, toCanvas, type CanvasNodeData } from "./graph";
-import { nodeRunStates, useLiveRun } from "./live-run";
+import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, flowNodeOutgoingPort, insertFlowNodeOnEdge, newFlowNodeId, shouldSplicePaletteItem, sourceWithGraph, toCanvas, type CanvasNodeData } from "./graph";
+import { useLiveRun } from "./live-run";
 import {
   attachCatalogResource,
   attachCatalogBinding,
   attachKnowledgeBinding,
   fallbackPalette,
   grantCatalogResource,
+  isProjectCustomComponentResource,
   knowledgePalette,
   newCatalogNode,
   nodeDisplayTitle,
@@ -51,11 +52,13 @@ import {
 import { agentIdFromRef, bindWorkflowAgentCall, latestAgentVersion, parseAgentCallRef } from "./agent-call";
 import { AgentCallInspector } from "./AgentCallInspector";
 import { CanvasEdgeActionsProvider, FlowEdge } from "./canvas-edge";
-import { NoteNode } from "./canvas-note";
-import { componentFor } from "./registry";
+import { studioNodeTypes } from "./canvas-nodes";
+import { projectRunToExecutionState, type NodeExecutionState } from "./execution-state";
 import { RunApprovalBar } from "./RunApprovalBar";
 import { useStudioChrome } from "./studio-chrome";
 import { StudioPaneResizeHandle } from "./studio-pane-resize";
+import { RunExecutionCanvas } from "./RunExecutionCanvas";
+import { runDetailHref } from "../runs/run-location";
 import type { LocalProjectApi } from "../../api/local-client";
 import { copySelection, deleteSelection, isProtectedFlowNode, loadCanvasClipboard, pasteClipboard, readCanvasClipboard, selectableCanvasIds, writeCanvasClipboard } from "./canvas-edit";
 import { emptyCanvasHistory, recordCanvasChange, redoCanvasChange, undoCanvasChange, type CanvasHistory } from "./canvas-history";
@@ -90,36 +93,73 @@ function PaletteIcon({ name }: { name: string }) {
   return <Icon size={14} />;
 }
 
-function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "agentNode">>) {
-  if (!data.flow) return null;
-  const component = componentFor(data.flow.component_type);
-  const title = data.title ?? component.label;
-  const showTarget = data.flow.component_type !== "Start";
-  return (
-    <div className={`agent-flow-node ${selected ? "selected" : ""}`} data-state={data.runState ?? "pending"}>
-      {showTarget ? <Handle type="target" position={Position.Left} style={{ top: "50%" }} /> : null}
-      <strong>{title}</strong>
-      <small>{data.flow.id}</small>
-      {component.ports.map((port, index) => (
-        <Handle key={port} id={port} type="source" position={Position.Right} style={{ top: `${portHandleTop(index, component.ports.length)}%` }} title={port} />
-      ))}
-    </div>
-  );
-}
-
-function BindingNode({ data, selected }: NodeProps<Node<CanvasNodeData, "bindingNode">>) {
-  const binding = data.binding;
-  if (!binding) return null;
-  return (
-    <div className={`agent-flow-node catalog-binding ${selected ? "selected" : ""}`}>
-      <strong>{binding.kind}</strong>
-      <small>{binding.reference}</small>
-    </div>
-  );
-}
-
-const nodeTypes = { agentNode: AgentNode, bindingNode: BindingNode, noteNode: NoteNode };
+const nodeTypes = studioNodeTypes;
 const edgeTypes = { flowEdge: FlowEdge };
+
+function executionStateLabel(state: NodeExecutionState, locale: "zh" | "en"): string {
+  const labels: Record<NodeExecutionState, { zh: string; en: string }> = {
+    idle: { zh: "未运行", en: "Not run" },
+    queued: { zh: "排队中", en: "Queued" },
+    running: { zh: "运行中", en: "Running" },
+    waiting_approval: { zh: "等待批准", en: "Waiting for approval" },
+    completed: { zh: "已完成", en: "Completed" },
+    failed: { zh: "失败", en: "Failed" },
+    stopped: { zh: "已停止", en: "Stopped" },
+    skipped: { zh: "已跳过", en: "Skipped" },
+  };
+  return labels[state][locale];
+}
+
+function runStatusLabel(status: NonNullable<ReturnType<typeof projectRunToExecutionState>["runStatus"]>, locale: "zh" | "en"): string {
+  if (status === "cancelled") return locale === "zh" ? "已停止" : "Stopped";
+  const labels: Record<typeof status, { zh: string; en: string }> = {
+    running: { zh: "运行中", en: "Running" },
+    waiting: { zh: "等待批准", en: "Waiting for approval" },
+    verified: { zh: "已验证", en: "Verified" },
+    unverified: { zh: "未验证", en: "Unverified" },
+    failed: { zh: "失败", en: "Failed" },
+    interrupted: { zh: "已中断", en: "Interrupted" },
+  };
+  return labels[status][locale];
+}
+
+function NodeRuntimeInspector({
+  events,
+  state,
+  locale,
+  onOpenRun,
+}: {
+  events: RuntimeEvent[];
+  state: NodeExecutionState;
+  locale: "zh" | "en";
+  onOpenRun: () => void;
+}) {
+  const zh = locale === "zh";
+  const started = events.find((event) => event.kind === "node.started");
+  const finished = [...events].reverse().find((event) => ["node.completed", "node.failed", "node.cancelled", "node.skipped"].includes(event.kind));
+  const failure = [...events].reverse().find((event) => event.kind === "node.failed");
+  const code = failure?.payload.code;
+  const duration = typeof finished?.payload.duration_ms === "number"
+    ? finished.payload.duration_ms
+    : started && finished
+      ? Math.max(0, Date.parse(finished.timestamp) - Date.parse(started.timestamp))
+      : null;
+  const hasToolReceipt = events.some((event) => event.kind === "tool.completed" || event.kind === "tool.failed");
+  const hasEvidence = events.some((event) => event.kind === "artifact.created");
+  return (
+    <section className="studio-node-runtime" aria-label={zh ? "节点运行状态" : "Node runtime status"}>
+      <Tag>{zh ? "运行时" : "Runtime"}</Tag>
+      <p><strong>{zh ? "状态" : "Status"}:</strong> {executionStateLabel(state, locale)}</p>
+      {started ? <p><strong>{zh ? "开始" : "Started"}:</strong> <time dateTime={started.timestamp}>{started.timestamp}</time></p> : null}
+      {finished && ["node.completed", "node.failed"].includes(finished.kind) ? <p><strong>{zh ? "结束" : "Completed"}:</strong> <time dateTime={finished.timestamp}>{finished.timestamp}</time></p> : null}
+      {duration !== null && Number.isFinite(duration) ? <p><strong>{zh ? "耗时" : "Duration"}:</strong> {duration} ms</p> : null}
+      {typeof code === "string" ? <p><strong>{zh ? "错误代码" : "Error code"}:</strong> <code>{code}</code></p> : null}
+      {hasToolReceipt ? <p>{zh ? "Tool 回执已记录，可在运行详情中查看安全投影。" : "A Tool receipt is recorded; view its safe projection in Run Detail."}</p> : null}
+      {hasEvidence ? <p>{zh ? "此节点生成了运行证据。" : "This node produced run evidence."}</p> : null}
+      <Button variant="ghost" size="sm" onClick={onOpenRun}>{zh ? "查看运行详情" : "View Run Detail"}</Button>
+    </section>
+  );
+}
 
 export { STUDIO_CHROME_STORAGE_KEY as STUDIO_RAILS_STORAGE_KEY } from "./studio-chrome";
 
@@ -259,9 +299,9 @@ export function StudioWorkbench({
     ...(mode === "agent" ? knowledgePalette(knowledge) : []),
     ...notePalette(),
   ], [agents, catalog, knowledge, mode]);
-  const states = React.useMemo(
-    () => Object.fromEntries(nodeRunStates(source, live.run?.events ?? []).map((node) => [node.id, node.state])),
-    [source, live.run?.events],
+  const execution = React.useMemo(
+    () => projectRunToExecutionState(source, mode === "agent" ? live.run : null),
+    [source, mode, live.run],
   );
 
   React.useEffect(() => {
@@ -295,15 +335,27 @@ export function StudioWorkbench({
       let changed = false;
       const next = current.map((node) => {
         if (!node.data.flow) return node;
-        const runState = states[node.id] ?? "pending";
+        const runState = execution.nodeStates.get(node.id) ?? "idle";
+        const runStateLabel = executionStateLabel(runState, locale);
         const title = nodeDisplayTitle(node.data.flow, catalog, locale, agents, source.ui.labels);
-        if (node.data.runState === runState && node.data.title === title) return node;
+        if (node.data.runState === runState && node.data.runStateLabel === runStateLabel && node.data.title === title) return node;
         changed = true;
-        return { ...node, data: { ...node.data, runState, title } };
+        return { ...node, data: { ...node.data, runState, runStateLabel, title } };
       });
       return changed ? next : current;
     });
-  }, [states, catalog, locale, agents, setNodes, source.ui.labels]);
+    setEdges((current) => {
+      let changed = false;
+      const next = current.map((edge) => {
+        const executionState = execution.edgeStates.get(edge.id) ?? "idle";
+        const className = executionState === "idle" ? "" : `execution-${executionState}`;
+        if (edge.data?.executionState === executionState && edge.className === className) return edge;
+        changed = true;
+        return { ...edge, className, data: { ...edge.data, executionState } };
+      });
+      return changed ? next : current;
+    });
+  }, [execution, catalog, locale, agents, setNodes, setEdges, source.ui.labels]);
 
   const onFlowInit = React.useCallback((instance: ReactFlowInstance<Node<CanvasNodeData>, Edge>) => {
     setFlowInstance(instance);
@@ -353,6 +405,14 @@ export function StudioWorkbench({
       flowInstance?.fitView({ ...CANVAS_FIT_VIEW, nodes: [{ id }] });
     });
   };
+  const autoLayoutCanvas = () => {
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const nextNodes = autoLayoutCanvasNodes(currentNodes, currentEdges);
+    setNodes(nextNodes);
+    emit(nextNodes, currentEdges);
+    window.requestAnimationFrame(() => flowInstance?.fitView(CANVAS_FIT_VIEW));
+  };
   const insertOnEdge = (edgeId: string, item: PaletteItem) => {
     if (!item.draggable || item.group === "note" || paletteItemBlocked(item, sourceRef.current.nodes)) return;
     const id = newFlowNodeId(item.componentType);
@@ -362,7 +422,8 @@ export function StudioWorkbench({
     const next = insertFlowNodeOnEdge(nodes, edges, edgeId, { id, type: "agentNode", position: { x: 0, y: 0 }, data: { flow } }, outgoing);
     if (!next) return;
     let nextSource = sourceWithGraph(source, next.nodes, next.edges);
-    if (nextSource.component_type === "Flow" && (item.group === "tool" || item.group === "mcp") && item.resource) {
+    if (nextSource.component_type === "Flow" && item.resource
+      && ((item.group === "tool" || item.group === "mcp") || isProjectCustomComponentResource(item.resource))) {
       nextSource = grantCatalogResource(nextSource, item.resource);
     }
     setNodes(next.nodes);
@@ -385,7 +446,7 @@ export function StudioWorkbench({
           ...source.ui,
           notes: {
             ...(source.ui.notes ?? {}),
-            [id]: { x: Math.round(nextPosition.x), y: Math.round(nextPosition.y), text: "", color: "amber", width: 220 },
+            [id]: { x: Math.round(nextPosition.x), y: Math.round(nextPosition.y), text: "", color: "amber", width: 220, manual_position: true },
           },
         },
       });
@@ -415,7 +476,8 @@ export function StudioWorkbench({
     }
     const id = newFlowNodeId(item.componentType);
     const flow = newCatalogNode(item, id);
-    if (source.component_type === "Flow" && (item.group === "tool" || item.group === "mcp") && item.resource) {
+    if (source.component_type === "Flow" && item.resource
+      && ((item.group === "tool" || item.group === "mcp") || isProjectCustomComponentResource(item.resource))) {
       applySource(attachCatalogResource(source, item.resource, flow, nextPosition));
     } else {
       const nextSource = {
@@ -641,7 +703,17 @@ export function StudioWorkbench({
     const node = source.nodes.find((item) => item.id === id);
     return !node || !isProtectedFlowNode(node, source.nodes);
   });
-  return (
+  return mode === "agent" && agentId && live.run ? (
+    <RunExecutionCanvas
+      api={api}
+      projectId={projectId}
+      agentId={agentId}
+      runId={live.run.run_id}
+      locale={locale}
+      showRunControls={false}
+      onReturnToDraft={live.clear}
+    />
+  ) : (
     <div className={`studio-layout${chrome.paletteCollapsed ? " palette-collapsed" : ""}${chrome.inspectorCollapsed ? " inspector-collapsed" : ""}`}>
       <Panel className="canvas-panel">
         <div
@@ -685,7 +757,15 @@ export function StudioWorkbench({
               }}
               onNodeDragStop={(_, _node, dragged) => {
                 const moved = new Map(dragged.map((item) => [item.id, item.position]));
-                const next = nodes.map((item) => moved.has(item.id) ? { ...item, position: moved.get(item.id)! } : item);
+                const next = nodes.map((item) => {
+                  if (!moved.has(item.id)) return item;
+                  const position = moved.get(item.id)!;
+                  return {
+                    ...item,
+                    position,
+                    ...(item.data.note ? { data: { ...item.data, note: { ...item.data.note, manual_position: true } } } : {}),
+                  };
+                });
                 setNodes(next);
                 emit(next, edges);
               }}
@@ -710,6 +790,17 @@ export function StudioWorkbench({
               <MiniMap pannable zoomable style={{ width: 148, height: 98 }} />
             </ReactFlow>
           </CanvasEdgeActionsProvider>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="studio-auto-layout"
+            icon={LayoutTemplate}
+            onClick={autoLayoutCanvas}
+            title={locale === "zh" ? "按执行依赖重新排列节点" : "Arrange nodes by execution dependencies"}
+          >
+            {locale === "zh" ? "自动布局" : "Auto layout"}
+          </Button>
           {insertMenu ? (
             <div className="canvas-edge-insert-menu" style={{ left: insertMenu.x, top: insertMenu.y }} role="menu">
               <p>{locale === "zh" ? "插入节点" : "Insert node"}</p>
@@ -721,6 +812,10 @@ export function StudioWorkbench({
               ))}
             </div>
           ) : null}
+          {live.run ? <div className="studio-canvas-run-status" role="status">
+            <span>{locale === "zh" ? "运行" : "Run"}</span>
+            <strong>{runStatusLabel(live.run.status, locale)}</strong>
+          </div> : null}
           <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
         </div>
       </Panel>
@@ -756,7 +851,32 @@ export function StudioWorkbench({
         title={inspectorTitle}
         locale={locale}
       >
-        {flow ? <div className="inspector-fields"><Tag>{flow.component_type === "Agent" ? "Model" : flow.component_type}</Tag><label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>{flow.component_type === "AgentCall" ? <AgentCallInspector key={flow.id} node={flow} agents={agents} api={api} projectId={projectId} zh={locale === "zh"} initialAgentId={pendingCallAgentId} workflowInputs={Object.keys(source.inputs)} workflowOutputs={Object.keys(source.outputs)} onBind={bindAgent} onMapping={(field, mapping) => updateNode(field, JSON.stringify(mapping))} onOpenAgent={openAgentCanvas} onAttachToFlow={attachSelectedToFlow} canAttachToFlow={canAttachSelected} /> : fieldFor(flow, updateNode, locale)}{flow.component_type === "AgentCall" && parseAgentCallRef(flow.agent_ref) ? <Button onClick={() => openAgentCall(flow.agent_ref)}>{locale === "zh" ? "打开已绑定版本" : "Open bound version"}</Button> : null}{flow.component_type === "Tool" ? <><label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label><label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label></> : null}{flow.component_type === "AgentCall" ? <label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label> : null}<Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button></div> : note ? <div className="inspector-fields"><Tag>{locale === "zh" ? "文字卡片" : "Note"}</Tag><label>{locale === "zh" ? "内容" : "Text"}<textarea rows={6} value={note.text} onChange={(event) => updateNote(selected!, { text: event.target.value.slice(0, 4000) })} /></label><p className="rail-note">{locale === "zh" ? "这是画布注释，不会进入运行图或改变 behavior hash。" : "This is a canvas note. It is not executed and does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除卡片" : "Delete note"}</Button></div> : selectedEdge ? <div className="inspector-fields"><Tag>{locale === "zh" ? "连线" : "Connection"}</Tag><label>{locale === "zh" ? "从" : "From"}<input value={selectedEdge.source} readOnly /></label><label>{locale === "zh" ? "端口" : "Port"}<input value={String(selectedEdge.sourceHandle ?? "")} readOnly /></label><label>{locale === "zh" ? "到" : "To"}<input value={selectedEdge.target} readOnly /></label><p className="rail-note">{locale === "zh" ? "悬停或点选这条线，中点会出现蓝色圆点和红色「删除」。点圆点插入节点，点删除去掉连线。" : "Hover or select this line to see the blue handle and red Delete. Use the handle to insert a node, or Delete to remove the connection."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除连线" : "Delete connection"}</Button></div> : binding ? <div className="inspector-fields"><Tag>{binding.kind}</Tag><label>{locale === "zh" ? "引用" : "Reference"}<input value={binding.reference} readOnly /></label><p className="rail-note">{locale === "zh" ? "这是 Catalog 绑定，不是 Flow 组件。移动它不会改变 behavior hash。" : "This is a catalog binding, not a Flow component. Moving it does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除绑定" : "Delete binding"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点或连线以编辑。" : "Select a canvas node or connection to edit."}</p>}
+        {flow ? <div className="inspector-fields">
+          <Tag>{flow.component_type === "Agent" ? "Model" : flow.component_type}</Tag>
+          <label>{locale === "zh" ? "节点 ID" : "Node ID"}<input value={flow.id} readOnly /></label>
+          {live.run && execution.nodeEvents.get(flow.id)?.length ? <NodeRuntimeInspector
+            events={execution.nodeEvents.get(flow.id) ?? []}
+            state={execution.nodeStates.get(flow.id) ?? "idle"}
+            locale={locale}
+            onOpenRun={() => {
+              const href = runDetailHref({ projectId, agentId: live.run!.agent_id, runId: live.run!.run_id });
+              if (onNavigate) onNavigate(href);
+              else window.location.hash = href;
+            }}
+          /> : null}
+          {flow.component_type === "AgentCall" ? <AgentCallInspector key={flow.id} node={flow} agents={agents} api={api} projectId={projectId} zh={locale === "zh"} initialAgentId={pendingCallAgentId} workflowInputs={Object.keys(source.inputs)} workflowOutputs={Object.keys(source.outputs)} onBind={bindAgent} onMapping={(field, mapping) => updateNode(field, JSON.stringify(mapping))} onOpenAgent={openAgentCanvas} onAttachToFlow={attachSelectedToFlow} canAttachToFlow={canAttachSelected} /> : fieldFor(flow, updateNode, locale)}
+          {flow.component_type === "AgentCall" && parseAgentCallRef(flow.agent_ref) ? <Button onClick={() => openAgentCall(flow.agent_ref)}>{locale === "zh" ? "打开已绑定版本" : "Open bound version"}</Button> : null}
+          {flow.component_type === "Tool" ? <>
+            <label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label>
+            <label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label>
+          </> : null}
+          {flow.component_type === "CustomComponent" ? <>
+            <label>{locale === "zh" ? "固定版本哈希" : "Pinned version hash"}<input value={flow.uses ? source.lock[flow.uses] ?? (locale === "zh" ? "缺少锁" : "Missing lock") : ""} readOnly /></label>
+            <label>{locale === "zh" ? "派生权限" : "Derived permissions"}<input value={source.extensions.veyra.permissions.tools.join(", ") || (locale === "zh" ? "无额外工具权限" : "No additional tool permissions")} readOnly /></label>
+          </> : null}
+          {flow.component_type === "AgentCall" ? <label>{locale === "zh" ? "依赖锁" : "Lock entries"}<input value={Object.keys(source.lock).join(", ") || (locale === "zh" ? "暂无依赖锁" : "No lock entries")} readOnly /></label> : null}
+          <Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除节点" : "Delete node"}</Button>
+        </div> : note ? <div className="inspector-fields"><Tag>{locale === "zh" ? "文字卡片" : "Note"}</Tag><label>{locale === "zh" ? "内容" : "Text"}<textarea rows={6} value={note.text} onChange={(event) => updateNote(selected!, { text: event.target.value.slice(0, 4000) })} /></label><p className="rail-note">{locale === "zh" ? "这是画布注释，不会进入运行图或改变 behavior hash。" : "This is a canvas note. It is not executed and does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除卡片" : "Delete note"}</Button></div> : selectedEdge ? <div className="inspector-fields"><Tag>{locale === "zh" ? "连线" : "Connection"}</Tag><label>{locale === "zh" ? "从" : "From"}<input value={selectedEdge.source} readOnly /></label><label>{locale === "zh" ? "端口" : "Port"}<input value={String(selectedEdge.sourceHandle ?? "")} readOnly /></label><label>{locale === "zh" ? "到" : "To"}<input value={selectedEdge.target} readOnly /></label><p className="rail-note">{locale === "zh" ? "悬停或点选这条线，中点会出现蓝色圆点和红色「删除」。点圆点插入节点，点删除去掉连线。" : "Hover or select this line to see the blue handle and red Delete. Use the handle to insert a node, or Delete to remove the connection."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除连线" : "Delete connection"}</Button></div> : binding ? <div className="inspector-fields"><Tag>{binding.kind}</Tag><label>{locale === "zh" ? "引用" : "Reference"}<input value={binding.reference} readOnly /></label><p className="rail-note">{locale === "zh" ? "这是 Catalog 绑定，不是 Flow 组件。移动它不会改变 behavior hash。" : "This is a catalog binding, not a Flow component. Moving it does not change the behavior hash."}</p><Button variant="danger" onClick={deleteSelected}>{locale === "zh" ? "删除绑定" : "Delete binding"}</Button></div> : <p className="rail-note">{locale === "zh" ? "在画布中选择一个节点或连线以编辑。" : "Select a canvas node or connection to edit."}</p>}
       </StudioRail>
       <CanvasEditToolbar
         locale={locale}
@@ -811,8 +931,8 @@ function PaletteList({ items, locale, nodes, onAdd }: { items: PaletteItem[]; lo
 }
 
 function fieldFor(node: FlowNode, update: (field: keyof FlowNode, value: string) => void, locale: "en" | "zh", agents: ProjectAgentRecord[] = [], onBindAgent?: (agentId: string) => void) {
-  const field: (keyof FlowNode)[] = node.component_type === "Agent" || node.component_type === "Model" ? ["model_ref", "system_prompt"] : node.component_type === "AgentCall" ? ["agent_ref"] : node.component_type === "Tool" ? ["uses", "network_hosts", "input_mapping", "output_mapping"] : node.component_type === "Condition" ? ["expression"] : node.component_type === "Transform" ? ["mapping"] : node.component_type === "HumanApproval" ? ["prompt"] : node.component_type === "Verifier" ? ["checks"] : node.component_type === "Output" ? ["output_name"] : [];
-  const zhLabels: Partial<Record<keyof FlowNode, string>> = { model_ref: "模型引用", system_prompt: "系统提示词", agent_ref: "Agent 引用", uses: "工具引用", network_hosts: "允许的网络主机（逗号分隔）", input_mapping: "工具输入映射（工具字段 → Agent 字段）", output_mapping: "工具输出映射（工具字段 → Agent 字段）", expression: "条件表达式", mapping: "字段映射", prompt: "审批提示", checks: "验证规则", output_name: "输出名称" };
+  const field: (keyof FlowNode)[] = node.component_type === "Agent" || node.component_type === "Model" ? ["model_ref", "system_prompt"] : node.component_type === "AgentCall" ? ["agent_ref"] : node.component_type === "Tool" ? ["uses", "network_hosts", "input_mapping", "output_mapping"] : node.component_type === "CustomComponent" ? ["uses", "input_mapping", "output_mapping"] : node.component_type === "Condition" ? ["expression"] : node.component_type === "Transform" ? ["mapping"] : node.component_type === "HumanApproval" ? ["prompt"] : node.component_type === "Verifier" ? ["checks"] : node.component_type === "Output" ? ["output_name"] : [];
+  const zhLabels: Partial<Record<keyof FlowNode, string>> = { model_ref: "模型引用", system_prompt: "系统提示词", agent_ref: "Agent 引用", uses: node.component_type === "CustomComponent" ? "组件引用" : "工具引用", network_hosts: "允许的网络主机（逗号分隔）", input_mapping: node.component_type === "CustomComponent" ? "组件输入映射" : "工具输入映射（工具字段 → Agent 字段）", output_mapping: node.component_type === "CustomComponent" ? "组件输出映射" : "工具输出映射（工具字段 → Agent 字段）", expression: "条件表达式", mapping: "字段映射", prompt: "审批提示", checks: "验证规则", output_name: "输出名称" };
   const selectedAgentId = agentIdFromRef(node.agent_ref) ?? "";
   return field.map((key) => key === "agent_ref" && agents.length ? <label key={key}>{locale === "zh" ? zhLabels[key] ?? key : key}<select value={selectedAgentId} onChange={(event) => onBindAgent?.(event.target.value)}><option value="">{locale === "zh" ? "选择 Agent" : "Select Agent"}</option>{agents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.slug}</option>)}</select></label> : <label key={key}>{locale === "zh" ? zhLabels[key] ?? key : key}<textarea readOnly={key === "uses"} rows={key === "system_prompt" ? 4 : key === "mapping" || key === "input_mapping" || key === "output_mapping" ? 4 : 2} value={key === "checks" ? (node.checks ?? []).join("\n") : key === "network_hosts" ? (node.network_hosts ?? []).join(", ") : key === "mapping" ? JSON.stringify(node.mapping ?? {}, null, 2) : key === "input_mapping" ? JSON.stringify(node.input_mapping ?? {}, null, 2) : key === "output_mapping" ? JSON.stringify(node.output_mapping ?? {}, null, 2) : String(node[key] ?? "")} onChange={(event) => { try { update(key, event.target.value); } catch { /* preserve invalid mapping text until corrected */ } }} /></label>);
 }

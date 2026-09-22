@@ -1,6 +1,6 @@
 """Portable, versioned contracts shared by Studio and Runtime."""
 
-from .agent import AgentBlueprint, AgentDraft, AgentSource, ProjectManifest
+from .custom_component import CustomComponentDefinition
 from .resource import (
     AgentVersionRef,
     ComponentClass,
@@ -26,6 +26,7 @@ __all__ = [
     "AgentSource",
     "AgentVersionRef",
     "ComponentClass",
+    "CustomComponentDefinition",
     "PackageEnvelope",
     "ProjectResourceBinding",
     "ProjectManifest",

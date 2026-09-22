@@ -58,14 +58,16 @@ def compile_blueprint(
     blueprint: AgentBlueprint,
     catalog: ResourceCatalog,
     *,
+    project_resources: list[dict[str, Any]] | None = None,
     name: str | None = None,
     slug: str | None = None,
     description: str | None = None,
 ) -> tuple[AgentSource, list[dict[str, Any]], str]:
     """Compile a validated Blueprint into AgentSource without executing it."""
 
+    project_resources = project_resources or []
     diagnostics: list[str] = []
-    selected = _selected_resources(blueprint, catalog, diagnostics)
+    selected = _selected_resources(blueprint, catalog, project_resources, diagnostics)
     if diagnostics:
         raise BlueprintCompileError(diagnostics)
     derived = _derived_permissions(selected)
@@ -98,13 +100,17 @@ def compile_blueprint(
         ),
         lock=lock,
     )
-    plan = resource_plan(compiled, catalog)
+    plan = resource_plan(compiled, catalog, project_resources=project_resources)
     return definition.source, plan, run_availability(plan)
 
 
 def resource_plan(
-    blueprint: AgentBlueprint, catalog: ResourceCatalog
+    blueprint: AgentBlueprint,
+    catalog: ResourceCatalog,
+    *,
+    project_resources: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    project_resources = project_resources or []
     plan: list[dict[str, Any]] = []
     seen: set[str] = set()
     components = {
@@ -112,6 +118,8 @@ def resource_plan(
         for resource in catalog.resources(kind="component")["resources"]
     }
     for component_type in blueprint.required_capabilities.component_types:
+        if component_type is ComponentType.CUSTOM_COMPONENT:
+            continue
         resource = components.get(component_type.value)
         if resource:
             _append_plan(plan, seen, resource)
@@ -126,6 +134,17 @@ def resource_plan(
                 _append_plan(plan, seen, catalog.by_reference(reference))
             except ResourceCatalogError:
                 continue
+    project_by_reference = {
+        str(resource.get("reference")): resource
+        for resource in project_resources
+        if is_pinned_project_component(resource)
+    }
+    for node in blueprint.nodes:
+        if node.component_type is not ComponentType.CUSTOM_COMPONENT or not node.uses:
+            continue
+        resource = project_by_reference.get(node.uses)
+        if resource is not None:
+            _append_plan(plan, seen, resource)
     return plan
 
 
@@ -146,6 +165,7 @@ def run_availability(plan: list[dict[str, Any]]) -> str:
 def _selected_resources(
     blueprint: AgentBlueprint,
     catalog: ResourceCatalog,
+    project_resources: list[dict[str, Any]],
     diagnostics: list[str],
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
@@ -154,12 +174,31 @@ def _selected_resources(
         for resource in catalog.resources(kind="component")["resources"]
     }
     for component_type in blueprint.required_capabilities.component_types:
+        if component_type is ComponentType.CUSTOM_COMPONENT:
+            continue
         resource = components.get(component_type.value)
         if resource is None:
             diagnostics.append(f"component {component_type.value} is not registered")
             continue
         if not _factory_selectable(resource):
             diagnostics.append(f"component {component_type.value} is not selectable")
+            continue
+        selected.append(resource)
+    project_components = {
+        str(resource.get("reference")): resource
+        for resource in project_resources
+        if is_pinned_project_component(resource)
+    }
+    for node in blueprint.nodes:
+        if node.component_type is not ComponentType.CUSTOM_COMPONENT:
+            continue
+        reference = node.uses or ""
+        resource = project_components.get(reference)
+        if resource is None:
+            diagnostics.append(
+                f"Custom Component {reference or '(missing reference)'} "
+                "is not a current, ready Project pin"
+            )
             continue
         selected.append(resource)
     expected = {
@@ -177,6 +216,8 @@ def _selected_resources(
             try:
                 resource = catalog.by_reference(reference)
             except ResourceCatalogError:
+                if kind == "tool" and reference in project_components:
+                    continue
                 diagnostics.append(f"{kind} {reference} is not registered")
                 continue
             if resource["kind"] not in expected[kind]:
@@ -187,6 +228,22 @@ def _selected_resources(
                 continue
             selected.append(resource)
     return selected
+
+
+def is_pinned_project_component(resource: dict[str, Any]) -> bool:
+    content_hash = resource.get("content_hash")
+    return (
+        resource.get("kind") == "component"
+        and resource.get("component_class") == "composite"
+        and resource.get("scope") == "project"
+        and resource.get("binding_status") == "current"
+        and resource.get("factory_selectable") is True
+        and resource.get("availability") == "ready"
+        and resource.get("runtime_status") == "supported"
+        and isinstance(content_hash, str)
+        and re.fullmatch(r"[0-9a-f]{64}", content_hash) is not None
+        and resource.get("bound_content_hash") == content_hash
+    )
 
 
 def _factory_selectable(resource: dict[str, Any]) -> bool:

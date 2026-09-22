@@ -16,8 +16,14 @@ from veyra_agent_platform.contracts.agent import AgentSource, ComponentType, Flo
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import (
     SCHEMA_VERSION,
+    ContractValidationError,
     IdempotencyKey,
     new_uuid7,
+)
+from veyra_agent_platform.contracts.custom_component import (
+    CustomComponentDefinition,
+    CustomComponentImplementationKind,
+    CustomComponentReadiness,
 )
 from veyra_agent_platform.contracts.typed_io import (
     TypedField,
@@ -32,6 +38,10 @@ from veyra_agent_platform.local.library.dependencies import (
 )
 from veyra_agent_platform.local.library.knowledge_context import read_knowledge_context
 from veyra_agent_platform.local.library.service import LibraryService
+from veyra_agent_platform.local.projects.custom_components import (
+    CustomComponentError,
+    CustomComponentService,
+)
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 from veyra_agent_platform.local.resources.project import (
@@ -113,12 +123,16 @@ class RuntimeService:
         project_resources: ProjectResourceService | None = None,
         resource_readiness: ResourceReadiness | None = None,
         artifacts: ArtifactService | None = None,
+        custom_components: CustomComponentService | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
         self.tools = tools or ToolRuntime(ResourceCatalog())
-        self.project_resources = project_resources or ProjectResourceService(
+        self.custom_components = custom_components or CustomComponentService(
             projects, self.tools.catalog
+        )
+        self.project_resources = project_resources or ProjectResourceService(
+            projects, self.tools.catalog, self.custom_components
         )
         self.resource_readiness = resource_readiness or ResourceReadiness(
             self.tools.catalog, self.model, self.tools._adapters.keys(), self.tools.mcp
@@ -126,6 +140,12 @@ class RuntimeService:
         self.profiles = profiles or RuntimeProfileStore(repository)
         self.conversations = conversations
         self.artifacts = artifacts or ArtifactService(repository, projects.object_root)
+        self.custom_components.project_resource_readiness = (
+            self.resource_readiness.project
+        )
+        self.custom_components.model_recipe_configured = lambda: bool(
+            self.model.status().get("configured")
+        )
         self.repository.interrupt_orphan_runs()
 
     def status(self) -> dict[str, Any]:
@@ -209,10 +229,7 @@ class RuntimeService:
         )
         model = self._model_for(project_id, agent_id)
         model_status = model.status()
-        requires_model = any(
-            node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
-            for node in source.nodes
-        )
+        requires_model = self._source_requires_model(project_id, source)
         model_ready = not requires_model or bool(model_status["configured"])
         model_detail = (
             "No model node is present in this Agent."
@@ -309,19 +326,106 @@ class RuntimeService:
     ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         for node in source.nodes:
-            if node.component_type is not ComponentType.TOOL:
+            if node.component_type is ComponentType.TOOL:
+                authorization = self._authorize_tool(project_id, source, node, {})
+                ready = authorization.decision == "allowed"
+                checks.append(
+                    {
+                        "node_id": node.id,
+                        "reference": node.uses or "tool_reference_missing",
+                        "ready": ready,
+                        "code": authorization.code,
+                        "detail": authorization.reason,
+                    }
+                )
                 continue
-            authorization = self._authorize_tool(project_id, source, node, {})
-            ready = authorization.decision == "allowed"
-            code = authorization.code
-            detail = authorization.reason
+            if node.component_type is not ComponentType.CUSTOM_COMPONENT:
+                continue
+            try:
+                definition = self._resolve_custom_component(project_id, source, node)
+            except RuntimeError as exc:
+                checks.append(
+                    {
+                        "node_id": node.id,
+                        "reference": node.uses or "component_reference_missing",
+                        "ready": False,
+                        "code": exc.code,
+                        "detail": str(exc),
+                    }
+                )
+                continue
+            if (
+                definition.implementation.kind
+                is CustomComponentImplementationKind.COMPOSITE_GRAPH
+            ):
+                checks.append(
+                    {
+                        "node_id": node.id,
+                        "reference": node.uses or definition.ref(),
+                        "ready": False,
+                        "code": "design_only",
+                        "detail": "composite_graph Custom Components are design-only",
+                    }
+                )
+                continue
+            if (
+                definition.implementation.kind
+                is CustomComponentImplementationKind.TOOL_WRAPPER
+            ):
+                authorization = self._authorize_wrapped_tool(
+                    project_id, source, node, definition, {}
+                )
+                checks.append(
+                    {
+                        "node_id": node.id,
+                        "reference": node.uses or definition.ref(),
+                        "ready": authorization.decision == "allowed",
+                        "code": authorization.code,
+                        "detail": authorization.reason,
+                    }
+                )
+                continue
+            if (
+                definition.implementation.kind
+                is CustomComponentImplementationKind.MODEL_RECIPE
+            ):
+                model = self._model_for(project_id, source.agent_id)
+                configured = bool(model.status()["configured"])
+                ready = (
+                    definition.readiness is CustomComponentReadiness.READY
+                    and configured
+                )
+                code = (
+                    "ready"
+                    if ready
+                    else "runtime_not_configured"
+                    if not configured
+                    else definition.readiness.value
+                )
+                detail = (
+                    "Custom Component is ready on the effective Agent Runtime."
+                    if ready
+                    else "Configure the effective Agent Runtime model before use."
+                    if not configured
+                    else f"Custom Component is {definition.readiness.value}"
+                )
+                checks.append(
+                    {
+                        "node_id": node.id,
+                        "reference": node.uses or definition.ref(),
+                        "ready": ready,
+                        "code": code,
+                        "detail": detail,
+                    }
+                )
+                continue
             checks.append(
                 {
                     "node_id": node.id,
-                    "reference": node.uses or "tool_reference_missing",
-                    "ready": ready,
-                    "code": code,
-                    "detail": detail,
+                    "reference": node.uses or definition.ref(),
+                    "ready": definition.readiness is CustomComponentReadiness.READY,
+                    "code": definition.readiness.value,
+                    "detail": f"Custom Component is {definition.readiness.value}",
                 }
             )
         return checks
@@ -330,10 +434,7 @@ class RuntimeService:
         self, project_id: str, agent_id: str, source: AgentSource
     ) -> None:
         model = self._model_for(project_id, agent_id)
-        requires_model = any(
-            node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
-            for node in source.nodes
-        )
+        requires_model = self._source_requires_model(project_id, source)
         check = _runtime_modality_readiness(
             source,
             requires_model,
@@ -1884,6 +1985,21 @@ class RuntimeService:
                         self._tool_output_values(node, {**execution.output, **produced})
                     )
                     port = "next"
+                elif node.component_type is ComponentType.CUSTOM_COMPONENT:
+                    values.update(
+                        self._run_custom_component(
+                            project_id,
+                            run_id,
+                            source,
+                            node,
+                            values,
+                            model,
+                            emit,
+                            tool_calls,
+                            approved=approved,
+                        )
+                    )
+                    port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
                     result = self._prepare_outputs(project_id, source, values)
@@ -2097,6 +2213,315 @@ class RuntimeService:
                 )
             mapped[target_name] = value
         return mapped
+
+    def _source_requires_model(self, project_id: str, source: AgentSource) -> bool:
+        for node in source.nodes:
+            if node.component_type in {ComponentType.AGENT, ComponentType.MODEL}:
+                return True
+            if node.component_type is ComponentType.CUSTOM_COMPONENT:
+                try:
+                    kind = self._resolve_custom_component(
+                        project_id, source, node
+                    ).implementation.kind
+                except RuntimeError:
+                    continue
+                if kind is CustomComponentImplementationKind.MODEL_RECIPE:
+                    return True
+        return False
+
+    def _custom_component_kind(
+        self, project_id: str, node: FlowNode
+    ) -> CustomComponentImplementationKind | None:
+        if node.uses is None:
+            return None
+        try:
+            return self.custom_components.resolve(
+                project_id, node.uses
+            ).implementation.kind
+        except (CustomComponentError, ContractValidationError, ProjectError):
+            return None
+
+    def _resolve_custom_component(
+        self, project_id: str, source: AgentSource, node: FlowNode
+    ) -> CustomComponentDefinition:
+        if not node.uses:
+            raise RuntimeError(
+                "component_reference_missing", "Custom Component node is missing uses"
+            )
+        locked = source.lock.get(node.uses)
+        try:
+            definition = self.custom_components.resolve(project_id, node.uses)
+        except CustomComponentError as exc:
+            raise RuntimeError(exc.code, str(exc)) from exc
+        if locked != definition.content_hash():
+            raise RuntimeError(
+                "component_lock_mismatch",
+                "Agent lock does not match the pinned Custom Component",
+            )
+        return definition
+
+    def _component_input_values(
+        self,
+        definition: CustomComponentDefinition,
+        node: FlowNode,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        mapped = self._tool_input_values(node, values)
+        for name, field in definition.inputs.items():
+            if name not in mapped:
+                if field.required:
+                    raise RuntimeError(
+                        "component_input_invalid",
+                        f"Custom Component input {name} is missing",
+                    )
+                continue
+            if not value_matches_field(field, mapped[name]):
+                raise RuntimeError(
+                    "component_input_invalid",
+                    f"Custom Component input {name} is not a {field.compact_type}",
+                )
+        return {name: mapped[name] for name in definition.inputs if name in mapped}
+
+    def _component_output_values(
+        self,
+        definition: CustomComponentDefinition,
+        node: FlowNode,
+        produced: dict[str, Any],
+    ) -> dict[str, Any]:
+        for name, field in definition.outputs.items():
+            if name not in produced:
+                if field.required:
+                    raise RuntimeError(
+                        "component_output_invalid",
+                        f"Custom Component output {name} is missing",
+                    )
+                continue
+            if not value_matches_field(field, produced[name]):
+                raise RuntimeError(
+                    "component_output_invalid",
+                    f"Custom Component output {name} is not a {field.compact_type}",
+                )
+        return self._tool_output_values(node, produced)
+
+    def _authorize_wrapped_tool(
+        self,
+        project_id: str,
+        source: AgentSource,
+        node: FlowNode,
+        definition: CustomComponentDefinition,
+        values: dict[str, Any],
+    ) -> Any:
+        if not definition.dependencies:
+            return self.tools._denied(
+                definition.implementation.tool_reference or "",
+                "unavailable_dependency",
+                "Tool wrapper has no pinned Tool",
+                values,
+            )
+        try:
+            resource = self.custom_components.resolve_dependency(
+                project_id, definition.dependencies[0]
+            )
+        except CustomComponentError as exc:
+            return self.tools._denied(
+                definition.implementation.tool_reference or "",
+                exc.code,
+                str(exc),
+                values,
+            )
+        tool_node = self._wrapper_tool_node(node, definition)
+        pinned = self._source_with_component_pins(source, definition)
+        return self.tools.authorize(
+            source=pinned,
+            node=tool_node,
+            values=values,
+            resource=self.resource_readiness.project(resource),
+        )
+
+    @staticmethod
+    def _wrapper_tool_node(
+        node: FlowNode, definition: CustomComponentDefinition
+    ) -> FlowNode:
+        payload: dict[str, Any] = {
+            "id": node.id,
+            "component_type": "Tool",
+            "uses": definition.implementation.tool_reference,
+        }
+        return FlowNode.from_dict(payload)
+
+    @staticmethod
+    def _source_with_component_pins(
+        source: AgentSource, definition: CustomComponentDefinition
+    ) -> AgentSource:
+        payload = source.to_dict()
+        lock = dict(payload.get("lock") or {})
+        for dependency in definition.dependencies:
+            lock[dependency.reference] = dependency.content_hash
+        payload["lock"] = lock
+        return AgentSource.from_dict(payload)
+
+    def _run_custom_component(
+        self,
+        project_id: str,
+        run_id: str,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        model: RuntimeModelClient,
+        emit: Callable[..., None],
+        tool_calls: list[Any],
+        *,
+        approved: bool,
+    ) -> dict[str, Any]:
+        definition = self._resolve_custom_component(project_id, source, node)
+        kind = definition.implementation.kind
+        if kind is CustomComponentImplementationKind.COMPOSITE_GRAPH:
+            raise RuntimeError(
+                "design_only",
+                "composite_graph Custom Components are not executed in this slice",
+            )
+        component_values = self._component_input_values(definition, node, values)
+        if kind is CustomComponentImplementationKind.TRANSFORM:
+            assert definition.implementation.mapping is not None
+            produced = {
+                key: _interpolate(template, component_values)
+                for key, template in definition.implementation.mapping.items()
+            }
+            return self._component_output_values(definition, node, produced)
+        if kind is CustomComponentImplementationKind.MODEL_RECIPE:
+            if not model.configured:
+                raise RuntimeError(
+                    "runtime_not_configured",
+                    "model_recipe Custom Components require a Runtime model",
+                )
+            prompt = definition.implementation.instruction or ""
+            if "{{" in prompt:
+                prompt = _interpolate(prompt, component_values)
+            user_content = json.dumps(
+                component_values, ensure_ascii=False, sort_keys=True
+            )
+            fragments: list[str] = []
+
+            def emit_delta(token: str) -> None:
+                emit(node.id, "model.delta", {"delta": token})
+
+            for token in model.stream(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content},
+                ]
+            ):
+                if not isinstance(token, str) or not token:
+                    continue
+                fragments.append(token)
+                emit_delta(token)
+            produced = _model_output_values(
+                "".join(fragments).strip(),
+                definition.outputs,
+                component_values,
+                node.id,
+            )
+            produced.pop(node.id, None)
+            return self._component_output_values(definition, node, produced)
+        tool_values = dict(component_values)
+        if definition.implementation.input_mapping:
+            tool_values = {}
+            for (
+                tool_name,
+                source_name,
+            ) in definition.implementation.input_mapping.items():
+                if source_name not in component_values:
+                    raise RuntimeError(
+                        "component_input_invalid",
+                        f"Tool wrapper input {source_name} is missing",
+                    )
+                tool_values[tool_name] = component_values[source_name]
+        tool_node = self._wrapper_tool_node(node, definition)
+        pinned = self._source_with_component_pins(source, definition)
+        authorization = self._authorize_wrapped_tool(
+            project_id, source, node, definition, tool_values
+        )
+        resource = authorization.resource
+        identity: dict[str, Any] = (
+            {
+                "resource_identity": {
+                    "reference": resource["reference"],
+                    "version": resource["version"],
+                    "content_hash": resource["content_hash"],
+                    "bound_content_hash": resource.get("bound_content_hash"),
+                    "locked_content_hash": definition.dependencies[0].content_hash
+                    if definition.dependencies
+                    else None,
+                    "component_reference": node.uses,
+                }
+            }
+            if resource is not None
+            else {"component_reference": node.uses}
+        )
+        emit(
+            node.id,
+            "tool.requested",
+            {
+                "tool_reference": authorization.tool_reference,
+                "input_digest": authorization.input_digest,
+                "permission": authorization.decision,
+                "code": authorization.code,
+                **identity,
+            },
+        )
+        record = _ToolCallRecord(
+            node_id=node.id,
+            tool_reference=authorization.tool_reference,
+            authorization=authorization.decision,
+            decision_code=authorization.code,
+            decision_reason=authorization.reason,
+            input_digest=authorization.input_digest,
+            receipt=None,
+        )
+        tool_calls.append(record)
+        if authorization.decision != "allowed":
+            raise RuntimeError(authorization.code, authorization.reason)
+        emit(
+            node.id,
+            "tool.started",
+            {"tool_reference": authorization.tool_reference, **identity},
+        )
+        project = self.repository.project(project_id)
+        if project is None:
+            raise RuntimeError("project_invalid", "Project is unavailable")
+        execution = self.tools.execute(
+            project_root=self.projects._existing_root(project["root_path"]),
+            source=pinned,
+            node=tool_node,
+            values=tool_values,
+            authorization=authorization,
+            approved=approved,
+        )
+        produced_artifacts = self._materialize_produced_artifacts(
+            project_id,
+            run_id,
+            node.id,
+            execution.produced_artifacts,
+            emit,
+        )
+        receipt = _json_safe_payload({**execution.receipt, **identity})
+        emit(node.id, "tool.completed", receipt)
+        tool_calls[-1] = _ToolCallRecord(
+            node_id=record.node_id,
+            tool_reference=record.tool_reference,
+            authorization=record.authorization,
+            decision_code=record.decision_code,
+            decision_reason=record.decision_reason,
+            input_digest=record.input_digest,
+            receipt=receipt,
+        )
+        produced = {**execution.output, **produced_artifacts}
+        if definition.implementation.output_mapping:
+            produced = {
+                definition.implementation.output_mapping.get(name, name): value
+                for name, value in produced.items()
+            }
+        return self._component_output_values(definition, node, produced)
 
     def _run_agent(
         self,

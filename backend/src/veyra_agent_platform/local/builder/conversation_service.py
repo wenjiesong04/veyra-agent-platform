@@ -6,17 +6,26 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.contracts.semantic_plan import OperationKind, SemanticField
+from veyra_agent_platform.local.builder.component_planning import (
+    capability_readiness,
+    direct_component_draft_plan,
+    matching_existing_component,
+)
 from veyra_agent_platform.local.builder.conversation_store import (
     BuilderConversationStore,
 )
 from veyra_agent_platform.local.builder.operation_events import (
     APPLY_COMPLETED,
     APPLY_STARTED,
+    COMPONENT_CREATED,
+    COMPONENT_DESIGN_COMPLETED,
+    COMPONENT_DESIGN_STARTED,
     INTENT_RESOLVED,
     INTENT_STARTED,
     OPERATION_COMPLETED,
@@ -50,6 +59,7 @@ from veyra_agent_platform.local.builder.test_run import (
 from veyra_agent_platform.local.factory.client import FactoryProviderError
 from veyra_agent_platform.local.factory.edit_service import EditProposalService
 from veyra_agent_platform.local.factory.service import FactoryError, FactoryService
+from veyra_agent_platform.local.library.service import DraftConflict
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.runtime.service import (
     RuntimeError as RuntimeFailure,
@@ -192,12 +202,19 @@ class TurnRequest(ClosedModel):
 
 class TestRunRequest(ClosedModel):
     agent_id: str | None = Field(default=None, min_length=1, max_length=64)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
     inputs: dict[str, Any] = Field(default_factory=dict)
     locale: Literal["zh", "en"] = "en"
 
 
 class TestRunCommandRequest(ClosedModel):
     command: Literal["approve", "reject", "stop"]
+    locale: Literal["zh", "en"] = "en"
+
+
+class ComponentProposalCommandRequest(ClosedModel):
+    command: Literal["apply", "reject"]
+    confirm: StrictBool
     locale: Literal["zh", "en"] = "en"
 
 
@@ -304,6 +321,18 @@ class BuilderConversationService:
                     locale,
                     on_event=on_event,
                     receipts=receipts,
+                )
+            elif (
+                resolution.get("status") == "resolved"
+                and resolution.get("intent") == "create_component"
+            ):
+                self._create_component_proposal(
+                    project_id,
+                    conversation_id,
+                    operation_id,
+                    resolution,
+                    locale,
+                    on_event=on_event,
                 )
             elif (
                 resolution.get("status") == "resolved"
@@ -833,6 +862,73 @@ class BuilderConversationService:
             name = str(candidate.get("name") or "")
         if state == "missing_capability":
             missing = generated.get("missing_capabilities") or []
+            component_plan = next(
+                (
+                    item.get("component_plan")
+                    for item in missing
+                    if isinstance(item, dict)
+                    and isinstance(item.get("component_plan"), dict)
+                ),
+                None,
+            )
+            if component_plan is not None and self.edits is not None:
+                self._emit(
+                    operation_id,
+                    COMPONENT_DESIGN_STARTED,
+                    locale,
+                    facts=_facts({"factory_session_id": session_id}),
+                    on_event=on_event,
+                )
+                proposal = self.edits.create_component_proposal(
+                    project_id,
+                    component_plan,
+                    conversation_id=conversation_id,
+                    operation_id=operation_id,
+                    factory_session_id=session_id,
+                    continuation="agent",
+                )
+                self._emit(
+                    operation_id,
+                    COMPONENT_DESIGN_COMPLETED,
+                    locale,
+                    facts=_facts(
+                        {
+                            "component_name": str(
+                                component_plan.get("display_name") or ""
+                            )[:200],
+                            "implementation_kind": str(
+                                (component_plan.get("implementation") or {}).get("kind")
+                                or ""
+                            ),
+                            "readiness": str(
+                                component_plan.get("readiness_expectation") or ""
+                            ),
+                        }
+                    ),
+                    on_event=on_event,
+                )
+                self._emit(
+                    operation_id,
+                    PROPOSAL_READY,
+                    locale,
+                    facts=_facts(
+                        {
+                            "proposal_id": str(proposal["proposal_id"]),
+                            "proposal_kind": "create_custom_component",
+                            "component_proposal_id": str(proposal["proposal_id"]),
+                            "factory_session_id": session_id,
+                            "state": "review",
+                        }
+                    ),
+                    on_event=on_event,
+                )
+                self._complete_operation(
+                    operation_id,
+                    "waiting",
+                    factory_session_id=session_id,
+                    proposal_id=str(proposal["proposal_id"]),
+                )
+                return generated
             references = ", ".join(
                 str(item.get("reference") or "")
                 for item in missing
@@ -882,6 +978,537 @@ class BuilderConversationService:
         )
         self._complete_operation(operation_id, "waiting", factory_session_id=session_id)
         return generated
+
+    def _create_component_proposal(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        resolution: dict[str, Any],
+        locale: Literal["zh", "en"],
+        *,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        if self.edits is None:
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="component_proposal_unavailable",
+                message="Custom Component proposals are not configured.",
+                details={"stage": "component_design"},
+                on_event=on_event,
+            )
+            return
+        raw = resolution.get("component_plan")
+        if not isinstance(raw, dict):
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="component_plan_missing",
+                message=(
+                    "The component request needs typed inputs, outputs, and a "
+                    "capability description."
+                ),
+                details={"stage": "component_design"},
+                on_event=on_event,
+            )
+            return
+        requirement = str(raw.get("capability_requirement") or "")
+        project_resources = self.edits.project_resources.list(project_id)["resources"]
+        matching = matching_existing_component(project_resources, requirement)
+        if len(matching) > 1:
+            names = ", ".join(str(item.get("name") or "Component") for item in matching)
+            message = (
+                f"当前 Project 有多个匹配 Component：{names}。请指定要使用的一个。"
+                if locale == "zh"
+                else f"Several Project Components match: {names}. Please identify one."
+            )
+            self._append_component_message(
+                conversation_id, operation_id, "clarification", message
+            )
+            self._emit(operation_id, OPERATION_COMPLETED, locale, on_event=on_event)
+            self._complete_operation(operation_id, "succeeded", kind="create_component")
+            return
+        if matching:
+            resource = matching[0]
+            readiness = capability_readiness(resource)
+            if readiness == "ready":
+                message = (
+                    f"Project 已有可复用 Component：{resource['name']}。"
+                    "未创建重复组件。"
+                    if locale == "zh"
+                    else (
+                        "A reusable Component already exists: "
+                        f"{resource['name']}. No duplicate was created."
+                    )
+                )
+                self._append_component_message(
+                    conversation_id,
+                    operation_id,
+                    "result",
+                    message,
+                    payload={
+                        "component_reference": str(resource.get("reference") or "")
+                    },
+                )
+                self._emit(
+                    operation_id,
+                    OPERATION_COMPLETED,
+                    locale,
+                    facts=_facts(
+                        {"component_reference": str(resource.get("reference") or "")}
+                    ),
+                    on_event=on_event,
+                )
+                self._complete_operation(
+                    operation_id, "succeeded", kind="create_component"
+                )
+                return
+            message = (
+                f"已有匹配 Component {resource.get('name')}，但状态为 "
+                f"{readiness}。请先完成配置；不会创建重复组件。"
+                if locale == "zh"
+                else (
+                    f"The matching Component {resource.get('name')} is "
+                    f"{readiness}. Configure it first; no duplicate was created."
+                )
+            )
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="component_requires_configuration",
+                message=message,
+                details={"stage": "capability_resolution", "readiness": readiness},
+                on_event=on_event,
+            )
+            return
+
+        self._emit(
+            operation_id,
+            COMPONENT_DESIGN_STARTED,
+            locale,
+            on_event=on_event,
+        )
+        try:
+            inputs = [
+                SemanticField(
+                    name=item["name"],
+                    type=item["type"],
+                    description=item.get("description", ""),
+                    multiple=item.get("multiple", False),
+                )
+                for item in raw["inputs"]
+            ]
+            outputs = [
+                SemanticField(
+                    name=item["name"],
+                    type=item["type"],
+                    description=item.get("description", ""),
+                    multiple=item.get("multiple", False),
+                )
+                for item in raw["outputs"]
+            ]
+            plan, reason = direct_component_draft_plan(
+                capability_requirement=requirement,
+                purpose=str(raw.get("purpose") or ""),
+                operation_kind=cast(OperationKind, raw.get("operation_kind")),
+                inputs=inputs,
+                outputs=outputs,
+                dependency_requirement=str(raw.get("dependency_requirement") or ""),
+                project_resources=project_resources,
+            )
+        except (KeyError, TypeError, ValueError, ContractValidationError) as exc:
+            plan, reason = None, str(exc)
+        if plan is None:
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="component_capability_unavailable",
+                message=reason
+                or "The current platform cannot safely implement this component.",
+                details={"stage": "component_design"},
+                on_event=on_event,
+            )
+            return
+        proposal = self.edits.create_component_proposal(
+            project_id,
+            plan,
+            conversation_id=conversation_id,
+            operation_id=operation_id,
+            factory_session_id=None,
+            continuation="direct_component",
+        )
+        self._emit(
+            operation_id,
+            COMPONENT_DESIGN_COMPLETED,
+            locale,
+            facts=_facts(
+                {
+                    "component_name": str(plan["display_name"])[:200],
+                    "implementation_kind": str(plan["implementation"]["kind"]),
+                    "readiness": str(
+                        proposal["component_plan"]["readiness_expectation"]
+                    ),
+                }
+            ),
+            on_event=on_event,
+        )
+        self._emit(
+            operation_id,
+            PROPOSAL_READY,
+            locale,
+            facts=_facts(
+                {
+                    "proposal_id": str(proposal["proposal_id"]),
+                    "proposal_kind": "create_custom_component",
+                    "component_proposal_id": str(proposal["proposal_id"]),
+                    "state": "review",
+                }
+            ),
+            on_event=on_event,
+        )
+        self._complete_operation(
+            operation_id,
+            "waiting",
+            proposal_id=str(proposal["proposal_id"]),
+            kind="create_component",
+        )
+
+    def command_component_proposal(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        proposal_id: str,
+        command: Literal["apply", "reject"],
+        *,
+        confirm: bool,
+        locale: Literal["zh", "en"],
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise BuilderConversationError(
+                "component_confirmation_required",
+                "Explicit confirmation is required before applying a "
+                "Component proposal.",
+            )
+        operation = self.store.operation(operation_id, conversation_id)
+        if operation is None or operation.get("proposal_id") != proposal_id:
+            raise BuilderConversationError(
+                "component_proposal_operation_mismatch",
+                "The Component proposal does not belong to the active "
+                "Builder operation.",
+            )
+        if self.edits is None:
+            raise BuilderConversationError(
+                "component_proposal_unavailable",
+                "Custom Component proposals are unavailable.",
+            )
+        proposal = self.edits.get_proposal(project_id, proposal_id)
+        if (
+            proposal.get("proposal_kind") != "create_custom_component"
+            or proposal.get("conversation_id") != conversation_id
+            or proposal.get("operation_id") != operation_id
+        ):
+            raise BuilderConversationError(
+                "component_proposal_operation_mismatch",
+                "The Component proposal does not match this Builder operation.",
+            )
+
+        session_id = str(proposal.get("factory_session_id") or "")
+        session = (
+            self.factory.get_session(project_id, session_id) if session_id else None
+        )
+        if (
+            command == "apply"
+            and proposal["state"] == "applied"
+            and session
+            and session["state"] == "review"
+        ):
+            return self.snapshot(project_id, conversation_id, factory_session=session)
+
+        self._emit(
+            operation_id,
+            PROPOSAL_CONFIRMED if command == "apply" else PROPOSAL_REJECTED,
+            locale,
+            facts=_facts(
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_kind": "create_custom_component",
+                    "command": command,
+                }
+            ),
+        )
+        if command == "reject":
+            rejected = self.edits.command(
+                project_id, proposal_id, "reject", confirm=True
+            )
+            message = (
+                "已拒绝 Component 提案；没有创建 Component，也不会静默降级创建 Agent。"
+                if locale == "zh"
+                else (
+                    "Component proposal rejected; no Component or fallback "
+                    "Agent was created."
+                )
+            )
+            self._append_component_message(
+                conversation_id,
+                operation_id,
+                "result",
+                message,
+                payload={"proposal_id": proposal_id, "state": rejected["state"]},
+            )
+            self._complete_operation(operation_id, "rejected", proposal_id=proposal_id)
+            return self.snapshot(project_id, conversation_id, factory_session=session)
+
+        self._emit(
+            operation_id,
+            APPLY_STARTED,
+            locale,
+            facts=_facts(
+                {"proposal_id": proposal_id, "proposal_kind": "create_custom_component"}
+            ),
+        )
+        try:
+            applied = self.edits.command(project_id, proposal_id, "apply", confirm=True)
+        except (FactoryError, DraftConflict, ProjectError) as exc:
+            code = getattr(exc, "code", "component_apply_failed")
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code=str(code),
+                message=str(exc),
+                details={"stage": "component_validation"},
+            )
+            return self.snapshot(project_id, conversation_id, factory_session=session)
+        component = applied.get("created_component")
+        if not isinstance(component, dict):
+            raise BuilderConversationError(
+                "component_apply_incomplete",
+                "The Component proposal did not return a published Component.",
+            )
+        self._emit(
+            operation_id,
+            COMPONENT_CREATED,
+            locale,
+            facts=_facts(
+                {
+                    "component_id": str(component["component_id"]),
+                    "component_name": str(component["display_name"]),
+                    "component_reference": str(component["reference"]),
+                    "readiness": str(component["readiness"]),
+                }
+            ),
+        )
+        message = (
+            f"Custom Component 已发布：{component['display_name']} "
+            f"v{component['version']}（{component['readiness']}）。"
+            if locale == "zh"
+            else (
+                f"Custom Component published: {component['display_name']} "
+                f"v{component['version']} ({component['readiness']})."
+            )
+        )
+        self._append_component_message(
+            conversation_id,
+            operation_id,
+            "result",
+            message,
+            payload={
+                "component_id": str(component["component_id"]),
+                "component_reference": str(component["reference"]),
+                "readiness": str(component["readiness"]),
+            },
+        )
+        self._emit(
+            operation_id,
+            APPLY_COMPLETED,
+            locale,
+            facts=_facts({"component_reference": str(component["reference"])}),
+        )
+        if proposal.get("continuation") == "direct_component":
+            self._emit(
+                operation_id,
+                OPERATION_COMPLETED,
+                locale,
+                facts=_facts({"component_reference": str(component["reference"])}),
+            )
+            self._complete_operation(operation_id, "succeeded", proposal_id=proposal_id)
+            return self.snapshot(project_id, conversation_id)
+
+        if not session_id:
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="factory_continuation_unavailable",
+                message=(
+                    "Component was published, but no Agent continuation "
+                    "session is available."
+                ),
+                details={"stage": "semantic_compilation"},
+            )
+            return self.snapshot(project_id, conversation_id)
+
+        def on_stage(kind: str, facts: dict[str, str]) -> None:
+            self._emit(operation_id, kind, locale, facts=_facts(facts))
+
+        try:
+            resumed = self.factory.resume_after_component(
+                project_id, session_id, on_stage=on_stage
+            )
+        except (FactoryError, DraftConflict, ProjectError) as exc:
+            code = getattr(exc, "code", "factory_continuation_failed")
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code=str(code),
+                message=str(exc),
+                details={"stage": "semantic_compilation"},
+            )
+            return self.snapshot(project_id, conversation_id)
+        if resumed["state"] == "review":
+            self._emit(
+                operation_id,
+                PROPOSAL_READY,
+                locale,
+                facts=_facts(
+                    {
+                        "proposal_kind": "agent_blueprint",
+                        "factory_session_id": session_id,
+                        "agent_name": str(
+                            (resumed.get("candidate") or {}).get("name") or ""
+                        ),
+                    }
+                ),
+            )
+            self._complete_operation(
+                operation_id, "waiting", factory_session_id=session_id
+            )
+            return self.snapshot(project_id, conversation_id, factory_session=resumed)
+
+        next_plan = next(
+            (
+                item.get("component_plan")
+                for item in resumed.get("missing_capabilities") or []
+                if isinstance(item, dict)
+                and isinstance(item.get("component_plan"), dict)
+            ),
+            None,
+        )
+        if resumed["state"] == "missing_capability" and next_plan is not None:
+            try:
+                next_proposal = self.edits.create_component_proposal(
+                    project_id,
+                    next_plan,
+                    conversation_id=conversation_id,
+                    operation_id=operation_id,
+                    factory_session_id=session_id,
+                    continuation="agent",
+                )
+            except FactoryError as exc:
+                self._fail_operation(
+                    conversation_id,
+                    operation_id,
+                    locale,
+                    code=exc.code,
+                    message=str(exc),
+                    details={"stage": "component_design"},
+                )
+                return self.snapshot(project_id, conversation_id)
+            self._emit(
+                operation_id,
+                COMPONENT_DESIGN_COMPLETED,
+                locale,
+                facts=_facts(
+                    {
+                        "component_name": str(next_plan.get("display_name") or ""),
+                        "implementation_kind": str(
+                            (next_plan.get("implementation") or {}).get("kind") or ""
+                        ),
+                        "readiness": str(next_plan.get("readiness_expectation") or ""),
+                    }
+                ),
+            )
+            self._emit(
+                operation_id,
+                PROPOSAL_READY,
+                locale,
+                facts=_facts(
+                    {
+                        "proposal_id": str(next_proposal["proposal_id"]),
+                        "proposal_kind": "create_custom_component",
+                        "component_proposal_id": str(next_proposal["proposal_id"]),
+                        "factory_session_id": session_id,
+                    }
+                ),
+            )
+            self._complete_operation(
+                operation_id,
+                "waiting",
+                factory_session_id=session_id,
+                proposal_id=str(next_proposal["proposal_id"]),
+            )
+            return self.snapshot(project_id, conversation_id, factory_session=resumed)
+
+        if resumed["state"] == "ready":
+            prompt = str(resumed.get("next_prompt") or "")
+            self._append_component_message(
+                conversation_id, operation_id, "clarification", prompt
+            )
+            self._emit(operation_id, OPERATION_COMPLETED, locale)
+            self._complete_operation(
+                operation_id, "succeeded", factory_session_id=session_id
+            )
+            return self.snapshot(project_id, conversation_id, factory_session=resumed)
+
+        missing = resumed.get("missing_capabilities") or []
+        missing_names = ", ".join(
+            str(item.get("reference") or item.get("kind") or "capability")
+            for item in missing
+            if isinstance(item, dict)
+        )
+        self._fail_operation(
+            conversation_id,
+            operation_id,
+            locale,
+            code="factory_missing_capability",
+            message=missing_names
+            or (
+                "The Agent still has a capability blocker; the Component "
+                "was published but no Agent was created."
+            ),
+            details={"stage": "semantic_compilation"},
+        )
+        return self.snapshot(project_id, conversation_id, factory_session=resumed)
+
+    def _append_component_message(
+        self,
+        conversation_id: str,
+        operation_id: str,
+        kind: str,
+        content: str,
+        *,
+        payload: dict[str, str] | None = None,
+    ) -> None:
+        if not content:
+            return
+        self.store.append_message(
+            message_id=new_uuid7(),
+            conversation_id=conversation_id,
+            sequence=self.store.next_sequence(conversation_id),
+            role="assistant",
+            kind=kind,
+            content=content[:4_000],
+            operation_id=operation_id,
+            payload=_facts(payload or {}),
+            created_at=_now(),
+        )
 
     def _fail_operation(
         self,
@@ -939,6 +1566,7 @@ class BuilderConversationService:
         *,
         factory_session_id: str | None = None,
         proposal_id: str | None = None,
+        kind: str | None = None,
     ) -> None:
         self.store.update_operation(
             operation_id,
@@ -946,6 +1574,7 @@ class BuilderConversationService:
             updated_at=_now(),
             factory_session_id=factory_session_id,
             proposal_id=proposal_id,
+            kind=kind,
         )
 
     def _apply_record_status(
@@ -1086,6 +1715,11 @@ class BuilderConversationService:
             input_payload={
                 "agent_id": agent_id,
                 "locale": locale,
+                **(
+                    {"workspace_id": request.workspace_id}
+                    if request.workspace_id
+                    else {}
+                ),
                 "inputs": json.dumps(
                     request.inputs, ensure_ascii=False, sort_keys=True
                 ),
@@ -1459,6 +2093,11 @@ class BuilderConversationService:
             "proposal_id": row["proposal_id"],
             "run_id": row["run_id"],
             "factory_session_id": row["factory_session_id"],
+            **(
+                {"workspace_id": payload["workspace_id"]}
+                if isinstance(payload.get("workspace_id"), str)
+                else {}
+            ),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "diagnostic": _facts(diagnostic),

@@ -164,6 +164,94 @@
   background: var(--surface-soft);
   box-shadow: 0 1px 1px color-mix(in srgb, var(--ink) 4%, transparent);
 }
+
+.builder-component-proposal {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 980px);
+  margin: 0 auto;
+  padding: clamp(16px, 3vw, 28px);
+  color: var(--ink);
+}
+.builder-component-proposal > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.builder-component-proposal h3,
+.builder-component-proposal h4,
+.builder-component-proposal p { margin: 0; }
+.builder-component-proposal header > div { display: grid; gap: 7px; min-width: 0; }
+.builder-component-eyebrow {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.builder-component-state {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.builder-component-state.is-review { color: var(--warn); }
+.builder-component-state.is-applied { color: var(--good); }
+.builder-component-state.is-rejected { color: var(--subtle); }
+.builder-component-proposal .detail-list,
+.builder-component-io dl {
+  display: grid;
+  grid-template-columns: minmax(100px, max-content) minmax(0, 1fr);
+  gap: 7px 14px;
+  margin: 0;
+}
+.builder-component-proposal .detail-list dt,
+.builder-component-io dt { color: var(--subtle); }
+.builder-component-proposal .detail-list dd,
+.builder-component-io dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.builder-component-io {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.builder-component-io > section {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 74%, transparent);
+}
+.builder-component-io dl { grid-template-columns: minmax(70px, max-content) minmax(0, 1fr); }
+.builder-component-io dd code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.builder-component-proposal details {
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 74%, transparent);
+}
+.builder-component-proposal summary { cursor: pointer; font-size: 13px; font-weight: 700; }
+.builder-component-proposal details h4 { margin-top: 14px; }
+.builder-component-proposal details ul { margin: 8px 0; padding-left: 20px; }
+.builder-component-proposal details li { display: grid; gap: 3px; margin: 7px 0; }
+.builder-component-proposal details li small { overflow-wrap: anywhere; color: var(--subtle); }
+.builder-component-proposal pre { max-width: 100%; overflow: auto; padding: 10px; border-radius: 9px; background: var(--surface-soft); font-size: 11px; }
+.builder-component-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+.builder-component-proposal > small { color: var(--subtle); line-height: 1.5; }
+@media (max-width: 640px) {
+  .builder-component-proposal > header { flex-direction: column; }
+  .builder-component-io { grid-template-columns: minmax(0, 1fr); }
+  .builder-component-actions { flex-direction: column-reverse; }
+  .builder-component-actions > button { width: 100%; }
+}
 .builder-workspace-dock.is-expanded {
   position: fixed;
   top: var(--header-height);

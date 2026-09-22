@@ -826,7 +826,8 @@ describe("Durable Project Chat", () => {
       conversation: { ...reviewed.conversation, last_operation_status: "succeeded" },
       messages: [
         ...reviewed.messages,
-        { message_id: "m-result", conversation_id: "conv-1", sequence: 2, role: "assistant", kind: "result", content: "礼物包装顾问已经创建并通过结构验证。", operation_id: "op-1", payload: { agent_id: "agent-new", agent_name: "礼物包装顾问" }, created_at: "2026-09-18T00:00:03Z" },
+        { message_id: "m-component", conversation_id: "conv-1", sequence: 2, role: "assistant", kind: "result", content: "Custom Component 已发布：包装建议 v1.0.0（ready）。", operation_id: "op-1", payload: { component_id: "component-1", component_reference: "component-1@1.0.0", readiness: "ready" }, created_at: "2026-09-18T00:00:02Z" },
+        { message_id: "m-result", conversation_id: "conv-1", sequence: 3, role: "assistant", kind: "result", content: "礼物包装顾问已经创建并通过结构验证。", operation_id: "op-1", payload: { agent_id: "agent-new", agent_name: "礼物包装顾问" }, created_at: "2026-09-18T00:00:03Z" },
       ],
       operations: [{ ...reviewed.operations[0], status: "succeeded" }],
       factory_session: created.session,
@@ -849,6 +850,7 @@ describe("Durable Project Chat", () => {
     await waitFor(() => expect(applyFactoryDraft).toHaveBeenCalledWith("project-1", "session-1", { confirm: true, name: "礼物包装顾问" }));
     expect(await screen.findByText("礼物包装顾问已经创建并通过结构验证。")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "Open Studio" })[0]).toHaveAttribute("href", "#/projects/project-1/agents/agent-new/design");
+    expect(screen.getByRole("link", { name: "View Project resources" })).toHaveAttribute("href", "#/projects/project-1/resources");
     expect(screen.queryByRole("button", { name: "Create Draft" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getAllByText("礼物包装顾问已经创建并通过结构验证。")).toHaveLength(1);
@@ -1002,6 +1004,7 @@ describe("Durable Project Chat", () => {
           proposal_id: null,
           run_id: "run-1",
           factory_session_id: null,
+          workspace_id: "op-1",
           created_at: "2026-09-20T00:00:00Z",
           updated_at: "2026-09-20T00:00:01Z",
           diagnostic: {},
@@ -1069,6 +1072,7 @@ describe("Durable Project Chat", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test Agent" }));
     await waitFor(() => expect(startBuilderTestRun).toHaveBeenCalledWith("project-1", "conv-1", {
       agent_id: "agent-1",
+      workspace_id: "op-1",
       inputs: { text: "Hello world" },
       locale: "en",
     }));

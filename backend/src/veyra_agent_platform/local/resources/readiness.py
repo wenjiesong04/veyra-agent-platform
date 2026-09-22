@@ -179,13 +179,27 @@ class ResourceReadiness:
                 "runtime_unsupported",
                 "This resource is not supported by the current Runtime.",
             )
-        elif kind == "skill" or (
-            kind == "component" and result["name"] in {"Agent", "Model"}
+        elif (
+            kind == "skill"
+            or (kind == "component" and result["name"] in {"Agent", "Model"})
+            or (
+                kind == "component"
+                and result.get("component_class") == "composite"
+                and spec.get("implementation_kind") == "model_recipe"
+            )
         ):
             require(
                 "model_configuration",
                 "Configure the Runtime provider, model and host model credential.",
                 self.model.configured,
+            )
+        elif (
+            kind == "component" and spec.get("implementation_kind") == "composite_graph"
+        ):
+            block(
+                "design_only",
+                "design_resource",
+                "composite_graph Custom Components are design-only in this slice.",
             )
         elif (
             result["runtime_status"] == "runtime_not_configured"

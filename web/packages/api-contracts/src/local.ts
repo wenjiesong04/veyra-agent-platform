@@ -166,6 +166,7 @@ export type FlowNode = {
     | "Model"
     | "AgentCall"
     | "Tool"
+    | "CustomComponent"
     | "Condition"
     | "Transform"
     | "HumanApproval"
@@ -199,6 +200,7 @@ export type StudioNote = {
   text: string;
   color?: StudioNoteColor;
   width?: number;
+  manual_position?: boolean;
 };
 
 export type AgentSource = {
@@ -229,6 +231,7 @@ export type AgentSource = {
     bindings?: Record<string, CatalogBinding>;
     notes?: Record<string, StudioNote>;
     labels?: Record<string, string>;
+    branch_labels?: Record<string, { true: string; false: string }>;
   };
   lock: Record<string, string>;
 };
@@ -315,6 +318,7 @@ export type WorkflowSource = {
     positions: Record<string, { x: number; y: number }>;
     notes?: Record<string, StudioNote>;
     labels?: Record<string, string>;
+    branch_labels?: Record<string, { true: string; false: string }>;
   };
   lock: Record<string, string>;
 };
@@ -363,6 +367,9 @@ export type BuilderOperationEventKind =
   | "builder.compile.completed"
   | "builder.validation.started"
   | "builder.validation.completed"
+  | "builder.component_design.started"
+  | "builder.component_design.completed"
+  | "builder.component.created"
   | "builder.proposal.ready"
   | "builder.proposal.confirmed"
   | "builder.proposal.rejected"
@@ -493,6 +500,7 @@ export type BuilderConversationOperation = {
   proposal_id: string | null;
   run_id: string | null;
   factory_session_id: string | null;
+  workspace_id?: string | null;
   created_at: string;
   updated_at: string;
   diagnostic: Record<string, string>;
@@ -503,6 +511,7 @@ export type BuilderConversationOperation = {
 };
 export type BuilderTestRunRequest = {
   agent_id?: string;
+  workspace_id?: string;
   inputs: Record<string, unknown>;
   locale: "zh" | "en";
 };
@@ -702,6 +711,67 @@ export type EditProposal = {
   state: "review" | "applied" | "rejected" | "undone";
   stale: boolean;
   applied_revision: number | null;
+};
+export type ComponentProposalCommand = "apply" | "reject";
+export type CustomComponentProposal = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  proposal_id: string;
+  proposal_kind: "create_custom_component";
+  project_id: string;
+  target_kind: "custom_component";
+  target_id: string;
+  instruction: string;
+  created_at: string;
+  component_plan: {
+    component_id: string;
+    display_name: string;
+    description: string;
+    capability_requirement: string;
+    agent_step?: string;
+    agent_step_key?: string;
+    inputs: TypedFields;
+    outputs: TypedFields;
+    implementation: JsonObject;
+    dependencies: Array<{ reference: string; content_hash: string }>;
+    required_permissions: ResourcePermissions;
+    readiness_expectation: "ready" | "requires_configuration";
+    why?: string;
+  };
+  continuation: "agent" | "direct_component";
+  conversation_id: string;
+  operation_id: string;
+  factory_session_id: string | null;
+  changes: EditProposalChange[];
+  permission_changes: EditProposalChange[];
+  impact: {
+    target_kind: "custom_component";
+    target_id: string;
+    scope: "project_resource";
+    immutable_versions_changed: false;
+    runs_started: false;
+    creates_component: true;
+  };
+  validation: {
+    valid: boolean;
+    readiness_expectation: "ready" | "requires_configuration";
+    dependencies: Array<{ reference: string; content_hash: string }>;
+  };
+  state: "review" | "applied" | "rejected";
+  stale: boolean;
+  created_component: {
+    component_id: string;
+    display_name: string;
+    version: string;
+    reference: string;
+    content_hash: string;
+    readiness: "ready" | "requires_configuration" | "design_only" | "unavailable";
+    implementation_kind: CustomComponentImplementationKind;
+  } | null;
+};
+export type ComponentProposalCommandRequest = {
+  command: ComponentProposalCommand;
+  confirm: boolean;
+  locale: "zh" | "en";
 };
 export type ListEditProposalsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
@@ -1252,7 +1322,7 @@ export type ResourceRuntimeStatus =
   | "runtime_not_configured"
   | "runtime_not_supported";
 
-export type ResourceOrigin = "builtin" | "workshop" | "discovered";
+export type ResourceOrigin = "builtin" | "workshop" | "discovered" | "project";
 
 export type ResourcePermissions = {
   network_hosts: string[];
@@ -1325,6 +1395,74 @@ export type ProjectResourcesResponse = {
   builtin_count: number;
   stale_count?: number;
 };
+
+export type CustomComponentImplementationKind =
+  | "model_recipe"
+  | "tool_wrapper"
+  | "transform"
+  | "composite_graph";
+export type CustomComponentReadiness =
+  | "ready"
+  | "requires_configuration"
+  | "design_only"
+  | "unavailable";
+export type CustomComponentDefinition = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  component_id: string;
+  project_id: string;
+  slug: string;
+  display_name: string;
+  description: string;
+  version: string;
+  reference: string;
+  content_hash: string;
+  inputs: TypedFields;
+  outputs: TypedFields;
+  implementation: JsonObject;
+  metadata: Record<string, string>;
+  dependencies: { reference: string; content_hash: string }[];
+  required_permissions: ResourcePermissions;
+  readiness: CustomComponentReadiness;
+  provenance: "manual" | "builder" | "imported";
+  lifecycle: "draft" | "active" | "deprecated";
+  deprecated: boolean;
+  created_at: string;
+  updated_at: string;
+};
+export type CustomComponentVersionSummary = {
+  version: string;
+  reference: string;
+  lifecycle: "active" | "deprecated";
+  implementation_kind: CustomComponentImplementationKind;
+  readiness: CustomComponentReadiness;
+  content_hash: string;
+};
+export type CustomComponentSummary = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  component_id: string;
+  project_id: string;
+  slug: string;
+  display_name: string;
+  description: string;
+  draft: CustomComponentDefinition | null;
+  latest_version: string | null;
+  versions: CustomComponentVersionSummary[];
+};
+export type ListCustomComponentsResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  components: CustomComponentSummary[];
+};
+export type CreateCustomComponentRequest = {
+  display_name: string;
+  description: string;
+  inputs: TypedFields;
+  outputs: TypedFields;
+  implementation: JsonObject;
+  metadata?: Record<string, string>;
+  provenance?: "manual" | "builder" | "imported";
+};
+export type UpdateCustomComponentRequest = Partial<CreateCustomComponentRequest>;
 
 export type AddProjectResourceRequest = {
   reference: string;

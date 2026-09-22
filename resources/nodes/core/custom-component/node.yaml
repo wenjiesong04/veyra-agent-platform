@@ -1,0 +1,28 @@
+# veyra.component.custom-component@1.0.0
+availability: ready
+component_class: primitive
+description: Project-owned reusable executable capability with typed I/O.
+factory_selectable: true
+kind: component
+name: CustomComponent
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.custom-component
+runtime_status: supported
+spec:
+  fields:
+  - uses
+  output_ports:
+  - next
+  ui:
+    category: core
+    icon: box
+    title: Custom Component
+tags:
+- graph
+- builtin
+version: 1.0.0

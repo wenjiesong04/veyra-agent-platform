@@ -58,6 +58,7 @@ class ComponentType(StrEnum):
     HUMAN_APPROVAL = "HumanApproval"
     VERIFIER = "Verifier"
     OUTPUT = "Output"
+    CUSTOM_COMPONENT = "CustomComponent"
     AGENT_CALL = "AgentCall"
 
     @classmethod
@@ -88,6 +89,7 @@ _ALLOWED_PORTS: dict[ComponentType, frozenset[TransitionPort]] = {
     ),
     ComponentType.VERIFIER: frozenset({TransitionPort.PASSED, TransitionPort.FAILED}),
     ComponentType.OUTPUT: frozenset(),
+    ComponentType.CUSTOM_COMPONENT: frozenset({TransitionPort.NEXT}),
     ComponentType.AGENT_CALL: frozenset({TransitionPort.NEXT}),
 }
 
@@ -103,6 +105,7 @@ _AGENT_GRAPH_TYPES = frozenset(
         ComponentType.HUMAN_APPROVAL,
         ComponentType.VERIFIER,
         ComponentType.OUTPUT,
+        ComponentType.CUSTOM_COMPONENT,
     }
 )
 _WORKFLOW_GRAPH_TYPES = frozenset(
@@ -262,6 +265,11 @@ class FlowNode:
                 "input_mapping",
                 "output_mapping",
             },
+            ComponentType.CUSTOM_COMPONENT: {
+                "uses",
+                "input_mapping",
+                "output_mapping",
+            },
             ComponentType.CONDITION: {"expression"},
             ComponentType.TRANSFORM: {"mapping"},
             ComponentType.HUMAN_APPROVAL: {"prompt"},
@@ -282,6 +290,7 @@ class FlowNode:
             ComponentType.AGENT: {"model_ref", "system_prompt"},
             ComponentType.MODEL: {"model_ref", "system_prompt"},
             ComponentType.TOOL: {"uses"},
+            ComponentType.CUSTOM_COMPONENT: {"uses"},
             ComponentType.CONDITION: {"expression"},
             ComponentType.TRANSFORM: {"mapping"},
             ComponentType.HUMAN_APPROVAL: {"prompt"},
@@ -321,9 +330,9 @@ class FlowNode:
             system_prompt=require_string(item["system_prompt"], "node.system_prompt")
             if "system_prompt" in present
             else None,
-            uses=require_string(item["uses"], "node.uses", pattern=_REFERENCE)
-            if "uses" in present
-            else None,
+            uses=(
+                _node_uses(item["uses"], component_type) if "uses" in present else None
+            ),
             network_hosts=(
                 _strict_str_list(
                     item["network_hosts"], "node.network_hosts", pattern=_HOST
@@ -640,6 +649,12 @@ class ProjectManifest:
         return result
 
 
+def _node_uses(value: Any, component_type: ComponentType) -> str:
+    if component_type is ComponentType.CUSTOM_COMPONENT:
+        return ResourceRef.from_string(value, "node.uses").as_ref()
+    return require_string(value, "node.uses", pattern=_REFERENCE)
+
+
 def _is_dependency_ref(value: str) -> bool:
     if _REFERENCE.fullmatch(value):
         return True
@@ -853,7 +868,11 @@ class RequiredCapabilities:
 
     def validate_nodes(self, nodes: tuple[FlowNode, ...]) -> None:
         node_types = {node.component_type for node in nodes}
-        node_tools = {node.uses for node in nodes if node.uses is not None}
+        node_tools = {
+            node.uses
+            for node in nodes
+            if node.component_type is ComponentType.TOOL and node.uses is not None
+        }
         if node_types != set(self.component_types):
             raise ContractValidationError(
                 "required_capabilities.component_types must exactly match graph nodes"
@@ -883,7 +902,7 @@ def _ui_layout(value: Any) -> Mapping[str, Any]:
     item = require_mapping(value, "ui")
     require_keys(
         item,
-        allowed={"positions", "bindings", "notes", "labels"},
+        allowed={"positions", "bindings", "notes", "labels", "branch_labels"},
         required={"positions"},
     )
     positions = require_mapping(item["positions"], "ui.positions")
@@ -905,6 +924,8 @@ def _ui_layout(value: Any) -> Mapping[str, Any]:
         layout["notes"] = _ui_notes(item["notes"])
     if "labels" in item:
         layout["labels"] = _ui_labels(item["labels"])
+    if "branch_labels" in item:
+        layout["branch_labels"] = _ui_branch_labels(item["branch_labels"])
     return cast(Mapping[str, Any], freeze_json(layout))
 
 
@@ -954,6 +975,31 @@ def _ui_labels(value: Any) -> dict[str, str]:
     return parsed
 
 
+def _ui_branch_labels(value: Any) -> dict[str, dict[str, str]]:
+    item = require_mapping(value, "ui.branch_labels")
+    parsed: dict[str, dict[str, str]] = {}
+    for node_id, labels in item.items():
+        require_string(node_id, "ui.branch_labels condition", pattern=NODE_ID_RE)
+        entry = require_mapping(labels, "ui.branch_labels ports")
+        require_keys(
+            entry,
+            allowed={"true", "false"},
+            required={"true", "false"},
+            field=f"ui.branch_labels.{node_id}",
+        )
+        parsed[node_id] = {
+            port: require_string(
+                entry[port], f"ui.branch_labels.{node_id}.{port}"
+            ).strip()
+            for port in ("true", "false")
+        }
+        if any(not value or len(value) > 80 for value in parsed[node_id].values()):
+            raise ContractValidationError(
+                "ui.branch_labels values must be 1 to 80 characters"
+            )
+    return parsed
+
+
 def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
     item = require_mapping(value, "ui.notes")
     parsed: dict[str, dict[str, Any]] = {}
@@ -962,7 +1008,7 @@ def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
         entry = require_mapping(payload, "ui.notes entry")
         require_keys(
             entry,
-            allowed={"x", "y", "text", "color", "width"},
+            allowed={"x", "y", "text", "color", "width", "manual_position"},
             required={"x", "y", "text"},
         )
         if not isinstance(entry["text"], str) or len(entry["text"]) > 4000:
@@ -994,6 +1040,13 @@ def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
                     "ui.notes.width must be an integer between 160 and 640"
                 )
             note["width"] = width
+        if "manual_position" in entry:
+            manual_position = entry["manual_position"]
+            if not isinstance(manual_position, bool):
+                raise ContractValidationError(
+                    "ui.notes.manual_position must be boolean"
+                )
+            note["manual_position"] = manual_position
         parsed[note_id] = note
     return parsed
 
@@ -1133,7 +1186,9 @@ class AgentSource:
         )
         _validate_ui_node_references(source.ui, source.nodes, "ui")
         tool_references = {
-            node.uses.rsplit("@", 1)[0] for node in source.nodes if node.uses
+            node.uses.rsplit("@", 1)[0]
+            for node in source.nodes
+            if node.uses and node.component_type is ComponentType.TOOL
         }
         if not tool_references.issubset(set(source.permissions.tools)):
             raise ContractValidationError(
@@ -1277,6 +1332,16 @@ def _validate_ui_node_references(
         colliding = ", ".join(sorted(unknown_labels))
         raise ContractValidationError(
             f"{field}.labels references unknown node(s): {colliding}"
+        )
+    branch_labels = ui.get("branch_labels") or {}
+    condition_ids = {
+        node.id for node in nodes if node.component_type is ComponentType.CONDITION
+    }
+    unknown_branch_labels = set(branch_labels) - condition_ids
+    if unknown_branch_labels:
+        colliding = ", ".join(sorted(unknown_branch_labels))
+        raise ContractValidationError(
+            f"{field}.branch_labels references non-Condition node(s): {colliding}"
         )
 
 

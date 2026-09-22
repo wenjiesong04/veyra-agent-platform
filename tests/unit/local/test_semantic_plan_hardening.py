@@ -22,7 +22,10 @@ from veyra_agent_platform.local.factory.semantic_plan_repair import (
     reject_silent_v1_degradation,
     semantic_plan_shape,
 )
-from veyra_agent_platform.local.factory.service import _plan_schema
+from veyra_agent_platform.local.factory.service import (
+    _plan_schema,
+    _planning_user_content,
+)
 from veyra_agent_platform.local.factory.structured_schema import (
     project_moonshot_json_schema,
 )
@@ -77,7 +80,13 @@ def test_condition_semantic_plan_parses() -> None:
     plan = AgentSemanticPlanV1.from_dict(
         _base(
             step_intents=[
-                _step("gate", "是否为空", 'input != ""', "condition"),
+                {
+                    **_step("gate", "是否为空", 'input != ""', "condition"),
+                    "branches": [
+                        {"key": "present", "label": "Present"},
+                        {"key": "empty", "label": "Empty"},
+                    ],
+                },
                 _step(
                     "summarize",
                     "摘要",
@@ -89,10 +98,10 @@ def test_condition_semantic_plan_parses() -> None:
         )
     )
     assert plan.step_intents[0].operation_kind == "condition"
-    assert "branches" not in plan.to_dict()["step_intents"][0]
+    assert plan.to_dict()["step_intents"][0]["branches"][0]["key"] == "present"
 
 
-def test_incomplete_branches_are_ignored_not_required() -> None:
+def test_non_condition_branches_are_repaired_with_a_diagnostic() -> None:
     payload = _base(
         step_intents=[
             {
@@ -104,9 +113,27 @@ def test_incomplete_branches_are_ignored_not_required() -> None:
             }
         ]
     )
-    plan = AgentSemanticPlanV1.from_dict(payload)
-    assert plan.step_intents[0].operation_kind == "approval"
+    repaired, notes = bounded_repair_semantic_plan(payload)
+    assert "dropped_invalid_branches:0" in notes
+    plan = AgentSemanticPlanV1.from_dict(repaired)
     assert "branches" not in plan.to_dict()["step_intents"][0]
+
+
+def test_condition_requires_two_declared_branches() -> None:
+    payload = _base(
+        step_intents=[
+            {
+                **_step("gate", "条件", 'input != ""', "condition"),
+                "branches": [{"key": "only", "label": "Only"}],
+            }
+        ]
+    )
+    try:
+        AgentSemanticPlanV1.from_dict(payload)
+    except ContractValidationError as exc:
+        assert "exactly two branches" in str(exc)
+        return
+    raise AssertionError("condition branch cardinality must be enforced")
 
 
 def test_malformed_step_intent_is_rejected() -> None:
@@ -176,7 +203,16 @@ def test_missing_semantic_key_is_filled_from_name() -> None:
 
 
 def test_v1_simple_plan_remains_compatible() -> None:
-    plan = AgentSemanticPlanV1.from_dict(_base())
+    plan = AgentSemanticPlanV1.from_dict(
+        _base(
+            goal="Translate the source text.",
+            suggested_name="翻译 Agent",
+            description="Translate user text.",
+            inputs=[{"name": "text", "type": "string"}],
+            outputs=[{"name": "translation", "type": "string"}],
+            steps=["翻译"],
+        )
+    )
     assert plan.step_intents == ()
     compiled = compile_semantic_plan(plan, _empty_context())
     assert compiled.status == "compiled"
@@ -196,6 +232,50 @@ def test_no_silent_v1_when_approval_was_observed() -> None:
         assert classify_plan_error(exc) == "silent_v1_degradation"
         return
     raise AssertionError("complex duties must not collapse to V1")
+
+
+def test_no_silent_v1_when_multiple_models_were_observed() -> None:
+    try:
+        reject_silent_v1_degradation(
+            obligations=frozenset({"multi_model"}),
+            operation_kinds=("model",),
+            approval_points=(),
+        )
+    except ContractValidationError as exc:
+        assert classify_plan_error(exc) == "silent_v1_degradation"
+        return
+    raise AssertionError("multi-model duties must not collapse to V1")
+
+
+def test_graph_obligations_include_capability_and_multi_model() -> None:
+    payload = _base(
+        step_intents=[
+            _step("read", "读取", "读取项目文件", "capability"),
+            _step("summary", "总结", "总结资料", "model", depends_on=["read"]),
+            _step("risk", "风险", "分析风险", "model", depends_on=["summary"]),
+        ]
+    )
+    assert graph_obligations(payload) == frozenset({"capability", "multi_model"})
+
+
+def test_graph_obligations_include_declared_branch_semantics() -> None:
+    payload = _base(
+        step_intents=[
+            {
+                **_step("gate", "分类", "分类输入", "condition"),
+                "branches": [
+                    {"key": "a", "label": "A"},
+                    {"key": "b", "label": "B"},
+                ],
+            },
+            {
+                **_step("approve_a", "A approval", "确认 A", "approval", ["gate"]),
+                "branch_condition": "gate",
+                "branch_key": "a",
+            },
+        ]
+    )
+    assert graph_obligations(payload) == frozenset({"condition", "approval", "branch"})
 
 
 def test_approval_points_satisfy_approval_obligation() -> None:
@@ -219,11 +299,14 @@ def test_graph_obligations_ignore_user_text() -> None:
     assert shape["operation_kinds"] == ["approval"]
 
 
-def test_mfjs_projected_plan_schema_omits_branches_and_keeps_enums() -> None:
+def test_mfjs_projected_plan_schema_keeps_branch_contract_and_enums() -> None:
     original = _plan_schema()
     projected = project_moonshot_json_schema(original)
     properties = projected["properties"]["step_intents"]["items"]["properties"]
-    assert "branches" not in properties
+    assert "branches" in properties
+    assert "branch_condition" in properties
+    assert "branch_key" in properties
+    assert "output_mapping" in properties
     dumped = json.dumps(projected)
     assert "$ref" not in dumped
     assert "oneOf" not in dumped
@@ -239,6 +322,7 @@ def test_mfjs_projected_plan_schema_omits_branches_and_keeps_enums() -> None:
         "approval",
         "verification",
     ]
+    assert "capability_requirement" in properties
     fmt = structured_response_format(
         derive_provider_capability_profile(FactorySettings()),
         name="agent_semantic_plan",
@@ -307,3 +391,22 @@ def test_policy_sentence_is_not_missing_capability() -> None:
     assert compiled.blueprint is not None
     types = [node["component_type"] for node in compiled.blueprint.to_dict()["nodes"]]
     assert "Tool" not in types
+
+
+def test_planning_prompt_reuses_project_capabilities_without_hashes() -> None:
+    digest = _planning_user_content(
+        [
+            {
+                "name": "Filesystem Read",
+                "resource_id": "veyra.tool.filesystem.read",
+                "kind": "tool",
+                "readiness": "ready",
+            }
+        ]
+    )
+    assert "Filesystem Read" in digest
+    assert "veyra.tool.filesystem.read" in digest
+    assert "a" * 64 not in digest
+    assert "capability_requirement" in digest
+    empty = _planning_user_content([])
+    assert "no bound tools" in empty

@@ -27,7 +27,7 @@ const COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
 ]);
 
 const AGENT_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
-  "Start", "Model", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
+  "Start", "Model", "Tool", "CustomComponent", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
 ]);
 
 const WORKFLOW_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
@@ -87,6 +87,15 @@ function canDrag(resource: ResourceDescriptor): boolean {
   return resource.factory_selectable;
 }
 
+export function isProjectCustomComponentResource(resource: ResourceDescriptor): boolean {
+  return resource.kind === "component"
+    && resource.component_class === "composite"
+    && "scope" in resource
+    && resource.scope === "project"
+    && "bound_content_hash" in resource
+    && typeof resource.bound_content_hash === "string";
+}
+
 export function paletteFromCatalog(resources: ResourceDescriptor[]): PaletteItem[] {
   const components: PaletteItem[] = [];
   const rest: PaletteItem[] = [];
@@ -94,7 +103,26 @@ export function paletteFromCatalog(resources: ResourceDescriptor[]): PaletteItem
     if (resource.kind === "component" && resource.name === "Agent") continue;
     const ui = resourceUi(resource);
     const title = ui?.title ?? resource.name;
-    if (resource.kind === "component" && COMPONENT_TYPES.has(resource.name as FlowNode["component_type"])) {
+    if (isProjectCustomComponentResource(resource)) {
+      const implementationKind = resource.spec.implementation_kind;
+      const detail = `${typeof implementationKind === "string" ? implementationKind : "Custom Component"} · ${resource.description}`.trim();
+      components.push({
+        key: resource.reference,
+        group: "component",
+        componentType: "CustomComponent",
+        title: resource.name,
+        titleZh: resource.name,
+        detail,
+        detailZh: detail,
+        category: ui?.category ?? "custom",
+        icon: ui?.icon ?? "box",
+        ports: ["next"],
+        draggable: canDrag(resource),
+        runtimeStatus: resource.runtime_status,
+        availability: resource.availability,
+        resource,
+      });
+    } else if (resource.kind === "component" && COMPONENT_TYPES.has(resource.name as FlowNode["component_type"])) {
       const type = resource.name as FlowNode["component_type"];
       const fallback = studioComponents.find((item) => item.type === type);
       components.push({
@@ -149,7 +177,7 @@ export function paletteForMode(items: PaletteItem[], mode: "agent" | "workflow" 
 }
 
 export function fallbackPalette(): PaletteItem[] {
-  return studioComponents.filter((component) => component.type !== "Agent").map((component) => ({
+  return studioComponents.filter((component) => component.type !== "Agent" && component.type !== "CustomComponent").map((component) => ({
     key: component.type,
     group: "component" as const,
     componentType: component.type,
@@ -169,8 +197,11 @@ export function fallbackPalette(): PaletteItem[] {
 export function grantCatalogResource(source: AgentSource, resource: ResourceDescriptor): AgentSource {
   const permissions = source.extensions.veyra.permissions;
   const required = resource.required_permissions;
-  const lock = resource.kind === "tool" || resource.kind === "mcp_tool"
-    ? { ...source.lock, [resource.reference]: projectToolHash(resource) }
+  const needsVersionLock = resource.kind === "tool"
+    || resource.kind === "mcp_tool"
+    || (resource.kind === "component" && resource.component_class === "composite");
+  const lock = needsVersionLock
+    ? { ...source.lock, [resource.reference]: projectResourceHash(resource) }
     : source.lock;
   return {
     ...source,
@@ -192,9 +223,13 @@ export function grantCatalogResource(source: AgentSource, resource: ResourceDesc
   };
 }
 
-export function projectToolHash(resource: ResourceDescriptor): string {
-  if (!("scope" in resource) || resource.scope !== "project" || !("bound_content_hash" in resource) || typeof resource.bound_content_hash !== "string") {
-    throw new Error("Tool must be bound to this Project before use.");
+export function projectResourceHash(resource: ResourceDescriptor): string {
+  if (!("scope" in resource)
+    || resource.scope !== "project"
+    || !("bound_content_hash" in resource)
+    || typeof resource.bound_content_hash !== "string"
+    || (("binding_status" in resource) && resource.binding_status === "stale")) {
+    throw new Error("Resource must be bound to this Project before use.");
   }
   return resource.bound_content_hash;
 }
@@ -345,6 +380,9 @@ export function paletteItemBlocked(item: PaletteItem, nodes: { component_type: s
 }
 
 export function newCatalogNode(item: PaletteItem, id: string): FlowNode {
+  if (item.componentType === "CustomComponent" && item.resource) {
+    return { id, component_type: "CustomComponent", uses: item.resource.reference, input_mapping: {}, output_mapping: {} };
+  }
   if ((item.group === "tool" || item.group === "mcp") && item.resource) {
     return { id, component_type: "Tool", uses: item.resource.reference };
   }
@@ -363,9 +401,10 @@ export function nodeDisplayTitle(flow: FlowNode, resources: ResourceDescriptor[]
     if (agent) return agent.name || agent.slug;
     return flow.agent_ref;
   }
-  if (flow.component_type === "Tool" && flow.uses) {
+  if ((flow.component_type === "Tool" || flow.component_type === "CustomComponent") && flow.uses) {
     const resource = resources.find((item) => item.reference === flow.uses);
     if (resource) {
+      if (flow.component_type === "CustomComponent") return resource.name;
       const title = resourceUi(resource)?.title ?? resource.name;
       return locale === "zh" ? (ZH_TITLE[title] ?? title) : title;
     }

@@ -39,6 +39,8 @@ import {
   type EditProposal,
   type EditProposalChange,
   type EditProposalCommand,
+  type CustomComponentProposal,
+  type ComponentProposalCommandRequest,
   type EditTargetKind,
   type ListEditProposalsResponse,
   type AgentImportApplyRequest,
@@ -55,6 +57,12 @@ import {
   type CreateAgentRequest,
   type CreatedAgentResponse,
   type CreateKnowledgeRequest,
+  type CreateCustomComponentRequest,
+  type CustomComponentDefinition,
+  type CustomComponentImplementationKind,
+  type CustomComponentReadiness,
+  type CustomComponentSummary,
+  type CustomComponentVersionSummary,
   type CreateProjectRequest,
   type CreateWorkflowRequest,
   type CreatedWorkflowResponse,
@@ -88,6 +96,7 @@ import {
   type FactoryMessage,
   type JsonObject,
   type JsonValue,
+  type TypedFieldSpec,
   type TypedFields,
   type KnowledgeDocumentResponse,
   type KnowledgeChunkResponse,
@@ -97,6 +106,7 @@ import {
   type ListAgentsResponse,
   type ListAgentTemplatesResponse,
   type ListComponentsResponse,
+  type ListCustomComponentsResponse,
   type ListMcpServersResponse,
   type ListPluginPacksResponse,
   type ListPluginTrashResponse,
@@ -108,6 +118,7 @@ import {
   type ImportMcpServersRequest,
   type ImportMcpServersResponse,
   type UpdateMcpServerRequest,
+  type UpdateCustomComponentRequest,
   type McpServer,
   type McpServerReadiness,
   type AgentDependencyCheck,
@@ -224,6 +235,14 @@ export type LocalProjectApi = {
   importProject?(file: File): Promise<ProjectSummaryResponse>;
   importProjectFromPath?(input: ImportProjectPathRequest): Promise<ProjectSummaryResponse>;
   listProjectResources?(projectId: string): Promise<ProjectResourcesResponse>;
+  listCustomComponents?(projectId: string): Promise<ListCustomComponentsResponse>;
+  createCustomComponent?(projectId: string, input: CreateCustomComponentRequest): Promise<CustomComponentDefinition>;
+  getCustomComponent?(projectId: string, componentId: string, version?: string): Promise<CustomComponentDefinition>;
+  updateCustomComponent?(projectId: string, componentId: string, input: UpdateCustomComponentRequest): Promise<CustomComponentDefinition>;
+  validateCustomComponent?(projectId: string, componentId: string): Promise<CustomComponentDefinition>;
+  publishCustomComponent?(projectId: string, componentId: string, version?: string): Promise<CustomComponentDefinition>;
+  deprecateCustomComponent?(projectId: string, componentId: string, version: string): Promise<CustomComponentDefinition>;
+  deleteCustomComponent?(projectId: string, componentId: string): Promise<ListCustomComponentsResponse>;
   addProjectResource?(projectId: string, input: AddProjectResourceRequest): Promise<ProjectResourcesResponse>;
   removeProjectResource?(projectId: string, resourceId: string, version: string): Promise<ProjectResourcesResponse>;
   revealProject?(projectId: string): Promise<RevealProjectResponse>;
@@ -266,6 +285,8 @@ export type LocalProjectApi = {
   resolveBuilderIntent?(projectId: string, input: BuilderResolveRequest): Promise<BuilderResolution>;
   submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void }): Promise<BuilderConversationSnapshot>;
   getBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot>;
+  getBuilderComponentProposal?(projectId: string, proposalId: string): Promise<CustomComponentProposal>;
+  commandBuilderComponentProposal?(projectId: string, conversationId: string, operationId: string, proposalId: string, input: ComponentProposalCommandRequest): Promise<BuilderConversationSnapshot>;
   recordBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRecordRequest): Promise<BuilderConversationSnapshot>;
   renameBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRenameRequest): Promise<BuilderConversationSnapshot>;
   deleteBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationDeleted>;
@@ -925,6 +946,9 @@ const builderEventKinds = new Set<BuilderOperationEventKind>([
   "builder.compile.completed",
   "builder.validation.started",
   "builder.validation.completed",
+  "builder.component_design.started",
+  "builder.component_design.completed",
+  "builder.component.created",
   "builder.proposal.ready",
   "builder.proposal.confirmed",
   "builder.proposal.rejected",
@@ -1067,6 +1091,7 @@ function builderConversationOperation(value: unknown, status: number): BuilderCo
     proposal_id: optionalId(record.proposal_id, "builder.proposal_id", status),
     run_id: optionalId(record.run_id, "builder.run_id", status),
     factory_session_id: optionalId(record.factory_session_id, "builder.factory_session_id", status),
+    workspace_id: optionalId(record.workspace_id, "builder.workspace_id", status),
     created_at: asString(record.created_at, "builder.operation.created_at", status),
     updated_at: asString(record.updated_at, "builder.operation.updated_at", status),
     diagnostic: stringFacts(record.diagnostic, "builder.diagnostic", status),
@@ -1331,6 +1356,112 @@ function editProposal(value: unknown, status = 502): EditProposal {
   };
 }
 
+function customComponentProposal(value: unknown, status = 502): CustomComponentProposal {
+  const record = schemaRecord(value, status);
+  const plan = asRecord(record.component_plan, status);
+  const implementation = asRecord(plan.implementation, status);
+  const implementationKind = asString(implementation.kind, "component proposal implementation.kind", status);
+  const readiness = asString(plan.readiness_expectation, "component proposal readiness", status);
+  const state = asString(record.state, "component proposal state", status);
+  const continuation = asString(record.continuation, "component proposal continuation", status);
+  const impact = asRecord(record.impact, status);
+  const validation = asRecord(record.validation, status);
+  const dependencies = (value: unknown, label: string) => asArray(value, label, status).map((item) => {
+    const dependency = asRecord(item, status);
+    return {
+      reference: asString(dependency.reference, `${label}.reference`, status),
+      content_hash: asString(dependency.content_hash, `${label}.content_hash`, status),
+    };
+  });
+  const typedFields = (value: unknown, label: string) => {
+    const fields = asRecord(value, status);
+    for (const [name, field] of Object.entries(fields)) {
+      if (!name || !isTypedFieldSpec(field as TypedFieldSpec)) {
+        throw new LocalApiClientError(`Invalid ${label} field`, { status, code: "invalid_response" });
+      }
+    }
+    return fields as TypedFields;
+  };
+  if (record.proposal_kind !== "create_custom_component" || record.target_kind !== "custom_component"
+    || (continuation !== "agent" && continuation !== "direct_component")
+    || !["review", "applied", "rejected"].includes(state)
+    || !["model_recipe", "tool_wrapper", "transform", "composite_graph"].includes(implementationKind)
+    || !["ready", "requires_configuration"].includes(readiness)
+    || impact.target_kind !== "custom_component" || impact.target_id !== record.target_id
+    || impact.scope !== "project_resource" || impact.immutable_versions_changed !== false
+    || impact.runs_started !== false || impact.creates_component !== true) {
+    throw new LocalApiClientError("The local service returned an invalid Custom Component proposal.", { status, code: "invalid_response" });
+  }
+  const permissions = asRecord(plan.required_permissions, status);
+  const requiredPermissions = resourcePermissions(permissions, status);
+  const createdRaw = record.created_component;
+  let createdComponent: CustomComponentProposal["created_component"] = null;
+  if (createdRaw !== null && createdRaw !== undefined) {
+    const created = asRecord(createdRaw, status);
+    const createdKind = asString(created.implementation_kind, "created component implementation_kind", status) as CustomComponentImplementationKind;
+    const createdReadiness = asString(created.readiness, "created component readiness", status) as CustomComponentReadiness;
+    if (!["model_recipe", "tool_wrapper", "transform", "composite_graph"].includes(createdKind)
+      || !["ready", "requires_configuration", "design_only", "unavailable"].includes(createdReadiness)) {
+      throw new LocalApiClientError("The local service returned an invalid created Component.", { status, code: "invalid_response" });
+    }
+    createdComponent = {
+      component_id: asString(created.component_id, "created component.component_id", status),
+      display_name: asString(created.display_name, "created component.display_name", status),
+      version: asString(created.version, "created component.version", status),
+      reference: asString(created.reference, "created component.reference", status),
+      content_hash: asString(created.content_hash, "created component.content_hash", status),
+      readiness: createdReadiness,
+      implementation_kind: createdKind,
+    };
+  }
+  const changes = (input: unknown): EditProposalChange[] => asArray(input, "component proposal changes", status).map((item) => {
+    const change = asRecord(item, status);
+    return {
+      path: asText(change.path, "component proposal change.path", status),
+      operation: asString(change.operation, "component proposal change.operation", status) as EditProposalChange["operation"],
+      before: (change.before ?? null) as JsonValue,
+      after: (change.after ?? null) as JsonValue,
+    };
+  });
+  const planDependencies = dependencies(plan.dependencies, "component_plan.dependencies");
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    proposal_id: asString(record.proposal_id, "proposal_id", status),
+    proposal_kind: "create_custom_component",
+    project_id: asString(record.project_id, "project_id", status),
+    target_kind: "custom_component",
+    target_id: asString(record.target_id, "target_id", status),
+    instruction: asString(record.instruction, "instruction", status),
+    created_at: asString(record.created_at, "created_at", status),
+    component_plan: {
+      component_id: asString(plan.component_id, "component_plan.component_id", status),
+      display_name: asString(plan.display_name, "component_plan.display_name", status),
+      description: asText(plan.description, "component_plan.description", status),
+      capability_requirement: asString(plan.capability_requirement, "component_plan.capability_requirement", status),
+      ...(plan.agent_step === undefined ? {} : { agent_step: asString(plan.agent_step, "component_plan.agent_step", status) }),
+      ...(plan.agent_step_key === undefined ? {} : { agent_step_key: asString(plan.agent_step_key, "component_plan.agent_step_key", status) }),
+      inputs: typedFields(plan.inputs, "component inputs"),
+      outputs: typedFields(plan.outputs, "component outputs"),
+      implementation: implementation as JsonObject,
+      dependencies: planDependencies,
+      required_permissions: requiredPermissions,
+      readiness_expectation: readiness as CustomComponentProposal["component_plan"]["readiness_expectation"],
+      ...(plan.why === undefined ? {} : { why: asText(plan.why, "component_plan.why", status) }),
+    },
+    continuation: continuation as CustomComponentProposal["continuation"],
+    conversation_id: asString(record.conversation_id, "conversation_id", status),
+    operation_id: asString(record.operation_id, "operation_id", status),
+    factory_session_id: optionalId(record.factory_session_id, "factory_session_id", status),
+    changes: changes(record.changes),
+    permission_changes: changes(record.permission_changes),
+    impact: { target_kind: "custom_component", target_id: asString(impact.target_id, "impact.target_id", status), scope: "project_resource", immutable_versions_changed: false, runs_started: false, creates_component: true },
+    validation: { valid: asBoolean(validation.valid, "component proposal validation.valid", status), readiness_expectation: asString(validation.readiness_expectation, "component proposal validation.readiness_expectation", status) as CustomComponentProposal["validation"]["readiness_expectation"], dependencies: dependencies(validation.dependencies, "component proposal validation.dependencies") },
+    state: state as CustomComponentProposal["state"],
+    stale: asBoolean(record.stale, "component proposal.stale", status),
+    created_component: createdComponent,
+  };
+}
+
 function validationDependency(value: unknown, status = 502): AgentDependencyCheck {
   const record = asRecord(value, status);
   const kind = asString(record.kind, "validation dependency kind", status);
@@ -1572,7 +1703,7 @@ function listedComponents(value: unknown, status = 502): ListComponentsResponse 
 const resourceKinds = new Set<ResourceKind>(["component", "tool", "mcp_tool", "skill", "policy", "template"]);
 const resourceAvailability = new Set<ResourceAvailability>(["ready", "requires_configuration", "design_only", "quarantined", "disabled", "unavailable"]);
 const resourceRuntimeStatuses = new Set<ResourceRuntimeStatus>(["supported", "runtime_not_configured", "runtime_not_supported"]);
-const resourceOrigins = new Set<ResourceOrigin>(["builtin", "workshop", "discovered"]);
+const resourceOrigins = new Set<ResourceOrigin>(["builtin", "workshop", "discovered", "project"]);
 
 function resourcePermissions(value: unknown, status = 502): ResourceDescriptor["required_permissions"] {
   const record = asRecord(value, status);
@@ -1697,6 +1828,115 @@ function projectResources(value: unknown, status = 502): ProjectResourcesRespons
     unbound_count: asNumber(record.unbound_count, "project_resources.unbound_count", status),
     builtin_count: asNumber(record.builtin_count, "project_resources.builtin_count", status),
     ...(record.stale_count === undefined ? {} : { stale_count: asNumber(record.stale_count, "project_resources.stale_count", status) }),
+  };
+}
+
+const customComponentKinds = new Set<CustomComponentImplementationKind>([
+  "model_recipe",
+  "tool_wrapper",
+  "transform",
+  "composite_graph",
+]);
+const customComponentReadiness = new Set<CustomComponentReadiness>([
+  "ready",
+  "requires_configuration",
+  "design_only",
+  "unavailable",
+]);
+
+function customComponentDefinition(value: unknown, status = 502): CustomComponentDefinition {
+  const record = schemaRecord(value, status);
+  const lifecycle = asString(record.lifecycle, "custom_component.lifecycle", status);
+  const provenance = asString(record.provenance, "custom_component.provenance", status);
+  const readiness = asString(record.readiness, "custom_component.readiness", status) as CustomComponentReadiness;
+  const implementation = asRecord(record.implementation, status);
+  const implementationKind = asString(implementation.kind, "custom_component.implementation.kind", status) as CustomComponentImplementationKind;
+  if (!customComponentKinds.has(implementationKind)
+    || !customComponentReadiness.has(readiness)
+    || !["draft", "active", "deprecated"].includes(lifecycle)
+    || !["manual", "builder", "imported"].includes(provenance)) {
+    throw new LocalApiClientError("The local service returned an invalid Custom Component definition.", { status, code: "invalid_response" });
+  }
+  const metadata = Object.fromEntries(Object.entries(asRecord(record.metadata, status)).map(([key, item]) => [
+    key,
+    asText(item, `custom_component.metadata.${key}`, status),
+  ]));
+  const dependencies = asArray(record.dependencies, "custom_component.dependencies", status).map((value) => {
+    const dependency = asRecord(value, status);
+    return {
+      reference: asString(dependency.reference, "custom_component.dependency.reference", status),
+      content_hash: asString(dependency.content_hash, "custom_component.dependency.content_hash", status),
+    };
+  });
+  if (typeof record.deprecated !== "boolean") {
+    throw new LocalApiClientError("The local service returned an invalid Custom Component lifecycle.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    component_id: asString(record.component_id, "custom_component.component_id", status),
+    project_id: asString(record.project_id, "custom_component.project_id", status),
+    slug: asString(record.slug, "custom_component.slug", status),
+    display_name: asString(record.display_name, "custom_component.display_name", status),
+    description: asText(record.description, "custom_component.description", status),
+    version: asString(record.version, "custom_component.version", status),
+    reference: asString(record.reference, "custom_component.reference", status),
+    content_hash: asString(record.content_hash, "custom_component.content_hash", status),
+    inputs: typedFields(record.inputs, "custom_component.inputs", status),
+    outputs: typedFields(record.outputs, "custom_component.outputs", status),
+    implementation: asJsonValue(implementation, "custom_component.implementation", status) as JsonObject,
+    metadata,
+    dependencies,
+    required_permissions: resourcePermissions(record.required_permissions, status),
+    readiness,
+    provenance: provenance as CustomComponentDefinition["provenance"],
+    lifecycle: lifecycle as CustomComponentDefinition["lifecycle"],
+    deprecated: record.deprecated,
+    created_at: asString(record.created_at, "custom_component.created_at", status),
+    updated_at: asString(record.updated_at, "custom_component.updated_at", status),
+  };
+}
+
+function customComponentVersion(value: unknown, status = 502): CustomComponentVersionSummary {
+  const record = asRecord(value, status);
+  const lifecycle = asString(record.lifecycle, "custom_component.version.lifecycle", status);
+  const implementationKind = asString(record.implementation_kind, "custom_component.version.implementation_kind", status) as CustomComponentImplementationKind;
+  const readiness = asString(record.readiness, "custom_component.version.readiness", status) as CustomComponentReadiness;
+  if (!["active", "deprecated"].includes(lifecycle)
+    || !customComponentKinds.has(implementationKind)
+    || !customComponentReadiness.has(readiness)) {
+    throw new LocalApiClientError("The local service returned an invalid Custom Component version.", { status, code: "invalid_response" });
+  }
+  return {
+    version: asString(record.version, "custom_component.version.version", status),
+    reference: asString(record.reference, "custom_component.version.reference", status),
+    lifecycle: lifecycle as CustomComponentVersionSummary["lifecycle"],
+    implementation_kind: implementationKind,
+    readiness,
+    content_hash: asString(record.content_hash, "custom_component.version.content_hash", status),
+  };
+}
+
+function customComponentSummary(value: unknown, status = 502): CustomComponentSummary {
+  const record = asRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    component_id: asString(record.component_id, "custom_component.component_id", status),
+    project_id: asString(record.project_id, "custom_component.project_id", status),
+    slug: asString(record.slug, "custom_component.slug", status),
+    display_name: asString(record.display_name, "custom_component.display_name", status),
+    description: asText(record.description, "custom_component.description", status),
+    draft: record.draft === null ? null : customComponentDefinition(record.draft, status),
+    latest_version: record.latest_version === null ? null : asString(record.latest_version, "custom_component.latest_version", status),
+    versions: asArray(record.versions, "custom_component.versions", status).map((item) => customComponentVersion(item, status)),
+  };
+}
+
+function listedCustomComponents(value: unknown, status = 502): ListCustomComponentsResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "custom_components.project_id", status),
+    components: asArray(record.components, "custom_components.components", status).map((item) => customComponentSummary(item, status)),
   };
 }
 
@@ -3160,6 +3400,41 @@ export class LocalApiClient {
     return this.request(`projects/${encodeURIComponent(projectId)}/resources`, projectResources);
   }
 
+  listCustomComponents(projectId: string): Promise<ListCustomComponentsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components`, listedCustomComponents);
+  }
+
+  createCustomComponent(projectId: string, input: CreateCustomComponentRequest): Promise<CustomComponentDefinition> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components`, customComponentDefinition, { method: "POST", body: input });
+  }
+
+  getCustomComponent(projectId: string, componentId: string, version?: string): Promise<CustomComponentDefinition> {
+    const params = new URLSearchParams();
+    if (version) params.set("version", version);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components/${encodeURIComponent(componentId)}${suffix}`, customComponentDefinition);
+  }
+
+  updateCustomComponent(projectId: string, componentId: string, input: UpdateCustomComponentRequest): Promise<CustomComponentDefinition> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components/${encodeURIComponent(componentId)}`, customComponentDefinition, { method: "PATCH", body: input });
+  }
+
+  validateCustomComponent(projectId: string, componentId: string): Promise<CustomComponentDefinition> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components/${encodeURIComponent(componentId)}/validate`, customComponentDefinition, { method: "POST" });
+  }
+
+  publishCustomComponent(projectId: string, componentId: string, version?: string): Promise<CustomComponentDefinition> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components/${encodeURIComponent(componentId)}/versions`, customComponentDefinition, { method: "POST", body: version ? { version } : {} });
+  }
+
+  deprecateCustomComponent(projectId: string, componentId: string, version: string): Promise<CustomComponentDefinition> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components/${encodeURIComponent(componentId)}/versions/${encodeURIComponent(version)}/deprecate`, customComponentDefinition, { method: "POST" });
+  }
+
+  deleteCustomComponent(projectId: string, componentId: string): Promise<ListCustomComponentsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/custom-components/${encodeURIComponent(componentId)}`, listedCustomComponents, { method: "DELETE" });
+  }
+
   addProjectResource(projectId: string, input: AddProjectResourceRequest): Promise<ProjectResourcesResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}/resources`, projectResources, { method: "POST", body: input });
   }
@@ -3342,6 +3617,27 @@ export class LocalApiClient {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}`,
       builderConversationSnapshot,
+    );
+  }
+
+  getBuilderComponentProposal(projectId: string, proposalId: string): Promise<CustomComponentProposal> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/edit-proposals/${encodeURIComponent(proposalId)}`,
+      customComponentProposal,
+    );
+  }
+
+  commandBuilderComponentProposal(
+    projectId: string,
+    conversationId: string,
+    operationId: string,
+    proposalId: string,
+    input: ComponentProposalCommandRequest,
+  ): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/operations/${encodeURIComponent(operationId)}/component-proposals/${encodeURIComponent(proposalId)}/commands`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
     );
   }
 
@@ -3698,8 +3994,12 @@ export class LocalApiClient {
     });
     source.onerror = () => {
       if (closed) return;
-      close();
-      handlers.onError?.(new LocalApiClientError("The local run event stream closed unexpectedly.", { status: 0, code: "unavailable" }));
+      // EventSource emits error while reconnecting too. Leave it open so the
+      // browser can resume with Last-Event-ID; report only terminal closure.
+      if (source.readyState === EventSource.CLOSED) {
+        close();
+        handlers.onError?.(new LocalApiClientError("The local run event stream closed unexpectedly.", { status: 0, code: "unavailable" }));
+      }
     };
     return close;
   }

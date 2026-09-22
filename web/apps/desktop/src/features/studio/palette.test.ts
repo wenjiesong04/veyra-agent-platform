@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ProjectResourceDescriptor, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, grantCatalogResource, knowledgePalette, nodeDisplayTitle, notePalette, paletteForMode, paletteFromCatalog, paletteItemBlocked, workflowAgentPalette } from "./palette";
+import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, grantCatalogResource, isProjectCustomComponentResource, knowledgePalette, newCatalogNode, nodeDisplayTitle, notePalette, paletteForMode, paletteFromCatalog, paletteItemBlocked, workflowAgentPalette } from "./palette";
 
 const source: AgentSource = {
   schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "",
@@ -58,6 +58,45 @@ describe("Studio catalog palette", () => {
     expect(paletteFromCatalog([{ ...resource, binding_status: "stale" } as ProjectResourceDescriptor])[0]?.draggable).toBe(false);
   });
 
+  it("projects a Project composite as a dynamic Agent node with an exact version lock", () => {
+    const component: ProjectResourceDescriptor = {
+      ...tool("Invoice Extractor", "custom.invoice-extractor", "design_only"),
+      resource_id: "custom-component-1",
+      kind: "component",
+      component_class: "composite",
+      version: "1.0.0",
+      reference: "custom-component-1@1.0.0",
+      name: "Invoice Extractor",
+      origin: "project",
+      content_hash: "c".repeat(64),
+      required_permissions: { network_hosts: ["files.example.test"], tools: ["veyra.tool.filesystem.read"], filesystem_read_roots: ["project"], filesystem_write_roots: [], shell_workspace_only: false },
+      tags: ["custom-component", "transform"],
+      spec: { implementation_kind: "transform", ui: { category: "custom", icon: "box", title: "Invoice Extractor" } },
+      scope: "project",
+      binding_status: "current",
+      binding_source: "manual",
+      bound_content_hash: "d".repeat(64),
+      used_by: [],
+    };
+    const staleComponent: ProjectResourceDescriptor = { ...component, binding_status: "stale" };
+    const item = paletteFromCatalog([component])[0];
+    expect(item).toMatchObject({ key: component.reference, group: "component", componentType: "CustomComponent", title: "Invoice Extractor", draggable: true });
+    expect(paletteForMode([item!], "agent")).toHaveLength(1);
+    expect(paletteForMode([item!], "workflow")).toHaveLength(0);
+    expect(isProjectCustomComponentResource(staleComponent)).toBe(true);
+    expect(paletteFromCatalog([staleComponent])[0]?.draggable).toBe(false);
+    expect(paletteFromCatalog([{ ...component, scope: "used_unbound", bound_content_hash: null } as ProjectResourceDescriptor])).toHaveLength(0);
+
+    const node = newCatalogNode(item!, "custom_1");
+    expect(node).toEqual({ id: "custom_1", component_type: "CustomComponent", uses: component.reference, input_mapping: {}, output_mapping: {} });
+    const next = attachCatalogResource(source, component, node, { x: 10, y: 20 });
+    expect(next.lock[component.reference]).toBe(component.bound_content_hash);
+    expect(next.extensions.veyra.permissions.tools).toContain("veyra.tool.filesystem.read");
+    expect(next.extensions.veyra.permissions.network_hosts).toContain("files.example.test");
+    expect(nodeDisplayTitle(node, [component], "zh")).toBe("Invoice Extractor");
+    expect(() => grantCatalogResource(source, staleComponent)).toThrow(/bound to this Project/);
+  });
+
   it("attaches Skills as catalog bindings without adding a Flow node", () => {
     const skill: ResourceDescriptor = {
       schema_version: "1.0",
@@ -89,6 +128,7 @@ describe("Studio catalog palette", () => {
   it("keeps the legacy Agent alias out of the new-node palette", () => {
     const items = fallbackPalette();
     expect(items.some((item) => item.componentType === "Agent")).toBe(false);
+    expect(items.some((item) => item.componentType === "CustomComponent")).toBe(false);
     expect(paletteForMode(items, "agent").some((item) => item.componentType === "Agent")).toBe(false);
     expect(paletteForMode(items, "agent").some((item) => item.componentType === "Model")).toBe(true);
     expect(paletteForMode(items, "agent").some((item) => item.componentType === "AgentCall")).toBe(false);

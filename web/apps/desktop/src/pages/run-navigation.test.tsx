@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentRunResponse, ProjectSummaryResponse, WorkItem } from "@veyra/api-contracts";
+import type { AgentRunResponse, AgentSource, ProjectSummaryResponse, WorkItem } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClient, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
@@ -12,6 +12,15 @@ import { RunDetail } from "../features/runs/RunDetail";
 import userEvent from "@testing-library/user-event";
 
 const identity = { projectId: "project-1", agentId: "agent-1", runId: "historical-1" };
+const executionSource: AgentSource = {
+  schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "runner", name: "Runner", description: "",
+  inputs: {}, outputs: { result: "string" },
+  nodes: [{ id: "start", component_type: "Start" }, { id: "tool", component_type: "Tool", uses: "veyra.tool.example@1.0.0" }, { id: "out", component_type: "Output", output_name: "result" }],
+  transitions: [{ from: "start", port: "next", to: "tool" }, { from: "tool", port: "next", to: "out" }],
+  extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+  ui: { positions: { start: { x: 0, y: 0 }, tool: { x: 200, y: 0 }, out: { x: 400, y: 0 } } },
+  lock: { "veyra.tool.example@1.0.0": "sha256:locked" },
+};
 const run: AgentRunResponse = {
   schema_version: "1.0", project_id: identity.projectId, agent_id: identity.agentId, run_id: identity.runId,
   version_id: "version-original", status: "failed", result: null, error: { code: "tool_failed", message: "Original failure" },
@@ -33,7 +42,7 @@ function setup() {
   const api = {
     listProjects: vi.fn().mockResolvedValue({ projects: [project] }),
     listAgentRuns: vi.fn().mockResolvedValue({ runs: [{ ...run, events: undefined }] }),
-    listAgentVersions: vi.fn().mockResolvedValue({ versions: [] }),
+    listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [{ version_id: "version-original", agent_id: "agent-1", source_hash: "source-hash", behavior_hash: "behavior-hash", created_at: run.created_at, source: executionSource }] }),
     getAgentRun: vi.fn(client.getAgentRun.bind(client)),
     runAgent: vi.fn(), getDraft: vi.fn(),
     orchestratorStatus: vi.fn().mockResolvedValue({ active: [], counts: {}, limits: {}, stale_count: 0 }),
@@ -128,11 +137,11 @@ describe("historical run navigation", () => {
     expect(screen.getByRole("link", { name: "newer-run" })).toHaveAttribute("href", runDetailHref({ ...identity, runId: "newer-run" }));
   });
 
-  it.each(["history", "monitor", "studio"])("restores the same detail on %s and remount without creating a Run or reading latest/draft", async (entry) => {
+  it.each(["history", "monitor"])("restores the same detail on %s and remount without creating a Run or reading latest/draft", async (entry) => {
     const { api, fetcher } = setup();
-    const href = entry === "history" ? runDetailHref(identity) : entry === "studio" ? runStudioHref(identity) : runMonitorHref(identity);
+    const href = entry === "history" ? runDetailHref(identity) : runMonitorHref(identity);
     window.history.replaceState(null, "", href);
-    const page = entry === "history" ? <AgentRunPage projectId="project-1" agentId="agent-1" /> : entry === "studio" ? <StudioPage projectId="project-1" agentId="agent-1" /> : <MonitorPage />;
+    const page = entry === "history" ? <AgentRunPage projectId="project-1" agentId="agent-1" /> : <MonitorPage />;
     let view = mount(api, page);
     for (let attempt = 0; attempt < 2; attempt++) {
       expect(await screen.findByRole("heading", { name: identity.runId })).toBeInTheDocument();
@@ -147,6 +156,26 @@ describe("historical run navigation", () => {
     expect(api.getDraft).not.toHaveBeenCalled();
     expect(api.listAgentRuns).not.toHaveBeenCalled();
     expect(fetcher.mock.calls.every(([url]) => url === "/api/v1/projects/project-1/agents/agent-1/runs/historical-1")).toBe(true);
+  });
+
+  it("restores the exact immutable Run version on Studio and keeps Run Detail as a separate route", async () => {
+    const { api } = setup();
+    window.history.replaceState(null, "", runStudioHref(identity));
+    mount(api, <StudioPage projectId="project-1" agentId="agent-1" />);
+    expect(await screen.findByRole("heading", { name: "Runner" })).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(identity.runId))).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("tool")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View Run Detail" })).toHaveAttribute("href", runDetailHref(identity));
+    expect(api.getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", identity.runId);
+    expect(api.listAgentVersions).toHaveBeenCalledWith("project-1", "agent-1");
+    expect(api.getDraft).not.toHaveBeenCalled();
+
+    cleanup();
+    window.history.replaceState(null, "", runDetailHref(identity));
+    mount(api, <StudioPage projectId="project-1" agentId="agent-1" />);
+    expect(await screen.findByRole("heading", { name: identity.runId })).toBeInTheDocument();
+    expect(screen.getByText("Original failure")).toBeInTheDocument();
   });
 
   it("shows missing run errors instead of substituting another Run", async () => {
@@ -168,9 +197,10 @@ describe("historical run navigation", () => {
     mount(api, <StudioPage projectId="project-1" agentId="agent-1" />);
     await waitFor(() => expect(api.getAgentRun).toHaveBeenCalled());
     await act(async () => { window.location.hash = runStudioHref({ ...identity, runId: "historical-2" }); window.dispatchEvent(new HashChangeEvent("hashchange")); });
-    expect(await screen.findByRole("heading", { name: "historical-2" })).toBeInTheDocument();
+    expect(await screen.findByText(/historical-2/)).toBeInTheDocument();
     await act(async () => finish(run));
-    expect(screen.queryByRole("heading", { name: identity.runId })).not.toBeInTheDocument();
+    expect(screen.getByText(/historical-2/)).toBeInTheDocument();
+    expect(screen.queryByText(/historical-1/)).not.toBeInTheDocument();
   });
 
   it("loads Workflow history by workflow and run identity", async () => {

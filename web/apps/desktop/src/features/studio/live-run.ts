@@ -90,10 +90,15 @@ function useLiveRunSession({
   const [busy, setBusy] = React.useState(false);
 
   const adopt = React.useCallback((next: AgentRunResponse, previous: AgentRunResponse | null = null) => {
-    const events = next.events ?? previous?.events ?? [];
+    const bySequence = new Map<number, RuntimeEvent>();
+    for (const event of [...(previous?.events ?? []), ...(next.events ?? [])]) {
+      if (event.run_id === next.run_id) bySequence.set(event.sequence, event);
+    }
+    const events = [...bySequence.values()].sort((left, right) => left.sequence - right.sequence);
     return {
       ...next,
       events,
+      status: inferRunStatus(next.status, events),
       stream_text: streamText(events) || next.stream_text || previous?.stream_text || "",
     };
   }, []);
@@ -163,7 +168,7 @@ function useLiveRunSession({
         },
         onDone: refresh,
       },
-      { after: 0 },
+      { after: Math.max(0, ...(run.events ?? []).map((event) => event.sequence)) },
     );
   }, [inactive, api, projectId, agentId, run?.run_id, run?.status, adopt]);
 

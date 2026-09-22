@@ -95,6 +95,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runAgent} onClick={() => void live.start(inputs)}>
               {inFlight ? (zh ? "运行中…" : "Running…") : (zh ? "测试运行" : "Test run")}
             </Button>
+            {run?.status === "running" ? <Button variant="ghost" size="sm" disabled={live.busy} onClick={() => void live.sendCommand("stop")}>{zh ? "停止运行" : "Stop Run"}</Button> : null}
             {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => live.clear()}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
           <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />

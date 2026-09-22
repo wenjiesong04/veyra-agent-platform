@@ -37,6 +37,34 @@ export function blueprintGraph(blueprint: JsonObject | null | undefined): {
   return { nodes, transitions };
 }
 
+export function blueprintPresentation(blueprint: JsonObject | null | undefined): {
+  labels: Record<string, string>;
+  note?: { text: string; width: number; color: string };
+} {
+  const ui = blueprint && isRecord(blueprint.ui_suggestions) ? blueprint.ui_suggestions : null;
+  if (!ui) return { labels: {} };
+  const labels: Record<string, string> = {};
+  if (isRecord(ui.labels)) {
+    for (const [id, label] of Object.entries(ui.labels)) {
+      if (typeof label === "string") labels[id] = label;
+    }
+  }
+  const notes = isRecord(ui.notes) ? ui.notes : null;
+  const intro = notes && isRecord(notes.note_intro) ? notes.note_intro : null;
+  if (!intro || typeof intro.text !== "string") return { labels };
+  const width = typeof intro.width === "number" && Number.isFinite(intro.width)
+    ? Math.min(640, Math.max(160, intro.width))
+    : 420;
+  return {
+    labels,
+    note: {
+      text: intro.text,
+      width,
+      color: typeof intro.color === "string" ? intro.color : "amber",
+    },
+  };
+}
+
 export function revisionFactoryGoal(input: {
   agentName: string;
   agentId: string;

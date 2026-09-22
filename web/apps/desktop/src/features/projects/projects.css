@@ -358,6 +358,23 @@
 
 .project-resource-stats strong { color: var(--ink); font-size: 20px; line-height: 1; }
 .project-resource-stats span { color: var(--muted); font-size: 11px; }
+.custom-components-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.custom-components-layout { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(320px, 1.2fr); gap: 20px; margin-top: 18px; }
+.custom-components-list, .custom-component-editor { display: grid; align-content: start; gap: 12px; min-width: 0; }
+.custom-component-card { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.custom-component-card-heading, .custom-component-card-actions, .custom-component-version, .custom-component-editor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.custom-component-card p, .custom-component-card small, .custom-component-editor p { margin: 0; color: var(--muted); }
+.custom-component-version { justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--line); }
+.custom-component-version span { display: grid; gap: 4px; min-width: 0; }
+.custom-component-version code { overflow-wrap: anywhere; }
+.custom-component-editor { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-subtle, var(--surface)); }
+.custom-component-editor h3 { margin: 0; }
+.custom-component-editor label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.custom-component-editor input, .custom-component-editor select, .custom-component-editor textarea { width: 100%; min-width: 0; }
+.custom-component-json { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.custom-component-safety-note { font-size: 12px; }
+.custom-components-message { color: var(--success, #32865b); }
+@media (max-width: 760px) { .custom-components-layout { grid-template-columns: minmax(0, 1fr); } .custom-components-header { flex-direction: column; } }
 .project-resource-stats .is-warning strong { color: var(--warn); }
 
 .project-resource-list, .project-resource-catalog-list, .project-resource-missing-list { display: grid; gap: 4px; }

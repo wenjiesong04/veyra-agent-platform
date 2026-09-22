@@ -141,6 +141,7 @@ def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
             "HumanApproval",
             "Verifier",
             "Output",
+            "CustomComponent",
         }
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
@@ -243,6 +244,91 @@ def test_runtime_condition_verifier_and_unsupported_nodes(tmp_path: Path) -> Non
         response = _run_until_settled(client, url, {"flag": True})
         assert response["status"] == "verified"
         assert response["result"] == {"result": "ok"}
+
+
+def test_runtime_branch_runs_only_selected_approval_and_transform(
+    tmp_path: Path,
+) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    nodes = [
+        {"id": "start", "component_type": "Start"},
+        {
+            "id": "classify",
+            "component_type": "Condition",
+            "expression": "urgent == true",
+        },
+        {"id": "approve_alpha", "component_type": "HumanApproval", "prompt": "Alpha"},
+        {"id": "approve_beta", "component_type": "HumanApproval", "prompt": "Beta"},
+        {
+            "id": "shape_alpha",
+            "component_type": "Transform",
+            "mapping": {"kind": "alpha", "detail": "{{request}}"},
+        },
+        {
+            "id": "shape_beta",
+            "component_type": "Transform",
+            "mapping": {"kind": "beta", "detail": "{{request}}"},
+        },
+        {"id": "output", "component_type": "Output", "output_name": "kind"},
+    ]
+    transitions = [
+        {"from": "start", "port": "next", "to": "classify"},
+        {"from": "classify", "port": "true", "to": "approve_alpha"},
+        {"from": "classify", "port": "false", "to": "approve_beta"},
+        {"from": "approve_alpha", "port": "approved", "to": "shape_alpha"},
+        {"from": "approve_alpha", "port": "rejected", "to": "output"},
+        {"from": "approve_beta", "port": "approved", "to": "shape_beta"},
+        {"from": "approve_beta", "port": "rejected", "to": "output"},
+        {"from": "shape_alpha", "port": "next", "to": "output"},
+        {"from": "shape_beta", "port": "next", "to": "output"},
+    ]
+    source = _source(nodes, transitions, {"urgent": "boolean", "request": "string"})
+    source["outputs"] = {"kind": "string", "detail": "string"}
+    with TestClient(create_app(settings)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+
+        urgent_waiting = _run_until_settled(
+            client, url, {"urgent": True, "request": "alpha request"}
+        )
+        assert urgent_waiting["status"] == "waiting"
+        urgent_events = client.get(f"{url}s/{urgent_waiting['run_id']}").json()[
+            "events"
+        ]
+        urgent_started = [
+            event["node_id"]
+            for event in urgent_events
+            if event["kind"] == "node.started"
+        ]
+        assert "approve_alpha" in urgent_started
+        assert "approve_beta" not in urgent_started
+        urgent_done = _command_until_settled(
+            client, url, urgent_waiting["run_id"], "approve"
+        )
+        assert urgent_done["result"] == {"kind": "alpha", "detail": "alpha request"}
+
+        routine_waiting = _run_until_settled(
+            client, url, {"urgent": False, "request": "beta request"}
+        )
+        assert routine_waiting["status"] == "waiting"
+        routine_events = client.get(f"{url}s/{routine_waiting['run_id']}").json()[
+            "events"
+        ]
+        routine_started = [
+            event["node_id"]
+            for event in routine_events
+            if event["kind"] == "node.started"
+        ]
+        assert "approve_beta" in routine_started
+        assert "approve_alpha" not in routine_started
+        routine_done = _command_until_settled(
+            client, url, routine_waiting["run_id"], "approve"
+        )
+        assert routine_done["result"] == {"kind": "beta", "detail": "beta request"}
 
 
 def test_runtime_rejects_unregistered_tool(tmp_path: Path) -> None:

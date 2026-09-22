@@ -15,6 +15,7 @@ export const studioComponents: StudioComponent[] = [
   { type: "Model", label: "Model", labelZh: "模型", detail: "Model instruction", detailZh: "模型与提示词", ports: ["next"] },
   { type: "AgentCall", label: "AgentCall", labelZh: "AgentCall", detail: "Call a Project Agent", detailZh: "调用项目 Agent", ports: ["next"] },
   { type: "Tool", label: "Tool", labelZh: "工具", detail: "Governed tool", detailZh: "受治理工具调用", ports: ["next"] },
+  { type: "CustomComponent", label: "Custom Component", labelZh: "自定义组件", detail: "Project-owned capability", detailZh: "项目级复用能力", ports: ["next"] },
   { type: "Condition", label: "Condition", labelZh: "条件", detail: "Branch expression", detailZh: "条件分支", ports: ["true", "false"] },
   { type: "Transform", label: "Transform", labelZh: "转换", detail: "Map values", detailZh: "安全字段映射", ports: ["next"] },
   { type: "HumanApproval", label: "Human approval", labelZh: "人工审批", detail: "Human decision", detailZh: "等待人工决策", ports: ["approved", "rejected"] },
@@ -31,6 +32,7 @@ export function newNode(type: FlowNode["component_type"], id: string): FlowNode 
   if (type === "Agent" || type === "Model") return { ...base, model_ref: "model.primary", system_prompt: "" };
   if (type === "AgentCall") return { ...base, agent_ref: "", input_mapping: {}, output_mapping: {} };
   if (type === "Tool") return { ...base, uses: "" };
+  if (type === "CustomComponent") return { ...base, uses: "", input_mapping: {}, output_mapping: {} };
   if (type === "Condition") return { ...base, expression: "" };
   if (type === "Transform") return { ...base, mapping: {} };
   if (type === "HumanApproval") return { ...base, prompt: "" };

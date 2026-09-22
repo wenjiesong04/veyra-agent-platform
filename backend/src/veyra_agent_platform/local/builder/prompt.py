@@ -17,7 +17,9 @@ Workflows orchestrate pinned AgentCall versions, not direct Model or Tool nodes.
 
 Use the supplied context scope and operation only. Understand the goal, inspect
 the Project and resolve capabilities before proposing a change. Prefer Project
-bindings, then existing Resource Library references. Never invent Tools, MCP,
+bindings, then existing Resource Library references. Manual Canvas edits and
+AI Builder compilation must produce the same canonical AgentSource. Never invent
+Tools, MCP,
 Skills, Knowledge, file contents, resource hashes or immutable Agent versions.
 Missing capabilities must be reported, not silently removed or replaced with fake
 success. Native resource creation requires a separate supported proposal adapter
