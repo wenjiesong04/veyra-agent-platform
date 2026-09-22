@@ -917,11 +917,28 @@ def _generation_schema() -> dict[str, Any]:
         "skill_refs",
         "policy_refs",
     ]
-    schema["$defs"]["typed_fields"]["description"] = (
-        "Non-empty map from slug keys to type names. Keys must match "
-        "[a-z][a-z0-9-]{0,62} and use hyphens, not underscores. Values are "
-        "type names such as string."
-    )
+    schema["$defs"]["typed_fields"] = {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {"$ref": "#/$defs/slug"},
+        "additionalProperties": {
+            "type": "string",
+            "enum": [
+                "string",
+                "number",
+                "integer",
+                "boolean",
+                "object",
+                "array",
+            ],
+        },
+        "description": (
+            "Non-empty map from slug keys to type names. Keys must match "
+            "[a-z][a-z0-9-]{0,62} and use hyphens, not underscores. Values are "
+            "type names such as string. Artifact modalities are not generated "
+            "through this compatibility schema."
+        ),
+    }
     schema["$defs"]["verification"]["description"] = (
         "Always include required as a boolean and checks as an array of "
         "strings. If required is true, checks must contain at least one item."

@@ -583,6 +583,68 @@ extensions:
       required: true
 ```
 
+### 5.3.1 Typed I/O
+
+Agent and Workflow `inputs` / `outputs` are typed by user intent. They are not
+a default `string → string` contract.
+
+Canonical runtime value kinds:
+
+- **Scalar** — `string`, `number`, `integer`, `boolean`
+- **JSON** — `object`, `array`, `table`
+- **ArtifactRef** — `image`, `pdf`, `document`, `file`, `audio`, `video`
+
+The compact wire form remains valid and is the default round-trip:
+
+```yaml
+inputs:
+  text: string
+outputs:
+  result: string
+```
+
+Rich descriptors are used when compact strings cannot express the field:
+
+```yaml
+inputs:
+  product-image:
+    type: artifact
+    artifact_kind: image
+    required: true
+    multiple: false
+    accepted_media_types: ["image/*"]
+```
+
+Legacy Agents that declare `text: string` continue to parse and run without a
+YAML migration. Compact fields that are required, single-valued, and otherwise
+default still serialize as type strings so existing `behavior_hash` values stay
+stable.
+
+Declared modality is not a runtime capability claim. An Agent may declare
+`image` input or `pdf` output and still be designable. Running it requires a
+compatible Runtime model, parser, renderer, or generator. Missing capability
+must remain a truthful blocker. Values must not silently collapse to strings.
+
+Binary values are `ArtifactRef` records, not inline Run JSON. Bytes live in the
+existing content-addressed object store (`objects/sha256/<digest>`). Metadata
+is Project-scoped in `project_artifacts`. Upload, read, resolve, and download
+all require `project_id` plus `artifact_id`. Host paths are never exposed to
+models, APIs, or UI.
+
+Runtime model modality truth is `RuntimeModelCapabilities` on the Agent
+Runtime profile. It is not `ProviderCapabilityProfile` and is not inferred in
+the UI from a model id substring. `unknown` is not `supported`. The current
+Moonshot `kimi-k3` Runtime model is `image_input=unsupported`. An Agent graph
+with image input may be saved; Run readiness is incompatible until a vision-
+capable Runtime model is configured. Provider HTTP calls may use OpenAI-
+compatible `image_url` data URLs; they must not send `file://`, host paths, or
+raw `artifact://` URLs. PDF/document bytes are not sent to the model. Missing
+parser, renderer, or image generation stays a truthful `missing_capability`.
+
+Agent Playground is not implemented. Workflow Builder Compiler is not
+implemented. Conversation restore still returns the latest canvas;
+multi-artifact Workbench remains limited.
+
 ### 5.4 Components: primitive vs composite
 
 Components are one resource kind with two required classes. They must not
@@ -1620,7 +1682,7 @@ Draft is mutable with revision. Version is immutable. Every run materializes or 
 - `file_versions`
 - `agent_version_files`
 - `runtime_api_profiles` (non-secret Project/Agent provider metadata)
-- `run_artifacts`
+- `project_artifacts` (Project-scoped ArtifactRef metadata; bytes stay in the object store)
 
 Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or long stdout.
 

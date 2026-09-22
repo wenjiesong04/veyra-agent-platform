@@ -111,7 +111,7 @@ describe("BuilderTestRun", () => {
         <BuilderTestRun api={apiFor({ startBuilderTestRun })} projectId="project-1" agentId="agent-1" conversationId="conv-1" locale="zh" onSnapshot={onSnapshot} />
       </ThemeProvider>,
     );
-    fireEvent.change(await screen.findByLabelText("测试输入"), { target: { value: "Hello world" } });
+    fireEvent.change(await screen.findByLabelText("text"), { target: { value: "Hello world" } });
     fireEvent.click(screen.getByRole("button", { name: "测试 Agent" }));
     await waitFor(() => expect(startBuilderTestRun).toHaveBeenCalledWith("project-1", "conv-1", {
       agent_id: "agent-1",

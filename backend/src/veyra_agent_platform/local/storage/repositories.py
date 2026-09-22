@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from veyra_agent_platform.contracts.artifact import ArtifactRecord, ArtifactSourceKind
 from veyra_agent_platform.contracts.common import new_uuid7
 
 from .bootstrap import require_schema_head
@@ -1368,6 +1369,43 @@ class LocalRepository:
                     connection, row["run_id"], self._run_payload(recovered)
                 )
 
+    def insert_artifact(
+        self, connection: sqlite3.Connection, record: ArtifactRecord
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO project_artifacts(
+              artifact_id, project_id, sha256, filename, media_type, size_bytes,
+              storage_ref, source_kind, run_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.artifact_id,
+                record.project_id,
+                record.sha256,
+                record.filename,
+                record.media_type,
+                record.size_bytes,
+                record.storage_ref,
+                record.source_kind,
+                record.run_id,
+                record.created_at,
+            ),
+        )
+
+    def artifact(self, project_id: str, artifact_id: str) -> ArtifactRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM project_artifacts
+                WHERE project_id = ? AND artifact_id = ?
+                """,
+                (project_id, artifact_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return _artifact_from_row(row)
+
     @staticmethod
     def _run_payload(row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -1386,3 +1424,18 @@ class LocalRepository:
             "created_at": row["created_at"],
             "finished_at": row["finished_at"],
         }
+
+
+def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
+    return ArtifactRecord(
+        artifact_id=row["artifact_id"],
+        project_id=row["project_id"],
+        sha256=row["sha256"],
+        filename=row["filename"],
+        media_type=row["media_type"],
+        size_bytes=int(row["size_bytes"]),
+        storage_ref=row["storage_ref"],
+        source_kind=cast(ArtifactSourceKind, row["source_kind"]),
+        created_at=row["created_at"],
+        run_id=row["run_id"],
+    )

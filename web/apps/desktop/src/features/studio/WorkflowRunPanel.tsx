@@ -133,6 +133,9 @@ export function WorkflowRunPanel({
             values={inputs}
             onChange={setInputs}
             emptyLabel={zh ? "此工作流不需要输入。" : "This Workflow has no inputs."}
+            locale={locale}
+            projectId={projectId}
+            api={api}
           />
           <div className="studio-run-actions">
             <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runWorkflow} onClick={() => void start()}>

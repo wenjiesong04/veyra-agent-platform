@@ -34,6 +34,16 @@ describe("Studio graph adapter", () => {
     expect(isAgentSourceCandidate(source)).toBe(true);
   });
 
+  it("accepts compact artifact types and rich typed field descriptors", () => {
+    expect(isAgentSourceCandidate({ ...source, inputs: { photo: "image" }, outputs: { caption: "string" } })).toBe(true);
+    expect(isAgentSourceCandidate({
+      ...source,
+      inputs: { photo: { type: "artifact", artifact_kind: "image", multiple: true } },
+      outputs: { caption: { type: "string", required: true } },
+    })).toBe(true);
+    expect(isAgentSourceCandidate({ ...source, inputs: { photo: "blob" }, outputs: { caption: "string" } })).toBe(false);
+  });
+
   it("round-trips catalog bindings without turning them into Flow nodes", () => {
     const bound = {
       ...source,

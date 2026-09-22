@@ -237,7 +237,11 @@ def test_meeting_notes_plan_compiles_structured_io() -> None:
     assert compiled.blueprint is not None
     payload = compiled.blueprint.to_dict()
     assert payload["inputs"] == {"transcript": "string"}
-    assert payload["outputs"] == {"summary": "string"}
+    assert payload["outputs"] == {
+        "summary": "string",
+        "decisions": "string",
+        "todos": "string",
+    }
     prompt = payload["nodes"][1]["system_prompt"]
     assert "包装" not in prompt
     assert "decisions" in prompt
@@ -271,7 +275,8 @@ def test_meeting_notes_keeps_chinese_extra_outputs_in_prompt() -> None:
     assert compiled.status == "compiled"
     assert compiled.blueprint is not None
     payload = compiled.blueprint.to_dict()
-    assert len(payload["outputs"]) == 1
+    assert len(payload["outputs"]) == 3
+    assert set(payload["outputs"].values()) == {"string"}
     prompt = payload["nodes"][1]["system_prompt"]
     assert "摘要" in prompt
     assert "决定" in prompt
@@ -679,3 +684,104 @@ def test_does_not_overgrant_unrelated_catalog_tools() -> None:
     assert permissions["tools"] == ["veyra.tool.filesystem.read"]
     assert permissions["network_hosts"] == []
     assert "veyra.tool.github.read" not in permissions["tools"]
+
+
+def test_image_to_text_keeps_image_input() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "product_image", "type": "image"}],
+            outputs=[{"name": "description", "type": "string"}],
+            capability_intents=[],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    assert payload["inputs"] == {"product-image": "image"}
+    assert payload["outputs"] == {"description": "string"}
+    assert "requires_runtime_image_input" in compiled.warnings
+    assert [node["component_type"] for node in payload["nodes"]] == [
+        "Start",
+        "Model",
+        "Output",
+    ]
+
+
+def test_pdf_and_image_generation_are_truthful_missing_capabilities() -> None:
+    pdf_in = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "report", "type": "pdf"}],
+            outputs=[{"name": "summary", "type": "string"}],
+            capability_intents=[],
+        ),
+        _empty_context(),
+    )
+    assert pdf_in.status == "missing_capability"
+    assert pdf_in.blueprint is None
+    assert pdf_in.missing[0]["kind"] == "pdf_parser"
+    assert pdf_in.missing[0]["proposal"]["executable"] is False
+
+    pdf_out = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "text", "type": "string"}],
+            outputs=[{"name": "report", "type": "pdf"}],
+            capability_intents=[],
+        ),
+        _empty_context(),
+    )
+    assert pdf_out.status == "missing_capability"
+    assert pdf_out.missing[0]["kind"] == "pdf_renderer"
+
+    image_out = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "prompt", "type": "string"}],
+            outputs=[{"name": "picture", "type": "image"}],
+            capability_intents=[],
+        ),
+        _empty_context(),
+    )
+    assert image_out.status == "missing_capability"
+    assert image_out.missing[0]["kind"] == "image_generation"
+
+
+def test_catalog_pdf_parser_is_not_auto_installed() -> None:
+    catalog = _tool(bound=False, reference="demo.pdf_parser@1.0.0")
+    catalog["resource_id"] = "demo.pdf_parser"
+    catalog["name"] = "PDF Parser"
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "report", "type": "pdf"}],
+            outputs=[{"name": "summary", "type": "string"}],
+            capability_intents=[],
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[],
+            catalog_resources=[catalog],
+        ),
+    )
+    assert compiled.status == "missing_capability"
+    assert compiled.blueprint is None
+    assert compiled.missing[0]["kind"] == "pdf_parser"
+
+
+def test_multiple_image_inputs_compile_to_artifact_descriptor() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "photos", "type": "image", "multiple": True}],
+            outputs=[{"name": "analysis", "type": "object"}],
+            capability_intents=[],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    assert compiled.blueprint.to_dict()["inputs"] == {
+        "photos": {
+            "type": "artifact",
+            "artifact_kind": "image",
+            "multiple": True,
+        }
+    }

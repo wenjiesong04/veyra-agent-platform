@@ -33,6 +33,7 @@ from .common import (
     thaw_json,
 )
 from .resource import AgentVersionRef, require_semver
+from .typed_io import TypedField, typed_fields_to_wire
 
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 
@@ -45,8 +46,8 @@ class WorkflowSource:
     name: str
     description: str
     version: str
-    inputs: Mapping[str, str]
-    outputs: Mapping[str, str]
+    inputs: Mapping[str, TypedField]
+    outputs: Mapping[str, TypedField]
     nodes: tuple[FlowNode, ...]
     transitions: tuple[Transition, ...]
     permissions: PermissionContract
@@ -165,8 +166,8 @@ class WorkflowSource:
             "name": self.name,
             "description": self.description,
             "version": self.version,
-            "inputs": thaw_json(self.inputs),
-            "outputs": thaw_json(self.outputs),
+            "inputs": typed_fields_to_wire(self.inputs),
+            "outputs": typed_fields_to_wire(self.outputs),
             "nodes": [node.to_dict() for node in self.nodes],
             "transitions": [transition.to_dict() for transition in self.transitions],
             "extensions": {

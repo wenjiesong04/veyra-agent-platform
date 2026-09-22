@@ -15,8 +15,10 @@ from typing import Any, Literal
 from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource
 from veyra_agent_platform.contracts.semantic_plan import (
     AgentSemanticPlanV1,
+    SemanticField,
     SemanticStepIntent,
 )
+from veyra_agent_platform.contracts.typed_io import ARTIFACT_KINDS
 from veyra_agent_platform.local.builder.knowledge_binding import (
     bind_knowledge,
     knowledge_reference,
@@ -171,10 +173,15 @@ def _compile_v1(
     )
     if question is not None:
         return SemanticCompileResult("clarification", None, question, (), (), ())
+    modality_missing, modality_tools, modality_warnings = _modality_requirements(
+        plan, context
+    )
+    missing.extend(modality_missing)
     if missing:
         return SemanticCompileResult(
             "missing_capability", None, None, tuple(missing), (), ()
         )
+    tools = _merge_tools(tools, modality_tools)
     payload = _linear_blueprint(
         plan,
         tools,
@@ -189,7 +196,7 @@ def _compile_v1(
             )
         ],
         extra_approvals=plan.approval_points,
-        warnings=(),
+        warnings=modality_warnings,
         collapse_models=True,
     )
     return SemanticCompileResult(
@@ -199,6 +206,7 @@ def _compile_v1(
         (),
         tuple(tools),
         tuple(documents),
+        modality_warnings,
     )
 
 
@@ -253,6 +261,11 @@ def _compile_graph_intent(
             tools.append(resource)
             seen.add(reference)
     missing.extend(extra_missing)
+    modality_missing, modality_tools, modality_warnings = _modality_requirements(
+        plan, context
+    )
+    missing.extend(modality_missing)
+    tools = _merge_tools(tools, modality_tools)
     if missing:
         return SemanticCompileResult(
             "missing_capability", None, None, tuple(missing), (), ()
@@ -261,7 +274,7 @@ def _compile_graph_intent(
         extra_approvals: tuple[str, ...] = ()
     else:
         extra_approvals = plan.approval_points
-    warnings = _verification_warnings(plan)
+    warnings = _verification_warnings(plan) + modality_warnings
     payload = _linear_blueprint(
         plan,
         tools,
@@ -294,21 +307,20 @@ def _linear_blueprint(
 ) -> dict[str, Any]:
     used_fields: set[str] = set()
     inputs = {
-        _field_slug(item.name, used_fields, "input"): item.type for item in plan.inputs
+        _field_slug(item.name, used_fields, "input"): _field_wire(item)
+        for item in plan.inputs
     }
     outputs = {
-        _field_slug(item.name, used_fields, "output"): item.type
+        _field_slug(item.name, used_fields, "output"): _field_wire(item)
         for item in plan.outputs
     }
     extra_outputs = [f"{item.name} ({item.type})" for item in plan.outputs[1:]]
-    if extra_outputs:
-        primary_name, primary_type = next(iter(outputs.items()))
-        outputs = {primary_name: primary_type}
     path_input = next(
         (name for name, kind in inputs.items() if kind == "string" and "path" in name),
         None,
     )
-    if tools and path_input is None:
+    filesystem_tools = [resource for resource in tools if _is_filesystem_tool(resource)]
+    if filesystem_tools and path_input is None:
         path_input = _field_slug("path", used_fields, "input")
         inputs[path_input] = "string"
 
@@ -487,8 +499,8 @@ def _compile_step(
     plan: AgentSemanticPlanV1,
     *,
     extra_outputs: list[str],
-    inputs: Mapping[str, str],
-    outputs: Mapping[str, str],
+    inputs: Mapping[str, Any],
+    outputs: Mapping[str, Any],
     path_input: str | None,
     tools: list[dict[str, Any]],
     used_ids: set[str],
@@ -733,7 +745,7 @@ def _model_prompt(
 
 
 def _transform_mapping(
-    step: SemanticStepIntent, inputs: Mapping[str, str], outputs: Mapping[str, str]
+    step: SemanticStepIntent, inputs: Mapping[str, Any], outputs: Mapping[str, Any]
 ) -> dict[str, str]:
     purpose = step.purpose.strip()
     if "{{" in purpose and "}}" in purpose and ":" in purpose:
@@ -746,7 +758,7 @@ def _transform_mapping(
     return {target: f"{{{{{source}}}}}"}
 
 
-def _condition_expression(step: SemanticStepIntent, inputs: Mapping[str, str]) -> str:
+def _condition_expression(step: SemanticStepIntent, inputs: Mapping[str, Any]) -> str:
     purpose = step.purpose.strip()
     if _CONDITION_EXPR.fullmatch(purpose):
         return purpose
@@ -839,3 +851,115 @@ def _missing_capability(kind: str, reference: str, reason: str) -> dict[str, Any
         "reason": reason,
         "proposal": {"action": "quarantined_resource_draft", "executable": False},
     }
+
+
+_CAPABILITY_NEEDLES = {
+    "pdf_parser": ("pdf_parser", "pdf-parser", "parse-pdf"),
+    "pdf_renderer": ("pdf_renderer", "pdf-renderer", "render-pdf"),
+    "image_generation": (
+        "image_generation",
+        "image-generation",
+        "text-to-image",
+    ),
+}
+
+
+def _field_wire(field: SemanticField) -> str | dict[str, Any]:
+    if not field.multiple:
+        return field.type
+    if field.type in ARTIFACT_KINDS:
+        return {
+            "type": "artifact",
+            "artifact_kind": field.type,
+            "multiple": True,
+        }
+    return {"type": field.type, "multiple": True}
+
+
+def _merge_tools(
+    current: list[dict[str, Any]], extra: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged = list(current)
+    seen = {str(item.get("reference") or "") for item in merged}
+    for item in extra:
+        reference = str(item.get("reference") or "")
+        if reference and reference not in seen:
+            merged.append(item)
+            seen.add(reference)
+    return merged
+
+
+def _is_filesystem_tool(resource: Mapping[str, Any]) -> bool:
+    reference = str(resource.get("reference") or resource.get("resource_id") or "")
+    return "filesystem" in reference.casefold()
+
+
+def _provides_capability(resource: Mapping[str, Any], capability: str) -> bool:
+    haystack = " ".join(
+        str(resource.get(key) or "")
+        for key in ("resource_id", "reference", "name", "slug")
+    ).casefold()
+    return any(needle in haystack for needle in _CAPABILITY_NEEDLES[capability])
+
+
+def _find_project_capability(
+    context: BuilderProjectContext, capability: str
+) -> dict[str, Any] | None:
+    for resource in context.project_resources:
+        if resource.get("scope") != "project":
+            continue
+        if _provides_capability(resource, capability):
+            return dict(resource)
+    return None
+
+
+def _modality_requirements(
+    plan: AgentSemanticPlanV1, context: BuilderProjectContext
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], tuple[str, ...]]:
+    missing: list[dict[str, Any]] = []
+    tools: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+
+    def require_capability(capability: str, reason: str) -> None:
+        if capability in seen:
+            return
+        seen.add(capability)
+        resource = _find_project_capability(context, capability)
+        if resource is not None:
+            tools.append(resource)
+            return
+        missing.append(_missing_capability(capability, capability, reason))
+
+    for item in plan.inputs:
+        if item.type == "image":
+            warnings.append("requires_runtime_image_input")
+        elif item.type == "pdf":
+            require_capability("pdf_parser", "PDF parsing is not bound to this Project")
+        elif item.type in {"audio", "video"}:
+            missing.append(
+                _missing_capability(
+                    "unsupported_modality",
+                    item.type,
+                    "Audio/video runtime adapters are not enabled",
+                )
+            )
+    for item in plan.outputs:
+        if item.type == "pdf":
+            require_capability(
+                "pdf_renderer", "PDF rendering is not bound to this Project"
+            )
+        elif item.type == "image":
+            require_capability(
+                "image_generation",
+                "Image generation is not bound to this Project",
+            )
+        elif item.type in {"audio", "video"}:
+            missing.append(
+                _missing_capability(
+                    "unsupported_modality",
+                    item.type,
+                    "Audio/video runtime adapters are not enabled",
+                )
+            )
+    return missing, tools, tuple(dict.fromkeys(warnings))

@@ -35,6 +35,7 @@ from .resource import (
     ResourceRef,
     require_semver,
 )
+from .typed_io import TypedField, parse_typed_fields, typed_fields_to_wire
 
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]*@[0-9]+\.[0-9]+\.[0-9]+$")
@@ -727,8 +728,8 @@ class ResourcePolicy:
 class AgentBlueprint:
     schema_version: str
     goal: str
-    inputs: Mapping[str, str]
-    outputs: Mapping[str, str]
+    inputs: Mapping[str, TypedField]
+    outputs: Mapping[str, TypedField]
     nodes: tuple[FlowNode, ...]
     transitions: tuple[Transition, ...]
     required_capabilities: RequiredCapabilities
@@ -793,8 +794,8 @@ class AgentBlueprint:
         return {
             "schema_version": self.schema_version,
             "goal": self.goal,
-            "inputs": thaw_json(self.inputs),
-            "outputs": thaw_json(self.outputs),
+            "inputs": typed_fields_to_wire(self.inputs),
+            "outputs": typed_fields_to_wire(self.outputs),
             "nodes": [node.to_dict() for node in self.nodes],
             "transitions": [transition.to_dict() for transition in self.transitions],
             "required_capabilities": self.required_capabilities.to_dict(),
@@ -874,19 +875,8 @@ class RequiredCapabilities:
         }
 
 
-def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
-    item = require_mapping(value, field)
-    if not item or not all(
-        isinstance(key, str)
-        and _SLUG.fullmatch(key)
-        and isinstance(item_value, str)
-        and item_value
-        for key, item_value in item.items()
-    ):
-        raise ContractValidationError(
-            f"{field} must be a non-empty map of slug names to non-empty types"
-        )
-    return cast(Mapping[str, str], freeze_json(dict(item)))
+def _typed_fields(value: Any, field: str) -> Mapping[str, TypedField]:
+    return parse_typed_fields(value, field)
 
 
 def _ui_layout(value: Any) -> Mapping[str, Any]:
@@ -1017,8 +1007,8 @@ class AgentSource:
     slug: str
     name: str
     description: str
-    inputs: Mapping[str, str]
-    outputs: Mapping[str, str]
+    inputs: Mapping[str, TypedField]
+    outputs: Mapping[str, TypedField]
     nodes: tuple[FlowNode, ...]
     transitions: tuple[Transition, ...]
     runtime_profile: str
@@ -1176,8 +1166,8 @@ class AgentSource:
             "slug": self.slug,
             "name": self.name,
             "description": self.description,
-            "inputs": thaw_json(self.inputs),
-            "outputs": thaw_json(self.outputs),
+            "inputs": typed_fields_to_wire(self.inputs),
+            "outputs": typed_fields_to_wire(self.outputs),
             "nodes": [node.to_dict() for node in self.nodes],
             "transitions": [transition.to_dict() for transition in self.transitions],
             "extensions": {
@@ -1293,7 +1283,7 @@ def _validate_ui_node_references(
 def _validate_graph(
     nodes: tuple[FlowNode, ...],
     transitions: tuple[Transition, ...],
-    outputs: Mapping[str, str],
+    outputs: Mapping[str, TypedField],
     verification: VerifierContract,
     *,
     allowed_types: frozenset[ComponentType] = _AGENT_GRAPH_TYPES,
@@ -1324,7 +1314,11 @@ def _validate_graph(
         for node in nodes
         if node.component_type is ComponentType.OUTPUT
     ]
-    if set(output_names) != set(outputs) or len(output_names) != len(set(output_names)):
+    if any(name is None or name not in outputs for name in output_names):
+        raise ContractValidationError("every Output node must name a declared output")
+    if len(output_names) != len(set(output_names)):
+        raise ContractValidationError("Output node output_name values must be unique")
+    if len(output_names) > 1 and set(output_names) != set(outputs):
         raise ContractValidationError(
             "every declared output must have exactly one matching Output node"
         )

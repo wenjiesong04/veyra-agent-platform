@@ -1,17 +1,133 @@
 # Veyra Development Handoff
 
-## Current checkpoint（2026-09-22，Graph Compiler V2 + SemanticPlan hardening）
+## Current checkpoint（2026-09-22，Typed I/O + Artifact Runtime released）
 
 - Branch：`codex/agent-platform` → `origin/codex/agent-platform`
-- Baseline：`8f71a1e baseline verified`
-- Graph Compiler V2 + Default Note + SemanticPlan V2 Provider Hardening
-  = **product-complete**（本轮 Git checkpoint）
-- 不要再把 HEAD 写成 `4e3c2e6`，也不要把 Slice 4 写成未提交
-- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`、`$DB`
-- **不要开始 Typed I/O / Artifact Runtime / Playground**
-- 不要重构 Conversation / multi-artifact Workbench
+- Graph Compiler V2 checkpoint：`8bef91c9cd546717b30134059172c74ceedc6289`
+- Typed I/O + Artifact Runtime：**released** by `feat: add typed agent IO and runtime artifacts`
+- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`、`$DB`，
+  也不误改无关的 `shell.tsx` / `shell.css` / `app.test.tsx`
+- 不要重开 Graph Compiler V2
+- 不要开始完整 Playground、Workflow Builder Compiler、Chat attachment 统一
 - 暂停：autonomous Run、Community redesign、behavioral eval / LLM judge
-- 下一步：Typed I/O + Artifact Runtime（需用户明确授权后再做）
+- 下一步：**Agent Playground**（Studio / Playground / Runs）。现在不要开始它。
+
+原则：
+
+- Agent I/O is typed by user intent.
+- Binary values are ArtifactRefs, not inline Run JSON.
+- Declared modality does not imply runtime capability.
+- Missing parser/renderer/generator must remain a truthful missing capability.
+
+### Typed I/O Slice E
+
+- `RuntimeModelCapabilities` 与 Builder `ProviderCapabilityProfile` 严格分开
+- Moonshot `kimi-k3`：`image_input=unsupported`；`unknown != supported`
+- Runtime readiness 增加 `modalities` check；Run 前失败
+  `runtime_model_incompatible` / `unsupported_modality`
+- Model adapter 可组 OpenAI-compatible `image_url` parts；HTTP 边界拒绝
+  `file://`、host path、`artifact://`。Vision 实际发送时改写为 data URL，
+  不把 bytes 写入 Run JSON / events
+- 当前真实 Runtime Model 不支持 vision：CASE C 必须在 Run 前 truthful 失败
+
+### Typed I/O Slice F
+
+- 共享 `RuntimeInputForm` / `RuntimeOutputView`
+- Studio Test、Workflow Test、Builder Test、Run Detail 共用
+- `FactoryTestRun` 是旧 UI 死路径（产品入口是 `ProjectBuilderConversation`），
+  不实现 Typed I/O，也不继续扩展
+- 未做完整 Playground page
+
+### Typed I/O Slice A
+
+- Agent/Workflow `inputs`/`outputs` 解析为 `TypedField`
+- 旧 compact map（`text: string`）继续 parse/run；等价字段仍 compact 序列化，
+  github-triage fixture 的 `behavior_hash` 不变
+- 用户可见类型：string/number/integer/boolean/object/array/table 以及
+  image/pdf/document/file/audio/video（底层 `type: artifact` + `artifact_kind`）
+- 声明 modality ≠ Runtime capability。image/pdf 不得退化成 string
+- Factory 兼容 schema 仍然只生成 compact scalar/json，不向 Kimi 暴露 artifact
+
+### Typed I/O Slice B
+
+- 复用 `local/storage/objects.py`：`objects/sha256/<digest>`
+- `ArtifactRecord` / `to_ref()`；bytes 不进 JSON
+- Alembic head：`local_0025_project_artifacts`
+- Project-scoped multipart upload：
+  `POST /api/v1/projects/{project_id}/artifacts`
+- metadata / content 读取都要求 `project_id` + `artifact_id`
+- filename sanitize、magic sniff、extension/claimed MIME consistency、8MB 上限
+- 不暴露 host path；不信任客户端 MIME alone
+
+### Typed I/O Slice C
+
+- Runtime `_prepare_inputs` / `_prepare_outputs` 解析 ArtifactRef 或 `$artifact`
+- Project isolation、存在性、MIME/accepted media 在 Run 前失败
+- `inputs_json` / `result_json` 只存 ArtifactRef，不含 bytes
+- Tool `produced_artifacts` → object store + `artifact.created`
+  （artifact_id / media_type / filename / size / digest / node_id）
+- 事件 payload 拒绝 binary keys
+
+### Typed I/O Slice D
+
+- SemanticPlan 扩展 compact 类型（含 image/pdf/document/file/audio/video）
+  与 `multiple`；不放 artifact_id / storage_ref
+- Compiler 保留 multiple outputs；一个 Output node 可收集多字段
+- pdf_parser / pdf_renderer / image_generation / unsupported_modality
+  仅在 Project-bound Resource 存在时生成 Tool
+- image → text 可编译，并警告 `requires_runtime_image_input`
+
+Focused evidence（未 commit）：
+
+- pytest typed I/O + artifacts + runtime routes + compiler + composition +
+  factory schema：163 + 5 passed
+- ruff/mypy on Runtime modality modules：clean
+- desktop typecheck：pass
+- desktop vitest runtime form/output + Builder/Studio/client：113 passed
+- 服务已用真实 `.env` 重启：
+  Desktop `5173` → 200；Community `5174` → 200；
+  Local `8771` `build_sha=8bef91c-typed-io-dirty` /
+  `local_0025_project_artifacts` / `database_ready=true`；
+  Community `8772` 同 SHA。
+  Builder Model：Moonshot `kimi-k3`（`https://api.moonshot.cn/v1`，
+  `strict_json_schema_support=supported`）。
+  Runtime Model：Moonshot `kimi-k3`（同 endpoint，`MOONSHOT_API_KEY`）。
+  Runtime modalities：`text_input=supported`，
+  `image_input=unsupported`，`structured_json_output=supported`，
+  `source=static_profile`。unknown ≠ supported。
+
+### Typed I/O Slice A
+
+- Agent/Workflow `inputs`/`outputs` 解析为 `TypedField`
+- 旧 compact map（`text: string`）继续 parse/run；等价字段仍 compact 序列化，
+  github-triage fixture 的 `behavior_hash` 不变
+- 用户可见类型：string/number/integer/boolean/object/array/table 以及
+  image/pdf/document/file/audio/video（底层 `type: artifact` + `artifact_kind`）
+- 声明 modality ≠ Runtime capability。image/pdf 不得退化成 string
+- Runtime 对 Artifact 值做 ArtifactRef shape 校验（store 隔离在 Slice B/C）
+- SemanticPlan 仍是 string/number/boolean（Slice D）
+- Factory 兼容 schema 仍然只生成 compact scalar/json，不向 Kimi 暴露 artifact
+
+### Typed I/O Slice B
+
+- 复用 `local/storage/objects.py`：`objects/sha256/<digest>`
+- `ArtifactRecord` / `to_ref()`；bytes 不进 JSON
+- Alembic head：`local_0025_project_artifacts`
+- Project-scoped multipart upload：
+  `POST /api/v1/projects/{project_id}/artifacts`
+- metadata / content 读取都要求 `project_id` + `artifact_id`
+- filename sanitize、magic sniff、extension/claimed MIME consistency、8MB 上限
+- 不暴露 host path；不信任客户端 MIME alone
+
+Focused evidence（未 commit）：
+
+- pytest typed I/O + contracts + templates + schema + factory/compiler +
+  resource binding + workflow versions + runtime/import/factory routes：
+  132 + 62 passed（Slice A）
+- ruff/mypy on Slice A modules：clean
+- desktop typecheck：pass
+- desktop vitest graph/TestRun/BuilderTest/studio：53 passed
+  （另一次全量 desktop vitest 422 passed，含无关既有 dirty UI 测试）
 
 CASE C 根因：MFJS 投影把 `properties.then` 当成 JSON Schema combinator
 剥掉，Kimi 在 `branches` 上连续三次 `missing field(s): then`。
@@ -31,12 +147,13 @@ SemanticPlan。这是 resolver 边界，不是 Compiler 失败。
 
 已知缺口继续记录：
 
-- Typed I/O（image / PDF / document / audio / video / ArtifactRef）未开始
-- Artifact Runtime 未开始
-- Workflow Builder Compiler 未开始
+- Agent Playground **NOT IMPLEMENTED**
+- Workflow Builder Compiler **NOT IMPLEMENTED**
 - 旧 Factory session 目前只恢复最新 canvas；multi-artifact Conversation 有限
-- Playground 未开始
+- 手写 PDF input Agent 的 Runtime readiness 不会自动标 `pdf_parser` missing；
+  Compiler 在无 Project-bound parser 时 truthful。Runtime 不 UTF-8 decode PDF
 - Builder Phase 2 Playwright CASE 1–3 未在本环境执行
+- 本轮 authenticated Desktop UI 停在登录页；仓库内无 Playwright 套件
 
 ### Compiler V2 边界
 

@@ -1,8 +1,11 @@
 import * as React from "react";
-import { projectRoutePaths, type AgentSource, type BuilderConversationOperation, type BuilderRunObservation, type EditProposal, type EditProposalCommand, type JsonValue, type RuntimeReadiness, type ValidateResponse } from "@veyra/api-contracts";
+import type { AgentSource, BuilderConversationOperation, BuilderRunObservation, EditProposal, EditProposalCommand, JsonValue, RuntimeReadiness, ValidateResponse } from "@veyra/api-contracts";
+import { compactFieldType, fieldIsMultiple, isArtifactCompactType, isArtifactRef, projectRoutePaths } from "@veyra/api-contracts";
 import { Alert, Button } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { runDetailHref } from "../runs/run-location";
+import { RuntimeInputForm } from "../runtime/RuntimeInputForm";
+import { RuntimeOutputView } from "../runtime/RuntimeOutputView";
 import { EditProposalPanel } from "./EditProposalPanel";
 
 type Locale = "zh" | "en";
@@ -63,7 +66,21 @@ const copy = {
 } as const;
 
 function valuesFor(source: AgentSource): Record<string, JsonValue> {
-  return Object.fromEntries(Object.entries(source.inputs).map(([name, type]) => [name, type === "boolean" ? false : type === "integer" || type === "number" ? 0 : ""]));
+  return Object.fromEntries(Object.entries(source.inputs).flatMap(([name, spec]) => {
+    const type = compactFieldType(spec);
+    if (isArtifactCompactType(type)) return [];
+    return [[name, type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "object" ? {} : type === "array" || type === "table" ? [] : ""]];
+  }));
+}
+
+function requiredArtifactsReady(source: AgentSource, values: Record<string, JsonValue>): boolean {
+  return Object.entries(source.inputs).every(([name, spec]) => {
+    if (!isArtifactCompactType(compactFieldType(spec))) return true;
+    if (typeof spec !== "string" && spec.required === false) return true;
+    const value = values[name];
+    if (fieldIsMultiple(spec)) return Array.isArray(value) && value.length > 0 && value.every(isArtifactRef);
+    return isArtifactRef(value);
+  });
 }
 
 export function latestTestOperation(operations: BuilderConversationOperation[]): BuilderConversationOperation | undefined {
@@ -101,6 +118,7 @@ export function BuilderTestRun({
   const [busy, setBusy] = React.useState(false);
   const [incoming, setIncoming] = React.useState<EditProposal>();
   const [repaired, setRepaired] = React.useState(false);
+  const [runResult, setRunResult] = React.useState<JsonValue | null>(null);
   const inFlight = React.useRef(false);
 
   React.useEffect(() => {
@@ -125,15 +143,29 @@ export function BuilderTestRun({
     return () => { current = false; };
   }, [alreadyValidated, api, projectId, agentId, operation?.proposal_id]);
 
-  const entries = Object.entries(source?.inputs ?? {});
-  const singleString = entries.length === 1 && entries[0][1] === "string";
+  React.useEffect(() => {
+    if (!observation?.run_id || !api.getAgentRun) {
+      setRunResult(null);
+      return;
+    }
+    let current = true;
+    void api.getAgentRun(projectId, agentId, observation.run_id).then((detail) => {
+      if (current) setRunResult(detail.result);
+    }).catch(() => {
+      if (current) setRunResult(null);
+    });
+    return () => { current = false; };
+  }, [api, projectId, agentId, observation?.run_id]);
+
   const model = readiness?.model;
   const runtimeConfigured = Boolean(model) && (!model?.required || model.configured);
+  const modalityCheck = readiness?.checks.find((item) => item.id === "modalities" && !item.ready);
   const validated = validation?.valid === true;
   const running = operation?.status === "in_progress";
   const waiting = operation?.status === "waiting" || observation?.approval_required === true;
   const stopped = Boolean(operation?.events.some((item) => item.kind === "builder.test_run.stopped"));
-  const canStart = Boolean(api.startBuilderTestRun) && validated && Boolean(source) && !running && !waiting && !busy;
+  const canStart = Boolean(api.startBuilderTestRun) && validated && Boolean(source) && !running && !waiting && !busy
+    && (!source || requiredArtifactsReady(source, values));
   const showButton = validated;
   const runtimeHref = projectRoutePaths.agentDesign(projectId, agentId);
   const detailHref = observation?.run_id
@@ -228,17 +260,15 @@ export function BuilderTestRun({
           <p><a href={runtimeHref}>{text.openRuntime}</a></p>
         </Alert>
       ) : null}
-      {singleString ? (
-        <label>
-          <span>{entries[0][0]}</span>
-          <input
-            aria-label={text.prompt}
-            value={String(values[entries[0][0]] ?? "")}
-            onChange={(event) => setValues({ [entries[0][0]]: event.target.value })}
-            disabled={running || waiting}
-          />
-        </label>
-      ) : null}
+      {modalityCheck ? <Alert type="warning" title={modalityCheck.detail} /> : null}
+      <RuntimeInputForm
+        schema={source.inputs}
+        values={values}
+        onChange={setValues}
+        locale={locale}
+        projectId={projectId}
+        api={api}
+      />
       <div className="builder-test-run-actions">
         {running ? <Button disabled={busy} onClick={() => void command("stop")}>{text.stop}</Button> : null}
         {waiting ? (
@@ -251,7 +281,7 @@ export function BuilderTestRun({
         {!running && !waiting ? (
           <Button
             variant="primary"
-            disabled={!canStart || (runtimeConfigured && singleString && !String(values[entries[0]?.[0]] ?? "").trim())}
+            disabled={!canStart}
             onClick={() => void start()}
           >
             {operation ? text.again : text.start}
@@ -267,7 +297,12 @@ export function BuilderTestRun({
           {observation?.output_summary ? (
             <>
               <p>{text.output}</p>
-              <pre><code>{observation.output_summary}</code></pre>
+              {runResult ? <RuntimeOutputView result={runResult} locale={locale} api={api} projectId={projectId} /> : <pre><code>{observation.output_summary}</code></pre>}
+            </>
+          ) : runResult ? (
+            <>
+              <p>{text.output}</p>
+              <RuntimeOutputView result={runResult} locale={locale} api={api} projectId={projectId} />
             </>
           ) : null}
           {runtimeModel ? (

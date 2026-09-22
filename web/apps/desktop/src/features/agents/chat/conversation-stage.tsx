@@ -1,7 +1,8 @@
 import * as React from "react";
 import { ArrowUp, ChevronsDown, ChevronsLeft, ChevronsRight, ChevronsUp, Copy, Plus, RotateCcw } from "lucide-react";
 import { IconButton, PaneResizeHandle, useLocale } from "@veyra/ui";
-import type { JsonValue } from "@veyra/api-contracts";
+import type { JsonValue, TypedFieldSpec } from "@veyra/api-contracts";
+import { compactFieldType } from "@veyra/api-contracts";
 import {
   measureConversationCanvas,
   readConversationCanvasLayout,
@@ -393,14 +394,16 @@ export function ConversationInputGrid({
   onChange,
   fileOptions = [],
 }: {
-  entries: Array<[string, string]>;
+  entries: Array<[string, TypedFieldSpec]>;
   values: Record<string, JsonValue>;
   onChange: (name: string, value: JsonValue) => void;
   fileOptions?: string[];
 }) {
   return (
     <div className="agent-chat-input-grid">
-      {entries.map(([name, type]) => (
+      {entries.map(([name, spec]) => {
+        const type = compactFieldType(spec);
+        return (
         <label key={name}>
           <span>{name}<small>{type}</small></span>
           {type === "boolean" ? (
@@ -422,7 +425,8 @@ export function ConversationInputGrid({
             </>
           )}
         </label>
-      ))}
+        );
+      })}
     </div>
   );
 }

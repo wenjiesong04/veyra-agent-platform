@@ -25,6 +25,8 @@
 | Runtime V1 | `ea94b64` | 事件/回执、审批、Stop、安全 Retry、checkpoint Resume、run_id 历史证据 |
 | Resource Library V1 | `ee814e2` | Catalog 真实 readiness → Project pin → Agent lock → Runtime 按 pin 执行 |
 | Knowledge V1 | `8351806` | 本地 txt/md ingest → 显式索引 → 绑定检索 → Run 引用证据 → Resource-Library 风格工作台；浏览器闭环在 `560a912` 上验收 |
+| Graph Compiler V2 | `8bef91c` | SemanticPlan → 可执行 Agent 图 + Default Canvas Note + Provider schema hardening |
+| Typed I/O + Artifact Runtime | this commit | TypedField / ArtifactRef、Project-scoped object store、Runtime modality truth、shared Test UI |
 
 GitHub Actions Billing 仍是外部阻塞，不把未执行的 CI 写成代码失败或 CI PASS。
 
@@ -131,8 +133,9 @@ GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地
 ## 5. Builder Phase 2
 
 Git 事实：Slice 1–4 与 ProviderCapabilityProfile / Harness Receipt 已包含在
-`8f71a1e`。Agent Graph Compiler V2 + Default Canvas Note 是该 HEAD 之上的
-未提交工作。Phase 2 模块整体仍未做最终 release gate。
+`8f71a1e`。Agent Graph Compiler V2 + Default Canvas Note + SemanticPlan V2
+Provider Hardening 已发布为 `8bef91c`。Phase 2 模块整体仍未做最终
+Playwright CASE 1–3 release gate。
 
 已落地：
 
@@ -286,7 +289,7 @@ web typecheck / build passed。这是 Compiler V2 开始前的 verified baseline
 不要再把 HEAD 写成 `4e3c2e6`，也不要把 Slice 4 写成未提交。
 
 **Agent Graph Compiler V2 + Default Canvas Note + SemanticPlan V2
-Provider Hardening = complete**（待本轮 Git checkpoint）。
+Provider Hardening = complete / released**（`8bef91c`）。
 
 正式锁定：
 
@@ -323,22 +326,50 @@ Start→Model→HumanApproval→Model→Output（风险项检查不能映射
 裸 CASE C 文本可能被 resolver 判成 `create_kind=workflow`；加上
 「做一个 Agent」后进入 SemanticPlan。未 Confirm / Apply。
 
-本切片不实现 Typed I/O / Artifact Runtime / Playground，也不重构
-Conversation / multi-artifact Workbench。
+**Typed I/O + Artifact Runtime = released**（本 checkpoint commit）。
+
+Canonical contract：`TypedField` 兼容旧 compact `text: string`；binary 值为
+Project-scoped `ArtifactRef`，复用 `objects/sha256/<digest>`。Runtime Model
+modalities 与 Builder `ProviderCapabilityProfile` 分开。当前 Moonshot
+`kimi-k3`：`image_input=unsupported`。缺 pdf_parser / pdf_renderer /
+image_generation 保持 truthful `missing_capability`。Studio Test、
+Workflow Test、Builder Test、Run Detail 共用 `RuntimeInputForm` /
+`RuntimeOutputView`。Agent Playground 与 Workflow Builder Compiler
+**尚未实现**。
+
+Release gate（2026-09-22，真实 `.env`，非 temp DB / 非 fake provider）：
+
+```text
+backend：env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check → 675 passed
+Ruff format：312 files；Ruff check passed；mypy 184 files；git diff --check clean
+Desktop vitest：53 files / 430 passed；Community vitest：3 files / 15 passed
+Desktop/Community typecheck passed
+Desktop production build：2025 modules，1.40s
+Community production build：1722 modules，656ms
+```
+
+Live Local API（dirty SHA `8bef91c-typed-io-dirty`，head `local_0025_project_artifacts`）：
+text Agent Run 得到 translation；string+number → object 保留 summary/score/report；
+image Run 前 422 `runtime_model_incompatible`；Artifact upload/metadata/download
+Project 隔离、MIME mismatch、超限拒绝；PDF bytes 不进入 Run JSON。
+Authenticated Desktop UI 仍需登录，仓库内无 Playwright；Chrome + playwright-core
+停在 `#/login`。Compiler 对 image/pdf 的 typed semantics 由 unit tests 覆盖。
+Moonshot Builder 在本轮 Runtime 验收后返回 `factory_rate_limited`（HTTP 429）。
 
 ## 6. 下一步
 
-Agent Graph Compiler V2 已收口。下一步按顺序，不要跳：
+Typed I/O + Artifact Runtime 已发布。下一个产品页面才是 **Agent Playground**。
+不要重开 Graph Compiler V2，也不要在本模块里扩展 PDF parser/renderer。
 
-1. Typed I/O + Artifact Runtime
+1. Agent Playground（Studio Test / Builder Test 逐步变成共享 Runtime UI +
+   独立 Playground surface）
 2. Conversation / multi-artifact Workbench：旧 Factory session 目前只恢复
-   最新 canvas，继续记为缺口
+   最新 canvas
 3. Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
 4. Community 分享闭环
 
 不要重开 Knowledge V1、Resource Library V1、Runtime V1、Builder Phase 1，
-也不要扩展 PDF / embedding。不要开始 autonomous loop。不要在本切片后
-继续 Typed I/O，除非用户明确授权。
+也不要扩展 PDF parser/renderer 或 embedding。不要开始 autonomous loop。
 
 Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Community 分享闭环**：
 
@@ -357,9 +388,11 @@ Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Comm
 - Builder Phase 2 仍未作为独立 Git 发布标签。Durable Conversation、
   Semantic Plan Compiler V1、Interaction Model V2、ProviderCapabilityProfile、
   Harness Receipt 与 Slice 4 Test Run 已包含在 `8f71a1e`。Agent Graph
-  Compiler V2 + Default Canvas Note 已落地，尚未 commit。完整 Playwright
-  CASE 1–3 留到最终 release gate。下一个大模块是 Typed I/O + Artifact
-  Runtime，不是再开一个 Builder Slice
+  Compiler V2 已发布为 `8bef91c`。Typed I/O + Artifact Runtime 已在本
+  checkpoint 发布。完整 Playwright CASE 1–3 与独立 Playground 仍未做
+- 手写 PDF input Agent 的 Runtime readiness 不会自动变成 `pdf_parser`
+  missing；缺 parser 的 truthful 点在 Compiler。Runtime 只把 ArtifactRef
+  文件名写入 prompt，不 UTF-8 decode PDF bytes，也不把 bytes 写入 Run JSON
 - 旧 Factory session 目前只恢复最新 canvas，不是完整 conversation/workbench
 - 公开 Community 目录仍有静态样例，不能当成真实注册表
 

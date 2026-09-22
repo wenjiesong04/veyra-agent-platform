@@ -1018,6 +1018,51 @@ describe("LocalApiClient Project requests", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/runtime/status");
   });
 
+  it("parses Runtime modalities and Project artifact uploads", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({
+        schema_version: "1.0",
+        configured: true,
+        model_id: "kimi-k3",
+        model_base_url: "https://api.moonshot.cn/v1",
+        model_api_key_env: "MOONSHOT_API_KEY",
+        reasoning_effort: "high",
+        allow_process_environment_key: true,
+        user_provided_only: false,
+        modalities: {
+          provider: "moonshot",
+          model_id: "kimi-k3",
+          text_input: "supported",
+          image_input: "unsupported",
+          structured_json_output: "supported",
+          source: "static_profile",
+        },
+      }))
+      .mockResolvedValueOnce(response({
+        kind: "artifact",
+        artifact_id: "art_1",
+        project_id: "project-1",
+        sha256: "a".repeat(64),
+        filename: "product.png",
+        media_type: "image/png",
+        size_bytes: 12,
+        storage_ref: "sha256/aa",
+        source_kind: "upload",
+        created_at: "2026-09-22T00:00:00Z",
+      }, 201));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      modalities: { image_input: "unsupported", source: "static_profile" },
+    });
+    const file = new File(["png"], "product.png", { type: "image/png" });
+    await expect(client.uploadArtifact("project-1", file)).resolves.toMatchObject({
+      artifact_id: "art_1",
+      filename: "product.png",
+      kind: "artifact",
+    });
+    expect(String(fetcher.mock.calls[1]?.[0])).toContain("/api/v1/projects/project-1/artifacts");
+  });
+
   it("sends commit compare-and-swap headers and revision body", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({
       schema_version: "1.0", version_id: "version-1", agent_id: "agent-1", source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file",

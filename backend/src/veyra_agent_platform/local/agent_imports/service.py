@@ -19,6 +19,7 @@ from veyra_agent_platform.contracts.common import (
     new_uuid7,
     require_uuid7,
 )
+from veyra_agent_platform.contracts.typed_io import typed_fields_to_wire
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
@@ -1573,8 +1574,8 @@ def _source_preview(
         "description": source.description,
         "instructions": instructions,
         "model": {"model_ref": model_nodes[0].model_ref} if model_nodes else {},
-        "inputs": dict(source.inputs),
-        "outputs": dict(source.outputs),
+        "inputs": typed_fields_to_wire(source.inputs),
+        "outputs": typed_fields_to_wire(source.outputs),
         "tools": [node.uses for node in source.nodes if node.uses],
         "skills": list(source.skill_refs),
         "knowledge_files": _knowledge_files(files),

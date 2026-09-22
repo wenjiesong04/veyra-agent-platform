@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import PermissionContract
+from veyra_agent_platform.contracts.typed_io import wire_field_compact_type
 
 FILESYSTEM_READ_RESOURCE_ID = "veyra.tool.filesystem.read"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -292,13 +293,14 @@ def _path_input(source: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         (
             name
             for name, value_type in inputs.items()
-            if value_type == "string" and _PATH_INPUT.search(name)
+            if wire_field_compact_type(value_type) == "string"
+            and _PATH_INPUT.search(name)
         ),
         None,
     )
     if selected is None:
         selected = "path"
-        if selected in inputs and inputs[selected] != "string":
+        if selected in inputs and wire_field_compact_type(inputs[selected]) != "string":
             raise ResourceMutationError(
                 "resource_input_conflict",
                 "The Agent already has a non-text path input; review it in Studio.",

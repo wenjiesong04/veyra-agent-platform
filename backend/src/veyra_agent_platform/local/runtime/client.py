@@ -109,6 +109,7 @@ class HttpRuntimeTransport:
             "reasoning_effort": self.settings.reasoning_effort,
             "max_completion_tokens": self.settings.max_completion_tokens,
         }
+        _assert_provider_safe_messages(messages)
         try:
             response = self._client.post("/chat/completions", json=body)
         except httpx.TimeoutException as exc:
@@ -154,6 +155,7 @@ class HttpRuntimeTransport:
             "max_completion_tokens": self.settings.max_completion_tokens,
             "stream": True,
         }
+        _assert_provider_safe_messages(messages)
         try:
             with self._client.stream(
                 "POST", "/chat/completions", json=body
@@ -296,6 +298,32 @@ class RuntimeModelClient:
                 secret_ref=self._secret_ref,
             )
         return self._http
+
+
+def _assert_provider_safe_messages(messages: Sequence[Mapping[str, Any]]) -> None:
+    """Reject host paths and internal artifact URLs at the HTTP boundary."""
+
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str) or not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, Mapping):
+                continue
+            image = part.get("image_url")
+            url = ""
+            if isinstance(image, str):
+                url = image
+            elif isinstance(image, Mapping):
+                url = str(image.get("url") or "")
+            if not url:
+                continue
+            lowered = url.casefold()
+            if lowered.startswith(("file:", "artifact:")) or url.startswith("/"):
+                raise RuntimeProviderError(
+                    "runtime_request_invalid",
+                    "Runtime model image parts cannot use host or artifact URLs",
+                )
 
 
 def _raise_for_provider(response: httpx.Response) -> None:

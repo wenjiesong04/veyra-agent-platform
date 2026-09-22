@@ -45,11 +45,14 @@ def test_work_templates_are_local_llm_graphs_with_compiled_skills() -> None:
     researcher = templates.source(QUESTION_RESEARCHER_TEMPLATE_ID)
     planner = templates.source(FILE_SORT_PLANNER_TEMPLATE_ID)
 
-    assert distiller.inputs == {"source": "string", "need": "string"}
-    assert distiller.outputs == {"brief": "string"}
-    assert researcher.inputs == {"question": "string", "notes": "string"}
-    assert planner.inputs == {"listing": "string", "goal": "string"}
-    assert planner.outputs == {"plan": "string"}
+    assert distiller.inputs["source"].compact_type == "string"
+    assert distiller.inputs["need"].compact_type == "string"
+    assert distiller.outputs["brief"].compact_type == "string"
+    assert researcher.inputs["question"].compact_type == "string"
+    assert researcher.inputs["notes"].compact_type == "string"
+    assert planner.inputs["listing"].compact_type == "string"
+    assert planner.inputs["goal"].compact_type == "string"
+    assert planner.outputs["plan"].compact_type == "string"
 
     for source, template_id in (
         (distiller, DOCUMENT_DISTILLER_TEMPLATE_ID),

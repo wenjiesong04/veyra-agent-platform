@@ -6,6 +6,7 @@ import { newUuidV7 } from "../../api/uuid";
 import { RunEventList } from "../studio/RunEventList";
 import { runStatusLabel, runTone, workflowRunAsAgentRun } from "../studio/studio-run-ui";
 import { RunApprovalBar } from "../studio/RunApprovalBar";
+import { RuntimeOutputView } from "../runtime/RuntimeOutputView";
 import { runDetailHref, runMonitorHref, runStudioHref, type RunIdentity } from "./run-location";
 import { KnowledgeEvidence } from "./KnowledgeEvidence";
 
@@ -28,7 +29,7 @@ export function RunEvidence({ run, locale, api }: { run: AgentRunResponse | Work
       <LinkButton href={runMonitorHref(identity)}>Monitor</LinkButton>
     </div>
     {run.error ? <Alert type="error" title={run.error.message} description={run.error.code} /> : null}
-    {run.result ? <pre><code>{JSON.stringify(run.result, null, 2)}</code></pre> : null}
+    {run.result ? <RuntimeOutputView result={run.result} locale={locale} api={api} projectId={run.project_id} /> : null}
     <KnowledgeEvidence key={run.run_id} events={run.events ?? []} api={api} projectId={run.project_id} locale={locale} />
     {run.events ? <RunEventList events={run.events} locale={locale} /> : null}
   </>;

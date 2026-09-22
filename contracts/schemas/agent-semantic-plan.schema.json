@@ -49,8 +49,26 @@
         "required": ["name", "type"],
         "properties": {
           "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-          "type": { "type": "string", "enum": ["string", "number", "boolean"] },
-          "description": { "type": "string", "maxLength": 240 }
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "integer",
+              "boolean",
+              "object",
+              "array",
+              "table",
+              "image",
+              "pdf",
+              "document",
+              "file",
+              "audio",
+              "video"
+            ]
+          },
+          "description": { "type": "string", "maxLength": 240 },
+          "multiple": { "type": "boolean" }
         }
       }
     },
@@ -64,8 +82,26 @@
         "required": ["name", "type"],
         "properties": {
           "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-          "type": { "type": "string", "enum": ["string", "number", "boolean"] },
-          "description": { "type": "string", "maxLength": 240 }
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "integer",
+              "boolean",
+              "object",
+              "array",
+              "table",
+              "image",
+              "pdf",
+              "document",
+              "file",
+              "audio",
+              "video"
+            ]
+          },
+          "description": { "type": "string", "maxLength": 240 },
+          "multiple": { "type": "boolean" }
         }
       }
     },

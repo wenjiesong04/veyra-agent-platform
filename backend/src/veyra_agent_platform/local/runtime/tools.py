@@ -75,9 +75,20 @@ class ToolAuthorization:
 
 
 @dataclass(frozen=True)
+class ProducedArtifact:
+    """Bytes produced by a Tool. Runtime persists them before graph values/events."""
+
+    field: str
+    filename: str
+    contents: bytes
+    claimed_type: str | None = None
+
+
+@dataclass(frozen=True)
 class ToolExecution:
     output: dict[str, Any]
     receipt: dict[str, Any]
+    produced_artifacts: tuple[ProducedArtifact, ...] = ()
 
 
 class ToolAdapter(Protocol):

@@ -12,6 +12,139 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
+export const COMPACT_FIELD_TYPES = [
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "object",
+  "array",
+  "table",
+  "image",
+  "pdf",
+  "document",
+  "file",
+  "audio",
+  "video",
+] as const;
+
+export type CompactFieldType = (typeof COMPACT_FIELD_TYPES)[number];
+export type ArtifactKind = "image" | "pdf" | "document" | "file" | "audio" | "video";
+export type FieldValueType =
+  | "string"
+  | "number"
+  | "integer"
+  | "boolean"
+  | "object"
+  | "array"
+  | "table"
+  | "artifact";
+
+export type TypedFieldDescriptor = {
+  type: FieldValueType | ArtifactKind;
+  artifact_kind?: ArtifactKind;
+  required?: boolean;
+  multiple?: boolean;
+  description?: string;
+  accepted_media_types?: string[];
+  json_schema?: JsonObject;
+};
+
+export type TypedFieldSpec = string | TypedFieldDescriptor;
+export type TypedFields = Record<string, TypedFieldSpec>;
+
+const compactFieldTypeSet = new Set<string>(COMPACT_FIELD_TYPES);
+
+export function compactFieldType(spec: TypedFieldSpec): string {
+  if (typeof spec === "string") return spec;
+  if (spec.type === "artifact") return spec.artifact_kind ?? "file";
+  return spec.type;
+}
+
+export const ARTIFACT_FIELD_TYPES: readonly ArtifactKind[] = [
+  "image",
+  "pdf",
+  "document",
+  "file",
+  "audio",
+  "video",
+];
+
+export function isArtifactCompactType(type: string): type is ArtifactKind {
+  return (ARTIFACT_FIELD_TYPES as readonly string[]).includes(type);
+}
+
+export function fieldIsMultiple(spec: TypedFieldSpec): boolean {
+  return typeof spec !== "string" && spec.multiple === true;
+}
+
+export function fieldIsRequired(spec: TypedFieldSpec): boolean {
+  return typeof spec === "string" || spec.required !== false;
+}
+
+export function acceptedMediaTypes(spec: TypedFieldSpec): string[] {
+  if (typeof spec !== "string" && spec.accepted_media_types?.length) {
+    return spec.accepted_media_types;
+  }
+  const type = compactFieldType(spec);
+  if (type === "image") return ["image/*"];
+  if (type === "pdf") return ["application/pdf", ".pdf"];
+  if (type === "audio") return ["audio/*"];
+  if (type === "video") return ["video/*"];
+  if (type === "document") {
+    return [".pdf", ".txt", ".md", ".doc", ".docx", "application/pdf", "text/plain"];
+  }
+  return [];
+}
+
+export type ArtifactRef = {
+  kind: "artifact";
+  artifact_id: string;
+  media_type: string;
+  filename: string;
+};
+
+export function isArtifactRef(value: unknown): value is ArtifactRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "artifact") return false;
+  return typeof record.artifact_id === "string" && record.artifact_id.length > 0
+    && typeof record.media_type === "string" && record.media_type.length > 0
+    && typeof record.filename === "string" && record.filename.length > 0;
+}
+
+export type ArtifactRecord = ArtifactRef & {
+  project_id: string;
+  sha256: string;
+  size_bytes: number;
+  storage_ref: string;
+  source_kind: "upload" | "runtime_output" | "project_file_import";
+  created_at: string;
+  run_id?: string;
+};
+
+export type CapabilityState = "supported" | "unsupported" | "unknown";
+
+export type RuntimeModelCapabilities = {
+  provider: string;
+  model_id: string;
+  text_input: CapabilityState;
+  image_input: CapabilityState;
+  structured_json_output: CapabilityState;
+  source: "static_profile" | "unknown";
+};
+
+export function isTypedFieldSpec(value: unknown): value is TypedFieldSpec {
+  if (typeof value === "string") return compactFieldTypeSet.has(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.type !== "string") return false;
+  if (record.type === "artifact") {
+    return typeof record.artifact_kind === "string" && compactFieldTypeSet.has(record.artifact_kind);
+  }
+  return compactFieldTypeSet.has(record.type);
+}
+
 export type PermissionContract = {
   network_hosts: string[];
   tools: string[];
@@ -76,8 +209,8 @@ export type AgentSource = {
   slug: string;
   name: string;
   description: string;
-  inputs: Record<string, string>;
-  outputs: Record<string, string>;
+  inputs: TypedFields;
+  outputs: TypedFields;
   nodes: FlowNode[];
   transitions: FlowTransition[];
   extensions: {
@@ -120,8 +253,8 @@ export type AgentImportPreview = {
   description: string;
   instructions: string;
   model: Record<string, string>;
-  inputs: Record<string, string>;
-  outputs: Record<string, string>;
+  inputs: TypedFields;
+  outputs: TypedFields;
   tools: string[];
   skills: string[];
   knowledge_files: string[];
@@ -168,8 +301,8 @@ export type WorkflowSource = {
   name: string;
   description: string;
   version?: string;
-  inputs: Record<string, string>;
-  outputs: Record<string, string>;
+  inputs: TypedFields;
+  outputs: TypedFields;
   nodes: FlowNode[];
   transitions: FlowTransition[];
   extensions: {
@@ -1322,6 +1455,7 @@ export type RuntimeStatus = {
   reasoning_effort: "low" | "high" | "max";
   allow_process_environment_key: boolean;
   user_provided_only: boolean;
+  modalities?: RuntimeModelCapabilities;
 };
 
 export type RuntimeProfileValidation = {
@@ -1338,7 +1472,7 @@ export type RuntimeProfileValidation = {
 };
 
 export type RuntimeReadinessCheck = {
-  id: "dependencies" | "model" | "tools";
+  id: "dependencies" | "model" | "modalities" | "tools";
   ready: boolean;
   code: string;
   detail: string;
@@ -1364,6 +1498,7 @@ export type RuntimeReadiness = {
     model_id: string;
     model_base_url: string;
     model_api_key_env: string;
+    modalities?: RuntimeModelCapabilities;
   };
   dependency_summary: AgentDependencySummary;
   dependencies: AgentDependencyCheck[];

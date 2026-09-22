@@ -1,6 +1,7 @@
 import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersionsResponse } from "@veyra/api-contracts";
 import {
   LOCAL_API_SCHEMA_VERSION,
+  isTypedFieldSpec,
   type AgentSource,
   type CreateEditProposalRequest,
   type CreateKnowledgeBindingRequest,
@@ -70,6 +71,8 @@ import {
   type FactorySessionState,
   type FactoryStatus,
   type ProviderCapabilityProfile,
+  type ArtifactRecord,
+  type RuntimeModelCapabilities,
   type RuntimeStatus,
   type SecretStatus,
   type RuntimeApiProfileInput,
@@ -85,6 +88,7 @@ import {
   type FactoryMessage,
   type JsonObject,
   type JsonValue,
+  type TypedFields,
   type KnowledgeDocumentResponse,
   type KnowledgeChunkResponse,
   type KnowledgeProcessing,
@@ -249,6 +253,9 @@ export type LocalProjectApi = {
   runtimeStatus?(): Promise<RuntimeStatus>;
   validateRuntimeProfile?(profile: RuntimeApiProfileInput): Promise<RuntimeProfileValidation>;
   runtimeReadiness?(projectId: string, agentId: string): Promise<RuntimeReadiness>;
+  uploadArtifact?(projectId: string, file: File): Promise<ArtifactRecord>;
+  getArtifact?(projectId: string, artifactId: string): Promise<ArtifactRecord>;
+  artifactContent?(projectId: string, artifactId: string): Promise<Blob>;
   getSecretStatus?(secretRef: string): Promise<SecretStatus>;
   setSecret?(secretRef: string, value: string): Promise<SecretStatus>;
   deleteSecret?(secretRef: string): Promise<SecretStatus>;
@@ -361,6 +368,21 @@ function asRecord(value: unknown, status = 502): Record<string, unknown> {
     });
   }
   return value as Record<string, unknown>;
+}
+
+function typedFields(value: unknown, field: string, status = 502): TypedFields {
+  const record = asRecord(value, status);
+  const parsed: TypedFields = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (!isTypedFieldSpec(item)) {
+      throw new LocalApiClientError(`The local service returned an invalid ${field}.${key}.`, {
+        status,
+        code: "invalid_response",
+      });
+    }
+    parsed[key] = item;
+  }
+  return parsed;
 }
 
 function asString(value: unknown, field: string, status = 502): string {
@@ -1874,8 +1896,8 @@ function agentImportPreview(value: unknown, status = 502): AgentImportRecord["pr
     description: asText(record.description, "agent_import.preview.description", status),
     instructions: asText(record.instructions, "agent_import.preview.instructions", status),
     model: Object.fromEntries(Object.entries(asRecord(record.model, status)).map(([key, item]) => [key, asString(item, `agent_import.preview.model.${key}`, status)])),
-    inputs: Object.fromEntries(Object.entries(asRecord(record.inputs, status)).map(([key, item]) => [key, asString(item, `agent_import.preview.inputs.${key}`, status)])),
-    outputs: Object.fromEntries(Object.entries(asRecord(record.outputs, status)).map(([key, item]) => [key, asString(item, `agent_import.preview.outputs.${key}`, status)])),
+    inputs: typedFields(record.inputs, "agent_import.preview.inputs", status),
+    outputs: typedFields(record.outputs, "agent_import.preview.outputs", status),
     tools: asArray(record.tools, "agent_import.preview.tools", status).map((item) => asString(item, "agent_import.preview.tools", status)),
     skills: asArray(record.skills, "agent_import.preview.skills", status).map((item) => asString(item, "agent_import.preview.skills", status)),
     knowledge_files: asArray(record.knowledge_files, "agent_import.preview.knowledge_files", status).map((item) => asString(item, "agent_import.preview.knowledge_files", status)),
@@ -2277,6 +2299,7 @@ function runtimeStatus(value: unknown, status = 502): RuntimeStatus {
     reasoning_effort: effort,
     allow_process_environment_key: asBoolean(record.allow_process_environment_key, "runtime.allow_process_environment_key", status),
     user_provided_only: asBoolean(record.user_provided_only, "runtime.user_provided_only", status),
+    ...(record.modalities === undefined ? {} : { modalities: runtimeModelCapabilities(record.modalities, status) }),
   };
 }
 
@@ -2319,6 +2342,7 @@ function runtimeReadiness(value: unknown, status = 502): RuntimeReadiness {
       model_id: asString(model.model_id, "runtime readiness model_id", status),
       model_base_url: asString(model.model_base_url, "runtime readiness model_base_url", status),
       model_api_key_env: asString(model.model_api_key_env, "runtime readiness model_api_key_env", status),
+      ...(model.modalities === undefined ? {} : { modalities: runtimeModelCapabilities(model.modalities, status) }),
     },
     dependency_summary: validationDependencySummary(record.dependency_summary, status),
     dependencies: asArray(record.dependencies, "runtime readiness dependencies", status).map((item) => validationDependency(item, status)),
@@ -2330,7 +2354,7 @@ function runtimeReadiness(value: unknown, status = 502): RuntimeReadiness {
 function runtimeReadinessCheck(value: unknown, status = 502): RuntimeReadinessCheck {
   const record = asRecord(value, status);
   const id = asString(record.id, "runtime readiness check id", status);
-  if (id !== "dependencies" && id !== "model" && id !== "tools") {
+  if (id !== "dependencies" && id !== "model" && id !== "modalities" && id !== "tools") {
     throw new LocalApiClientError("The local service returned an invalid Runtime readiness check.", { status, code: "invalid_response" });
   }
   return {
@@ -2407,6 +2431,54 @@ function runtimeToolReadiness(value: unknown, status = 502): RuntimeToolReadines
     code: asString(record.code, "runtime readiness tool code", status),
     detail: asText(record.detail, "runtime readiness tool detail", status),
   };
+}
+
+function capabilityState(value: unknown, field: string, status = 502): "supported" | "unsupported" | "unknown" {
+  const state = asString(value, field, status);
+  if (state !== "supported" && state !== "unsupported" && state !== "unknown") {
+    throw new LocalApiClientError(`The local service returned an invalid ${field}.`, { status, code: "invalid_response" });
+  }
+  return state;
+}
+
+function runtimeModelCapabilities(value: unknown, status = 502): RuntimeModelCapabilities {
+  const record = asRecord(value, status);
+  const source = asString(record.source, "runtime.modalities.source", status);
+  if (source !== "static_profile" && source !== "unknown") {
+    throw new LocalApiClientError("The local service returned an invalid Runtime modality source.", { status, code: "invalid_response" });
+  }
+  return {
+    provider: asString(record.provider, "runtime.modalities.provider", status),
+    model_id: asString(record.model_id, "runtime.modalities.model_id", status),
+    text_input: capabilityState(record.text_input, "runtime.modalities.text_input", status),
+    image_input: capabilityState(record.image_input, "runtime.modalities.image_input", status),
+    structured_json_output: capabilityState(record.structured_json_output, "runtime.modalities.structured_json_output", status),
+    source,
+  };
+}
+
+function artifactRecord(value: unknown, status = 502): ArtifactRecord {
+  const record = asRecord(value, status);
+  const sourceKind = asString(record.source_kind, "artifact.source_kind", status);
+  if (sourceKind !== "upload" && sourceKind !== "runtime_output" && sourceKind !== "project_file_import") {
+    throw new LocalApiClientError("The local service returned an invalid artifact source.", { status, code: "invalid_response" });
+  }
+  const payload: ArtifactRecord = {
+    kind: "artifact",
+    artifact_id: asString(record.artifact_id, "artifact.artifact_id", status),
+    project_id: asString(record.project_id, "artifact.project_id", status),
+    sha256: asString(record.sha256, "artifact.sha256", status),
+    filename: asString(record.filename, "artifact.filename", status),
+    media_type: asString(record.media_type, "artifact.media_type", status),
+    size_bytes: asNumber(record.size_bytes, "artifact.size_bytes", status),
+    storage_ref: asString(record.storage_ref, "artifact.storage_ref", status),
+    source_kind: sourceKind,
+    created_at: asString(record.created_at, "artifact.created_at", status),
+  };
+  if (record.run_id !== undefined && record.run_id !== null) {
+    payload.run_id = asString(record.run_id, "artifact.run_id", status);
+  }
+  return payload;
 }
 
 function secretStatus(value: unknown, status = 502): SecretStatus {
@@ -3171,6 +3243,25 @@ export class LocalApiClient {
 
   runtimeReadiness(projectId: string, agentId: string): Promise<RuntimeReadiness> {
     return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-readiness`, runtimeReadiness);
+  }
+
+  uploadArtifact(projectId: string, file: File): Promise<ArtifactRecord> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request(`projects/${encodeURIComponent(projectId)}/artifacts`, artifactRecord, { method: "POST", formData });
+  }
+
+  getArtifact(projectId: string, artifactId: string): Promise<ArtifactRecord> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      artifactRecord,
+    );
+  }
+
+  artifactContent(projectId: string, artifactId: string): Promise<Blob> {
+    return this.requestBlob(
+      `projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/content`,
+    );
   }
 
   workflowRuntimeReadiness(projectId: string, workflowId: string): Promise<WorkflowRuntimeReadiness> {

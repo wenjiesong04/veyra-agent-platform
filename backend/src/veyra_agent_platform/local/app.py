@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from .agent_imports import AgentImportService
 from .api.agent_imports import build_router as build_agent_import_router
+from .api.artifacts import build_router as build_artifacts_router
 from .api.factory import build_router as build_factory_router
 from .api.factory.builder_routes import build_router as build_builder_router
 from .api.factory.edit_routes import build_router as build_edit_proposals_router
@@ -28,6 +29,7 @@ from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
 from .api.trash import build_router as build_trash_router
 from .api.workflows import build_router as build_workflow_router
+from .artifacts import ArtifactService
 from .builder.conversation_service import BuilderConversationService
 from .builder.conversation_store import BuilderConversationStore
 from .builder.resolution import BuilderResolutionService
@@ -127,6 +129,7 @@ def create_app(
         )
         application.state.repository = repository
         application.state.projects = projects
+        application.state.artifacts = ArtifactService(repository, object_root)
         application.state.agent_imports = AgentImportService(
             database_path.parent / "agent-imports", projects, catalog
         )
@@ -175,6 +178,7 @@ def create_app(
             runtime_profiles,
             application.state.conversations,
             project_resources=application.state.project_resources,
+            artifacts=application.state.artifacts,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime
@@ -238,6 +242,7 @@ def create_app(
         )
     )
     application.include_router(build_projects_router())
+    application.include_router(build_artifacts_router())
     application.include_router(build_agent_import_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())

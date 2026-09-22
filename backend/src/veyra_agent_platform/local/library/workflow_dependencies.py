@@ -9,6 +9,7 @@ from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
 from veyra_agent_platform.contracts.resource import AgentVersionRef
+from veyra_agent_platform.contracts.typed_io import compact_type_map
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.projects.service import ProjectError
 from veyra_agent_platform.local.storage.repositories import LocalRepository
@@ -108,7 +109,7 @@ def _validate_call_dataflow(
         node = nodes[node_id]
         incoming = [available[parent] for parent in parents[node_id]]
         values = (
-            dict(source.inputs)
+            compact_type_map(source.inputs)
             if not incoming
             else {
                 key: value
@@ -118,15 +119,17 @@ def _validate_call_dataflow(
         )
         if node_id in resolved:
             child = resolved[node_id].source
+            child_inputs = compact_type_map(child.inputs)
+            child_outputs = compact_type_map(child.outputs)
             for parameter, variable in (node.input_mapping or {}).items():
-                if values.get(variable) != child.inputs[parameter]:
+                if values.get(variable) != child_inputs[parameter]:
                     raise ProjectError(
                         f"AgentCall {node_id} input {parameter} needs a prior "
-                        f"{child.inputs[parameter]} variable: {variable}",
+                        f"{child_inputs[parameter]} variable: {variable}",
                         code="workflow_input_mapping_invalid",
                     )
             for output, variable in (node.output_mapping or {}).items():
-                values[variable] = child.outputs[output]
+                values[variable] = child_outputs[output]
         elif node.component_type is ComponentType.TRANSFORM:
             values.update({key: "string" for key in (node.mapping or {})})
         available[node_id] = values

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource
+from veyra_agent_platform.contracts.typed_io import typed_fields_to_wire
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,8 @@ def compile_agent_definition(
             "slug": slug,
             "name": name,
             "description": description,
-            "inputs": dict(blueprint.inputs),
-            "outputs": dict(blueprint.outputs),
+            "inputs": typed_fields_to_wire(blueprint.inputs),
+            "outputs": typed_fields_to_wire(blueprint.outputs),
             "nodes": [node.to_dict() for node in blueprint.nodes],
             "transitions": [
                 transition.to_dict() for transition in blueprint.transitions

@@ -200,3 +200,62 @@
     white-space: normal;
   }
 }
+
+.runtime-artifact-input,
+.runtime-artifact-list,
+.runtime-artifact-grid,
+.runtime-output-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-artifact-list,
+.runtime-artifact-grid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-artifact-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface-soft);
+}
+
+.runtime-artifact-card img {
+  width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.runtime-artifact-card strong,
+.runtime-output-fields dt {
+  font-size: 12px;
+}
+
+.runtime-artifact-card small,
+.runtime-io-error {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-io-error {
+  color: var(--bad);
+}
+
+.runtime-output-fields > div {
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-output-text,
+.runtime-output-scalar {
+  margin: 0;
+}

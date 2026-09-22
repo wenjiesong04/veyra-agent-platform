@@ -6,6 +6,7 @@ import json
 import re
 import threading
 import time
+from base64 import b64encode
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -18,7 +19,14 @@ from veyra_agent_platform.contracts.common import (
     IdempotencyKey,
     new_uuid7,
 )
+from veyra_agent_platform.contracts.typed_io import (
+    TypedField,
+    artifact_id_from_value,
+    looks_like_artifact_ref,
+    value_matches_field,
+)
 from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.artifacts import ArtifactService
 from veyra_agent_platform.local.library.dependencies import (
     inspect_agent_dependencies,
 )
@@ -36,8 +44,12 @@ from veyra_agent_platform.local.storage.repositories import LocalRepository
 from .client import RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
 from .conversations import AgentConversationService
+from .model_capabilities import (
+    RuntimeModelCapabilities,
+    runtime_model_capabilities,
+)
 from .profiles import RuntimeApiProfile, RuntimeProfileStore
-from .tools import ToolAuthorization, ToolRuntime, ToolRuntimeError
+from .tools import ProducedArtifact, ToolAuthorization, ToolRuntime, ToolRuntimeError
 
 _TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 _COMPARE = re.compile(
@@ -100,6 +112,7 @@ class RuntimeService:
         conversations: AgentConversationService | None = None,
         project_resources: ProjectResourceService | None = None,
         resource_readiness: ResourceReadiness | None = None,
+        artifacts: ArtifactService | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
@@ -112,10 +125,15 @@ class RuntimeService:
         )
         self.profiles = profiles or RuntimeProfileStore(repository)
         self.conversations = conversations
+        self.artifacts = artifacts or ArtifactService(repository, projects.object_root)
         self.repository.interrupt_orphan_runs()
 
     def status(self) -> dict[str, Any]:
-        return self.model.status()
+        payload = self.model.status()
+        payload["modalities"] = runtime_model_capabilities(
+            self.model.settings
+        ).to_dict()
+        return payload
 
     def validate_profile(self, profile: RuntimeApiProfile) -> dict[str, Any]:
         """Validate a supplied profile without persisting it or running a prompt."""
@@ -208,6 +226,8 @@ class RuntimeService:
         _, profile_source = self.profiles.effective(project_id, agent_id)
         tool_checks = self._tool_readiness(project_id, source)
         tools_ready = all(item["ready"] for item in tool_checks)
+        modalities = runtime_model_capabilities(model.settings)
+        modality_check = _runtime_modality_readiness(source, requires_model, modalities)
         checks = [
             {
                 "id": "dependencies",
@@ -226,6 +246,10 @@ class RuntimeService:
                 "ready": model_ready,
                 "code": "ready" if model_ready else "runtime_not_configured",
                 "detail": model_detail,
+            },
+            {
+                "id": "modalities",
+                **modality_check,
             },
             {
                 "id": "tools",
@@ -250,6 +274,7 @@ class RuntimeService:
                 "model_id": model_status["model_id"],
                 "model_base_url": model_status["model_base_url"],
                 "model_api_key_env": model_status["model_api_key_env"],
+                "modalities": modalities.to_dict(),
             },
             "dependency_summary": dependencies["dependency_summary"],
             "dependencies": dependencies["dependencies"],
@@ -301,6 +326,22 @@ class RuntimeService:
             )
         return checks
 
+    def _require_runtime_modalities(
+        self, project_id: str, agent_id: str, source: AgentSource
+    ) -> None:
+        model = self._model_for(project_id, agent_id)
+        requires_model = any(
+            node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
+            for node in source.nodes
+        )
+        check = _runtime_modality_readiness(
+            source,
+            requires_model,
+            runtime_model_capabilities(model.settings),
+        )
+        if not check["ready"]:
+            raise RuntimeError(str(check["code"]), str(check["detail"]))
+
     def components(self) -> dict[str, Any]:
         from veyra_agent_platform.local.components import component_registry
 
@@ -327,7 +368,8 @@ class RuntimeService:
                 "source_identity_invalid",
                 "source identity does not match requested Agent",
             )
-        self._validate_inputs(source, inputs)
+        inputs = self._prepare_inputs(project_id, source, inputs)
+        self._require_runtime_modalities(project_id, agent_id, source)
         fingerprint = file_hash(source_text)
         scope = f"run:{project_id}:{agent_id}"
         digest = sha256_digest(
@@ -461,7 +503,8 @@ class RuntimeService:
             raise RuntimeError(
                 "agent_version_invalid", "Agent version integrity check failed"
             )
-        self._validate_inputs(source, inputs)
+        inputs = self._prepare_inputs(project_id, source, inputs)
+        self._require_runtime_modalities(project_id, agent_id, source)
         scope = f"run-version:{project_id}:{agent_id}:{version_id}"
         digest = sha256_digest({"version_id": version_id, "inputs": inputs})
         with self.repository.transaction() as connection:
@@ -622,7 +665,7 @@ class RuntimeService:
                 if row is None or row["status"] != "running":
                     raise _RunAbandoned()
             self.repository.add_run_events(
-                connection, run_id, [(node_id, kind, payload)]
+                connection, run_id, [(node_id, kind, _json_safe_payload(payload))]
             )
 
     def _commit_outcome(
@@ -930,7 +973,8 @@ class RuntimeService:
                 "agent_version_invalid", "Agent version integrity check failed"
             )
         inputs = self.repository.run_inputs(row["run_id"])
-        self._validate_inputs(source, inputs)
+        inputs = self._prepare_inputs(row["project_id"], source, inputs)
+        self._require_runtime_modalities(row["project_id"], row["agent_id"], source)
         now, command_id, run_id = _now(), new_uuid7(), new_uuid7()
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
@@ -1125,7 +1169,8 @@ class RuntimeService:
             raise RuntimeError(
                 "agent_version_invalid", "Agent version integrity check failed"
             )
-        self._validate_inputs(source, inputs)
+        inputs = self._prepare_inputs(row["project_id"], source, inputs)
+        self._require_runtime_modalities(row["project_id"], row["agent_id"], source)
         now = _now()
         command_id = new_uuid7()
         run_id = new_uuid7()
@@ -1345,7 +1390,8 @@ class RuntimeService:
             values = json.loads(checkpoint["values_json"])
             if (
                 decision == "rejected"
-                and source.outputs.get("written") == "boolean"
+                and (written := source.outputs.get("written")) is not None
+                and written.compact_type == "boolean"
                 and "written" not in values
             ):
                 values["written"] = False
@@ -1523,26 +1569,163 @@ class RuntimeService:
     def _validate_inputs(
         source: AgentSource | WorkflowSource, inputs: dict[str, Any]
     ) -> None:
-        if set(inputs) != set(source.inputs):
+        declared = source.inputs
+        extra = set(inputs) - set(declared)
+        missing = {
+            name
+            for name, field in declared.items()
+            if field.required and name not in inputs
+        }
+        if extra or missing:
             raise RuntimeError(
                 "inputs_invalid", "inputs must exactly match the Agent source inputs"
             )
-        validators: dict[str, Callable[[Any], bool]] = {
-            "string": lambda value: isinstance(value, str),
-            "boolean": lambda value: isinstance(value, bool),
-            "integer": lambda value: isinstance(value, int)
-            and not isinstance(value, bool),
-            "number": lambda value: isinstance(value, int | float)
-            and not isinstance(value, bool),
-            "object": lambda value: isinstance(value, dict),
-            "array": lambda value: isinstance(value, list),
-        }
-        for field, field_type in source.inputs.items():
-            validator = validators.get(field_type)
-            if validator is None or not validator(inputs[field]):
+        for field_name, field in declared.items():
+            if field_name not in inputs:
+                continue
+            if not value_matches_field(field, inputs[field_name]):
                 raise RuntimeError(
-                    "inputs_invalid", f"input {field} must be a {field_type}"
+                    "inputs_invalid",
+                    f"input {field_name} must be a {field.compact_type}",
                 )
+
+    def _prepare_inputs(
+        self,
+        project_id: str,
+        source: AgentSource | WorkflowSource,
+        inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._validate_inputs(source, inputs)
+        return self._bind_typed_values(
+            project_id, source.inputs, inputs, "inputs_invalid"
+        )
+
+    def _prepare_outputs(
+        self,
+        project_id: str,
+        source: AgentSource | WorkflowSource,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = self._validated_outputs(source, values)
+        error_code = (
+            "output_type_invalid"
+            if any(field.is_artifact() for field in source.outputs.values())
+            else "output_invalid"
+        )
+        return self._bind_typed_values(project_id, source.outputs, result, error_code)
+
+    def _bind_typed_values(
+        self,
+        project_id: str,
+        fields: Mapping[str, TypedField],
+        values: dict[str, Any],
+        error_code: str,
+    ) -> dict[str, Any]:
+        bound = dict(values)
+        for name, field in fields.items():
+            if name not in bound or not field.is_artifact():
+                continue
+            bound[name] = self._bind_artifact_value(
+                project_id, name, field, bound[name], error_code
+            )
+        return bound
+
+    def _bind_artifact_value(
+        self,
+        project_id: str,
+        name: str,
+        field: TypedField,
+        value: Any,
+        error_code: str,
+    ) -> Any:
+        if field.multiple:
+            if not isinstance(value, list):
+                raise RuntimeError(
+                    error_code, f"{name} must be a {field.compact_type} list"
+                )
+            return [
+                self._resolve_artifact_ref(project_id, name, field, item, error_code)
+                for item in value
+            ]
+        return self._resolve_artifact_ref(project_id, name, field, value, error_code)
+
+    def _resolve_artifact_ref(
+        self,
+        project_id: str,
+        name: str,
+        field: TypedField,
+        value: Any,
+        error_code: str,
+    ) -> dict[str, Any]:
+        artifact_id = artifact_id_from_value(value)
+        if artifact_id is None:
+            raise RuntimeError(
+                error_code, f"{name} must be a {field.compact_type} ArtifactRef"
+            )
+        try:
+            record = self.artifacts.get(project_id, artifact_id)
+        except ProjectError as exc:
+            code = error_code if exc.code == "artifact_not_found" else exc.code
+            raise RuntimeError(code, str(exc)) from exc
+        media_type = str(record["media_type"])
+        if isinstance(value, Mapping) and "media_type" in value:
+            claimed = str(value["media_type"]).casefold()
+            if claimed and claimed != media_type.casefold():
+                raise RuntimeError(
+                    error_code,
+                    f"{name} artifact media type does not match stored bytes",
+                )
+        if not field.accepts_media(media_type):
+            raise RuntimeError(
+                error_code, f"{name} artifact media type is not accepted"
+            )
+        return {
+            "kind": "artifact",
+            "artifact_id": record["artifact_id"],
+            "media_type": media_type,
+            "filename": str(record["filename"]),
+        }
+
+    def _materialize_produced_artifacts(
+        self,
+        project_id: str,
+        run_id: str,
+        node_id: str,
+        produced: tuple[ProducedArtifact, ...],
+        emit: Callable[[str | None, str, dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        mapped: dict[str, Any] = {}
+        for item in produced:
+            try:
+                record = self.artifacts.upload(
+                    project_id,
+                    item.filename,
+                    item.contents,
+                    claimed_type=item.claimed_type,
+                    source_kind="runtime_output",
+                    run_id=run_id,
+                )
+            except ProjectError as exc:
+                raise RuntimeError(exc.code, str(exc)) from exc
+            emit(
+                node_id,
+                "artifact.created",
+                {
+                    "artifact_id": record["artifact_id"],
+                    "media_type": record["media_type"],
+                    "filename": record["filename"],
+                    "size_bytes": record["size_bytes"],
+                    "digest": record["sha256"],
+                    "node_id": node_id,
+                },
+            )
+            mapped[item.field] = {
+                "kind": "artifact",
+                "artifact_id": record["artifact_id"],
+                "media_type": record["media_type"],
+                "filename": record["filename"],
+            }
+        return mapped
 
     def _execute(
         self,
@@ -1615,7 +1798,7 @@ class RuntimeService:
                     port = "true" if _condition(node.expression, values) else "false"
                 elif node.component_type is ComponentType.VERIFIER:
                     assert node.checks is not None
-                    result = self._validated_outputs(source, values)
+                    result = self._prepare_outputs(project_id, source, values)
                     verifier_passed = all(
                         _check(check, result) for check in node.checks
                     )
@@ -1679,7 +1862,14 @@ class RuntimeService:
                         authorization=authorization,
                         approved=approved,
                     )
-                    receipt = {**execution.receipt, **identity}
+                    produced = self._materialize_produced_artifacts(
+                        project_id,
+                        run_id,
+                        node.id,
+                        execution.produced_artifacts,
+                        emit,
+                    )
+                    receipt = _json_safe_payload({**execution.receipt, **identity})
                     emit(node.id, "tool.completed", receipt)
                     tool_calls[-1] = _ToolCallRecord(
                         node_id=record.node_id,
@@ -1690,11 +1880,13 @@ class RuntimeService:
                         input_digest=record.input_digest,
                         receipt=receipt,
                     )
-                    values.update(self._tool_output_values(node, execution.output))
+                    values.update(
+                        self._tool_output_values(node, {**execution.output, **produced})
+                    )
                     port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
-                    result = self._validated_outputs(source, values)
+                    result = self._prepare_outputs(project_id, source, values)
                     emit(node.id, "node.completed", {})
                     return _ExecutionOutcome(
                         events=events,
@@ -1784,6 +1976,7 @@ class RuntimeService:
 
                     values.update(
                         self._run_agent(
+                            project_id,
                             node,
                             source,
                             values,
@@ -1859,24 +2052,19 @@ class RuntimeService:
     def _validated_outputs(
         source: AgentSource | WorkflowSource, values: dict[str, Any]
     ) -> dict[str, Any]:
-        validators: dict[str, Callable[[Any], bool]] = {
-            "string": lambda value: isinstance(value, str),
-            "boolean": lambda value: isinstance(value, bool),
-            "integer": lambda value: isinstance(value, int)
-            and not isinstance(value, bool),
-            "number": lambda value: isinstance(value, int | float)
-            and not isinstance(value, bool),
-            "object": lambda value: isinstance(value, dict),
-            "array": lambda value: isinstance(value, list),
-        }
         result: dict[str, Any] = {}
-        for name, output_type in source.outputs.items():
-            if name not in values or not validators.get(output_type, lambda _: False)(
-                values[name]
-            ):
+        for name, field in source.outputs.items():
+            if name not in values:
+                if field.required:
+                    raise RuntimeError(
+                        "output_invalid",
+                        f"output {name} is missing or is not a {field.compact_type}",
+                    )
+                continue
+            if not value_matches_field(field, values[name]):
                 raise RuntimeError(
-                    "output_invalid",
-                    f"output {name} is missing or is not a {output_type}",
+                    "output_type_invalid" if field.is_artifact() else "output_invalid",
+                    f"output {name} is missing or is not a {field.compact_type}",
                 )
             result[name] = values[name]
         return result
@@ -1912,6 +2100,7 @@ class RuntimeService:
 
     def _run_agent(
         self,
+        project_id: str,
         node: Any,
         source: AgentSource,
         values: dict[str, Any],
@@ -1933,9 +2122,18 @@ class RuntimeService:
         prompt = self._agent_system_prompt(node, source)
         if "{{" in prompt:
             prompt = _interpolate(prompt, values)
-        user_content = _agent_user_message(source, values) + knowledge_context
-        if conversation_context:
-            user_content += conversation_context
+        capabilities = runtime_model_capabilities(model.settings)
+        user_content: Any = _agent_user_content(source, values, capabilities)
+        extra = knowledge_context + conversation_context
+        if extra:
+            if isinstance(user_content, str):
+                user_content = user_content + extra
+            else:
+                user_content = [
+                    *user_content,
+                    {"type": "text", "text": extra},
+                ]
+        user_content = self._provider_user_content(project_id, user_content)
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
@@ -1950,6 +2148,45 @@ class RuntimeService:
         return _model_output_values(
             "".join(fragments).strip(), source.outputs, values, node.id
         )
+
+    def _provider_user_content(
+        self, project_id: str, content: str | list[dict[str, Any]]
+    ) -> str | list[dict[str, Any]]:
+        if isinstance(content, str):
+            return content
+        rewritten: list[dict[str, Any]] = []
+        for part in content:
+            if part.get("type") != "image_url":
+                rewritten.append(part)
+                continue
+            image = part.get("image_url")
+            if not isinstance(image, Mapping):
+                raise RuntimeError("runtime_request_invalid", "Image part is invalid")
+            url = str(image.get("url") or "")
+            if url.startswith("artifact://"):
+                artifact_id = url.removeprefix("artifact://")
+                try:
+                    record, payload = self.artifacts.read_bytes(project_id, artifact_id)
+                except ProjectError as exc:
+                    raise RuntimeError(exc.code, str(exc)) from exc
+                encoded = b64encode(payload).decode("ascii")
+                rewritten.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{record.media_type};base64,{encoded}",
+                        },
+                    }
+                )
+                continue
+            lowered = url.casefold()
+            if lowered.startswith(("file:", "artifact:")) or url.startswith("/"):
+                raise RuntimeError(
+                    "runtime_request_invalid",
+                    "Image parts cannot use host or artifact URLs",
+                )
+            rewritten.append(dict(part))
+        return rewritten
 
     def _model_for(self, project_id: str, agent_id: str) -> RuntimeModelClient:
         profile, _ = self.profiles.effective(project_id, agent_id)
@@ -2004,9 +2241,115 @@ class RuntimeService:
         return resources
 
 
+_BINARY_EVENT_KEYS = frozenset(
+    {"bytes", "base64", "contents", "content_b64", "data_base64"}
+)
+
+
+def _json_safe_payload(value: Any) -> Any:
+    if isinstance(value, bytes | bytearray):
+        raise RuntimeError(
+            "event_payload_invalid", "Run events cannot contain binary values"
+        )
+    if isinstance(value, Mapping):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _BINARY_EVENT_KEYS:
+                raise RuntimeError(
+                    "event_payload_invalid",
+                    "Run events cannot contain binary artifact payloads",
+                )
+            safe[str(key)] = _json_safe_payload(item)
+        return safe
+    if isinstance(value, list):
+        return [_json_safe_payload(item) for item in value]
+    return value
+
+
+def _runtime_modality_readiness(
+    source: AgentSource,
+    requires_model: bool,
+    modalities: RuntimeModelCapabilities,
+) -> dict[str, Any]:
+    kinds = {
+        field.artifact_kind for field in source.inputs.values() if field.is_artifact()
+    }
+    if "audio" in kinds or "video" in kinds:
+        return {
+            "ready": False,
+            "code": "unsupported_modality",
+            "detail": "Audio/video runtime adapters are not enabled",
+        }
+    if "image" not in kinds or not requires_model:
+        return {
+            "ready": True,
+            "code": "ready",
+            "detail": "Runtime model modalities match this Agent.",
+        }
+    if modalities.image_input == "supported":
+        return {
+            "ready": True,
+            "code": "ready",
+            "detail": "Runtime model supports image input.",
+        }
+    if modalities.image_input == "unknown":
+        return {
+            "ready": False,
+            "code": "runtime_model_incompatible",
+            "detail": "Runtime model image input support is unknown.",
+        }
+    return {
+        "ready": False,
+        "code": "runtime_model_incompatible",
+        "detail": "Runtime model does not support image input",
+    }
+
+
+def _agent_user_content(
+    source: AgentSource,
+    values: dict[str, Any],
+    capabilities: RuntimeModelCapabilities,
+) -> str | list[dict[str, Any]]:
+    image_parts: list[dict[str, Any]] = []
+    for name, field in source.inputs.items():
+        if not field.is_artifact() or field.artifact_kind != "image":
+            continue
+        raw = values.get(name)
+        refs = raw if field.multiple and isinstance(raw, list) else [raw]
+        for item in refs:
+            if not looks_like_artifact_ref(item):
+                continue
+            if capabilities.image_input != "supported":
+                raise RuntimeError(
+                    "runtime_model_incompatible",
+                    "Runtime model does not support image input",
+                )
+            artifact_id = artifact_id_from_value(item)
+            media_type = ""
+            if isinstance(item, Mapping):
+                media_type = str(item.get("media_type") or "")
+            image_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"artifact://{artifact_id}",
+                        "media_type": media_type,
+                    },
+                }
+            )
+    text = _agent_user_message(source, values)
+    if not image_parts:
+        return text
+    return [{"type": "text", "text": text}, *image_parts]
+
+
 def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:
     parts: list[str] = []
     for name, value in values.items():
+        field = source.inputs.get(name)
+        if field is not None and field.is_artifact():
+            parts.append(_artifact_prompt_line(name, field, value))
+            continue
         parts.append(f"{name}: {value}")
     if not parts:
         raise RuntimeError(
@@ -2015,21 +2358,34 @@ def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _artifact_prompt_line(name: str, field: TypedField, value: Any) -> str:
+    items = value if field.multiple and isinstance(value, list) else [value]
+    labels: list[str] = []
+    for item in items:
+        filename = ""
+        if looks_like_artifact_ref(item) and isinstance(item, Mapping):
+            filename = str(item.get("filename") or "")
+        labels.append(filename or "artifact")
+    return f"{name}: [{field.compact_type} {', '.join(labels)}]"
+
+
 def _model_output_values(
     content: str,
-    outputs: Mapping[str, str],
+    outputs: Mapping[str, TypedField],
     values: dict[str, Any],
     node_id: str,
 ) -> dict[str, Any]:
     """Accept declared outputs; later Model nodes may overwrite earlier results."""
 
     recorded = {} if node_id in outputs else {node_id: content}
-    targets = [
-        (name, field_type) for name, field_type in outputs.items() if name not in values
-    ]
+    targets = [(name, field) for name, field in outputs.items() if name not in values]
     if not targets:
         targets = list(outputs.items())
-    if len(targets) == 1 and targets[0][1] == "string":
+    if (
+        len(targets) == 1
+        and targets[0][1].compact_type == "string"
+        and not targets[0][1].multiple
+    ):
         return {**recorded, targets[0][0]: content}
     try:
         parsed: Any = json.loads(content)
@@ -2038,37 +2394,22 @@ def _model_output_values(
             "agent_output_invalid", "Agent model did not return valid JSON outputs"
         ) from exc
     if len(targets) == 1:
-        name, field_type = targets[0]
-        if not _value_matches_type(parsed, field_type):
+        name, field = targets[0]
+        if not value_matches_field(field, parsed):
             raise RuntimeError(
-                "agent_output_invalid", f"Agent output {name} is not a {field_type}"
+                "agent_output_invalid",
+                f"Agent output {name} is not a {field.compact_type}",
             )
         return {**recorded, name: parsed}
     if not isinstance(parsed, dict) or set(parsed) != {name for name, _ in targets}:
         raise RuntimeError(
             "agent_output_invalid", "Agent model output fields do not match the Agent"
         )
-    if not all(
-        _value_matches_type(parsed[name], field_type) for name, field_type in targets
-    ):
+    if not all(value_matches_field(field, parsed[name]) for name, field in targets):
         raise RuntimeError(
             "agent_output_invalid", "Agent model output types are invalid"
         )
     return {**recorded, **parsed}
-
-
-def _value_matches_type(value: Any, field_type: str) -> bool:
-    validators: dict[str, Callable[[Any], bool]] = {
-        "string": lambda item: isinstance(item, str),
-        "boolean": lambda item: isinstance(item, bool),
-        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
-        "number": lambda item: isinstance(item, int | float)
-        and not isinstance(item, bool),
-        "object": lambda item: isinstance(item, dict),
-        "array": lambda item: isinstance(item, list),
-    }
-    validator = validators.get(field_type)
-    return validator(value) if validator is not None else False
 
 
 def _interpolate(template: str, values: dict[str, Any]) -> str:

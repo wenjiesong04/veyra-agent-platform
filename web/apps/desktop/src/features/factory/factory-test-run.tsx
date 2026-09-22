@@ -1,6 +1,7 @@
+/** Legacy Factory conversation test-run. Product Chat/Builder uses BuilderTestRun. */
 import * as React from "react";
 import { Play } from "lucide-react";
-import type { AgentSource, JsonValue } from "@veyra/api-contracts";
+import { compactFieldType, type AgentSource, type JsonValue } from "@veyra/api-contracts";
 import { Button, ErrorState, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { MiniRunCanvas } from "../studio/MiniRunCanvas";
@@ -35,7 +36,10 @@ const copy = {
 } as const;
 
 function valuesFor(source: AgentSource): InputValues {
-  return Object.fromEntries(Object.entries(source.inputs).map(([name, type]) => [name, type === "boolean" ? false : type === "integer" || type === "number" ? 0 : ""]));
+  return Object.fromEntries(Object.entries(source.inputs).map(([name, spec]) => {
+    const type = compactFieldType(spec);
+    return [name, type === "boolean" ? false : type === "integer" || type === "number" ? 0 : ""];
+  }));
 }
 
 export function FactoryTestRun({
@@ -74,7 +78,7 @@ export function FactoryTestRun({
   if (!source) return <p className="factory-canvas-kicker">{text.loading}</p>;
 
   const entries = Object.entries(source.inputs);
-  const singleString = entries.length === 1 && entries[0][1] === "string";
+  const singleString = entries.length === 1 && compactFieldType(entries[0][1]) === "string";
   const inFlight = live.busy || live.run?.status === "running" || live.run?.status === "waiting";
   const canStart = Boolean(api.runAgent) && !inFlight;
   const promptValue = singleString ? String(values[entries[0][0]] ?? "") : "";

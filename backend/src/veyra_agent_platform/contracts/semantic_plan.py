@@ -21,8 +21,9 @@ from .common import (
     require_schema_version,
     require_string,
 )
+from .typed_io import COMPACT_TYPES, CompactFieldType
 
-FieldType = Literal["string", "number", "boolean"]
+FieldType = CompactFieldType
 OperationKind = Literal[
     "model",
     "capability",
@@ -31,7 +32,7 @@ OperationKind = Literal[
     "approval",
     "verification",
 ]
-_FIELD_TYPES = {"string", "number", "boolean"}
+_FIELD_TYPES = set(COMPACT_TYPES)
 _OPERATION_KINDS = {
     "model",
     "capability",
@@ -67,11 +68,14 @@ class SemanticField:
     name: str
     type: FieldType
     description: str
+    multiple: bool = False
 
-    def to_dict(self) -> dict[str, str]:
-        payload = {"name": self.name, "type": self.type}
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": self.name, "type": self.type}
         if self.description:
             payload["description"] = self.description
+        if self.multiple:
+            payload["multiple"] = True
         return payload
 
 
@@ -266,13 +270,22 @@ def _fields(value: Any, field: str, limit: int) -> tuple[SemanticField, ...]:
         record = require_mapping(item, f"{field}[{index}]")
         require_keys(
             record,
-            allowed={"name", "type", "description"},
+            allowed={"name", "type", "description", "multiple"},
             required={"name", "type"},
         )
         name = _text(record["name"], f"{field}[{index}].name", 80)
         kind = record["type"]
         if kind not in _FIELD_TYPES:
             raise ContractValidationError(f"{field}[{index}].type is not supported")
+        multiple = record.get("multiple")
+        if multiple is None:
+            many = False
+        elif isinstance(multiple, bool):
+            many = multiple
+        else:
+            raise ContractValidationError(
+                f"{field}[{index}].multiple must be a boolean"
+            )
         key = name.casefold()
         if key in seen:
             raise ContractValidationError(f"{field} names must be unique")
@@ -284,6 +297,7 @@ def _fields(value: Any, field: str, limit: int) -> tuple[SemanticField, ...]:
                 description=_optional_text(
                     record.get("description"), f"{field}[{index}].description", 240
                 ),
+                multiple=many,
             )
         )
     return tuple(parsed)

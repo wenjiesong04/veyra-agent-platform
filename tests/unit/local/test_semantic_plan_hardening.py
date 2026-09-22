@@ -268,6 +268,29 @@ def test_mfjs_projection_preserves_property_named_then() -> None:
     assert projected["properties"]["when"]["type"] == "string"
 
 
+def test_typed_io_semantic_fields_parse_image_pdf_and_multiple() -> None:
+    plan = AgentSemanticPlanV1.from_dict(
+        _base(
+            inputs=[
+                {"name": "photo", "type": "image"},
+                {"name": "photos", "type": "image", "multiple": True},
+            ],
+            outputs=[{"name": "analysis", "type": "object"}],
+        )
+    )
+    assert plan.inputs[0].type == "image"
+    assert plan.inputs[1].multiple is True
+    assert plan.outputs[0].type == "object"
+    try:
+        AgentSemanticPlanV1.from_dict(
+            _base(inputs=[{"name": "photo", "type": "artifact"}])
+        )
+    except ContractValidationError as exc:
+        assert "type" in str(exc)
+    else:
+        raise AssertionError("compact artifact type must be rejected")
+
+
 def test_policy_sentence_is_not_missing_capability() -> None:
     compiled = compile_semantic_plan(
         AgentSemanticPlanV1.from_dict(

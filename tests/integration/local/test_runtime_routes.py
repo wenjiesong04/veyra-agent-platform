@@ -592,6 +592,8 @@ def test_runtime_status_is_unconfigured_without_host_key(tmp_path: Path) -> None
         assert payload["model_id"] == "kimi-k3"
         assert payload["user_provided_only"] is False
         assert payload["allow_process_environment_key"] is True
+        assert payload["modalities"]["image_input"] == "unsupported"
+        assert payload["modalities"]["model_id"] == "kimi-k3"
 
 
 def test_agent_node_requires_runtime_key(tmp_path: Path) -> None:

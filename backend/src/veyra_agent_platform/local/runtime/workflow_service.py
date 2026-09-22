@@ -174,7 +174,7 @@ class WorkflowRuntimeService:
         IdempotencyKey("1.0", key)
         draft = self.library.workflow_draft(project_id, workflow_id)
         source = WorkflowSource.from_dict(draft["source"])
-        self.runtime._validate_inputs(source, inputs)
+        inputs = self.runtime._prepare_inputs(project_id, source, inputs)
         calls = resolve_workflow_calls(self.repository, project_id, source)
         for call in calls.values():
             gaps = _permission_gaps(source, call.source)
@@ -448,7 +448,9 @@ class WorkflowRuntimeService:
                         }
                     )
                 elif node.component_type is ComponentType.OUTPUT:
-                    result = self.runtime._validated_outputs(source, values)
+                    result = self.runtime._prepare_outputs(
+                        row["project_id"], source, values
+                    )
                     with self.repository.transaction() as connection:
                         self.store.event(
                             connection, run_id, current, "node.completed", {}

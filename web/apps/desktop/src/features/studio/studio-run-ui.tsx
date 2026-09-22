@@ -1,17 +1,26 @@
 import * as React from "react";
-import type { AgentRunResponse, JsonValue, RuntimeReadiness, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonValue, RuntimeReadiness, TypedFields, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
+import { compactFieldType, fieldIsMultiple, isArtifactCompactType } from "@veyra/api-contracts";
 import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
+import { RuntimeInputForm } from "../runtime/RuntimeInputForm";
 
-export function initialSourceInputs(inputs: Record<string, string>, initialFilePath?: string): Record<string, JsonValue> {
+export function initialSourceInputs(inputs: TypedFields, initialFilePath?: string): Record<string, JsonValue> {
   const values = Object.fromEntries(
-    Object.entries(inputs).map(([name, type]) => [
-      name,
-      type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "object" ? {} : type === "array" ? [] : "",
-    ]),
+    Object.entries(inputs).flatMap(([name, spec]) => {
+      const type = compactFieldType(spec);
+      if (isArtifactCompactType(type)) return [];
+      if (fieldIsMultiple(spec) && (type === "array" || type === "table")) {
+        return [[name, []]] as Array<[string, JsonValue]>;
+      }
+      return [[
+        name,
+        type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "object" ? {} : type === "array" || type === "table" ? [] : "",
+      ]] as Array<[string, JsonValue]>;
+    }),
   );
   if (initialFilePath) {
-    const field = Object.entries(inputs).find(([name, type]) => type === "string" && /(^|_)(path|file|document)(_|$)/i.test(name))?.[0];
+    const field = Object.entries(inputs).find(([name, spec]) => compactFieldType(spec) === "string" && /(^|_)(path|file|document)(_|$)/i.test(name))?.[0];
     if (field) values[field] = initialFilePath;
   }
   return values;
@@ -158,66 +167,29 @@ export function RunInputFields({
   onChange,
   emptyLabel,
   fileOptions = [],
+  locale = "en",
+  projectId,
+  api,
 }: {
-  schema: Record<string, string>;
+  schema: TypedFields;
   values: Record<string, JsonValue>;
   onChange: (values: Record<string, JsonValue>) => void;
   emptyLabel: string;
   fileOptions?: string[];
+  locale?: "zh" | "en";
+  projectId?: string;
+  api?: LocalProjectApi;
 }) {
   return (
-    <>
-      {Object.entries(schema).map(([name, type]) => (
-        <label key={name}>
-          <span>{name}<small>{type}</small></span>
-          {type === "boolean" ? (
-            <select
-              value={String(values[name] ?? false)}
-              onChange={(event) => onChange({ ...values, [name]: event.target.value === "true" })}
-            >
-              <option value="false">false</option>
-              <option value="true">true</option>
-            </select>
-          ) : type === "object" || type === "array" ? (
-            <textarea
-              rows={3}
-              aria-label={name}
-              value={typeof values[name] === "string" ? String(values[name]) : JSON.stringify(values[name] ?? (type === "array" ? [] : {}), null, 2)}
-              onChange={(event) => {
-                try {
-                  const parsed: unknown = JSON.parse(event.target.value);
-                  if (type === "array" ? Array.isArray(parsed) : Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed)) {
-                    onChange({ ...values, [name]: parsed as JsonValue });
-                    return;
-                  }
-                } catch {
-                  // Keep typing until JSON is valid.
-                }
-                onChange({ ...values, [name]: event.target.value });
-              }}
-            />
-          ) : (
-            <>
-              <input
-                type={type === "integer" || type === "number" ? "number" : "text"}
-                step={type === "integer" ? "1" : "any"}
-                list={type === "string" && fileOptions.length > 0 && /(^|_)(path|file|document)(_|$)/i.test(name) ? `run-file-options-${name}` : undefined}
-                value={String(values[name] ?? "")}
-                onChange={(event) => {
-                  const value: JsonValue = type === "integer"
-                    ? Number.parseInt(event.target.value || "0", 10)
-                    : type === "number"
-                      ? Number.parseFloat(event.target.value || "0")
-                      : event.target.value;
-                  onChange({ ...values, [name]: value });
-                }}
-              />
-              {type === "string" && fileOptions.length > 0 && /(^|_)(path|file|document)(_|$)/i.test(name) ? <datalist id={`run-file-options-${name}`}>{fileOptions.slice(0, 100).map((path) => <option value={path} key={path} />)}</datalist> : null}
-            </>
-          )}
-        </label>
-      ))}
-      {!Object.keys(schema).length ? <p>{emptyLabel}</p> : null}
-    </>
+    <RuntimeInputForm
+      schema={schema}
+      values={values}
+      onChange={onChange}
+      emptyLabel={emptyLabel}
+      fileOptions={fileOptions}
+      locale={locale}
+      projectId={projectId}
+      api={api}
+    />
   );
 }

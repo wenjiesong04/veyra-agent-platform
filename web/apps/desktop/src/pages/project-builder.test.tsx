@@ -1065,7 +1065,7 @@ describe("Durable Project Chat", () => {
     expect(screen.getByRole("tab", { name: "Workbench" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("tab", { name: "Test" }));
     expect(screen.getByRole("tab", { name: "Test" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.change(await screen.findByLabelText("Test input"), { target: { value: "Hello world" } });
+    fireEvent.change(await screen.findByLabelText("text"), { target: { value: "Hello world" } });
     fireEvent.click(screen.getByRole("button", { name: "Test Agent" }));
     await waitFor(() => expect(startBuilderTestRun).toHaveBeenCalledWith("project-1", "conv-1", {
       agent_id: "agent-1",

@@ -87,6 +87,9 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             onChange={setInputs}
             emptyLabel={zh ? "此 Agent 不需要输入。" : "This Agent has no inputs."}
             fileOptions={fileOptions}
+            locale={locale}
+            projectId={projectId}
+            api={api}
           />
           <div className="studio-run-actions">
             <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runAgent} onClick={() => void live.start(inputs)}>

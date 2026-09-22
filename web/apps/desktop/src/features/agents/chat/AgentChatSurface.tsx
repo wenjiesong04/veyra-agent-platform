@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Bot } from "lucide-react";
-import { type AgentConversationMessage, type AgentConversationSummary, type AgentRunResponse, type AgentSource, type JsonValue, type ResourceDescriptor } from "@veyra/api-contracts";
+import { compactFieldType, type AgentConversationMessage, type AgentConversationSummary, type AgentRunResponse, type AgentSource, type JsonValue, type ResourceDescriptor } from "@veyra/api-contracts";
 import { ErrorState, LoadingState, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../../api/local-client";
 import { MiniRunCanvas } from "../../studio/MiniRunCanvas";
@@ -54,7 +54,10 @@ const copy = {
 } as const;
 
 function valuesFor(source: AgentSource): InputValues {
-  return Object.fromEntries(Object.entries(source.inputs).map(([name, type]) => [name, type === "boolean" ? false : type === "integer" || type === "number" ? 0 : ""]));
+  return Object.fromEntries(Object.entries(source.inputs).map(([name, spec]) => {
+    const type = compactFieldType(spec);
+    return [name, type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "object" ? {} : type === "array" || type === "table" ? [] : ""];
+  }));
 }
 
 function statusTone(status: AgentRunResponse["status"]): "good" | "warn" | "bad" {
@@ -67,7 +70,7 @@ function errorText(error: unknown, locale: Locale): string {
 
 function submittedDisplay(source: AgentSource, submitted: InputValues): { text: string | null; json: string } {
   const entries = Object.entries(source.inputs);
-  const singleString = entries.length === 1 && entries[0][1] === "string";
+  const singleString = entries.length === 1 && compactFieldType(entries[0][1]) === "string";
   return {
     text: singleString ? String(submitted[entries[0][0]] ?? "") : null,
     json: JSON.stringify(submitted, null, 2),
@@ -110,7 +113,7 @@ export function AgentChatSurface({
       const draft = await api.getDraft(projectId, agentId);
       setSource(draft.source);
       const next = valuesFor(draft.source);
-      const stringField = Object.entries(draft.source.inputs).find(([, type]) => type === "string")?.[0];
+      const stringField = Object.entries(draft.source.inputs).find(([, spec]) => compactFieldType(spec) === "string")?.[0];
       if (initialPrompt && stringField) next[stringField] = initialPrompt;
       setValues(next);
       setLoadState("ready");
@@ -211,7 +214,7 @@ export function AgentChatSurface({
   React.useEffect(() => {
     if (!initialPrompt || !source || !api.runAgent) return;
     const entries = Object.entries(source.inputs);
-    if (!(entries.length === 1 && entries[0][1] === "string")) return;
+    if (!(entries.length === 1 && compactFieldType(entries[0][1]) === "string")) return;
     const key = `${projectId}:${agentId}:${initialPrompt}`;
     if (autoStartedKeys.has(key)) return;
     autoStartedKeys.add(key);
@@ -226,7 +229,7 @@ export function AgentChatSurface({
   }
 
   const inputEntries = Object.entries(source.inputs);
-  const singleString = inputEntries.length === 1 && inputEntries[0][1] === "string";
+  const singleString = inputEntries.length === 1 && compactFieldType(inputEntries[0][1]) === "string";
   const inFlight = live.busy || live.run?.status === "running" || live.run?.status === "waiting";
   const canStart = Boolean(api.runAgent) && !inFlight;
   const composerValue = singleString ? String(values[inputEntries[0][0]] ?? "") : "";

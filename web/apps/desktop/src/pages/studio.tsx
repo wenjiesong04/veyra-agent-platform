@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Code2, LayoutPanelTop, Save, SlidersHorizontal } from "lucide-react";
-import type { ResourceDescriptor, StudioSource, ValidateResponse } from "@veyra/api-contracts";
+import type { ResourceDescriptor, StudioSource, TypedFields, ValidateResponse } from "@veyra/api-contracts";
+import { isTypedFieldSpec } from "@veyra/api-contracts";
 import { Button, Alert, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
@@ -273,7 +274,7 @@ type EditorProps = { source: StudioSource; onChange: (source: StudioSource) => v
 function FormView({ source, onChange, onBufferValidity }: EditorProps) {
   const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow";
   const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value });
-  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} onValid={(inputs) => onChange({ ...source, inputs })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} onValid={(outputs) => onChange({ ...source, outputs })} /></div>
+  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} typedFields onValid={(inputs) => onChange({ ...source, inputs: inputs as TypedFields })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} typedFields onValid={(outputs) => onChange({ ...source, outputs: outputs as TypedFields })} /></div>
     {!workflow ? source.nodes.filter((node) => node.component_type === "Tool").map((node) => <fieldset key={node.id}><legend>Tool · {node.id}</legend><label>{zh ? "资源引用" : "Resource reference"}<input readOnly value={node.uses ?? ""} /></label><label>{zh ? "固定哈希" : "Pinned hash"}<input readOnly value={source.lock[node.uses ?? ""] ?? ""} /></label>{(["input_mapping", "output_mapping"] as const).map((field) => <JsonField key={field} field={`${node.id}:${field}`} onBufferValidity={onBufferValidity} label={`${node.id} ${field}`} value={node[field] ?? {}} onValid={(mapping) => onChange({ ...source, nodes: source.nodes.map((item) => item.id === node.id ? { ...item, [field]: mapping } : item) })} />)}</fieldset>) : null}
   </Panel>;
 }
@@ -282,11 +283,11 @@ function useBufferValidity(field: string, error: string, onBufferValidity: Buffe
   React.useEffect(() => { onBufferValidity(field, Boolean(error)); return () => onBufferValidity(field, false); }, [field, error, onBufferValidity]);
 }
 
-function JsonField({ label, value, onValid, field, onBufferValidity }: { label: string; value: Record<string, string>; onValid: (value: Record<string, string>) => void; field: string; onBufferValidity: BufferValidity }) {
+function JsonField({ label, value, onValid, field, onBufferValidity, typedFields = false }: { label: string; value: Record<string, string> | TypedFields; onValid: (value: Record<string, string> | TypedFields) => void; field: string; onBufferValidity: BufferValidity; typedFields?: boolean }) {
   const canonical = JSON.stringify(value, null, 2); const [text, setText] = React.useState(canonical); const [error, setError] = React.useState("");
   useBufferValidity(field, error, onBufferValidity);
   React.useEffect(() => { setText(canonical); setError(""); }, [canonical]);
-  return <label><span>{label}</span><textarea rows={5} value={text} onChange={(event) => { const next = event.target.value; setText(next); try { const parsed = JSON.parse(next); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((item) => typeof item !== "string")) throw new Error("Expected a string map."); onValid(parsed as Record<string, string>); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Invalid JSON."); } }} />{error ? <small className="studio-parse-error">{error}</small> : null}</label>;
+  return <label><span>{label}</span><textarea rows={5} value={text} onChange={(event) => { const next = event.target.value; setText(next); try { const parsed = JSON.parse(next); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected a map."); const values = Object.values(parsed as Record<string, unknown>); if (typedFields ? values.some((item) => !isTypedFieldSpec(item)) : values.some((item) => typeof item !== "string")) throw new Error(typedFields ? "Expected typed fields." : "Expected a string map."); onValid(parsed as Record<string, string>); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Invalid JSON."); } }} />{error ? <small className="studio-parse-error">{error}</small> : null}</label>;
 }
 
 function SourceView({ source, onChange, onBufferValidity }: EditorProps) {

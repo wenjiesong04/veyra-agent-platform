@@ -1,4 +1,4 @@
-import type { AgentSource, AgentVersionSnapshot, CatalogBinding, FlowNode, FlowTransition, ResourceDescriptor, StudioNote, StudioSource, WorkflowSource } from "@veyra/api-contracts";
+import { isTypedFieldSpec, type AgentSource, type AgentVersionSnapshot, type CatalogBinding, type FlowNode, type FlowTransition, type ResourceDescriptor, type StudioNote, type StudioSource, type TypedFields, type WorkflowSource } from "@veyra/api-contracts";
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import { agentCallRef, parseAgentCallRef } from "./agent-call";
 import { catalogToolRequiresApproval } from "./palette";
@@ -110,6 +110,10 @@ function stringMap(value: unknown): value is Record<string, string> {
   return record(value) && Object.values(value).every((item) => typeof item === "string");
 }
 
+function typedFieldsMap(value: unknown): value is TypedFields {
+  return record(value) && Object.values(value).every(isTypedFieldSpec);
+}
+
 function flowNode(value: unknown): value is FlowNode {
   if (!record(value) || typeof value.id !== "string" || !componentTypes.has(value.component_type as FlowNode["component_type"])) return false;
   const optionalStrings = ["model_ref", "system_prompt", "agent_ref", "uses", "expression", "prompt", "output_name"];
@@ -141,7 +145,7 @@ export function isAgentSourceCandidate(value: unknown): value is AgentSource {
     || value.agentspec_version !== "26.1"
     || value.component_type !== "Flow"
     || !["agent_id", "slug", "name", "description"].every((key) => typeof value[key] === "string")
-    || !stringMap(value.inputs) || !stringMap(value.outputs) || !stringMap(value.lock)
+    || !typedFieldsMap(value.inputs) || !typedFieldsMap(value.outputs) || !stringMap(value.lock)
     || !Array.isArray(value.nodes) || !value.nodes.every(flowNode)
     || !Array.isArray(value.transitions)) return false;
   if (!value.transitions.every((transition) => record(transition)
@@ -180,7 +184,7 @@ export function isWorkflowSourceCandidate(value: unknown): value is WorkflowSour
     || value.schema_version !== "1.0"
     || value.component_type !== "Workflow"
     || !["workflow_id", "slug", "name", "description"].every((key) => typeof value[key] === "string")
-    || !stringMap(value.inputs) || !stringMap(value.outputs) || !stringMap(value.lock)
+    || !typedFieldsMap(value.inputs) || !typedFieldsMap(value.outputs) || !stringMap(value.lock)
     || !Array.isArray(value.nodes) || !value.nodes.every(flowNode)
     || !Array.isArray(value.transitions)) return false;
   if (!value.transitions.every((transition) => record(transition)
