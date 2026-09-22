@@ -477,12 +477,122 @@ def test_generate_sends_moonshot_compatible_schema_without_creating_draft(
         assert schema["properties"]["suggested_name"]["type"] == "string"
         items = schema["properties"]["capability_intents"]["items"]
         assert items["type"] == "string"
+        assert (
+            "branches"
+            not in schema["properties"]["step_intents"]["items"]["properties"]
+        )
+        kinds = schema["properties"]["step_intents"]["items"]["properties"][
+            "operation_kind"
+        ]
+        assert kinds["enum"] == [
+            "model",
+            "capability",
+            "transform",
+            "condition",
+            "approval",
+            "verification",
+        ]
         refused = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
             json={"confirm": False},
         )
         assert refused.status_code == 422
         assert client.get(f"/api/v1/projects/{project_id}").json()["agents"] == before
+
+
+def test_generate_repairs_incomplete_branches_without_extra_model_call(
+    tmp_path: Path,
+) -> None:
+    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
+    plan["step_intents"] = [
+        {
+            "semantic_key": "summarize",
+            "name": "合同摘要",
+            "purpose": "生成合同摘要",
+            "operation_kind": "model",
+        },
+        {
+            "semantic_key": "confirm",
+            "name": "用户确认",
+            "purpose": "请确认合同摘要",
+            "operation_kind": "approval",
+            "depends_on": ["summarize"],
+            "branches": [{"when": "approved"}],
+        },
+        {
+            "semantic_key": "verify",
+            "name": "结果检查",
+            "purpose": "output is not empty",
+            "operation_kind": "verification",
+            "depends_on": ["confirm"],
+        },
+    ]
+    transport = ScriptedKimiTransport(
+        [
+            _completion("What should success look like?"),
+            _completion(json.dumps(plan)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "生成合同摘要并让用户确认"},
+        )
+        session_id = created.json()["session_id"]
+        generated = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
+        )
+        assert generated.status_code == 200
+        types = [
+            node["component_type"] for node in generated.json()["blueprint"]["nodes"]
+        ]
+        assert "HumanApproval" in types
+        assert "Verifier" in types
+        assert len(transport.calls) == 2
+
+
+def test_generate_does_not_silently_degrade_complex_intents(tmp_path: Path) -> None:
+    broken = {
+        "schema_version": "1.0",
+        "goal": "生成合同摘要",
+        "suggested_name": "合同摘要",
+        "description": "摘要后确认",
+        "inputs": [{"name": "contract", "type": "string"}],
+        "outputs": [{"name": "summary", "type": "string"}],
+        "steps": ["摘要", "确认"],
+        "capability_intents": [],
+        "knowledge_intents": [],
+        "approval_points": [],
+        "success_criteria": [],
+        "user_constraints": [],
+        "step_intents": [{"operation_kind": "approval"}],
+    }
+    transport = ScriptedKimiTransport(
+        [
+            _completion("What should success look like?"),
+            _completion(json.dumps(broken)),
+            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
+            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "生成合同摘要并让用户确认"},
+        )
+        session_id = created.json()["session_id"]
+        failed = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
+        )
+        assert failed.status_code == 422
+        assert failed.json()["code"] == "factory_generation_invalid"
+        diagnostics = client.get(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}"
+        ).json()["diagnostics"]
+        assert any("silent_v1_degradation" in item for item in diagnostics)
+        assert any("category=" in item for item in diagnostics)
 
 
 def test_schema_invalid_blueprint_does_not_create_a_draft(tmp_path: Path) -> None:

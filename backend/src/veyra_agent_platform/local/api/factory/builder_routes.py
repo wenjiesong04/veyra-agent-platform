@@ -73,7 +73,9 @@ def build_router() -> APIRouter:
             request, lambda: _conversations(request).get(project_id, conversation_id)
         )
 
-    @router.patch("/api/v1/projects/{project_id}/builder/conversations/{conversation_id}")
+    @router.patch(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+    )
     def rename_conversation(
         project_id: str,
         conversation_id: str,

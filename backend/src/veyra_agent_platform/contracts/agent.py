@@ -90,6 +90,7 @@ _ALLOWED_PORTS: dict[ComponentType, frozenset[TransitionPort]] = {
     ComponentType.AGENT_CALL: frozenset({TransitionPort.NEXT}),
 }
 
+# Agent graphs are self-contained capability graphs. AgentCall is Workflow-only.
 _AGENT_GRAPH_TYPES = frozenset(
     {
         ComponentType.START,
@@ -891,7 +892,9 @@ def _typed_fields(value: Any, field: str) -> Mapping[str, str]:
 def _ui_layout(value: Any) -> Mapping[str, Any]:
     item = require_mapping(value, "ui")
     require_keys(
-        item, allowed={"positions", "bindings", "notes"}, required={"positions"}
+        item,
+        allowed={"positions", "bindings", "notes", "labels"},
+        required={"positions"},
     )
     positions = require_mapping(item["positions"], "ui.positions")
     parsed: dict[str, dict[str, int]] = {}
@@ -910,6 +913,8 @@ def _ui_layout(value: Any) -> Mapping[str, Any]:
         layout["bindings"] = _ui_bindings(item["bindings"])
     if "notes" in item:
         layout["notes"] = _ui_notes(item["notes"])
+    if "labels" in item:
+        layout["labels"] = _ui_labels(item["labels"])
     return cast(Mapping[str, Any], freeze_json(layout))
 
 
@@ -945,6 +950,18 @@ def _ui_bindings(value: Any) -> dict[str, dict[str, Any]]:
 
 
 _NOTE_COLORS = frozenset({"teal", "amber", "violet", "slate"})
+
+
+def _ui_labels(value: Any) -> dict[str, str]:
+    item = require_mapping(value, "ui.labels")
+    parsed: dict[str, str] = {}
+    for node_id, label in item.items():
+        require_string(node_id, "ui.labels id", pattern=NODE_ID_RE)
+        text = require_string(label, "ui.labels text").strip()
+        if not text or len(text) > 80:
+            raise ContractValidationError("ui.labels text must be 1 to 80 characters")
+        parsed[node_id] = text
+    return parsed
 
 
 def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
@@ -1263,6 +1280,13 @@ def _validate_ui_node_references(
         colliding = ", ".join(sorted(note_bindings))
         raise ContractValidationError(
             f"{field}.notes collide with ui.bindings id(s): {colliding}"
+        )
+    labels = ui.get("labels") or {}
+    unknown_labels = set(labels) - {node.id for node in nodes}
+    if unknown_labels:
+        colliding = ", ".join(sorted(unknown_labels))
+        raise ContractValidationError(
+            f"{field}.labels references unknown node(s): {colliding}"
         )
 
 

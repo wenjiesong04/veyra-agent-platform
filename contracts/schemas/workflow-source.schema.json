@@ -399,6 +399,17 @@
               }
             }
           }
+        },
+        "labels": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
         }
       }
     },

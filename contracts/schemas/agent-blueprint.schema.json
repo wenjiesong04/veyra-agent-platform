@@ -461,6 +461,41 @@
               }
             }
           }
+        },
+        "notes": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["x", "y", "text"],
+            "properties": {
+              "x": { "type": "integer" },
+              "y": { "type": "integer" },
+              "text": { "type": "string", "maxLength": 4000 },
+              "color": {
+                "enum": ["teal", "amber", "violet", "slate"]
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 160,
+                "maximum": 640
+              }
+            }
+          }
+        },
+        "labels": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
         }
       }
     },

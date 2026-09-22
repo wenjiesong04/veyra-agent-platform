@@ -164,10 +164,12 @@ Studio 是 Agent / Workflow 的可视化设计环境。Canvas 展示结构、执
 Human Approval、Output 及其它正式支持的能力，但产品概念不等于同名 wire 节点：
 
 - 输入由 source inputs 与 Start 等真实契约表达，不虚构独立 `Input` 节点类型。
-- Agent 画布主要承载 Start、Model、Tool、HumanApproval、Verifier、Output 和显式知识绑定。
+- Agent 画布承载 Start、Model、Tool、Condition、Transform、HumanApproval、Verifier、
+  Output 和显式知识绑定。AgentCall 不出现在 Agent 画布。
 - Workflow 画布承载 Start、AgentCall、Condition、Transform、HumanApproval、Verifier、
   Output；不直接放 Model 或 Tool。AgentCall 锁定 `agent_id@version_id`，不是文件路径或
-  随时变化的 latest。历史 Agent 控制流兼容不等于新产品边界改变。
+  随时变化的 latest。Agent 内部图可以包含 Condition/Transform，这是能力图而不是
+  把 Agent 变成 Workflow。
 - MCP 在资源和 UI 中归入 Tools，发现描述经规范化后落为 Tool 节点；不是与 Agent、
   Workflow、Component、Knowledge 平级的新产品层。
 - Component 保留 primitive / composite 分类；composite 展开成已锁定的 primitive，

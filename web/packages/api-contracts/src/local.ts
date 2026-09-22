@@ -95,6 +95,7 @@ export type AgentSource = {
     positions: Record<string, { x: number; y: number }>;
     bindings?: Record<string, CatalogBinding>;
     notes?: Record<string, StudioNote>;
+    labels?: Record<string, string>;
   };
   lock: Record<string, string>;
 };
@@ -180,6 +181,7 @@ export type WorkflowSource = {
   ui: {
     positions: Record<string, { x: number; y: number }>;
     notes?: Record<string, StudioNote>;
+    labels?: Record<string, string>;
   };
   lock: Record<string, string>;
 };

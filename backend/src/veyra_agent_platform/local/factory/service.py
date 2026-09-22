@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +60,14 @@ from .compiler import (
     compile_blueprint,
     resource_plan,
     run_availability,
+)
+from .semantic_plan_repair import (
+    bounded_repair_semantic_plan,
+    classify_plan_error,
+    graph_obligations,
+    reject_silent_v1_degradation,
+    semantic_plan_shape,
+    validation_error_path,
 )
 from .store import FactorySessionRepository
 
@@ -273,7 +281,14 @@ class FactoryService:
                 {
                     "role": "user",
                     "content": (
-                        "Generate the AgentSemanticPlanV1 JSON for this requirement."
+                        "Generate the AgentSemanticPlanV1 JSON for this requirement. "
+                        "Use step_intents for every real duty. operation_kind must "
+                        "be one of model, capability, transform, condition, "
+                        "approval, verification. Human confirmation is approval. "
+                        "A check after a result is verification. A branch is "
+                        "condition. Put tool policy in user_constraints, not "
+                        "capability_intents. Do not emit branches or node IDs. "
+                        "A simple one-duty Agent may use a single model step."
                     ),
                 },
             ]
@@ -289,6 +304,7 @@ class FactoryService:
             history_count = len(self.store.messages(session_id))
             used_object_fallback = False
             diagnostics: list[str] = []
+            observed_kinds: set[str] = set()
             attempts = self.client.settings.repair_attempts
             attempt = 1
             stage(SEMANTIC_PLAN_STARTED)
@@ -337,19 +353,43 @@ class FactoryService:
                         continue
                     self._recover_generation(session_id)
                     raise
+                parsed: dict[str, Any] | None = None
+                repair_notes: tuple[str, ...] = ()
                 try:
-                    parsed = json.loads(completion.content)
-                    plan = AgentSemanticPlanV1.from_dict(parsed)
+                    loaded = json.loads(completion.content)
+                    if not isinstance(loaded, dict):
+                        raise ContractValidationError("semantic plan must be an object")
+                    parsed = loaded
+                    observed_kinds |= graph_obligations(parsed)
+                    repaired, repair_notes = bounded_repair_semantic_plan(parsed)
+                    plan = AgentSemanticPlanV1.from_dict(repaired)
+                    reject_silent_v1_degradation(
+                        obligations=frozenset(observed_kinds),
+                        operation_kinds=tuple(
+                            step.operation_kind for step in plan.step_intents
+                        ),
+                        approval_points=plan.approval_points,
+                    )
                 except (
                     json.JSONDecodeError,
                     TypeError,
                     ValueError,
                     ContractValidationError,
                 ) as exc:
-                    diagnostics.append(_generation_failure(attempt, exc))
+                    diagnostics.append(
+                        _generation_failure(
+                            attempt,
+                            exc,
+                            payload=parsed,
+                            repair_notes=repair_notes,
+                        )
+                    )
                     messages.append(completion.assistant_message)
                     messages.append(
-                        {"role": "user", "content": _repair_prompt(diagnostics)}
+                        {
+                            "role": "user",
+                            "content": _repair_prompt(diagnostics, schema=plan_schema),
+                        }
                     )
                     attempt += 1
                     continue
@@ -432,7 +472,10 @@ class FactoryService:
                     )
                     messages.append(completion.assistant_message)
                     messages.append(
-                        {"role": "user", "content": _repair_prompt(diagnostics)}
+                        {
+                            "role": "user",
+                            "content": _repair_prompt(diagnostics, schema=plan_schema),
+                        }
                     )
                     attempt += 1
                     continue
@@ -792,19 +835,58 @@ def _prepare_blueprint_payload(parsed: Any) -> Any:
     return payload
 
 
-def _generation_failure(attempt: int, exc: BaseException) -> str:
+def _generation_failure(
+    attempt: int,
+    exc: BaseException,
+    *,
+    payload: dict[str, Any] | None = None,
+    repair_notes: tuple[str, ...] = (),
+) -> str:
     detail = " ".join(str(exc).split())[:180]
     name = type(exc).__name__
-    if detail:
-        return f"attempt {attempt}: invalid AgentSemanticPlan ({name}: {detail})"
-    return f"attempt {attempt}: invalid AgentSemanticPlan ({name})"
+    category = classify_plan_error(exc)
+    path = validation_error_path(exc)
+    parts = [
+        f"attempt {attempt}: invalid AgentSemanticPlan ({name}: {detail})"
+        if detail
+        else f"attempt {attempt}: invalid AgentSemanticPlan ({name})"
+    ]
+    parts.append(f"category={category}")
+    parts.append(f"path={path}")
+    if payload is not None:
+        shape = json.dumps(
+            semantic_plan_shape(payload), ensure_ascii=True, sort_keys=True
+        )
+        parts.append(f"shape={shape}")
+    if repair_notes:
+        parts.append("repair=" + ",".join(repair_notes[:8]))
+    return " ".join(parts)
 
 
-def _repair_prompt(diagnostics: list[str]) -> str:
+def _repair_prompt(
+    diagnostics: list[str], *, schema: Mapping[str, Any] | None = None
+) -> str:
+    excerpt = ""
+    if isinstance(schema, Mapping):
+        properties = schema.get("properties")
+        if isinstance(properties, dict) and "step_intents" in properties:
+            excerpt = json.dumps(
+                {"step_intents": properties["step_intents"]},
+                ensure_ascii=True,
+                sort_keys=True,
+            )[:1_200]
     return (
-        "Repair only the invalid AgentSemanticPlanV1 fields. Do not add resource "
-        "hashes, Knowledge UUIDs, node IDs, canvas positions, source.lock, or "
-        "permissions. Diagnostics: " + "; ".join(diagnostics)
+        "Repair only the invalid AgentSemanticPlanV1 fields. Keep the original "
+        "user requirement. operation_kind must be exactly model, capability, "
+        "transform, condition, approval, or verification. Human confirmation is "
+        "approval. A later check is verification. A branch is condition. Do not "
+        "emit branches, node IDs, resource hashes, Knowledge UUIDs, canvas "
+        "positions, source.lock, or permissions. Do not omit approval, "
+        "condition, verification, or transform step_intents once they were "
+        "required. Do not copy policy sentences into capability_intents. "
+        + (f"step_intents schema: {excerpt}. " if excerpt else "")
+        + "Diagnostics: "
+        + "; ".join(diagnostics)
     )
 
 

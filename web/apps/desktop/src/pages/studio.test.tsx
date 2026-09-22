@@ -241,7 +241,8 @@ describe("StudioPage source and conflict safety", () => {
     expect(await screen.findByText("Project resources unavailable. Refresh to retry.")).toBeInTheDocument();
     expect(listResources).not.toHaveBeenCalled();
     expect(screen.getByText("Add a Tool in Project Resources first.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Tool / })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Read File|GitHub/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Tool / })).toBeInTheDocument();
   });
 
   it("collapses catalog and inspector rails and restores them from the edge strips", async () => {
@@ -380,8 +381,8 @@ describe("StudioPage source and conflict safety", () => {
     renderPage(api);
     expect(await screen.findByRole("button", { name: /Model Model instruction/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /AgentCall/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Condition Branch expression/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Transform Map values/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Condition Branch expression/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Transform Map values/ })).toBeInTheDocument();
     cleanup();
     const workflowProject = {
       ...project,

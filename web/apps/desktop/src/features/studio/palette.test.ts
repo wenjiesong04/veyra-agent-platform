@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ProjectResourceDescriptor, ResourceDescriptor } from "@veyra/api-contracts";
-import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, grantCatalogResource, knowledgePalette, notePalette, paletteForMode, paletteFromCatalog, paletteItemBlocked, workflowAgentPalette } from "./palette";
+import { attachCatalogBinding, attachCatalogResource, attachKnowledgeBinding, catalogToolRequiresApproval, fallbackPalette, grantCatalogResource, knowledgePalette, nodeDisplayTitle, notePalette, paletteForMode, paletteFromCatalog, paletteItemBlocked, workflowAgentPalette } from "./palette";
 
 const source: AgentSource = {
   schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "",
@@ -92,8 +92,8 @@ describe("Studio catalog palette", () => {
     expect(paletteForMode(items, "agent").some((item) => item.componentType === "Agent")).toBe(false);
     expect(paletteForMode(items, "agent").some((item) => item.componentType === "Model")).toBe(true);
     expect(paletteForMode(items, "agent").some((item) => item.componentType === "AgentCall")).toBe(false);
-    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Condition")).toBe(false);
-    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Transform")).toBe(false);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Condition")).toBe(true);
+    expect(paletteForMode(items, "agent").some((item) => item.componentType === "Transform")).toBe(true);
     expect(paletteForMode(items, "workflow").some((item) => item.componentType === "AgentCall")).toBe(true);
     expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Condition")).toBe(true);
     expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Model")).toBe(false);
@@ -141,6 +141,11 @@ describe("Studio catalog palette", () => {
     expect(next.nodes).toEqual(source.nodes);
     expect(next.lock[`${document.knowledge_id}@1.0.0`]).toBe(document.source_file_hash);
     expect(next.ui.bindings?.bind_knowledge1).toEqual({ kind: "knowledge", reference: `${document.knowledge_id}@1.0.0`, x: 8, y: 10 });
+  });
+
+  it("prefers semantic labels over component type titles", () => {
+    expect(nodeDisplayTitle({ id: "summary", component_type: "Model" }, [], "zh", [], { summary: "总结资料" })).toBe("总结资料");
+    expect(nodeDisplayTitle({ id: "summary", component_type: "Model" }, [], "zh")).toBe("模型");
   });
 
   it("exposes canvas notes as a non-executable palette card", () => {

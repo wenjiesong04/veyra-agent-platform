@@ -160,7 +160,7 @@ class BuilderConversationStore:
                 clauses.append("project_id = ?")
                 params.append(project_id)
             sql = f"""SELECT * FROM builder_conversations
-                   WHERE {' AND '.join(clauses)}
+                   WHERE {" AND ".join(clauses)}
                    ORDER BY last_activity_at DESC, conversation_id DESC"""
             if limit is not None:
                 sql += " LIMIT ?"

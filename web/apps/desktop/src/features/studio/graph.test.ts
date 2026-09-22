@@ -133,6 +133,31 @@ describe("Studio graph adapter", () => {
     expect(callProblems.some((item) => item.code === "agent_lock_mismatch" && item.params?.nodeId === "call")).toBe(false);
   });
 
+  it("shows semantic labels on canvas nodes and drops labels for deleted nodes", () => {
+    const labelled = {
+      ...source,
+      ui: { positions: source.ui.positions, labels: { start: "入口", out: "结果", missing: "gone" } },
+    };
+    const graph = toCanvas(labelled);
+    expect(graph.nodes.find((node) => node.id === "start")?.data.title).toBe("入口");
+    const next = sourceWithGraph(labelled, graph.nodes, graph.edges);
+    expect(next.ui.labels).toEqual({ start: "入口", out: "结果" });
+  });
+
+  it("keeps a default canvas note above the flow and valid after deletion", () => {
+    const noted = {
+      ...source,
+      ui: { positions: { start: { x: 0, y: 80 }, out: { x: 240, y: 80 } }, notes: { note_intro: { x: 0, y: -220, text: "说明", color: "amber" as const, width: 280 } } },
+    };
+    const graph = toCanvas(noted);
+    const note = graph.nodes.find((node) => node.id === "note_intro");
+    const flowY = Math.min(...graph.nodes.filter((node) => node.data.flow).map((node) => node.position.y));
+    expect(note?.position.y).toBeLessThan(flowY);
+    const withoutNote = sourceWithGraph(noted, graph.nodes.filter((node) => node.id !== "note_intro"), graph.edges);
+    expect(withoutNote.ui.notes).toBeUndefined();
+    expect(withoutNote.nodes.map((node) => node.id)).toEqual(["start", "out"]);
+  });
+
   it("round-trips canvas notes without turning them into Flow nodes", () => {
     const noted = {
       ...source,

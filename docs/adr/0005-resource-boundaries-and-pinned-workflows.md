@@ -85,8 +85,8 @@ flowchart LR
 
 共用选中、拖拽、连线、缩放、参数检查器、草稿保存、表单和源码投影；按 `Flow` / `Workflow` 区分节点集合、接口、依赖校验和运行入口。差异不只是 palette。
 
-- Agent：模型、工具、转换、条件、审批、校验等内部步骤；不提供新增 AgentCall。
-- Workflow：AgentCall 与控制流；即使从 Source 粘贴 Model 或 Tool 也必须拒绝。
+- Agent：可独立执行的能力内部图（模型、工具、转换、条件、审批、校验、输出）；不提供新增 AgentCall。
+- Workflow：编排多个不可变 Agent version；节点是 AgentCall 与控制流；即使从 Source 粘贴 Model 或 Tool 也必须拒绝。
 - Component：列表、说明、参数、版本、依赖与引用关系。Primitive 不提供空白“编辑自身”画布。Composite 的制作与升级流程仍需独立实现。
 - Knowledge：文档内容、元信息和引用管理。
 - Files：原始文件索引；不是所有文件都自动成为模型知识。

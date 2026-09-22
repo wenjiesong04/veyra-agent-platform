@@ -141,6 +141,72 @@ def resolve_project_resource(
     )
 
 
+def resolve_capability_intent(
+    project_resources: list[dict[str, Any]],
+    catalog_resources: list[dict[str, Any]],
+    instruction: str,
+) -> ResourceMatch:
+    """Resolve a capability step against Project-bound tools only.
+
+    Reuses the filesystem.read resolver first. Other Project-bound tools are
+    selected only on a unique name, resource_id, or exact reference match.
+    Catalog-only resources are never auto-installed.
+    """
+
+    match = resolve_project_resource(project_resources, catalog_resources, instruction)
+    if match.status != "unresolved":
+        return match
+    project_owned = [
+        resource
+        for resource in project_resources
+        if resource.get("scope") == "project"
+        and resource.get("kind") in {"tool", "mcp_tool"}
+        and resource.get("binding_status") != "stale"
+    ]
+    folded = instruction.casefold()
+    exact_reference = [
+        resource
+        for resource in project_owned
+        if str(resource.get("reference") or "").casefold() == folded
+    ]
+    if len(exact_reference) == 1:
+        return ResourceMatch("resolved", exact_reference[0], (exact_reference[0],))
+    exact_id = [
+        resource
+        for resource in project_owned
+        if str(resource.get("resource_id") or "").casefold() == folded
+    ]
+    if len(exact_id) == 1:
+        return ResourceMatch("resolved", exact_id[0], (exact_id[0],))
+    exact_name = [
+        resource
+        for resource in project_owned
+        if str(resource.get("name") or "").casefold() == folded
+    ]
+    if len(exact_name) == 1:
+        return ResourceMatch("resolved", exact_name[0], (exact_name[0],))
+    named = [
+        resource
+        for resource in project_owned
+        if str(resource.get("name") or "").casefold() in folded
+        or str(resource.get("resource_id") or "").casefold() in folded
+    ]
+    if len(named) == 1:
+        return ResourceMatch("resolved", named[0], (named[0],))
+    if len(named) > 1:
+        return ResourceMatch("ambiguous", None, tuple(named))
+    catalog_known = [
+        resource
+        for resource in catalog_resources
+        if resource.get("kind") in {"tool", "mcp_tool"}
+    ]
+    return ResourceMatch(
+        "unbound" if catalog_known else "unresolved",
+        None,
+        tuple(catalog_known[:8]),
+    )
+
+
 def resource_readiness(resource: dict[str, Any]) -> dict[str, Any]:
     """Expose Project pin, live readiness and minimum permissions for review."""
 

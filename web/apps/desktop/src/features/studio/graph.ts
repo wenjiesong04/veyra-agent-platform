@@ -217,7 +217,11 @@ export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[];
     id: flow.id,
     type: "agentNode",
     position: source.ui.positions[flow.id] ?? { x: 90 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 170 },
-    data: { flow, runState: "pending" as const },
+    data: {
+      flow,
+      runState: "pending" as const,
+      title: source.ui.labels?.[flow.id],
+    },
   }));
   const bindingNodes = Object.entries("bindings" in source.ui ? source.ui.bindings ?? {} : {}).map(([id, binding]) => ({
     id,
@@ -237,6 +241,14 @@ export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[];
     nodes: [...flowNodes, ...bindingNodes, ...noteNodes],
     edges: source.transitions.map(flowEdge),
   };
+}
+
+function persistLabels(source: StudioSource, nodeIds: string[]): Record<string, string> | undefined {
+  const keep = new Set(nodeIds);
+  const labels = Object.fromEntries(
+    Object.entries(source.ui.labels ?? {}).filter(([id]) => keep.has(id)),
+  );
+  return Object.keys(labels).length ? labels : undefined;
 }
 
 function persistNotes(nodes: Node<CanvasNodeData>[]): Record<string, StudioNote> | undefined {
@@ -346,7 +358,7 @@ export function sourceWithGraph(source: StudioSource, nodes: Node<CanvasNodeData
       nodes: flowNodes,
       transitions,
       lock: Object.fromEntries(Object.entries(source.lock).filter(([key]) => used.has(key))),
-      ui: { ...source.ui, positions, notes: persistNotes(nodes) },
+      ui: { ...source.ui, positions, notes: persistNotes(nodes), labels: persistLabels(source, flowNodes.map((node) => node.id)) },
     };
   }
   const boundSkills = Object.values(bindings).filter((binding) => binding.kind === "skill").map((binding) => binding.reference);
@@ -378,7 +390,7 @@ export function sourceWithGraph(source: StudioSource, nodes: Node<CanvasNodeData
         ...((source.extensions.veyra.knowledge_refs?.length || boundKnowledge.length) ? { knowledge_refs: [...new Set([...(source.extensions.veyra.knowledge_refs ?? []).filter((ref) => keepRef(ref, "knowledge", boundKnowledge)), ...boundKnowledge])] } : {}),
       },
     },
-    ui: { ...source.ui, positions, ...(Object.keys(bindings).length ? { bindings } : { bindings: undefined }), notes: persistNotes(nodes) },
+    ui: { ...source.ui, positions, ...(Object.keys(bindings).length ? { bindings } : { bindings: undefined }), notes: persistNotes(nodes), labels: persistLabels(source, flowNodes.map((node) => node.id)) },
   };
 }
 

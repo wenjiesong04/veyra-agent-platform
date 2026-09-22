@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from tests.integration.local.test_factory_routes import VALID_SEMANTIC_PLAN
+from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
 from veyra_agent_platform.local.builder.knowledge_binding import knowledge_reference
@@ -311,3 +312,370 @@ def test_tool_intent_uses_project_resource_only() -> None:
     assert compiled.status == "compiled"
     assert compiled.blueprint is not None
     assert compiled.blueprint.required_capabilities.tool_refs == (REFERENCE,)
+
+
+def _step(
+    key: str,
+    name: str,
+    purpose: str,
+    kind: str,
+    depends_on: list[str] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "semantic_key": key,
+        "name": name,
+        "purpose": purpose,
+        "operation_kind": kind,
+    }
+    if depends_on:
+        payload["depends_on"] = depends_on
+    return payload
+
+
+def _empty_context() -> object:
+    return builder_project_context(
+        project_id="project",
+        knowledge=[],
+        project_resources=[],
+        catalog_resources=[],
+    )
+
+
+def test_v1_plan_without_step_intents_stays_three_nodes() -> None:
+    compiled = compile_semantic_plan(_plan(), _empty_context())
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    types = [node["component_type"] for node in compiled.blueprint.to_dict()["nodes"]]
+    assert types == ["Start", "Model", "Output"]
+    assert "note_intro" in compiled.blueprint.to_dict()["ui_suggestions"]["notes"]
+
+
+def test_duplicate_semantic_key_is_rejected() -> None:
+    payload = deepcopy(VALID_SEMANTIC_PLAN)
+    payload["step_intents"] = [
+        _step("summary", "总结", "总结资料", "model"),
+        _step("summary", "重复", "再总结", "model"),
+    ]
+    try:
+        AgentSemanticPlanV1.from_dict(payload)
+    except ContractValidationError as exc:
+        assert "unique" in str(exc)
+        return
+    raise AssertionError("duplicate semantic keys must be rejected")
+
+
+def test_unknown_dependency_is_rejected() -> None:
+    payload = deepcopy(VALID_SEMANTIC_PLAN)
+    payload["step_intents"] = [
+        _step("summary", "总结", "总结资料", "model", depends_on=["missing"])
+    ]
+    try:
+        AgentSemanticPlanV1.from_dict(payload)
+    except ContractValidationError as exc:
+        assert "unknown key" in str(exc)
+        return
+    raise AssertionError("unknown depends_on must be rejected")
+
+
+def test_cycle_is_rejected() -> None:
+    payload = deepcopy(VALID_SEMANTIC_PLAN)
+    payload["step_intents"] = [
+        _step("a", "A", "first", "model", depends_on=["b"]),
+        _step("b", "B", "second", "model", depends_on=["a"]),
+    ]
+    try:
+        AgentSemanticPlanV1.from_dict(payload)
+    except ContractValidationError as exc:
+        assert "cycle" in str(exc)
+        return
+    raise AssertionError("cycles must be rejected")
+
+
+def test_multiple_model_steps_compile_separate_nodes() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            goal="Research helper.",
+            suggested_name="研究助手",
+            description="总结、风险、建议。",
+            steps=["总结", "风险", "建议"],
+            step_intents=[
+                _step("summary", "总结资料", "先总结用户资料", "model"),
+                _step(
+                    "risk",
+                    "风险分析",
+                    "分析其中风险",
+                    "model",
+                    depends_on=["summary"],
+                ),
+                _step(
+                    "advice",
+                    "生成建议",
+                    "生成行动建议",
+                    "model",
+                    depends_on=["risk"],
+                ),
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    models = [node for node in payload["nodes"] if node["component_type"] == "Model"]
+    assert [node["id"] for node in models] == ["summary", "risk", "advice"]
+    assert payload["ui_suggestions"]["labels"]["summary"] == "总结资料"
+    assert "先总结用户资料" in models[0]["system_prompt"]
+    assert "分析其中风险" in models[1]["system_prompt"]
+    assert "生成行动建议" in models[2]["system_prompt"]
+    assert "先总结用户资料" not in models[1]["system_prompt"]
+    assert "AgentCall" not in [node["component_type"] for node in payload["nodes"]]
+
+
+def test_human_approval_and_verifier_compile_real_nodes() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "contract", "type": "string"}],
+            outputs=[{"name": "summary", "type": "string"}],
+            steps=["摘要", "确认", "校验"],
+            step_intents=[
+                _step("summarize", "合同摘要", "生成合同摘要", "model"),
+                _step(
+                    "confirm",
+                    "用户确认",
+                    "请确认合同摘要",
+                    "approval",
+                    depends_on=["summarize"],
+                ),
+                _step(
+                    "verify",
+                    "结果检查",
+                    "output is not empty and includes risks",
+                    "verification",
+                    depends_on=["confirm"],
+                ),
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    types = [node["component_type"] for node in payload["nodes"]]
+    assert "HumanApproval" in types
+    assert "Verifier" in types
+    assert "Output" in types
+    verifier = next(
+        node for node in payload["nodes"] if node["component_type"] == "Verifier"
+    )
+    assert verifier["checks"] == ["output.not_empty"]
+    assert payload["verification"]["required"] is True
+    assert compiled.warnings  # unmapped risk-content check stays a warning
+
+
+def test_unmapped_verification_does_not_fake_a_verifier() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            step_intents=[
+                _step("write", "写摘要", "生成摘要", "model"),
+                _step(
+                    "verify",
+                    "检查风险项",
+                    "结果必须包含风险项和行动建议",
+                    "verification",
+                    depends_on=["write"],
+                ),
+            ]
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    types = [node["component_type"] for node in compiled.blueprint.to_dict()["nodes"]]
+    assert "Verifier" not in types
+    assert types.count("Model") == 2
+    assert compiled.blueprint.verification.required is False
+    assert any("unsupported_verification" in item for item in compiled.warnings)
+
+
+def test_capability_step_compiles_project_tool() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "path", "type": "string"}],
+            step_intents=[
+                _step("read", "读取项目文件", "读取项目文件", "capability"),
+                _step("summarize", "总结内容", "总结内容并生成结果", "model"),
+            ],
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[_tool()],
+            catalog_resources=[_tool(bound=False)],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    tool_node = next(
+        node for node in payload["nodes"] if node["component_type"] == "Tool"
+    )
+    assert tool_node["uses"] == REFERENCE
+    assert payload["requested_permissions"]["tools"] == ["veyra.tool.filesystem.read"]
+    assert payload["requested_permissions"]["network_hosts"] == []
+    source, _, _ = compile_blueprint(compiled.blueprint, ResourceCatalog())
+    pinned = finalize_compiled_source(
+        source,
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[_tool()],
+            catalog_resources=[_tool(bound=False)],
+        ),
+    ).to_dict()
+    assert pinned["lock"][REFERENCE] == BOUND_HASH
+
+
+def test_capability_step_without_project_tool_is_missing() -> None:
+    catalog = _tool(bound=False)
+    catalog["scope"] = "catalog"
+    compiled = compile_semantic_plan(
+        _plan(
+            step_intents=[
+                _step("read", "读取项目文件", "读取项目文件", "capability"),
+                _step("summarize", "总结", "总结内容", "model"),
+            ]
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[],
+            catalog_resources=[catalog],
+        ),
+    )
+    assert compiled.status == "missing_capability"
+    assert compiled.blueprint is None
+
+
+def test_transform_and_condition_compile_canonical_nodes() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[
+                {"name": "text", "type": "string"},
+                {"name": "ready", "type": "boolean"},
+            ],
+            outputs=[{"name": "result", "type": "string"}],
+            step_intents=[
+                _step("shape", "整理字段", "result: {{text}}", "transform"),
+                _step(
+                    "gate",
+                    "是否就绪",
+                    "ready == true",
+                    "condition",
+                    depends_on=["shape"],
+                ),
+                _step(
+                    "answer",
+                    "生成结果",
+                    "给出最终结果",
+                    "model",
+                    depends_on=["gate"],
+                ),
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    types = [node["component_type"] for node in payload["nodes"]]
+    assert types == ["Start", "Transform", "Condition", "Model", "Output"]
+    transform = next(
+        node for node in payload["nodes"] if node["component_type"] == "Transform"
+    )
+    condition = next(
+        node for node in payload["nodes"] if node["component_type"] == "Condition"
+    )
+    assert transform["mapping"] == {"result": "{{text}}"}
+    assert condition["expression"] == "ready == true"
+    ports = {(item["from"], item["port"]) for item in payload["transitions"]}
+    assert ("gate", "true") in ports
+    assert ("gate", "false") in ports
+
+
+def test_default_note_does_not_change_behavior_hash() -> None:
+    compiled = compile_semantic_plan(_plan(), _empty_context())
+    assert compiled.blueprint is not None
+    source, _, _ = compile_blueprint(compiled.blueprint, ResourceCatalog())
+    noted = source.to_dict()
+    without = deepcopy(noted)
+    without["ui"].pop("notes", None)
+    kept = AgentSource.from_dict(without)
+    assert source.behavior_hash == kept.behavior_hash
+    assert source.source_hash != kept.source_hash
+
+
+def test_note_deletion_remains_valid() -> None:
+    compiled = compile_semantic_plan(_plan(), _empty_context())
+    assert compiled.blueprint is not None
+    source, _, _ = compile_blueprint(compiled.blueprint, ResourceCatalog())
+    payload = source.to_dict()
+    payload["ui"].pop("notes", None)
+    AgentSource.from_dict(payload)
+
+
+def test_single_model_step_intent_stays_start_model_output() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            goal="Create a Chinese-English translation Agent.",
+            suggested_name="中英文翻译 Agent",
+            description="Translate between Chinese and English.",
+            steps=["翻译"],
+            step_intents=[
+                _step("translate", "翻译", "在中英文之间翻译用户输入", "model")
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    assert [node["component_type"] for node in payload["nodes"]] == [
+        "Start",
+        "Model",
+        "Output",
+    ]
+    assert payload["ui_suggestions"]["labels"]["translate"] == "翻译"
+    assert "note_intro" in payload["ui_suggestions"]["notes"]
+
+
+def test_does_not_overgrant_unrelated_catalog_tools() -> None:
+    github = _tool(bound=False, reference="veyra.tool.github.read@1.0.0")
+    github["resource_id"] = "veyra.tool.github.read"
+    github["name"] = "GitHub Read"
+    github["required_permissions"] = {
+        "network_hosts": ["api.github.com"],
+        "tools": ["veyra.tool.github.read"],
+        "filesystem_read_roots": [],
+        "filesystem_write_roots": [],
+        "shell_workspace_only": False,
+    }
+    compiled = compile_semantic_plan(
+        _plan(
+            step_intents=[
+                _step("read", "读取项目文件", "读取项目文件", "capability"),
+                _step("summarize", "总结", "总结内容", "model"),
+            ]
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[_tool()],
+            catalog_resources=[_tool(bound=False), github],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    permissions = compiled.blueprint.to_dict()["requested_permissions"]
+    assert permissions["tools"] == ["veyra.tool.filesystem.read"]
+    assert permissions["network_hosts"] == []
+    assert "veyra.tool.github.read" not in permissions["tools"]

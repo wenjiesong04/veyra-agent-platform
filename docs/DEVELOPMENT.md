@@ -128,13 +128,11 @@ GitHub Actions billing 是外部阻塞，本轮未 rerun CI，也不当作本地
 2. 执行闭环：Runtime V1 + Knowledge 引用已齐；不是真实外部 soak。
 3. 分享闭环：仍是最大缺口。
 
-## 5. Builder Phase 2（进行中）
+## 5. Builder Phase 2
 
-HEAD：`4e3c2e6`。Slice 4 Test Run 已在 working tree 落地（未提交）。
-Slice 1（Knowledge binding）、Slice 2（Project `filesystem.read` binding）
-与 Slice 3（typed validation repair）已随先前 Interaction Model V2 提交落地。
-ProviderCapabilityProfile 与 BuilderHarnessReceipt 已随 `4e3c2e6` 发布。
-Phase 2 模块整体仍未做最终 release gate。
+Git 事实：Slice 1–4 与 ProviderCapabilityProfile / Harness Receipt 已包含在
+`8f71a1e`。Agent Graph Compiler V2 + Default Canvas Note 是该 HEAD 之上的
+未提交工作。Phase 2 模块整体仍未做最终 release gate。
 
 已落地：
 
@@ -252,7 +250,7 @@ API 只走 Project-scoped conversation/operation。
 明确未完成：Builder Phase 2 最终 release gate、Catalog → Project
 mutation from Chat。
 
-**Builder Phase 2 Slice 4 = complete**（未发布）。
+**Builder Phase 2 Slice 4 = complete**（已包含在 `8f71a1e`）。
 
 闭环：
 
@@ -269,15 +267,78 @@ Builder Model ≠ Agent Runtime Model。当前 live 两者碰巧都是 Moonshot
 执行模型。UI 不得把 Builder Kimi 标成 Agent Runtime，除非该 Agent 的
 有效 Runtime 确实是 Kimi。
 
+### 本轮基线（2026-09-22，`8f71a1e baseline verified`）
+
+Git HEAD：`8f71a1e15481cddeb45830eb2482992fa4c20d8e`。
+
+首次 `make check` 在该修订上因两处已提交 Ruff format 失败（decorator
+折行、f-string 引号）。授权只修这两处后，完整 `make check` 通过：
+
+```text
+Backend pytest: 596 passed
+Ruff format/check: passed
+mypy: passed（175 files）
+git diff --check: clean
+```
+
+先前同修订上的前端门禁：Desktop 409 passed、Community 15 passed、
+web typecheck / build passed。这是 Compiler V2 开始前的 verified baseline。
+不要再把 HEAD 写成 `4e3c2e6`，也不要把 Slice 4 写成未提交。
+
+**Agent Graph Compiler V2 + Default Canvas Note + SemanticPlan V2
+Provider Hardening = complete**（待本轮 Git checkpoint）。
+
+正式锁定：
+
+- Agent = 可独立执行的能力内部图：Start / Model / Tool / Condition /
+  Transform / HumanApproval / Verifier / Output
+- Workflow = 多个 immutable Agent version 的编排；AgentCall 只属于 Workflow
+- Knowledge 仍是 binding，不是计算节点
+- `ui.notes` 默认存在、不是必填、不进 `behavior_hash`、用户可删
+- `ui.labels` 只用于画布语义标题；Inspector 仍显示 component type
+
+`AgentSemanticPlanV1` 保留 `steps: string[]`。可选 `step_intents` 描述
+职责、operation kind、depends_on。Provider-facing schema 不包含
+`branches`；Condition / Approval / Verifier 的额外 port 由 Compiler
+确定性展开。模型不输出 node/edge id、resource hash、permission、
+source.lock、canvas 坐标。
+
+如果 `step_intents` 已表达 approval / condition / verification /
+transform，生成失败不得静默退回 Start → 单 Model → Output。
+
+Compiler V2：无 `step_intents` 时仍编译简单 Start → Model → Output；
+有真实职责边界时才生成多 Model / Tool / Transform / Condition /
+HumanApproval / Verifier。不 hallucinate Tool，不 Catalog auto-install，
+不 silent upgrade，不 permission overgrant。Verifier 只映射
+`output.not_empty`；不能映射时编译为 Model + warning，不造假 Verifier。
+默认 Note 由 SemanticPlan 确定性生成，不再额外调模型。
+
+Live CASE C 根因（真实 Moonshot / kimi-k3）：Provider schema 曾包含
+嵌套 `branches.then`，而 MFJS 投影会剥掉名为 `then` 的 property，导致
+连续三次 `missing field(s): then` → `factory_generation_invalid`。
+已去掉 Provider-facing `branches`，并做 bounded repair / 拒绝静默 V1。
+验收：CASE A Start→Model→Output；CASE B 三个 Model；CASE C
+Start→Model→HumanApproval→Model→Output（风险项检查不能映射
+`output.not_empty`，保持 truthful）；CASE E 真实 `condition` intent。
+裸 CASE C 文本可能被 resolver 判成 `create_kind=workflow`；加上
+「做一个 Agent」后进入 SemanticPlan。未 Confirm / Apply。
+
+本切片不实现 Typed I/O / Artifact Runtime / Playground，也不重构
+Conversation / multi-artifact Workbench。
+
 ## 6. 下一步
 
-Slice 4 explicit Test Run 已收口。下一步按顺序，不要跳：
+Agent Graph Compiler V2 已收口。下一步按顺序，不要跳：
 
-1. Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
-2. Community 分享闭环
+1. Typed I/O + Artifact Runtime
+2. Conversation / multi-artifact Workbench：旧 Factory session 目前只恢复
+   最新 canvas，继续记为缺口
+3. Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
+4. Community 分享闭环
 
 不要重开 Knowledge V1、Resource Library V1、Runtime V1、Builder Phase 1，
-也不要扩展 PDF / embedding。不要开始 autonomous loop。
+也不要扩展 PDF / embedding。不要开始 autonomous loop。不要在本切片后
+继续 Typed I/O，除非用户明确授权。
 
 Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Community 分享闭环**：
 
@@ -293,10 +354,13 @@ Builder Phase 2 整个模块完成并发布后，下一个大模块仍是 **Comm
 - 没有 PostgreSQL + 对象存储演练，就不能宣称 Community production ready
 - 没有真实外部 Provider，就不能宣称 Runtime 已在生产网络下验证
 - Builder 不能一次修改多个对象，也不是全 Project 操作入口
-- Builder Phase 2 仍未发布。Durable Conversation、Semantic Plan Compiler、
-  Interaction Model V2、ProviderCapabilityProfile、Harness Receipt 与
-  Slice 4 Test Run 已落地。完整 Playwright CASE 1–3 留到最终 release gate。
-  下一步是模块发布门禁，不是下一个 Builder Slice
+- Builder Phase 2 仍未作为独立 Git 发布标签。Durable Conversation、
+  Semantic Plan Compiler V1、Interaction Model V2、ProviderCapabilityProfile、
+  Harness Receipt 与 Slice 4 Test Run 已包含在 `8f71a1e`。Agent Graph
+  Compiler V2 + Default Canvas Note 已落地，尚未 commit。完整 Playwright
+  CASE 1–3 留到最终 release gate。下一个大模块是 Typed I/O + Artifact
+  Runtime，不是再开一个 Builder Slice
+- 旧 Factory session 目前只恢复最新 canvas，不是完整 conversation/workbench
 - 公开 Community 目录仍有静态样例，不能当成真实注册表
 
 ## 8. 提交规则

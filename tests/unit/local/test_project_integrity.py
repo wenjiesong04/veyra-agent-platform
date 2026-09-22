@@ -15,6 +15,7 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.library import LibraryService
 from veyra_agent_platform.local.library.service import DraftConflict
 from veyra_agent_platform.local.projects import ProjectService
+from veyra_agent_platform.local.projects.layout import BLANK_AGENT_NOTE_TEXT
 from veyra_agent_platform.local.projects.service import (
     MAX_INDEXED_FILE_BYTES,
     ProjectError,
@@ -463,3 +464,19 @@ def test_create_workflow_writes_layout_and_indexes_blank_source(
     assert source["component_type"] == "Workflow"
     assert source["lock"] == {}
     assert [node["component_type"] for node in source["nodes"]] == ["Start", "Output"]
+    note = source["ui"]["notes"]["note_intro"]
+    assert "Workflow" in note["text"]
+    assert note["y"] == -220
+
+
+def test_create_blank_agent_includes_default_canvas_note(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="One")
+    agent = projects.create_agent(project_id=created["project_id"], mode="blank")
+    source = json.loads((Path(created["root_path"]) / agent["source_path"]).read_text())
+    assert source["ui"]["notes"]["note_intro"]["text"] == BLANK_AGENT_NOTE_TEXT
+    assert [node["component_type"] for node in source["nodes"]] == [
+        "Start",
+        "Model",
+        "Output",
+    ]

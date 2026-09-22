@@ -79,14 +79,23 @@ def require_schema_version(data: Mapping[str, Any]) -> None:
 
 
 def require_keys(
-    data: Mapping[str, Any], *, allowed: set[str], required: set[str]
+    data: Mapping[str, Any],
+    *,
+    allowed: set[str],
+    required: set[str],
+    field: str = "",
 ) -> None:
     unknown = set(data) - allowed
     missing = required - set(data)
+    prefix = f"{field}: " if field else ""
     if unknown:
-        raise ContractValidationError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        raise ContractValidationError(
+            f"{prefix}unknown field(s): {', '.join(sorted(unknown))}"
+        )
     if missing:
-        raise ContractValidationError(f"missing field(s): {', '.join(sorted(missing))}")
+        raise ContractValidationError(
+            f"{prefix}missing field(s): {', '.join(sorted(missing))}"
+        )
 
 
 def require_string(

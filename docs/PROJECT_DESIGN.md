@@ -591,9 +591,8 @@ collapse into a single palette bag.
 **Primitive** — platform-owned graph node types. These are the only nodes a
 Canvas may persist. V1 primitives:
 
-- Start, Model, Tool, HumanApproval, Verifier, Output
-  (Agent canvas palette)
-- Condition, Transform (Workflow control flow; historical Agent graphs may still persist them)
+- Start, Model, Tool, Condition, Transform, HumanApproval, Verifier, Output
+  (Agent canvas palette: a self-contained executable capability graph)
 - AgentCall (Workflow canvas only; references `agent_id@version_id`, both UUIDv7, never a path)
 
 A primitive cannot be authored in a Project overlay, Factory output, or
@@ -903,7 +902,10 @@ The model produces a small `AgentSemanticPlanV1` describing user intent:
 
 - goal, suggested name, description
 - inputs/outputs
-- steps / behavior intent
+- summary steps
+- optional `step_intents` graph intent (`semantic_key`, `name`, `purpose`,
+  `operation_kind`, `depends_on`). Provider-facing plans do not emit branch
+  objects; the server expands extra ports.
 - capability intents and knowledge intents
 - approval points, success criteria, user constraints
 
@@ -913,6 +915,17 @@ paths, runtime adapters, or credentials.
 
 `SemanticPlanCompiler` then compiles a canonical `AgentBlueprint` candidate by
 reusing the deterministic Project Knowledge and Project Resource resolvers.
+V1 plans without `step_intents` remain a simple Start → optional Project Tool →
+one Model → Output graph. V2 `step_intents` compile real Model, Tool,
+Transform, Condition, HumanApproval, Verifier, and Output nodes. The compiler
+never emits AgentCall inside an Agent, never hallucinates Tools, never
+auto-installs Catalog resources, never silently upgrades pins, and never
+overgrants permissions. HumanApproval becomes a real node when the plan asks
+for confirmation. Verifier is emitted only when a check maps to an existing
+contract (`output.not_empty`); unmapped verification becomes a Model plus a
+warning, never a fake Verifier. If `step_intents` already expressed approval,
+condition, verification, or transform, generation must not silently fall
+back to a V1 one-model graph.
 The server owns node/edge IDs, Tool/Knowledge refs, `source.lock`, required
 permissions, graph wiring and verification defaults. Ambiguous mentions become
 clarification. Unbound capabilities become `missing_capability`. Catalog
@@ -1172,8 +1185,8 @@ workspace per layer, not one Canvas for every page.
 | Layer | Workspace | What the user does |
 |---|---|---|
 | Project | Dashboard | Status, resource counts, and settings. No graph editing. |
-| Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output. Left palette projects Model, Tool, Knowledge bindings, plus HumanApproval and Verifier. Condition, Transform, and AgentCall stay on the Workflow canvas. Right inspector edits parameters. Bottom panel test-runs. |
-| Workflow | Same Canvas shell | Declares its own inputs and outputs. Palette is AgentCall plus control flow (Condition, Transform, HumanApproval, Verifier). No Model or Tool nodes. Existing Agents are not renamed into Workflows. |
+| Agent | Canvas | Declares its own inputs and outputs. Default skeleton Start → Model → Output plus an optional canvas Note. Left palette projects Model, Tool, Condition, Transform, HumanApproval, Verifier, Knowledge bindings, and Notes. AgentCall is not an Agent node. Right inspector edits parameters and shows component type; canvas titles prefer semantic labels. Bottom panel test-runs. |
+| Workflow | Same Canvas shell | Declares its own inputs and outputs. Palette is AgentCall plus control flow (Condition, Transform, HumanApproval, Verifier). No Model or Tool nodes. Blank Workflows also receive a default optional Note. Existing Agents are not renamed into Workflows. |
 | Component | Resource Catalog + Project Resource Library | Global Catalog owns description, version, examples, and references; Project Resource Library owns selected versions and usage. Not a flowchart. Primitive vs composite stays a required class. |
 | Knowledge | Library + preview | Project documents, metadata, and citations. A document can be explicitly bound to an Agent from its detail page. Not a flowchart. |
 | Files / Assets | File manager | Raw indexed files, separate from Knowledge documents; a file can open an Agent Studio run with its relative path prefilled. |
@@ -1281,9 +1294,11 @@ Do not hide Components, do not promote MCP into a product layer, and do
 not rename Agent into Workflow.
 
 1. **Agent is not renamed to Workflow.** An Agent remains a runnable
-   capability whose graph may contain Model, Tool, and Knowledge. A
-   Workflow is a separate source that only orchestrates AgentCall plus
-   control flow. Both declare their own inputs and outputs.
+   capability whose internal graph may contain Start, Model, Tool, Condition,
+   Transform, HumanApproval, Verifier, and Output. A Workflow is a separate
+   source that only orchestrates immutable Agent versions via AgentCall plus
+   control flow. Both declare their own inputs and outputs. AgentCall is
+   Workflow-only.
 2. **Shared editor does not mean every page is a Canvas.** Agent and
    Workflow share one Canvas shell. Components use Resource Library
    (list + detail). Knowledge uses document management. Runs use list +
@@ -1315,10 +1330,12 @@ Studio shows this report after validation without turning a missing host
 credential into a fake successful Run.
 
 ```text
-Left      Catalog projection (Agent: Model / Tool / Knowledge;
-          Workflow: AgentCall / control flow).
+Left      Catalog projection (Agent: Model / Tool / Condition / Transform /
+          HumanApproval / Verifier / Knowledge; Workflow: AgentCall / control
+          flow). AgentCall never appears on the Agent palette.
           MCP appears under Tools, not as its own product class.
-          Canvas notes are UI-only annotations; they are not Flow nodes.
+          Canvas notes are UI-only annotations; they are default, not required,
+          and they are not Flow nodes.
 Center    Canvas. Hover a connection to insert a node; select it to
           delete or reconnect an endpoint. Notes can hold free text.
 Right     parameter inspector

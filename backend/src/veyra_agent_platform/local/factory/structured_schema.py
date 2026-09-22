@@ -51,6 +51,13 @@ def _project_node(node: Any) -> Any:
                 continue
             if key == "oneOf":
                 projected["anyOf"] = _project_node(value)
+            elif key == "properties" and isinstance(value, dict):
+                # Property names are not JSON Schema combinators. Stripping
+                # `then` here previously deleted SemanticPlan `branches.then`
+                # while leaving it in `required`, which kimi-k3 omitted.
+                projected["properties"] = {
+                    name: _project_node(item) for name, item in value.items()
+                }
             else:
                 projected[key] = _project_node(value)
         if const is not None:

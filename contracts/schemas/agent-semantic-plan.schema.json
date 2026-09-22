@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://veyra.local/contracts/agent-semantic-plan.schema.json",
   "title": "AgentSemanticPlanV1",
-  "description": "Provider-facing semantic plan. Models describe intent; Veyra compiles canonical objects.",
+  "description": "Provider-facing semantic plan. Models describe intent and optional step graph intent; Veyra compiles canonical objects. Do not emit node IDs, hashes, permissions, source.lock, or canvas positions.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -77,6 +77,7 @@
     },
     "capability_intents": {
       "type": "array",
+      "description": "Names of Project-bound tools only. Leave empty when no tool is required. Never copy policy sentences here.",
       "maxItems": 8,
       "items": { "type": "string", "minLength": 1, "maxLength": 240 }
     },
@@ -99,6 +100,39 @@
       "type": "array",
       "maxItems": 8,
       "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+    },
+    "step_intents": {
+      "type": "array",
+      "description": "Optional duty graph. Omit only for a simple one-model Agent. Include one object per real duty. Use depends_on for order. The server compiles nodes and extra ports. Do not emit branches, node IDs, hashes, or canvas data.",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["semantic_key", "name", "purpose", "operation_kind"],
+        "properties": {
+          "semantic_key": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "operation_kind": {
+            "type": "string",
+            "description": "model=LLM duty. capability=Project tool. transform=field mapping. condition=branch; server expands true/false. approval=human must confirm. verification=deterministic check such as non-empty output; do not invent a verifier implementation.",
+            "enum": [
+              "model",
+              "capability",
+              "transform",
+              "condition",
+              "approval",
+              "verification"
+            ]
+          },
+          "depends_on": {
+            "type": "array",
+            "description": "semantic_key values that must complete first.",
+            "maxItems": 8,
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
     }
   }
 }

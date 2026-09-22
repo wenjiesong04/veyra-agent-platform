@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from veyra_agent_platform.contracts.agent import AgentSource
+from veyra_agent_platform.local.projects.layout import DEFAULT_CANVAS_NOTE_ID
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.templates import (
     DOCUMENT_DISTILLER_TEMPLATE_ID,
@@ -90,6 +92,25 @@ def test_instantiate_assigns_a_new_agent_id_without_tools() -> None:
     assert forked.slug == "my-distiller"
     assert forked.name == "我的提炼"
     assert forked.nodes[1].system_prompt == original.nodes[1].system_prompt
+
+
+def test_templates_include_a_default_canvas_note() -> None:
+    catalog = AgentTemplateCatalog()
+    for template_id in (
+        STARTER_TEMPLATE_ID,
+        DOCUMENT_DISTILLER_TEMPLATE_ID,
+        QUESTION_RESEARCHER_TEMPLATE_ID,
+        FILE_SORT_PLANNER_TEMPLATE_ID,
+    ):
+        source = catalog.source(template_id)
+        note = (source.ui.get("notes") or {}).get(DEFAULT_CANVAS_NOTE_ID)
+        assert note is not None
+        assert note["text"]
+        assert note["y"] == -220
+        without = source.to_dict()
+        without["ui"].pop("notes", None)
+        kept = AgentSource.from_dict(without)
+        assert source.behavior_hash == kept.behavior_hash
 
 
 def test_unknown_template_is_rejected() -> None:

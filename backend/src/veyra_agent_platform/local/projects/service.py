@@ -40,10 +40,13 @@ from veyra_agent_platform.local.projects.knowledge_ingest import (
     parse_upload,
 )
 from veyra_agent_platform.local.projects.layout import (
+    BLANK_AGENT_NOTE_TEXT,
+    DEFAULT_CANVAS_NOTE_ID,
     INDEXED_ROOT_DIRECTORIES,
     agent_resource_manifest,
     blank_knowledge_document,
     blank_workflow_source,
+    default_canvas_note,
     ensure_project_layout,
     knowledge_resource_manifest,
     resource_yaml_path,
@@ -653,7 +656,7 @@ class ProjectService:
         """Create one blank or catalog-based Agent inside an existing Project."""
         with self._writer_lock:
             if mode == "blank":
-                source = self._starter_source()
+                source = self._blank_agent_source()
                 return self._install_prepared_source(
                     project_id=project_id,
                     source=source,
@@ -2432,6 +2435,15 @@ class ProjectService:
 
     def _starter_source(self) -> AgentSource:
         return self._template_source(STARTER_TEMPLATE_ID)
+
+    def _blank_agent_source(self) -> AgentSource:
+        payload = self._starter_source().to_dict()
+        ui = dict(payload.get("ui") or {})
+        notes = dict(ui.get("notes") or {})
+        notes[DEFAULT_CANVAS_NOTE_ID] = default_canvas_note(BLANK_AGENT_NOTE_TEXT)
+        ui["notes"] = notes
+        payload["ui"] = ui
+        return AgentSource.from_dict(payload)
 
     def _template_source(self, template_id: str) -> AgentSource:
         try:

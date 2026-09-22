@@ -1,18 +1,60 @@
 # Veyra Development Handoff
 
-## Current checkpoint（2026-09-20，Builder Phase 2 Slice 4 = complete）
+## Current checkpoint（2026-09-22，Graph Compiler V2 + SemanticPlan hardening）
 
 - Branch：`codex/agent-platform` → `origin/codex/agent-platform`
-- HEAD：`4e3c2e6`（ProviderCapabilityProfile + Harness Receipt 已发布）
-- Slice 4 working tree dirty：`4e3c2e6-slice4-dirty`（**未 commit / 未 push**）
-- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`
-- 不要重开 Interaction Model V2 / Durable Conversation /
-  AgentSemanticPlanV1 / SemanticPlanCompiler / ProviderCapabilityProfile /
-  Harness Receipt / Slice 4
+- Baseline：`8f71a1e baseline verified`
+- Graph Compiler V2 + Default Note + SemanticPlan V2 Provider Hardening
+  = **product-complete**（本轮 Git checkpoint）
+- 不要再把 HEAD 写成 `4e3c2e6`，也不要把 Slice 4 写成未提交
+- 不处理 `.backboard/sessions`、`.backboard/settings.json`、`.env`、`$DB`
+- **不要开始 Typed I/O / Artifact Runtime / Playground**
+- 不要重构 Conversation / multi-artifact Workbench
 - 暂停：autonomous Run、Community redesign、behavioral eval / LLM judge
-- 下一步：Builder Phase 2 最终 release gate（含 Playwright CASE 1–3）
+- 下一步：Typed I/O + Artifact Runtime（需用户明确授权后再做）
 
-### 窄审计（实现前核对的真实连接点）
+CASE C 根因：MFJS 投影把 `properties.then` 当成 JSON Schema combinator
+剥掉，Kimi 在 `branches` 上连续三次 `missing field(s): then`。
+Provider-facing schema 已去掉 `branches`；server 展开 extra ports。
+
+Live（Moonshot / kimi-k3，未 Apply）：
+
+- CASE A：Start → Model → Output
+- CASE B：Model ×3
+- CASE C：Start → Model → HumanApproval → Model → Output
+  （风险项/行动建议不能映射 `output.not_empty`，不造假 Verifier）
+- CASE E：真实 `condition` intent。限制：false 口接到 Output；
+  expression 可能落到 `result != ""`，不能表达完整 empty/supplement 分支
+
+裸 CASE C 文本可能被 resolver 判成 Workflow；「做一个 Agent：…」后才进入
+SemanticPlan。这是 resolver 边界，不是 Compiler 失败。
+
+已知缺口继续记录：
+
+- Typed I/O（image / PDF / document / audio / video / ArtifactRef）未开始
+- Artifact Runtime 未开始
+- Workflow Builder Compiler 未开始
+- 旧 Factory session 目前只恢复最新 canvas；multi-artifact Conversation 有限
+- Playground 未开始
+- Builder Phase 2 Playwright CASE 1–3 未在本环境执行
+
+### Compiler V2 边界
+
+- Agent = 可独立执行的能力内部图：Start / Model / Tool / Condition /
+  Transform / HumanApproval / Verifier / Output
+- Workflow = 多个 immutable Agent version 的编排；AgentCall 只属于 Workflow
+- SemanticPlan V2：可选 `step_intents`（semantic_key / name / purpose /
+  operation_kind / depends_on）。模型不输出 node/edge id、hash、permission、
+  lock、canvas 坐标
+- 无 `step_intents`：Start → Model → Output
+- 有真实职责边界：多 Model，以及可映射的 Tool / Transform / Condition /
+  HumanApproval / Verifier
+- Resource resolution 复用现有 deterministic resolver
+- Knowledge 保持 binding
+- `ui.notes` 默认存在、可删、不进 `behavior_hash`
+- `ui.labels` 是画布语义标题；Inspector 显示 component type
+
+### 窄审计（Slice 4 Test Run 连接点，仍有效）
 
 1. Runtime start-run：`POST /api/v1/projects/{project}/agents/{agent}/run` →
    `RuntimeService.run()`。Builder `start_test_run` 直接复用，不另建 Run store。
@@ -133,21 +175,31 @@ Veyra Builder Model。」`runtime_model_source=default|project|agent`。
   typed Observe → EditProposal repair → Confirm Apply → Validate →
   Run 计数不变。
 
-### 四服务
+### 四服务（当前）
 
 真实配置，无 temp DB / temp project root / loopback fake provider：
 
 - Desktop `5173` → 200
 - Community `5174` → 200
-- Local `8771` `build_sha=4e3c2e6-slice4-dirty` /
-  `local_0023_builder_harness_receipts` / `database_ready=true` / `status=ok`
-- Community API `8772` `build_sha=a719813-interaction-v2-dirty` /
+- Local `8771` `build_sha=8f71a1e-compiler-v2-dirty` /
+  `local_0024_builder_conversation_trash` / `database_ready=true` / `status=ok`
+- Community API `8772` `build_sha=8f71a1e-compiler-v2-dirty` /
   `community_0008_plugin_registry` / `database_ready=true` / `status=ok`
-- **Builder Model**：Moonshot / `kimi-k3` / `known` + `source=probe` /
-  strict JSON Schema supported
+- **Builder Model**：Moonshot / `kimi-k3` / `known` + `source=probe`
 - **Agent Runtime Model**：host default Moonshot / `kimi-k3` /
   `https://api.moonshot.cn/v1` / `configured=true`
 - 真实 Projects 仍在：`dddd` / `test` / `New project`
+
+Compiler V2 live（New project，**未 Confirm / 未 Apply**）：
+
+- CASE A retry：`Start → Model → Output` + `ui.labels.translate=中英文互译` + default Note
+- CASE B：`Start → Model ×3 → Output`，labels 资料总结 / 风险分析 / 建议生成 + Note
+- CASE C：live Kimi 三次未产出合法 Semantic Plan（compiler 单测仍覆盖
+  HumanApproval + Verifier）
+- CASE D：resolver 澄清（New project 无 filesystem.read pin）；compiler 单测覆盖
+  Tool pin 与 missing_capability
+
+不要把这些 waiting 会话自动 Apply。
 
 ### 剩余 Builder Phase 2 gaps
 

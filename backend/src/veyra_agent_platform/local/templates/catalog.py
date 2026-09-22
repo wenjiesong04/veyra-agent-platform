@@ -7,6 +7,7 @@ from typing import Any
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.domain.agent_definition import merge_catalog_bindings
+from veyra_agent_platform.local.projects.layout import attach_default_canvas_note
 from veyra_agent_platform.local.resources import ResourceCatalog
 
 STARTER_TEMPLATE_ID = "veyra.starter-agent@1.0.0"
@@ -60,13 +61,17 @@ _STARTER_SOURCE: dict[str, Any] = {
             "policy_refs": [],
         }
     },
-    "ui": {
-        "positions": {
-            "start": {"x": 0, "y": 80},
-            "model": {"x": 240, "y": 80},
-            "output": {"x": 480, "y": 80},
-        }
-    },
+    "ui": attach_default_canvas_note(
+        {
+            "positions": {
+                "start": {"x": 0, "y": 80},
+                "model": {"x": 240, "y": 80},
+                "output": {"x": 480, "y": 80},
+            }
+        },
+        "A safe local-first starting point. Describe this Agent's purpose, "
+        "inputs, outputs, and how to use it.",
+    ),
     "lock": {"veyra.runtime.profile@1.0.0": _RUNTIME_LOCK_DIGEST},
 }
 
@@ -250,14 +255,17 @@ def _work_template(
                 "policy_refs": [],
             }
         },
-        "ui": {
-            "positions": {
-                "start": {"x": 0, "y": 80},
-                "agent": {"x": 240, "y": 80},
-                "output": {"x": 480, "y": 80},
+        "ui": attach_default_canvas_note(
+            {
+                "positions": {
+                    "start": {"x": 0, "y": 80},
+                    "agent": {"x": 240, "y": 80},
+                    "output": {"x": 480, "y": 80},
+                },
+                **({"bindings": bindings} if bindings else {}),
             },
-            **({"bindings": bindings} if bindings else {}),
-        },
+            description,
+        ),
         "lock": {
             **skill_lock,
             "veyra.runtime.profile@1.0.0": _RUNTIME_LOCK_DIGEST,

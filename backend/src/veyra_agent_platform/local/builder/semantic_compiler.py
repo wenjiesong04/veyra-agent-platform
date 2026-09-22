@@ -1,17 +1,22 @@
-"""Compile AgentSemanticPlanV1 into a canonical AgentBlueprint candidate.
+"""Compile AgentSemanticPlan into a canonical AgentBlueprint candidate.
 
-The model describes intent. This compiler owns IDs, pins, permissions, and
-graph wiring. It reuses Slice 1/2 resolvers and never guesses among matches.
+The model describes intent and optional step graph intent. This compiler owns
+IDs, pins, permissions, and graph wiring. It never emits AgentCall inside an
+Agent and never guesses among Project resources.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import AgentBlueprint, AgentSource
-from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
+from veyra_agent_platform.contracts.semantic_plan import (
+    AgentSemanticPlanV1,
+    SemanticStepIntent,
+)
 from veyra_agent_platform.local.builder.knowledge_binding import (
     bind_knowledge,
     knowledge_reference,
@@ -20,7 +25,12 @@ from veyra_agent_platform.local.builder.knowledge_binding import (
 from veyra_agent_platform.local.builder.resource_binding import (
     FILESYSTEM_READ_RESOURCE_ID,
     grant_required_permissions,
+    resolve_capability_intent,
     resolve_project_resource,
+)
+from veyra_agent_platform.local.projects.layout import (
+    attach_default_canvas_note,
+    default_canvas_note,
 )
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
@@ -33,10 +43,36 @@ _PROJECT_SCOPED_READ = re.compile(
     r"veyra\.tool\.filesystem\.read",
     re.IGNORECASE,
 )
+_POLICY_MARKERS = (
+    "mcp",
+    "web-search",
+    "shell.exec",
+    "browser.navigate",
+    "github",
+    "http",
+)
 _EXTERNAL_TOOL = re.compile(
     r"(github|mcp\b|shell\.exec|browser\.navigate|veyra\.tool\.(?!filesystem\.read))",
     re.IGNORECASE,
 )
+
+
+def _is_regurgitated_policy(text: str) -> bool:
+    folded = text.casefold()
+    hits = sum(1 for marker in _POLICY_MARKERS if marker in folded)
+    return hits >= 2 or text.count(",") >= 3
+
+
+_OUTPUT_NOT_EMPTY = re.compile(
+    r"not empty|non-?empty|非空|有输出|must produce|output exists|"
+    r"结果不为空|contains? (a )?(result|output)",
+    re.IGNORECASE,
+)
+_CONDITION_EXPR = re.compile(
+    r"^([a-z][a-z0-9_]*)(?:\s*)(==|!=)(?:\s*)"
+    r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|true|false|[0-9]+)$"
+)
+_RESERVED_NODE_IDS = {"start", "output", "note_intro"}
 CompileStatus = Literal["compiled", "clarification", "missing_capability"]
 
 
@@ -56,6 +92,7 @@ class SemanticCompileResult:
     missing: tuple[dict[str, Any], ...]
     tools: tuple[dict[str, Any], ...]
     documents: tuple[dict[str, Any], ...]
+    warnings: tuple[str, ...] = ()
 
 
 def compile_semantic_plan(
@@ -63,87 +100,15 @@ def compile_semantic_plan(
 ) -> SemanticCompileResult:
     """Resolve intents against this Project, then emit a validated Blueprint."""
 
-    tools: list[dict[str, Any]] = []
-    documents: list[dict[str, Any]] = []
-    missing: list[dict[str, Any]] = []
-    seen_tools: set[str] = set()
-    seen_knowledge: set[str] = set()
-
-    for intent in plan.capability_intents:
-        match = resolve_project_resource(
-            list(context.project_resources),
-            list(context.catalog_resources),
-            intent,
-        )
-        if match.status == "resolved" and match.selected is not None:
-            reference = str(match.selected["reference"])
-            if reference not in seen_tools:
-                tools.append(match.selected)
-                seen_tools.add(reference)
-            continue
-        if match.status == "ambiguous":
-            return SemanticCompileResult(
-                "clarification",
-                None,
-                _clarify(plan.goal, match.candidates, knowledge=False),
-                (),
-                (),
-                (),
-            )
-        if match.status == "unbound":
-            if _PROJECT_SCOPED_READ.search(intent):
-                missing.append(
-                    _missing_capability(
-                        "tool",
-                        FILESYSTEM_READ_RESOURCE_ID,
-                        "Tool is not bound to this Project",
-                    )
-                )
-            continue
-        if _EXTERNAL_TOOL.search(intent):
-            missing.append(
-                _missing_capability(
-                    "tool",
-                    intent,
-                    "Requested capability is not bound to this Project",
-                )
-            )
-
-    for intent in plan.knowledge_intents:
-        knowledge_match = resolve_knowledge(list(context.knowledge), intent)
-        if (
-            knowledge_match.status == "resolved"
-            and knowledge_match.selected is not None
-        ):
-            reference = knowledge_reference(knowledge_match.selected)
-            if reference not in seen_knowledge:
-                documents.append(knowledge_match.selected)
-                seen_knowledge.add(reference)
-            continue
-        if knowledge_match.status == "ambiguous":
-            return SemanticCompileResult(
-                "clarification",
-                None,
-                _clarify(plan.goal, knowledge_match.candidates, knowledge=True),
-                (),
-                (),
-                (),
-            )
-
-    if missing:
+    documents, knowledge_question = _resolve_knowledge(plan, context)
+    if knowledge_question is not None:
         return SemanticCompileResult(
-            "missing_capability", None, None, tuple(missing), (), ()
+            "clarification", None, knowledge_question, (), (), ()
         )
 
-    blueprint = AgentBlueprint.from_dict(_blueprint_payload(plan, tools, documents))
-    return SemanticCompileResult(
-        "compiled",
-        blueprint,
-        None,
-        (),
-        tuple(tools),
-        tuple(documents),
-    )
+    if plan.step_intents:
+        return _compile_graph_intent(plan, context, documents)
+    return _compile_v1(plan, context, documents)
 
 
 def finalize_compiled_source(
@@ -196,10 +161,136 @@ def builder_project_context(
     )
 
 
-def _blueprint_payload(
+def _compile_v1(
+    plan: AgentSemanticPlanV1,
+    context: BuilderProjectContext,
+    documents: list[dict[str, Any]],
+) -> SemanticCompileResult:
+    tools, missing, question = _resolve_capability_intents(
+        plan.capability_intents, context, require_unresolved=False
+    )
+    if question is not None:
+        return SemanticCompileResult("clarification", None, question, (), (), ())
+    if missing:
+        return SemanticCompileResult(
+            "missing_capability", None, None, tuple(missing), (), ()
+        )
+    payload = _linear_blueprint(
+        plan,
+        tools,
+        documents,
+        model_steps=[
+            SemanticStepIntent(
+                semantic_key="analyze",
+                name=plan.suggested_name,
+                purpose=plan.description,
+                operation_kind="model",
+                depends_on=(),
+            )
+        ],
+        extra_approvals=plan.approval_points,
+        warnings=(),
+        collapse_models=True,
+    )
+    return SemanticCompileResult(
+        "compiled",
+        AgentBlueprint.from_dict(payload),
+        None,
+        (),
+        tuple(tools),
+        tuple(documents),
+    )
+
+
+def _compile_graph_intent(
+    plan: AgentSemanticPlanV1,
+    context: BuilderProjectContext,
+    documents: list[dict[str, Any]],
+) -> SemanticCompileResult:
+    tools: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    capability_steps = [
+        step for step in plan.step_intents if step.operation_kind == "capability"
+    ]
+    for step in capability_steps:
+        match = resolve_capability_intent(
+            list(context.project_resources),
+            list(context.catalog_resources),
+            step.purpose,
+        )
+        if match.status == "resolved" and match.selected is not None:
+            reference = str(match.selected["reference"])
+            if reference not in seen:
+                tools.append(match.selected)
+                seen.add(reference)
+            continue
+        if match.status == "ambiguous":
+            return SemanticCompileResult(
+                "clarification",
+                None,
+                _clarify(plan.goal, match.candidates, knowledge=False),
+                (),
+                (),
+                (),
+            )
+        missing.append(
+            _missing_capability(
+                "tool",
+                step.purpose,
+                "Requested capability is not bound to this Project",
+            )
+        )
+    leftover_intents = () if capability_steps else plan.capability_intents
+    extra_tools, extra_missing, question = _resolve_capability_intents(
+        leftover_intents, context, require_unresolved=False
+    )
+    if question is not None:
+        return SemanticCompileResult("clarification", None, question, (), (), ())
+    for resource in extra_tools:
+        reference = str(resource["reference"])
+        if reference not in seen:
+            tools.append(resource)
+            seen.add(reference)
+    missing.extend(extra_missing)
+    if missing:
+        return SemanticCompileResult(
+            "missing_capability", None, None, tuple(missing), (), ()
+        )
+    if any(step.operation_kind == "approval" for step in plan.step_intents):
+        extra_approvals: tuple[str, ...] = ()
+    else:
+        extra_approvals = plan.approval_points
+    warnings = _verification_warnings(plan)
+    payload = _linear_blueprint(
+        plan,
+        tools,
+        documents,
+        model_steps=list(plan.step_intents),
+        extra_approvals=extra_approvals,
+        warnings=warnings,
+        collapse_models=False,
+    )
+    return SemanticCompileResult(
+        "compiled",
+        AgentBlueprint.from_dict(payload),
+        None,
+        (),
+        tuple(tools),
+        tuple(documents),
+        warnings,
+    )
+
+
+def _linear_blueprint(
     plan: AgentSemanticPlanV1,
     tools: list[dict[str, Any]],
     documents: list[dict[str, Any]],
+    *,
+    model_steps: list[SemanticStepIntent],
+    extra_approvals: tuple[str, ...],
+    warnings: tuple[str, ...],
+    collapse_models: bool,
 ) -> dict[str, Any]:
     used_fields: set[str] = set()
     inputs = {
@@ -223,8 +314,10 @@ def _blueprint_payload(
 
     nodes: list[dict[str, Any]] = [{"id": "start", "component_type": "Start"}]
     transitions: list[dict[str, str]] = []
-    positions = {"start": {"x": 0, "y": 0}}
+    positions = {"start": {"x": 0, "y": 80}}
+    labels: dict[str, str] = {}
     previous = "start"
+    previous_port = "next"
     cursor_x = 0
     permissions = {
         "network_hosts": [],
@@ -233,44 +326,118 @@ def _blueprint_payload(
         "filesystem_write_roots": [],
         "shell_workspace_only": False,
     }
-
-    for index, resource in enumerate(tools):
-        node_id = "filesystem_read" if index == 0 else f"filesystem_read_{index + 1}"
-        nodes.append(
-            {
+    used_ids = {"start", "output", "note_intro"}
+    tool_by_ref = {str(resource["reference"]): resource for resource in tools}
+    pending_tools = list(tools)
+    ordered = _ordered_steps(model_steps, collapse_models=collapse_models)
+    if not any(step.operation_kind == "capability" for step in ordered):
+        for index, resource in enumerate(pending_tools):
+            node_id = _unique_id(
+                "filesystem_read" if index == 0 else f"tool_{index + 1}", used_ids
+            )
+            mapping = {"path": path_input} if path_input else {}
+            tool_node: dict[str, Any] = {
                 "id": node_id,
                 "component_type": "Tool",
                 "uses": resource["reference"],
-                "input_mapping": {"path": path_input},
+            }
+            if mapping:
+                tool_node["input_mapping"] = mapping
+            nodes.append(tool_node)
+            labels[node_id] = str(resource.get("name") or "Tool")[:80]
+            cursor_x += 240
+            positions[node_id] = {"x": cursor_x, "y": 80}
+            transitions.append({"from": previous, "port": previous_port, "to": node_id})
+            previous = node_id
+            previous_port = "next"
+            permissions = grant_required_permissions(
+                permissions, resource["required_permissions"]
+            )
+        pending_tools = []
+
+    for step in ordered:
+        node, extras, consumed = _compile_step(
+            step,
+            plan,
+            extra_outputs=extra_outputs,
+            inputs=inputs,
+            outputs=outputs,
+            path_input=path_input,
+            tools=pending_tools if step.operation_kind == "capability" else [],
+            used_ids=used_ids,
+            include_all_steps=collapse_models,
+        )
+        if consumed is not None:
+            pending_tools = [
+                resource
+                for resource in pending_tools
+                if str(resource["reference"]) != consumed
+            ]
+        if node is None:
+            continue
+        node_id = str(node["id"])
+        nodes.append(node)
+        labels[node_id] = step.name[:80]
+        cursor_x += 240
+        positions[node_id] = {"x": cursor_x, "y": 80}
+        transitions.append({"from": previous, "port": previous_port, "to": node_id})
+        component = str(node["component_type"])
+        extra_ports = {
+            "Condition": ("false",),
+            "HumanApproval": ("rejected",),
+            "Verifier": ("failed",),
+        }.get(component, ())
+        success_port = {
+            "Condition": "true",
+            "HumanApproval": "approved",
+            "Verifier": "passed",
+        }.get(component, "next")
+        for port in extra_ports:
+            transitions.append({"from": node_id, "port": port, "to": "output"})
+        previous = node_id
+        previous_port = success_port
+        if node.get("uses"):
+            matched = tool_by_ref.get(str(node["uses"]))
+            if matched is not None:
+                permissions = grant_required_permissions(
+                    permissions, matched["required_permissions"]
+                )
+        nodes.extend(extras)
+
+    for index, prompt in enumerate(extra_approvals):
+        node_id = _unique_id(f"approval_{index + 1}", used_ids)
+        nodes.append(
+            {
+                "id": node_id,
+                "component_type": "HumanApproval",
+                "prompt": prompt,
             }
         )
-        transitions.append({"from": previous, "port": "next", "to": node_id})
-        cursor_x += 160
-        positions[node_id] = {"x": cursor_x, "y": 0}
+        labels[node_id] = prompt[:80]
+        cursor_x += 240
+        positions[node_id] = {"x": cursor_x, "y": 80}
+        transitions.append({"from": previous, "port": previous_port, "to": node_id})
+        transitions.append({"from": node_id, "port": "rejected", "to": "output"})
         previous = node_id
-        permissions = grant_required_permissions(
-            permissions, resource["required_permissions"]
-        )
-
-    cursor_x += 160
-    nodes.append(
-        {
-            "id": "analyze",
-            "component_type": "Agent",
-            "model_ref": "model.primary",
-            "system_prompt": _system_prompt(plan, extra_outputs),
-        }
-    )
-    transitions.append({"from": previous, "port": "next", "to": "analyze"})
-    positions["analyze"] = {"x": cursor_x, "y": 0}
+        previous_port = "approved"
 
     output_name = next(iter(outputs))
-    cursor_x += 160
+    cursor_x += 240
     nodes.append(
         {"id": "output", "component_type": "Output", "output_name": output_name}
     )
-    transitions.append({"from": "analyze", "port": "next", "to": "output"})
-    positions["output"] = {"x": cursor_x, "y": 0}
+    transitions.append({"from": previous, "port": previous_port, "to": "output"})
+    positions["output"] = {"x": cursor_x, "y": 80}
+    labels["output"] = output_name[:80]
+
+    verifier_checks: list[str] = []
+    for node in nodes:
+        if node.get("component_type") == "Verifier":
+            verifier_checks.extend(str(item) for item in node.get("checks") or [])
+    verification = {
+        "required": bool(verifier_checks),
+        "checks": list(dict.fromkeys(verifier_checks)),
+    }
 
     bindings: dict[str, dict[str, Any]] = {}
     for index, document in enumerate(documents):
@@ -278,14 +445,24 @@ def _blueprint_payload(
         bindings[identity] = {
             "kind": "knowledge",
             "reference": knowledge_reference(document),
-            "x": 24 + (index % 3) * 220,
-            "y": 24 + (index // 3) * 140,
+            "x": -260,
+            "y": 80 + index * 140,
         }
 
     component_types = list(dict.fromkeys(str(node["component_type"]) for node in nodes))
-    ui: dict[str, Any] = {"positions": positions}
+    if any(node["component_type"] == "AgentCall" for node in nodes):
+        raise RuntimeError("AgentCall is not allowed inside an Agent graph")
+    ui: dict[str, Any] = {
+        "positions": positions,
+        "labels": labels,
+        "notes": {
+            "note_intro": default_canvas_note(_note_text(plan)),
+        },
+    }
     if bindings:
         ui["bindings"] = bindings
+    ui = attach_default_canvas_note(ui, _note_text(plan))
+    _ = warnings
     return {
         "schema_version": "1.0",
         "goal": plan.goal,
@@ -300,34 +477,327 @@ def _blueprint_payload(
             "policy_refs": [],
         },
         "requested_permissions": permissions,
-        "verification": {"required": False, "checks": []},
+        "verification": verification,
         "ui_suggestions": ui,
     }
 
 
-def _system_prompt(
-    plan: AgentSemanticPlanV1, extra_outputs: list[str] | None = None
+def _compile_step(
+    step: SemanticStepIntent,
+    plan: AgentSemanticPlanV1,
+    *,
+    extra_outputs: list[str],
+    inputs: Mapping[str, str],
+    outputs: Mapping[str, str],
+    path_input: str | None,
+    tools: list[dict[str, Any]],
+    used_ids: set[str],
+    include_all_steps: bool = False,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
+    node_id = _unique_id(_node_id_from_key(step.semantic_key), used_ids)
+    kind = step.operation_kind
+    if kind == "model":
+        return (
+            {
+                "id": node_id,
+                "component_type": "Model",
+                "model_ref": "model.primary",
+                "system_prompt": _model_prompt(
+                    plan,
+                    step,
+                    extra_outputs,
+                    include_all_steps=include_all_steps,
+                ),
+            },
+            [],
+            None,
+        )
+    if kind == "capability":
+        if not tools:
+            return None, [], None
+        resource = tools[0]
+        mapping = {"path": path_input} if path_input else {}
+        node: dict[str, Any] = {
+            "id": node_id,
+            "component_type": "Tool",
+            "uses": resource["reference"],
+        }
+        if mapping:
+            node["input_mapping"] = mapping
+        return node, [], str(resource["reference"])
+    if kind == "transform":
+        mapping = _transform_mapping(step, inputs, outputs)
+        return (
+            {
+                "id": node_id,
+                "component_type": "Transform",
+                "mapping": mapping,
+            },
+            [],
+            None,
+        )
+    if kind == "condition":
+        return (
+            {
+                "id": node_id,
+                "component_type": "Condition",
+                "expression": _condition_expression(step, inputs),
+            },
+            [],
+            None,
+        )
+    if kind == "approval":
+        return (
+            {
+                "id": node_id,
+                "component_type": "HumanApproval",
+                "prompt": step.purpose,
+            },
+            [],
+            None,
+        )
+    if kind == "verification":
+        checks = _step_verifier_checks(step)
+        if checks:
+            return (
+                {
+                    "id": node_id,
+                    "component_type": "Verifier",
+                    "checks": list(checks),
+                },
+                [],
+                None,
+            )
+        return (
+            {
+                "id": node_id,
+                "component_type": "Model",
+                "model_ref": "model.primary",
+                "system_prompt": _model_prompt(
+                    plan,
+                    step,
+                    extra_outputs,
+                    include_all_steps=include_all_steps,
+                ),
+            },
+            [],
+            None,
+        )
+    return None, [], None
+
+
+def _ordered_steps(
+    steps: list[SemanticStepIntent], *, collapse_models: bool
+) -> list[SemanticStepIntent]:
+    if collapse_models:
+        models = [step for step in steps if step.operation_kind == "model"]
+        return models[:1]
+    by_key = {step.semantic_key.casefold(): step for step in steps}
+    remaining = {step.semantic_key.casefold() for step in steps}
+    ordered: list[SemanticStepIntent] = []
+    while remaining:
+        ready = [
+            step
+            for step in steps
+            if step.semantic_key.casefold() in remaining
+            and all(item.casefold() not in remaining for item in step.depends_on)
+        ]
+        if not ready:
+            break
+        next_step = ready[0]
+        ordered.append(next_step)
+        remaining.remove(next_step.semantic_key.casefold())
+    leftover = [by_key[key] for key in remaining if key in by_key]
+    return ordered + leftover
+
+
+def _resolve_knowledge(
+    plan: AgentSemanticPlanV1, context: BuilderProjectContext
+) -> tuple[list[dict[str, Any]], str | None]:
+    documents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for intent in plan.knowledge_intents:
+        knowledge_match = resolve_knowledge(list(context.knowledge), intent)
+        if (
+            knowledge_match.status == "resolved"
+            and knowledge_match.selected is not None
+        ):
+            reference = knowledge_reference(knowledge_match.selected)
+            if reference not in seen:
+                documents.append(knowledge_match.selected)
+                seen.add(reference)
+            continue
+        if knowledge_match.status == "ambiguous":
+            return [], _clarify(plan.goal, knowledge_match.candidates, knowledge=True)
+    return documents, None
+
+
+def _resolve_capability_intents(
+    intents: tuple[str, ...],
+    context: BuilderProjectContext,
+    *,
+    require_unresolved: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    tools: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for intent in intents:
+        match = resolve_project_resource(
+            list(context.project_resources),
+            list(context.catalog_resources),
+            intent,
+        )
+        if match.status == "resolved" and match.selected is not None:
+            reference = str(match.selected["reference"])
+            if reference not in seen:
+                tools.append(match.selected)
+                seen.add(reference)
+            continue
+        if match.status == "ambiguous":
+            return (
+                [],
+                [],
+                _clarify(intent, match.candidates, knowledge=False),
+            )
+        if match.status == "unbound":
+            if _PROJECT_SCOPED_READ.search(intent) or require_unresolved:
+                missing.append(
+                    _missing_capability(
+                        "tool",
+                        FILESYSTEM_READ_RESOURCE_ID,
+                        "Tool is not bound to this Project",
+                    )
+                )
+            continue
+        if _is_regurgitated_policy(intent):
+            continue
+        if _EXTERNAL_TOOL.search(intent) or require_unresolved:
+            missing.append(
+                _missing_capability(
+                    "tool",
+                    intent,
+                    "Requested capability is not bound to this Project",
+                )
+            )
+    return tools, missing, None
+
+
+def _note_text(plan: AgentSemanticPlanV1) -> str:
+    chinese = bool(_CJK.search(plan.goal) or _CJK.search(plan.suggested_name))
+    purpose = "目的" if chinese else "Purpose"
+    inputs = "输入" if chinese else "Inputs"
+    outputs = "输出" if chinese else "Outputs"
+    steps_label = "主要步骤" if chinese else "Main steps"
+    lines = [
+        plan.suggested_name,
+        "",
+        f"{purpose}: {plan.description or plan.goal}",
+        "",
+        f"{inputs}: " + "、".join(item.name for item in plan.inputs),
+        f"{outputs}: " + "、".join(item.name for item in plan.outputs),
+        "",
+        f"{steps_label}:",
+    ]
+    named = [step.name for step in plan.step_intents] or list(plan.steps)
+    lines.extend(f"{index}. {name}" for index, name in enumerate(named, start=1))
+    return "\n".join(lines)[:4000]
+
+
+def _model_prompt(
+    plan: AgentSemanticPlanV1,
+    step: SemanticStepIntent,
+    extra_outputs: list[str],
+    *,
+    include_all_steps: bool = False,
 ) -> str:
     lines = [
-        f"You are {plan.suggested_name}.",
-        plan.description,
+        f"You are {step.name}.",
+        step.purpose or plan.description,
         f"Goal: {plan.goal}",
-        "Steps:",
-        *[f"{index}. {step}" for index, step in enumerate(plan.steps, start=1)],
     ]
+    if include_all_steps:
+        lines.append("Steps:")
+        lines.extend(
+            f"{index}. {item}" for index, item in enumerate(plan.steps, start=1)
+        )
     if extra_outputs:
         lines.append("Also include these fields in the result:")
         lines.extend(f"- {item}" for item in extra_outputs)
     if plan.success_criteria:
         lines.append("Success:")
         lines.extend(f"- {item}" for item in plan.success_criteria)
-    if plan.approval_points:
-        lines.append("Ask for approval when:")
-        lines.extend(f"- {item}" for item in plan.approval_points)
     if plan.user_constraints:
         lines.append("Constraints:")
         lines.extend(f"- {item}" for item in plan.user_constraints)
     return "\n".join(lines)
+
+
+def _transform_mapping(
+    step: SemanticStepIntent, inputs: Mapping[str, str], outputs: Mapping[str, str]
+) -> dict[str, str]:
+    purpose = step.purpose.strip()
+    if "{{" in purpose and "}}" in purpose and ":" in purpose:
+        name, template = purpose.split(":", 1)
+        slug = _SLUG_NOISE.sub("-", name.casefold()).strip("-")
+        if slug:
+            return {slug: template.strip()}
+    target = next(iter(outputs))
+    source = next(iter(inputs))
+    return {target: f"{{{{{source}}}}}"}
+
+
+def _condition_expression(step: SemanticStepIntent, inputs: Mapping[str, str]) -> str:
+    purpose = step.purpose.strip()
+    if _CONDITION_EXPR.fullmatch(purpose):
+        return purpose
+    for name, kind in inputs.items():
+        if kind == "boolean" and re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            return f"{name} == true"
+    for name in inputs:
+        if re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            return f'{name} != ""'
+    return 'result != ""'
+
+
+def _step_verifier_checks(step: SemanticStepIntent) -> tuple[str, ...]:
+    if _OUTPUT_NOT_EMPTY.search(step.purpose):
+        return ("output.not_empty",)
+    return ()
+
+
+def _verification_warnings(plan: AgentSemanticPlanV1) -> tuple[str, ...]:
+    warnings: list[str] = []
+    for step in plan.step_intents:
+        if step.operation_kind != "verification":
+            continue
+        if not _OUTPUT_NOT_EMPTY.search(step.purpose):
+            warnings.append(f"unsupported_verification:{step.semantic_key}")
+    for criterion in plan.success_criteria:
+        if not _OUTPUT_NOT_EMPTY.search(criterion):
+            warnings.append(f"success_criterion_not_verifier:{criterion}")
+    return tuple(warnings)
+
+
+def _node_id_from_key(key: str) -> str:
+    folded = _SLUG_NOISE.sub("_", key.casefold()).strip("_")
+    if not folded or not folded[0].isalpha():
+        folded = "step"
+    return folded[:63]
+
+
+def _unique_id(base: str, used: set[str]) -> str:
+    candidate = base if base not in _RESERVED_NODE_IDS else f"{base}_node"
+    if candidate not in used:
+        used.add(candidate)
+        return candidate
+    index = 2
+    while True:
+        suffix = f"_{index}"
+        next_id = f"{candidate[: 63 - len(suffix)]}{suffix}"
+        if next_id not in used:
+            used.add(next_id)
+            return next_id
+        index += 1
 
 
 def _field_slug(name: str, used: set[str], prefix: str) -> str:

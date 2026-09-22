@@ -296,14 +296,14 @@ export function StudioWorkbench({
       const next = current.map((node) => {
         if (!node.data.flow) return node;
         const runState = states[node.id] ?? "pending";
-        const title = nodeDisplayTitle(node.data.flow, catalog, locale, agents);
+        const title = nodeDisplayTitle(node.data.flow, catalog, locale, agents, source.ui.labels);
         if (node.data.runState === runState && node.data.title === title) return node;
         changed = true;
         return { ...node, data: { ...node.data, runState, title } };
       });
       return changed ? next : current;
     });
-  }, [states, catalog, locale, agents, setNodes]);
+  }, [states, catalog, locale, agents, setNodes, source.ui.labels]);
 
   const onFlowInit = React.useCallback((instance: ReactFlowInstance<Node<CanvasNodeData>, Edge>) => {
     setFlowInstance(instance);
@@ -628,7 +628,7 @@ export function StudioWorkbench({
   const inspectorTitle = selectedIds.length > 1
     ? (locale === "zh" ? `已选 ${selectedIds.length} 项` : `${selectedIds.length} selected`)
     : flow
-    ? nodeDisplayTitle(flow, catalog, locale, agents)
+    ? nodeDisplayTitle(flow, catalog, locale, agents, source.ui.labels)
     : note
       ? (locale === "zh" ? "文字卡片" : "Note")
       : selectedEdge

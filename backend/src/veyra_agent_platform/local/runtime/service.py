@@ -1947,7 +1947,9 @@ class RuntimeService:
             fragments.append(token)
             if on_token is not None:
                 on_token(token)
-        return _model_output_values("".join(fragments).strip(), source.outputs, values)
+        return _model_output_values(
+            "".join(fragments).strip(), source.outputs, values, node.id
+        )
 
     def _model_for(self, project_id: str, agent_id: str) -> RuntimeModelClient:
         profile, _ = self.profiles.effective(project_id, agent_id)
@@ -2014,14 +2016,21 @@ def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:
 
 
 def _model_output_values(
-    content: str, outputs: Mapping[str, str], values: dict[str, Any]
+    content: str,
+    outputs: Mapping[str, str],
+    values: dict[str, Any],
+    node_id: str,
 ) -> dict[str, Any]:
-    """Accept only values matching the declared outputs not already populated."""
+    """Accept declared outputs; later Model nodes may overwrite earlier results."""
+
+    recorded = {} if node_id in outputs else {node_id: content}
     targets = [
         (name, field_type) for name, field_type in outputs.items() if name not in values
     ]
+    if not targets:
+        targets = list(outputs.items())
     if len(targets) == 1 and targets[0][1] == "string":
-        return {targets[0][0]: content}
+        return {**recorded, targets[0][0]: content}
     try:
         parsed: Any = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -2034,7 +2043,7 @@ def _model_output_values(
             raise RuntimeError(
                 "agent_output_invalid", f"Agent output {name} is not a {field_type}"
             )
-        return {name: parsed}
+        return {**recorded, name: parsed}
     if not isinstance(parsed, dict) or set(parsed) != {name for name, _ in targets}:
         raise RuntimeError(
             "agent_output_invalid", "Agent model output fields do not match the Agent"
@@ -2045,7 +2054,7 @@ def _model_output_values(
         raise RuntimeError(
             "agent_output_invalid", "Agent model output types are invalid"
         )
-    return parsed
+    return {**recorded, **parsed}
 
 
 def _value_matches_type(value: Any, field_type: str) -> bool:

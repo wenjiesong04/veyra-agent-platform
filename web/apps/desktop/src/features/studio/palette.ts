@@ -27,7 +27,7 @@ const COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
 ]);
 
 const AGENT_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
-  "Start", "Model", "HumanApproval", "Verifier", "Output",
+  "Start", "Model", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
 ]);
 
 const WORKFLOW_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
@@ -354,7 +354,9 @@ export function newCatalogNode(item: PaletteItem, id: string): FlowNode {
   return newNode(item.componentType, id);
 }
 
-export function nodeDisplayTitle(flow: FlowNode, resources: ResourceDescriptor[], locale: "zh" | "en", agents: ProjectAgentRecord[] = []): string {
+export function nodeDisplayTitle(flow: FlowNode, resources: ResourceDescriptor[], locale: "zh" | "en", agents: ProjectAgentRecord[] = [], labels: Record<string, string> = {}): string {
+  const labelled = labels[flow.id]?.trim();
+  if (labelled) return labelled;
   if (flow.component_type === "AgentCall" && flow.agent_ref) {
     const agentId = flow.agent_ref.split("@")[0];
     const agent = agents.find((item) => item.agent_id === agentId);
