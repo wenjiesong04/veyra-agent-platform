@@ -1,4 +1,4 @@
-import type { AgentRunResponse, AgentSource, JsonObject, JsonValue } from "@veyra/api-contracts";
+import { isArtifactRef, type AgentRunResponse, type AgentSource, type JsonObject, type JsonValue } from "@veyra/api-contracts";
 
 export type ConversationCanvasKind = "run" | "table" | "result" | "document";
 
@@ -34,8 +34,28 @@ export function tableRows(result: JsonValue | null | undefined): JsonObject[] | 
   return null;
 }
 
+function isArtifactValue(value: JsonValue | null | undefined): boolean {
+  if (isArtifactRef(value)) return true;
+  return Array.isArray(value) && value.length > 0 && value.every(isArtifactRef);
+}
+
+export function containsArtifacts(value: JsonValue | null | undefined): boolean {
+  if (value == null) return false;
+  if (isArtifactRef(value)) return true;
+  if (Array.isArray(value)) return value.some((item) => containsArtifacts(item));
+  if (typeof value === "object") return Object.values(value).some((item) => containsArtifacts(item));
+  return false;
+}
+
+export function isMediaResult(result: JsonValue | null | undefined): boolean {
+  if (isArtifactValue(result)) return true;
+  if (!isJsonObject(result)) return false;
+  const entries = Object.entries(result);
+  return entries.length > 0 && entries.every(([, item]) => isArtifactValue(item));
+}
+
 export function isStructuredResult(result: JsonValue | null | undefined): boolean {
-  if (result == null) return false;
+  if (result == null || isMediaResult(result)) return false;
   if (Array.isArray(result)) return result.length > 0;
   if (!isJsonObject(result)) return false;
   const entries = Object.entries(result);

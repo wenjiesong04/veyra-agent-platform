@@ -252,6 +252,106 @@ class ResourceWorkshop:
             "resource": self.catalog.detail(resource_id, version),
         }
 
+    def write_overlay(
+        self, payload: dict[str, Any], *, package_id: str
+    ) -> dict[str, Any]:
+        """Persist a workshop overlay node.yaml and reload the Catalog."""
+
+        target = self.overlay_root / "workshop" / package_id / "node.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{new_uuid7()}.tmp")
+        try:
+            temporary.write_text(
+                yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+            self.catalog.reload_overlays()
+        except (OSError, NodePackageError, yaml.YAMLError) as exc:
+            temporary.unlink(missing_ok=True)
+            if target.exists() and not target.read_text(encoding="utf-8").strip():
+                target.unlink(missing_ok=True)
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid",
+                "Resource overlay could not be loaded into the catalog",
+            ) from exc
+        resource_id = str(payload.get("resource_id") or "")
+        version = str(payload.get("version") or "")
+        try:
+            return self.catalog.detail(resource_id, version)
+        except ResourceCatalogError as exc:
+            raise ResourceWorkshopError("workshop_draft_invalid", str(exc)) from exc
+
+    def replace_overlay(
+        self, resource_id: str, version: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        target = self._workshop_package(resource_id, version)
+        if target is None:
+            raise ResourceWorkshopError(
+                "workshop_draft_not_found", "Overlay package was not found"
+            )
+        package_id = target.parent.name
+        return self.write_overlay(payload, package_id=package_id)
+
+    def overlay_payload(self, resource_id: str, version: str) -> dict[str, Any]:
+        target = self._workshop_package(resource_id, version)
+        if target is None:
+            raise ResourceWorkshopError(
+                "workshop_draft_not_found", "Overlay package was not found"
+            )
+        try:
+            payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Overlay package could not be read"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ResourceWorkshopError(
+                "workshop_draft_invalid", "Overlay package is invalid"
+            )
+        return payload
+
+    def set_enabled(
+        self, resource_id: str, version: str, *, enabled: bool
+    ) -> dict[str, Any]:
+        """Toggle a published workshop Skill or declarative Tool wrapper."""
+
+        try:
+            resource = self.catalog.detail(resource_id, version)
+        except ResourceCatalogError as exc:
+            raise ResourceWorkshopError("workshop_draft_not_found", str(exc)) from exc
+        if resource.get("origin") != "workshop":
+            raise ResourceWorkshopError(
+                "workshop_skill_invalid",
+                "Only workshop resources can be enabled or disabled",
+            )
+        kind = str(resource.get("kind") or "")
+        raw_spec = resource.get("spec")
+        spec = raw_spec if isinstance(raw_spec, dict) else {}
+        wrapper = spec.get("wrapper_kind") == "tool_wrapper"
+        if kind == "skill":
+            return self.set_skill_enabled(resource_id, version, enabled=enabled)
+        if kind != "tool" or not wrapper:
+            raise ResourceWorkshopError(
+                "workshop_skill_invalid",
+                "Only workshop Skills and declarative Tool wrappers can be toggled",
+            )
+        payload = self.overlay_payload(resource_id, version)
+        payload["availability"] = "ready" if enabled else "disabled"
+        payload["factory_selectable"] = enabled
+        payload["runtime_status"] = "supported" if enabled else "runtime_not_configured"
+        tags = [
+            tag
+            for tag in list(payload.get("tags") or [])
+            if tag not in {"disabled", "approved"}
+        ]
+        tags.extend(["approved"] if enabled else ["disabled"])
+        payload["tags"] = list(dict.fromkeys(["workshop", *tags]))
+        return {
+            "schema_version": "1.0",
+            "resource": self.replace_overlay(resource_id, version, payload),
+        }
+
     def _workshop_package(self, resource_id: str, version: str) -> Path | None:
         root = self.overlay_root / "workshop"
         if not root.is_dir():

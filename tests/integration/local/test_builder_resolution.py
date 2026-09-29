@@ -8,7 +8,6 @@ import pytest
 
 from tests.integration.local.test_edit_proposal_routes import _target
 from tests.integration.local.test_factory_routes import (
-    VALID_SEMANTIC_PLAN,
     ScriptedKimiTransport,
     _client,
     _completion,
@@ -183,14 +182,20 @@ def test_creation_resolves_type_without_creating_objects(tmp_path, kind):
             f"/api/v1/projects/{project}/builder/resolve",
             json={"content": f"帮我做一个翻译 {kind}"},
         ).json()
-        assert result["create_kind"] == kind
-        assert result["status"] == ("resolved" if kind == "agent" else "unsupported")
+        if kind == "resource":
+            assert result["create_kind"] == "resource"
+            assert result["status"] == "unsupported"
+        elif kind == "workflow":
+            assert result["create_kind"] == "workflow"
+            assert result["status"] == "resolved"
+        else:
+            assert result["create_kind"] == "agent"
+            assert result["status"] == "resolved"
         assert client.get(f"/api/v1/projects/{project}").json() == before
         if kind == "agent":
             transport.completions.extend(
                 [
                     _completion("Ready for a proposal."),
-                    _completion(json.dumps(VALID_SEMANTIC_PLAN)),
                 ]
             )
             session = client.post(

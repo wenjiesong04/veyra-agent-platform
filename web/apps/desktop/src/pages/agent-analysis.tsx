@@ -8,14 +8,14 @@ const copy = {
   zh: {
     eyebrow: "Agent 数据分析", title: "数据分析", description: "这里呈现这个 Agent 的真实本机运行指标和验证结果。",
     metricsEyebrow: "运行指标", metricsTitle: "本机运行概览", metricsDetail: "所有数字均来自持久化 Run 记录。",
-    emptyTitle: "暂无可分析的运行记录", emptyDetail: "在编排页面完成一次测试运行后，指标会自动出现在这里。",
+    emptyTitle: "暂无可分析的运行记录", emptyDetail: "在 Agent Studio 完成一次测试运行后，指标会自动出现在这里。",
     unavailable: "本地 Runtime 尚未提供运行历史。", loading: "正在读取运行记录…", retry: "无法读取运行记录。",
     total: "全部运行", verified: "已验证", failed: "失败", interrupted: "中断", unverified: "未验证", recent: "最近运行", latest: "最近一次",
   },
   en: {
     eyebrow: "Agent data analysis", title: "Data analysis", description: "This page presents real local run metrics and verification outcomes for this Agent.",
     metricsEyebrow: "Run metrics", metricsTitle: "Local run overview", metricsDetail: "Every number is derived from durable Run records.",
-    emptyTitle: "No runs available to analyze", emptyDetail: "Complete a test run in Orchestration and its metrics will appear here.",
+    emptyTitle: "No runs available to analyze", emptyDetail: "Complete a test run in Agent Studio and its metrics will appear here.",
     unavailable: "The local Runtime does not expose run history yet.", loading: "Loading run history…", retry: "Run history could not be loaded.",
     total: "Total runs", verified: "Verified", failed: "Failed", interrupted: "Interrupted", unverified: "Unverified", recent: "Recent runs", latest: "Latest",
   },

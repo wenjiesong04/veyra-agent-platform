@@ -4,7 +4,7 @@ import { agentCallRef, parseAgentCallRef } from "./agent-call";
 import { catalogToolRequiresApproval } from "./palette";
 import { componentFor } from "./registry";
 import type { NodeExecutionState } from "./execution-state";
-import { centerNoteAboveGraph, estimatedNodeSize, layoutExecutionGraph } from "./graph-layout";
+import { centerNoteAboveGraph, labeledNodeSize, layoutExecutionGraph, type CanvasSize } from "./graph-layout";
 
 export type CanvasNodeData = {
   flow?: FlowNode;
@@ -38,6 +38,15 @@ export type GraphDiagnostic = {
   code: GraphDiagnosticCode;
   params?: Record<string, string>;
 };
+
+export function isLoopAgent(source: StudioSource): boolean {
+  return source.component_type === "Flow" && source.extensions.veyra.execution_kind === "loop";
+}
+
+function loopCoreNode(source: AgentSource): FlowNode | undefined {
+  return source.nodes.find((node) => node.component_type === "Model" || node.component_type === "Agent")
+    ?? source.nodes.find((node) => node.component_type !== "Start" && node.component_type !== "Output");
+}
 
 export const FLOW_NODE_ID_RE = /^[a-z][a-z0-9_]{0,62}$/;
 
@@ -138,6 +147,7 @@ function canvasNotesValid(ui: Record<string, unknown>): boolean {
       || typeof note.y !== "number" || !Number.isFinite(note.y)) return false;
     if ("color" in note && (typeof note.color !== "string" || !colors.has(note.color))) return false;
     if ("width" in note && (typeof note.width !== "number" || !Number.isFinite(note.width) || note.width < 160 || note.width > 640)) return false;
+    if ("height" in note && (typeof note.height !== "number" || !Number.isFinite(note.height) || note.height < 96 || note.height > 640)) return false;
     if ("manual_position" in note && typeof note.manual_position !== "boolean") return false;
   }
   return true;
@@ -169,6 +179,7 @@ export function isAgentSourceCandidate(value: unknown): value is AgentSource {
     || !record(verification) || typeof verification.required !== "boolean" || !Array.isArray(verification.checks) || !verification.checks.every((item) => typeof item === "string")
     || ("skill_refs" in veyra && (!Array.isArray(veyra.skill_refs) || !veyra.skill_refs.every((item) => typeof item === "string")))
     || ("policy_refs" in veyra && (!Array.isArray(veyra.policy_refs) || !veyra.policy_refs.every((item) => typeof item === "string")))
+    || ("interaction_mode" in veyra && (typeof veyra.interaction_mode !== "string" || !["auto", "chat", "form", "hybrid"].includes(veyra.interaction_mode)))
     || !record(value.ui.positions)) return false;
   if ("bindings" in value.ui) {
     if (!record(value.ui.bindings)) return false;
@@ -225,8 +236,66 @@ function flowEdge(
   };
 }
 
+function loopCapabilityCanvas(source: AgentSource): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
+  const core = loopCoreNode(source);
+  const corePosition = (core && source.ui.positions[core.id]) ?? { x: 240, y: 120 };
+  const coreSize = core ? flowNodeBox(core, source.name) : { width: 180, height: 72 };
+  const flowNodes: Node<CanvasNodeData>[] = core ? [{
+    id: core.id,
+    type: "agentNode",
+    position: corePosition,
+    width: coreSize.width,
+    height: coreSize.height,
+    style: { width: coreSize.width, height: coreSize.height },
+    data: {
+      flow: core,
+      runState: "idle",
+      title: source.name || "Agent Core",
+    },
+  }] : [];
+  const bindingNodes = Object.entries(source.ui.bindings ?? {}).map(([id, binding]) => ({
+    id,
+    type: "bindingNode",
+    position: { x: binding.x, y: binding.y },
+    data: { binding: { kind: binding.kind, reference: binding.reference } },
+  }));
+  const defaultNote = source.ui.notes?.note_intro;
+  const noteNodes = Object.entries(source.ui.notes ?? {}).map(([id, note]) => ({
+    id,
+    type: "noteNode",
+    position: { x: note.x, y: note.y },
+    style: { width: note.width ?? (id === "note_intro" ? 420 : 260), height: note.height ?? 168 },
+    data: { note: {
+      text: note.text,
+      color: note.color ?? "amber",
+      width: note.width ?? (id === "note_intro" ? 420 : 260),
+      ...(typeof note.height === "number" ? { height: note.height } : {}),
+      manual_position: note.manual_position ?? (id === "note_intro" ? Boolean(defaultNote && defaultNote.manual_position === true) : undefined),
+    } },
+    draggable: true,
+    connectable: false,
+  }));
+  const edges: Edge[] = core
+    ? bindingNodes.map((binding) => ({
+      id: `cap:${core.id}:${binding.id}`,
+      source: core.id,
+      target: binding.id,
+      sourceHandle: "next",
+      type: "flowEdge",
+      data: { port: "next", readOnly: true },
+    }))
+    : [];
+  return { nodes: [...flowNodes, ...bindingNodes, ...noteNodes], edges };
+}
+
 export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
-  const layoutNodes = source.nodes.map((flow) => ({ id: flow.id, component_type: flow.component_type }));
+  if (source.component_type === "Flow" && source.extensions.veyra.execution_kind === "loop") {
+    return loopCapabilityCanvas(source);
+  }
+  const layoutNodes = source.nodes.map((flow) => {
+    const size = flowNodeBox(flow, source.ui.labels?.[flow.id]);
+    return { id: flow.id, component_type: flow.component_type, width: size.width, height: size.height };
+  });
   const layoutPositions = layoutExecutionGraph(layoutNodes, source.transitions, source.ui.positions);
   const defaultNote = source.ui.notes?.note_intro;
   const defaultNoteUsesAutomaticPosition = defaultNote !== undefined
@@ -235,17 +304,22 @@ export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[];
   const automaticNotePosition = defaultNoteUsesAutomaticPosition
     ? centerNoteAboveGraph(layoutNodes, layoutPositions, defaultNote?.width ?? 420)
     : undefined;
-  const flowNodes = source.nodes.map((flow) => ({
-    id: flow.id,
-    type: "agentNode",
-    position: layoutPositions[flow.id] ?? { x: 0, y: 0 },
-    style: { width: estimatedNodeSize(flow.component_type).width, minHeight: estimatedNodeSize(flow.component_type).height },
-    data: {
-      flow,
-      runState: "idle" as const,
-      title: source.ui.labels?.[flow.id],
-    },
-  }));
+  const flowNodes = source.nodes.map((flow) => {
+    const size = flowNodeBox(flow, source.ui.labels?.[flow.id]);
+    return {
+      id: flow.id,
+      type: "agentNode",
+      position: layoutPositions[flow.id] ?? { x: 0, y: 0 },
+      width: size.width,
+      height: size.height,
+      style: { width: size.width, height: size.height },
+      data: {
+        flow,
+        runState: "idle" as const,
+        title: source.ui.labels?.[flow.id],
+      },
+    };
+  });
   const bindingNodes = Object.entries("bindings" in source.ui ? source.ui.bindings ?? {} : {}).map(([id, binding]) => ({
     id,
     type: "bindingNode",
@@ -256,10 +330,12 @@ export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[];
     id,
     type: "noteNode",
     position: id === "note_intro" && automaticNotePosition ? automaticNotePosition : { x: note.x, y: note.y },
+    style: { width: note.width ?? (id === "note_intro" ? 420 : 260), height: note.height ?? 168 },
     data: { note: {
       text: note.text,
       color: note.color ?? "amber",
-      width: note.width ?? (id === "note_intro" ? 420 : 220),
+      width: note.width ?? (id === "note_intro" ? 420 : 260),
+      ...(typeof note.height === "number" ? { height: note.height } : {}),
       manual_position: note.manual_position ?? (id === "note_intro" ? !defaultNoteUsesAutomaticPosition : undefined),
     } },
     draggable: true,
@@ -273,10 +349,15 @@ export function toCanvas(source: StudioSource): { nodes: Node<CanvasNodeData>[];
 
 export function autoLayoutCanvasNodes(nodes: Node<CanvasNodeData>[], edges: Edge[]): Node<CanvasNodeData>[] {
   const flowNodes = nodes.filter((node) => node.data.flow);
-  const layoutNodes = flowNodes.map((node) => ({
-    id: node.id,
-    component_type: node.data.flow!.component_type,
-  }));
+  const layoutNodes = flowNodes.map((node) => {
+    const size = flowNodeBox(node.data.flow!, node.data.title);
+    return {
+      id: node.id,
+      component_type: node.data.flow!.component_type,
+      width: size.width,
+      height: size.height,
+    };
+  });
   const positions = layoutExecutionGraph(layoutNodes, edges.map((edge) => ({
     from: edge.source,
     to: edge.target,
@@ -289,8 +370,8 @@ export function autoLayoutCanvasNodes(nodes: Node<CanvasNodeData>[], edges: Edge
   return nodes.map((node) => {
     const position = positions[node.id];
     if (position && node.data.flow) {
-      const size = estimatedNodeSize(node.data.flow.component_type);
-      return { ...node, position, style: { ...node.style, width: size.width, minHeight: size.height } };
+      const size = flowNodeBox(node.data.flow, node.data.title);
+      return { ...node, position, width: size.width, height: size.height, style: { ...node.style, width: size.width, height: size.height } };
     }
     if (node.id === "note_intro" && notePosition && node.data.note) {
       return { ...node, position: notePosition };
@@ -316,17 +397,22 @@ function persistNotes(nodes: Node<CanvasNodeData>[]): Record<string, StudioNote>
       text: note.text,
       color: note.color,
       width: note.width,
+      ...(typeof note.height === "number" ? { height: note.height } : {}),
       ...(note.manual_position === undefined ? {} : { manual_position: note.manual_position }),
     }];
   }));
   return Object.keys(notes).length ? notes : undefined;
 }
 
-export function portHandleTop(index: number, count: number): number {
-  if (count <= 1) return 50;
-  const gap = 28;
-  const start = 50 - ((count - 1) * gap) / 2;
-  return start + index * gap;
+function flowNodeBox(flow: FlowNode, title?: string): CanvasSize {
+  return labeledNodeSize(title || componentFor(flow.component_type).label, flow.id, componentFor(flow.component_type).ports.length);
+}
+
+export function portHandleTop(index: number, count: number): string {
+  if (count <= 1) return "50%";
+  const offset = (index - (count - 1) / 2) * 18;
+  if (offset === 0) return "50%";
+  return `calc(50% ${offset > 0 ? "+" : "-"} ${Math.abs(offset)}px)`;
 }
 
 export function flowNodeOutgoingPort(componentType: FlowNode["component_type"]): string | null {
@@ -401,6 +487,41 @@ export function sourceWithGraph(source: AgentSource, nodes: Node<CanvasNodeData>
 export function sourceWithGraph(source: WorkflowSource, nodes: Node<CanvasNodeData>[], edges: Edge[]): WorkflowSource;
 export function sourceWithGraph(source: StudioSource, nodes: Node<CanvasNodeData>[], edges: Edge[]): StudioSource;
 export function sourceWithGraph(source: StudioSource, nodes: Node<CanvasNodeData>[], edges: Edge[]): StudioSource {
+  if (source.component_type === "Flow" && source.extensions.veyra.execution_kind === "loop") {
+    const coreCanvas = nodes.find((node) => node.data.flow);
+    const bindingCanvas = nodes.filter((node) => node.data.binding && !node.data.flow);
+    const positions = { ...source.ui.positions };
+    if (coreCanvas) {
+      positions[coreCanvas.id] = { x: Math.round(coreCanvas.position.x), y: Math.round(coreCanvas.position.y) };
+    }
+    const bindings = Object.fromEntries(bindingCanvas.map((node) => {
+      const binding = node.data.binding as NonNullable<CanvasNodeData["binding"]>;
+      return [node.id, { ...binding, x: Math.round(node.position.x), y: Math.round(node.position.y) }];
+    }));
+    const boundSkills = Object.values(bindings).filter((binding) => binding.kind === "skill").map((binding) => binding.reference);
+    const boundKnowledge = Object.values(bindings).filter((binding) => binding.kind === "knowledge").map((binding) => binding.reference);
+    const boundPolicies = Object.values(bindings).filter((binding) => binding.kind === "policy").map((binding) => binding.reference);
+    const originalBindings = Object.values(source.ui.bindings ?? {});
+    const keepRef = (reference: string, kind: "skill" | "policy" | "knowledge", current: string[]) => {
+      const hadBinding = originalBindings.some((binding) => binding.kind === kind && binding.reference === reference);
+      return current.includes(reference) || !hadBinding;
+    };
+    return {
+      ...source,
+      nodes: source.nodes,
+      transitions: source.transitions,
+      extensions: {
+        ...source.extensions,
+        veyra: {
+          ...source.extensions.veyra,
+          skill_refs: [...new Set([...(source.extensions.veyra.skill_refs ?? []).filter((reference) => keepRef(reference, "skill", boundSkills)), ...boundSkills])],
+          policy_refs: [...new Set([...(source.extensions.veyra.policy_refs ?? []).filter((reference) => keepRef(reference, "policy", boundPolicies)), ...boundPolicies])],
+          ...((source.extensions.veyra.knowledge_refs?.length || boundKnowledge.length) ? { knowledge_refs: [...new Set([...(source.extensions.veyra.knowledge_refs ?? []).filter((ref) => keepRef(ref, "knowledge", boundKnowledge)), ...boundKnowledge])] } : {}),
+        },
+      },
+      ui: { ...source.ui, positions, ...(Object.keys(bindings).length ? { bindings } : { bindings: undefined }), notes: persistNotes(nodes), labels: persistLabels(source, source.nodes.map((node) => node.id)) },
+    };
+  }
   const flowCanvas = nodes.filter((node) => node.data.flow);
   const bindingCanvas = nodes.filter((node) => node.data.binding && !node.data.flow);
   const positions = Object.fromEntries(flowCanvas.map((node) => [node.id, { x: Math.round(node.position.x), y: Math.round(node.position.y) }]));
@@ -468,8 +589,18 @@ export function graphDiagnostics(source: StudioSource, catalog: ResourceDescript
   if (!source.nodes.some((node) => node.component_type === "Output")) problems.push({ code: "output_missing" });
   const outputNames = source.nodes.filter((node) => node.component_type === "Output").map((node) => node.output_name);
   if (new Set(outputNames).size !== outputNames.length || outputNames.some((name) => !name || !(name in source.outputs))) problems.push({ code: "output_declaration" });
-  if (source.extensions.veyra.verification.required && !source.nodes.some((node) => node.component_type === "Verifier")) problems.push({ code: "verifier_required" });
-  const workflowTypes = new Set(["Start", "AgentCall", "Condition", "Transform", "HumanApproval", "Verifier", "Output"]);
+  if (source.extensions.veyra.verification.required && !source.nodes.some((node) => node.component_type === "Verifier") && !isLoopAgent(source)) problems.push({ code: "verifier_required" });
+  const workflowTypes = new Set(["Start", "AgentCall", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output"]);
+  if (isLoopAgent(source)) {
+    if (source.nodes.filter((node) => node.component_type === "Start").length !== 1) problems.push({ code: "start_count" });
+    if (!source.nodes.some((node) => node.component_type === "Output")) problems.push({ code: "output_missing" });
+    for (const node of source.nodes) {
+      if (node.component_type === "AgentCall") {
+        problems.push({ code: "node_context_invalid", params: { nodeId: node.id, componentType: node.component_type, context: source.component_type } });
+      }
+    }
+    return problems;
+  }
   const workflowValues = new Set([...Object.keys(source.inputs), ...source.nodes.flatMap((node) => [...Object.keys(node.mapping ?? {}), ...Object.values(node.output_mapping ?? {})])]);
   for (const node of source.nodes) {
     if ((source.component_type === "Workflow" && !workflowTypes.has(node.component_type)) || (source.component_type === "Flow" && node.component_type === "AgentCall")) {

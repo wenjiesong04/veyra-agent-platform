@@ -63,3 +63,7 @@ deploy/community/backups/
 *.tmp
 *.swp
 *.bak
+
+# Agent session objects and local scratch (not product source)
+.backboard/sessions/
+/$DB

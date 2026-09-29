@@ -23,6 +23,7 @@ from veyra_agent_platform.local.mcp.schema import McpSchemaError, require_contra
 from veyra_agent_platform.local.mcp.service import McpService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
+from veyra_agent_platform.local.state import EntityStoreError
 
 _MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
@@ -36,6 +37,8 @@ _MCP_ADAPTER = "veyra.runtime.mcp.call"
 _HTTP_ADAPTER = "veyra.runtime.http.request"
 _BROWSER_ADAPTER = "veyra.runtime.browser.navigate"
 _SEARCH_ADAPTER = "veyra.runtime.web.search"
+_ENTITY_READ_ADAPTER = "veyra.runtime.entity.read"
+_ENTITY_WRITE_ADAPTER = "veyra.runtime.entity.write"
 _GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
 _GITHUB_WRITE_ADAPTER = "veyra.runtime.github.write"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
@@ -116,6 +119,7 @@ class ToolRuntime:
         adapters: Mapping[str, ToolAdapter] | None = None,
         http_client: httpx.Client | None = None,
         secret_store: SecretStore | None = None,
+        entity_store: Any | None = None,
     ) -> None:
         self.catalog = catalog
         self.mcp = mcp
@@ -123,6 +127,8 @@ class ToolRuntime:
             timeout=30.0, follow_redirects=False
         )
         self._secret_store = secret_store
+        self._entity_store = entity_store
+        self._call_project_id: str | None = None
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
             _LIST_ADAPTER: self._execute_list,
@@ -133,6 +139,8 @@ class ToolRuntime:
             _HTTP_ADAPTER: self._execute_http,
             _BROWSER_ADAPTER: self._execute_browser_navigate,
             _SEARCH_ADAPTER: self._execute_web_search,
+            _ENTITY_READ_ADAPTER: self._execute_entity_read,
+            _ENTITY_WRITE_ADAPTER: self._execute_entity_write,
             _GITHUB_READ_ADAPTER: self._execute_github_read,
             _GITHUB_WRITE_ADAPTER: self._execute_github_write,
         }
@@ -291,6 +299,30 @@ class ToolRuntime:
         values: dict[str, Any],
         authorization: ToolAuthorization,
         approved: bool,
+        project_id: str | None = None,
+    ) -> ToolExecution:
+        self._call_project_id = project_id
+        try:
+            return self._execute_authorized(
+                project_root=project_root,
+                source=source,
+                node=node,
+                values=values,
+                authorization=authorization,
+                approved=approved,
+            )
+        finally:
+            self._call_project_id = None
+
+    def _execute_authorized(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
     ) -> ToolExecution:
         if authorization.decision != "allowed" or authorization.resource is None:
             raise ToolRuntimeError(authorization.code, authorization.reason)
@@ -334,9 +366,8 @@ class ToolRuntime:
         approved: bool,
     ) -> ToolExecution:
         del source, node, approved
-        output, byte_length, relative_path = self._read_project_file(
-            project_root, values.get("path")
-        )
+        path = _wrapper_project_path(authorization, values.get("path"))
+        output, byte_length, relative_path = self._read_project_file(project_root, path)
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
         )
@@ -358,6 +389,65 @@ class ToolRuntime:
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
         )
+
+    def _execute_entity_read(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        store = self._entity_store
+        project_id = self._call_project_id or str(values.get("project_id") or "")
+        entity_id = values.get("entity_id")
+        if store is None or not project_id or not isinstance(entity_id, str):
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Entity Read requires a project entity"
+            )
+        record = store.read(project_id, entity_id)
+        if record is None:
+            raise ToolRuntimeError("tool_failed", "Entity was not found")
+        return self._receipt_execution(authorization, record, 0, "")
+
+    def _execute_entity_write(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        store = self._entity_store
+        project_id = self._call_project_id or str(values.get("project_id") or "")
+        entity_type = str(values.get("entity_type") or "ProjectEntity")
+        payload = values.get("payload")
+        status = str(values.get("status") or "active")
+        entity_id = values.get("entity_id")
+        if store is None or not project_id or not isinstance(payload, dict):
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Entity Write requires a payload object"
+            )
+        try:
+            record = store.write(
+                project_id=project_id,
+                entity_type=entity_type,
+                payload=payload,
+                status=status,
+                entity_id=(
+                    entity_id if isinstance(entity_id, str) and entity_id else None
+                ),
+                source="tool",
+            )
+        except EntityStoreError as exc:
+            raise ToolRuntimeError("tool_input_invalid", str(exc)) from exc
+        return self._receipt_execution(authorization, record, 0, "")
 
     def _execute_shell(
         self,
@@ -439,8 +529,9 @@ class ToolRuntime:
         approved: bool,
     ) -> ToolExecution:
         del source, node, approved
+        path = _wrapper_project_path(authorization, values.get("path"))
         output, byte_length, relative_path = self._list_project_directory(
-            project_root, values.get("path")
+            project_root, path
         )
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
@@ -457,8 +548,9 @@ class ToolRuntime:
         approved: bool,
     ) -> ToolExecution:
         del source, node, approved
+        path = _wrapper_project_path(authorization, values.get("path"))
         output, byte_length, relative_path = self._search_project_files(
-            project_root, values.get("path"), values.get("query")
+            project_root, path, values.get("query")
         )
         return self._receipt_execution(
             authorization, output, byte_length, relative_path
@@ -500,11 +592,22 @@ class ToolRuntime:
         approved: bool,
     ) -> ToolExecution:
         del project_root, source, approved
+        values = _http_wrapper_values(authorization, values)
         method = values.get("method")
         raw_url = values.get("url")
         body = values.get("body")
+        spec = _wrapper_spec(authorization)
         if not isinstance(method, str) or method.upper() not in _HTTP_METHODS:
             raise ToolRuntimeError("tool_input_invalid", "HTTP method is not supported")
+        if spec and spec.get("methods"):
+            allowed_methods = {
+                item.upper() for item in spec["methods"] if isinstance(item, str)
+            }
+            if method.upper() not in allowed_methods:
+                raise ToolRuntimeError(
+                    "tool_network_denied",
+                    "HTTP method is outside the wrapper allowlist",
+                )
         if not isinstance(raw_url, str) or not raw_url.strip():
             raise ToolRuntimeError("tool_input_invalid", "HTTP URL is required")
         parsed = urlsplit(raw_url)
@@ -519,23 +622,54 @@ class ToolRuntime:
                 "tool_network_denied", "HTTP URL is invalid or contains credentials"
             )
         allowed_hosts = {item.lower() for item in (node.network_hosts or ())}
+        if spec.get("allowed_hosts"):
+            allowed_hosts |= {
+                str(item).lower()
+                for item in spec["allowed_hosts"]
+                if isinstance(item, str)
+            }
         if host.lower() not in allowed_hosts:
             raise ToolRuntimeError(
                 "tool_network_denied",
                 "HTTP host must be explicitly listed on the Tool node",
             )
+        path_prefix = str(spec.get("path_prefix") or "")
+        if path_prefix:
+            allowed = path_prefix.rstrip("/")
+            if parsed.path != path_prefix and not parsed.path.startswith(allowed + "/"):
+                raise ToolRuntimeError(
+                    "tool_network_denied",
+                    "HTTP path is outside the wrapper route boundary",
+                )
         if body is not None and not isinstance(body, str):
             raise ToolRuntimeError("tool_input_invalid", "HTTP body must be text")
+        timeout_ms = spec.get("timeout_ms")
+        timeout = (
+            timeout_ms / 1000.0
+            if isinstance(timeout_ms, int) and timeout_ms > 0
+            else None
+        )
+        max_bytes = spec.get("max_response_bytes")
+        limit = (
+            max_bytes
+            if isinstance(max_bytes, int) and max_bytes > 0
+            else _MAX_FILE_BYTES
+        )
+        limit = min(limit, _MAX_FILE_BYTES)
         try:
             response = self._http_client.request(
-                method.upper(), raw_url, content=body, follow_redirects=False
+                method.upper(),
+                raw_url,
+                content=body,
+                follow_redirects=False,
+                timeout=timeout,
             )
             content = response.content
         except httpx.TimeoutException as exc:
             raise ToolRuntimeError("tool_timeout", "HTTP request timed out") from exc
         except httpx.HTTPError as exc:
             raise ToolRuntimeError("tool_failed", "HTTP request failed") from exc
-        if len(content) > _MAX_FILE_BYTES:
+        if len(content) > limit:
             raise ToolRuntimeError(
                 "tool_output_too_large", "HTTP response exceeds the 1 MiB limit"
             )
@@ -887,6 +1021,7 @@ class ToolRuntime:
             "byte_length": byte_length,
             "relative_path": relative_path,
         }
+        receipt.update(_wrapper_receipt(authorization))
         return ToolExecution(output=output, receipt=receipt)
 
     @staticmethod
@@ -1402,3 +1537,75 @@ def _shell_environment() -> dict[str, str]:
         if any(marker in name.upper() for marker in sensitive_markers):
             environment.pop(name, None)
     return environment
+
+
+def _wrapper_spec(authorization: ToolAuthorization) -> dict[str, Any]:
+    resource = authorization.resource or {}
+    spec = resource.get("spec")
+    if not isinstance(spec, Mapping) or spec.get("wrapper_kind") != "tool_wrapper":
+        return {}
+    return dict(spec)
+
+
+def _http_wrapper_values(
+    authorization: ToolAuthorization, values: dict[str, Any]
+) -> dict[str, Any]:
+    spec = _wrapper_spec(authorization)
+    if not spec:
+        return values
+    if "url" in values or "method" in values:
+        raise ToolRuntimeError(
+            "tool_network_denied",
+            "HTTP wrappers cannot accept unconstrained URL or method arguments",
+        )
+    hosts = [str(item).lower() for item in (spec.get("allowed_hosts") or []) if item]
+    methods = [str(item).upper() for item in (spec.get("methods") or []) if item]
+    path_prefix = str(spec.get("path_prefix") or "")
+    if not hosts or not methods or not path_prefix:
+        raise ToolRuntimeError(
+            "tool_network_denied", "HTTP wrapper is missing host or route bounds"
+        )
+    scheme = str(spec.get("scheme") or "http").strip().lower()
+    host = hosts[0]
+    port = spec.get("port")
+    netloc = f"{host}:{port}" if isinstance(port, int) else host
+    query_items = {
+        str(key): str(item)
+        for key, item in values.items()
+        if key not in {"url", "method", "body", "headers"} and item is not None
+    }
+    query = urlencode(query_items)
+    url = f"{scheme}://{netloc}{path_prefix}"
+    if query:
+        url = f"{url}?{query}"
+    body = values.get("body") if methods[0] in {"POST", "PUT", "PATCH"} else None
+    return {"url": url, "method": methods[0], "body": body}
+
+
+def _wrapper_project_path(authorization: ToolAuthorization, raw_path: Any) -> Any:
+    spec = _wrapper_spec(authorization)
+    prefix = str(spec.get("path_prefix") or "").strip().replace("\\", "/")
+    if not prefix:
+        return raw_path
+    path = str(raw_path or prefix).strip().replace("\\", "/")
+    trimmed = prefix.strip("/")
+    portable = path.strip("/")
+    if portable != trimmed and not portable.startswith(trimmed + "/"):
+        raise ToolRuntimeError(
+            "tool_path_denied",
+            "Filesystem wrapper path is outside the frozen prefix",
+        )
+    return path
+
+
+def _wrapper_receipt(authorization: ToolAuthorization) -> dict[str, Any]:
+    spec = _wrapper_spec(authorization)
+    if not spec:
+        return {}
+    resource = authorization.resource or {}
+    extra: dict[str, Any] = {
+        "factory_resource_id": str(resource.get("resource_id") or ""),
+        "factory_resource_version": str(resource.get("version") or ""),
+        "base_adapter": str(spec.get("base_adapter") or authorization.adapter or ""),
+    }
+    return {key: value for key, value in extra.items() if value}

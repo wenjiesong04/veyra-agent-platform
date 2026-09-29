@@ -49,6 +49,7 @@ export type CommunityRegistryEntry = {
   schema_version: "community.registry.v1";
   owner_handle: string;
   owner_display_name: string | null;
+  owner_avatar_url?: string | null;
   slug: string;
   name: string;
   description: string;
@@ -151,6 +152,7 @@ export type CommunityPluginEntry = {
   schema_version: "community.plugin.registry.v1";
   owner_handle: string;
   owner_display_name: string | null;
+  owner_avatar_url?: string | null;
   plugin_id: string;
   slug: string;
   name: string;

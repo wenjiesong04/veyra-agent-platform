@@ -2,6 +2,8 @@
 availability: ready
 description: Keep execution and data handling local.
 factory_selectable: true
+capabilities:
+- local_only
 kind: policy
 name: Local Only
 required_permissions:

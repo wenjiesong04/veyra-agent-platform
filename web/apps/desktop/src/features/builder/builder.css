@@ -372,13 +372,12 @@
 .factory-assembly-embedded .agent-convo-flow-block {
   width: 100%;
   max-width: 100%;
-  overflow: visible;
+  min-width: 0;
 }
 .builder-workspace-panel .agent-convo-flow,
 .factory-assembly-embedded .agent-convo-flow {
-  width: 100%;
-  max-width: 100%;
-  height: auto;
+  width: max-content;
+  max-width: none;
 }
 .factory-assembly-embedded {
   min-width: 0;

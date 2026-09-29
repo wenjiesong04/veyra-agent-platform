@@ -13,7 +13,7 @@ import unicodedata
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import yaml  # type: ignore[import-untyped]
 
@@ -23,7 +23,7 @@ from veyra_agent_platform.contracts.agent import (
     ProjectManifest,
 )
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
-from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.contracts.common import new_uuid7, require_uuid7
 from veyra_agent_platform.contracts.resource import (
     ProjectResourceBinding,
     ResourceKind,
@@ -35,6 +35,7 @@ from veyra_agent_platform.local.projects.knowledge_index import (
     build_index,
 )
 from veyra_agent_platform.local.projects.knowledge_ingest import (
+    KnowledgeCloudFileReference,
     KnowledgeIntakeError,
     KnowledgeOrigin,
     parse_upload,
@@ -52,6 +53,10 @@ from veyra_agent_platform.local.projects.layout import (
     resource_yaml_path,
     workflow_resource_manifest,
 )
+from veyra_agent_platform.local.projects.materialize import (
+    ProjectMaterializeError,
+    materialize_stream,
+)
 from veyra_agent_platform.local.projects.origins import CommunityAgentOrigin
 from veyra_agent_platform.local.projects.packaging import (
     MAX_PROJECT_ARCHIVE_BYTES,
@@ -61,6 +66,7 @@ from veyra_agent_platform.local.projects.packaging import (
     unpack_project_archive,
 )
 from veyra_agent_platform.local.storage.objects import write_object
+from veyra_agent_platform.local.storage.project_sync import project_metadata_hash
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 from veyra_agent_platform.local.templates import (
     STARTER_TEMPLATE_ID,
@@ -155,6 +161,7 @@ class ProjectService:
         extra_files: dict[str, bytes] | None = None,
         default_agent_id: str | None = None,
         imported_bundle: ProjectArchive | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         root = self._new_root(root_path, require_new_root=require_new_root)
         root_preexisted = root.exists()
@@ -178,6 +185,7 @@ class ProjectService:
             forked_sources,
             parents=parents,
             default_agent_id=None if fork_identities else default_agent_id,
+            project_id=project_id,
         )
         if imported_bundle is not None:
             manifest = imported_bundle.manifest.to_dict()
@@ -253,11 +261,14 @@ class ProjectService:
         extra_files: dict[str, bytes] | None = None,
         default_agent_id: str | None = None,
         imported_bundle: ProjectArchive | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a Project under the application-managed storage root only."""
         with self._writer_lock:
             requested = None if name is None else self._folder_name_from_display(name)
-            allocated = self._allocate_name(requested)
+            allocated = self._allocate_name(
+                requested, also_avoid=self._reserved_managed_folders()
+            )
             target = self._allocate_managed_folder(allocated)
             if target.name != allocated:
                 allocated = self._allocate_name(target.name)
@@ -304,6 +315,7 @@ class ProjectService:
         storage = self._managed_storage_root()
         base = self._folder_name_from_display(display_name)
         occupy_resolved = occupy.resolve() if occupy is not None else None
+        reserved = self._reserved_managed_folders()
         suffix = 0
         while True:
             folder = base if suffix == 0 else f"{base}({suffix})"
@@ -314,9 +326,23 @@ class ProjectService:
                         return occupy
                 except OSError:
                     pass
-            if not candidate.exists() and not candidate.is_symlink():
+            if (
+                _name_key(folder) not in reserved
+                and not candidate.exists()
+                and not candidate.is_symlink()
+            ):
                 return candidate
             suffix += 1
+
+    def _reserved_managed_folders(self) -> set[str]:
+        """Folder names still bound to a Project row, including trashed ones."""
+        rows = [*self.repository.projects(), *self.repository.trashed_projects()]
+        stored = (str(row["root_path"] or "") for row in rows)
+        return {
+            _name_key(text)
+            for text in stored
+            if text and not Path(text).is_absolute() and len(Path(text).parts) == 1
+        }
 
     def _align_managed_folder(
         self, project_id: str, display_name: str, root: Path
@@ -469,6 +495,40 @@ class ProjectService:
             "text": self._read_text(path),
         }
 
+    def materialize_cloud_file(
+        self,
+        project_id: str,
+        relative_path: str,
+        source: BinaryIO,
+        *,
+        expected_sha256: str | None = None,
+        expected_size: int | None = None,
+    ) -> dict[str, Any]:
+        """Write downloaded Cloud bytes only into explicit Project asset locations."""
+        with self._writer_lock:
+            project = self.repository.project(project_id)
+            if project is None:
+                raise ProjectError("unknown Project")
+            root = self._existing_root(project["root_path"])
+            self._require_project_manifest(root)
+            try:
+                result = materialize_stream(
+                    root,
+                    relative_path,
+                    source,
+                    expected_sha256=expected_sha256,
+                    expected_size=expected_size,
+                )
+            except ProjectMaterializeError as error:
+                raise ProjectError(str(error), error.code) from error
+            self.index(root)
+            return {
+                "schema_version": "1.0",
+                "project_id": project_id,
+                "status": "materialized",
+                **result.to_dict(),
+            }
+
     def project_resource_bindings(
         self, project_id: str
     ) -> tuple[ProjectResourceBinding, ...]:
@@ -549,7 +609,11 @@ class ProjectService:
                 raise
 
     def _allocate_name(
-        self, requested_name: str | None, *, exclude_project_id: str | None = None
+        self,
+        requested_name: str | None,
+        *,
+        exclude_project_id: str | None = None,
+        also_avoid: set[str] | None = None,
     ) -> str:
         """Allocate a display name among active Projects under the writer lock."""
         if requested_name is None:
@@ -563,7 +627,7 @@ class ProjectService:
             _name_key(row["name"])
             for row in self.repository.projects()
             if row["project_id"] != exclude_project_id
-        }
+        } | (also_avoid or set())
         candidate = base
         suffix = 1
         while _name_key(candidate) in occupied:
@@ -723,6 +787,99 @@ class ProjectService:
                 source=source,
             )
 
+    def create_workflow_from_source(
+        self,
+        *,
+        project_id: str,
+        source: WorkflowSource,
+    ) -> dict[str, Any]:
+        """Install a compiled Workflow source as a new local Draft."""
+        with self._writer_lock:
+            project = self.repository.project(project_id)
+            if project is None:
+                raise ProjectError("unknown Project")
+            root = self._existing_root(project["root_path"])
+            manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+            previous_manifest_text = self._read_text(manifest_path)
+            manifest = ProjectManifest.from_dict(
+                self._parse_yaml(previous_manifest_text, "Project manifest")
+            )
+            occupied_names = {
+                self._workflow_source(root, entry).name for entry in manifest.workflows
+            }
+            occupied_slugs = {entry.slug for entry in manifest.workflows}
+            payload = source.to_dict()
+            payload["name"] = self._allocate_agent_name(source.name, occupied_names)
+            payload["slug"] = self._allocate_agent_slug(source.slug, occupied_slugs)
+            installed = WorkflowSource.from_dict(payload)
+            return self._install_workflow(
+                project_id=project_id,
+                root=root,
+                manifest_path=manifest_path,
+                previous_manifest_text=previous_manifest_text,
+                manifest=manifest,
+                source=installed,
+            )
+
+    def install_synced_workflow(
+        self, *, project_id: str, source: WorkflowSource
+    ) -> dict[str, Any]:
+        with self._writer_lock:
+            existing = self.repository.workflow(source.workflow_id)
+            if existing is None:
+                project = self.repository.project(project_id)
+                if project is None:
+                    raise ProjectError("unknown Project")
+                root = self._existing_root(project["root_path"])
+                manifest_path = self._safe_file(root, Path("project.vproject.yaml"))
+                previous = self._read_text(manifest_path)
+                manifest = ProjectManifest.from_dict(
+                    self._parse_yaml(previous, "Project manifest")
+                )
+                return self._install_workflow(
+                    project_id=project_id,
+                    root=root,
+                    manifest_path=manifest_path,
+                    previous_manifest_text=previous,
+                    manifest=manifest,
+                    source=source,
+                )
+            if existing["project_id"] != project_id or existing["slug"] != source.slug:
+                raise ProjectError(
+                    "synced Workflow identity conflicts with Local Project"
+                )
+            return self.replace_workflow_source(project_id=project_id, source=source)
+
+    def replace_workflow_source(
+        self, *, project_id: str, source: WorkflowSource
+    ) -> dict[str, Any]:
+        with self._writer_lock:
+            project = self.repository.project(project_id)
+            if project is None:
+                raise ProjectError("unknown Project")
+            root = self._existing_root(project["root_path"])
+            manifest = ProjectManifest.from_dict(
+                self._parse_yaml(
+                    self._read_text(
+                        self._safe_file(root, Path("project.vproject.yaml"))
+                    ),
+                    "Project manifest",
+                )
+            )
+            entry = next(
+                (
+                    item
+                    for item in manifest.workflows
+                    if item.resource_id == source.workflow_id
+                ),
+                None,
+            )
+            if entry is None or entry.slug != source.slug:
+                raise ProjectError("synced Workflow identity is not present in Project")
+            path = self._safe_file(root, Path(entry.path) / "workflow.vworkflow.yaml")
+            self.atomic_write(path, self._canonical_source(source.to_dict()))
+            return self.index(root)
+
     def create_agent_from_source(
         self,
         *,
@@ -731,9 +888,20 @@ class ProjectService:
         name: str | None = None,
         description: str | None = None,
         parent_agent_id: str | None = None,
+        community_origin: CommunityAgentOrigin | None = None,
         extra_files: dict[str, bytes] | None = None,
+        preserve_identity: bool = False,
     ) -> dict[str, Any]:
-        """Install a previously validated Factory source as a new Agent Draft."""
+        """Install a validated Agent source as a new local Draft."""
+        if community_origin is not None and (
+            community_origin.slug != source.slug
+            or community_origin.version != source.version
+            or community_origin.source_hash != source.source_hash
+        ):
+            raise ProjectError(
+                "Community Agent origin does not match the imported source",
+                "community_origin_mismatch",
+            )
         with self._writer_lock:
             return self._install_prepared_source(
                 project_id=project_id,
@@ -741,8 +909,99 @@ class ProjectService:
                 name=name,
                 description=description,
                 parent_agent_id=parent_agent_id,
+                community_origin=community_origin,
                 extra_files=extra_files,
+                preserve_identity=preserve_identity,
             )
+
+    def install_synced_agent(
+        self,
+        *,
+        project_id: str,
+        source: AgentSource,
+        parent_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Install or replace one validated portable Agent definition."""
+        with self._writer_lock:
+            existing = self.repository.agent(source.agent_id)
+            if existing is None:
+                return self._install_prepared_source(
+                    project_id=project_id,
+                    source=source,
+                    parent_agent_id=parent_agent_id,
+                    preserve_identity=True,
+                )
+            if existing["project_id"] != project_id or existing["slug"] != source.slug:
+                raise ProjectError("synced Agent identity conflicts with Local Project")
+            return self.replace_agent_source(
+                project_id=project_id,
+                source=source,
+                parent_agent_id=parent_agent_id,
+            )
+
+    def replace_agent_source(
+        self,
+        *,
+        project_id: str,
+        source: AgentSource,
+        parent_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._writer_lock:
+            _, root, _, _, manifest = self._project_manifest_state(project_id)
+            entry = next(
+                (item for item in manifest.agents if item.agent_id == source.agent_id),
+                None,
+            )
+            if entry is None or entry.slug != source.slug:
+                raise ProjectError("synced Agent identity is not present in Project")
+            if parent_agent_id is not None and not any(
+                item.agent_id == parent_agent_id for item in manifest.agents
+            ):
+                raise ProjectError("synced Agent parent is missing")
+            path = self._safe_file(root, Path(entry.path) / "agent.vagent.yaml")
+            self.atomic_write(path, self._canonical_source(source.to_dict()))
+            return self.index(root)
+
+    def install_synced_agent_version(
+        self, *, project_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        version_id = payload.get("version_id")
+        agent_id = payload.get("agent_id")
+        source_payload = payload.get("source")
+        if not isinstance(version_id, str) or not isinstance(agent_id, str):
+            raise ProjectError("synced Agent version identity is invalid")
+        source = AgentSource.from_dict(source_payload)
+        if source.agent_id != agent_id or source.source_hash != payload.get(
+            "source_hash"
+        ):
+            raise ProjectError("synced Agent version hash or identity is invalid")
+        agent = self.repository.agent(agent_id)
+        if agent is None or agent["project_id"] != project_id:
+            raise ProjectError("synced Agent version dependency is missing")
+        source_text = self._canonical_source(source.to_dict())
+        with self.repository.transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM agent_versions WHERE version_id = ?", (version_id,)
+            ).fetchone()
+            if existing is not None:
+                if existing["source_hash"] != source.source_hash:
+                    raise ProjectError("immutable Agent version integrity mismatch")
+            else:
+                self.repository.insert_version(
+                    connection,
+                    {
+                        "version_id": version_id,
+                        "agent_id": agent_id,
+                        "source_hash": source.source_hash,
+                        "behavior_hash": source.behavior_hash,
+                        "lock_hash": source.lock_hash,
+                        "file_hash": file_hash(source_text),
+                        "source": source.to_dict(),
+                        "source_text": source_text,
+                        "created_at": payload.get("created_at") or _utc_now(),
+                    },
+                )
+        return {"version_id": version_id, "agent_id": agent_id}
 
     def import_agent(
         self,
@@ -806,6 +1065,7 @@ class ProjectService:
         parent_agent_id: str | None = None,
         community_origin: CommunityAgentOrigin | None = None,
         extra_files: dict[str, bytes] | None = None,
+        preserve_identity: bool = False,
     ) -> dict[str, Any]:
         """Allocate project-local identity before atomically installing one source."""
         project = self.repository.project(project_id)
@@ -824,15 +1084,16 @@ class ProjectService:
         ):
             raise ProjectError("parent Agent was not found in this Project")
 
-        source = self._allocate_agent_identity(
-            root=root,
-            manifest=manifest,
-            source=source,
-            name=name,
-            description=description,
-            slug=slug,
-            default_name=default_name,
-        )
+        if not preserve_identity:
+            source = self._allocate_agent_identity(
+                root=root,
+                manifest=manifest,
+                source=source,
+                name=name,
+                description=description,
+                slug=slug,
+                default_name=default_name,
+            )
         result = self._install_source(
             project_id=project_id,
             root=root,
@@ -1067,6 +1328,15 @@ class ProjectService:
                     "UPDATE projects SET removed_at = NULL WHERE project_id = ?",
                     (manifest.project_id,),
                 )
+            self.repository.record_project_metadata(
+                connection,
+                project_id=manifest.project_id,
+                metadata_hash=project_metadata_hash(
+                    project_id=manifest.project_id,
+                    name=manifest.name,
+                    description=manifest.description,
+                ),
+            )
             manifest_agent_ids = {source.agent_id for source, _, _ in records}
             existing_agents = connection.execute(
                 """SELECT * FROM agents
@@ -1853,6 +2123,92 @@ class ProjectService:
                 origin=origin,
             )
 
+    def install_synced_knowledge_metadata(
+        self, *, project_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        knowledge_id = payload.get("knowledge_id")
+        slug = payload.get("slug")
+        if not isinstance(knowledge_id, str) or not isinstance(slug, str):
+            raise ProjectError("synced Knowledge identity is invalid")
+        _, root, manifest_path, previous, manifest = self._project_manifest_state(
+            project_id
+        )
+        entry = next(
+            (item for item in manifest.knowledge if item.resource_id == knowledge_id),
+            None,
+        )
+        name = str(payload.get("name") or slug)
+        description = str(payload.get("description") or "")
+        source_ref = payload.get("source_ref")
+        cloud_ref = (
+            KnowledgeCloudFileReference.model_validate(source_ref)
+            if source_ref is not None
+            else None
+        )
+        if entry is not None:
+            result = self.replace_knowledge(
+                project_id=project_id,
+                knowledge_id=knowledge_id,
+                name=name,
+                description=description,
+            )
+        else:
+            result = self._install_knowledge(
+                project_id=project_id,
+                root=root,
+                manifest_path=manifest_path,
+                previous_manifest_text=previous,
+                manifest=manifest,
+                resource_id=knowledge_id,
+                slug=slug,
+                name=name,
+                description=description,
+                text=blank_knowledge_document(name),
+            )
+        if cloud_ref is not None:
+            result = self.set_knowledge_cloud_file(
+                project_id=project_id,
+                knowledge_id=knowledge_id,
+                file_id=cloud_ref.file_id,
+            )
+        return result
+
+    def set_knowledge_cloud_file(
+        self, *, project_id: str, knowledge_id: str, file_id: str | None
+    ) -> dict[str, Any]:
+        """Persist an explicit Cloud File source reference without indexing it."""
+        with self._writer_lock:
+            _, root, _, _, manifest = self._project_manifest_state(project_id)
+            entry = next(
+                (
+                    item
+                    for item in manifest.knowledge
+                    if item.resource_id == knowledge_id
+                ),
+                None,
+            )
+            if entry is None:
+                raise ProjectError("unknown Knowledge in Project")
+            knowledge_root = self._safe_directory(root, Path(entry.path))
+            target = knowledge_root / "cloud-file-ref.json"
+            if target.is_symlink():
+                raise ProjectError("Knowledge Cloud File reference is unsafe")
+            if file_id is None:
+                target.unlink(missing_ok=True)
+            else:
+                try:
+                    reference = KnowledgeCloudFileReference(file_id=file_id)
+                except ValueError as error:
+                    raise ProjectError(
+                        "Knowledge Cloud File reference is invalid"
+                    ) from error
+                self.atomic_write(
+                    target,
+                    self._canonical_source(reference.model_dump()),
+                )
+            self.index(root)
+            return self.knowledge_summary(project_id, knowledge_id)
+
     def ingest_knowledge(
         self, project_id: str, filename: str | None, contents: bytes
     ) -> dict[str, Any]:
@@ -2324,6 +2680,7 @@ class ProjectService:
             if origin_path.exists() or origin_path.is_symlink()
             else None
         )
+        source_ref = self._knowledge_cloud_file_ref(root, entry)
         updated_at = (
             datetime.fromtimestamp(
                 max(
@@ -2335,7 +2692,7 @@ class ProjectService:
             .isoformat()
             .replace("+00:00", "Z")
         )
-        return {
+        listing: dict[str, Any] = {
             "knowledge_id": resource.resource_id,
             "slug": resource.slug,
             "name": resource.name,
@@ -2359,6 +2716,25 @@ class ProjectService:
                 "updated_at": updated_at,
             },
         }
+        if source_ref is not None:
+            listing["source_ref"] = source_ref
+        return listing
+
+    def _knowledge_cloud_file_ref(
+        self, root: Path, entry: Any
+    ) -> dict[str, str] | None:
+        knowledge_root = self._safe_directory(root, Path(entry.path))
+        target = knowledge_root / "cloud-file-ref.json"
+        if not target.exists() and not target.is_symlink():
+            return None
+        if target.is_symlink() or not target.is_file():
+            raise ProjectError("Knowledge Cloud File reference is unsafe")
+        try:
+            return KnowledgeCloudFileReference.model_validate(
+                json.loads(self._read_text(target))
+            ).model_dump()
+        except (ValueError, json.JSONDecodeError) as error:
+            raise ProjectError("Knowledge Cloud File reference is invalid") from error
 
     def _knowledge_manifest(self, root: Path, entry: Any) -> ResourceManifest:
         resource_path = self._safe_file(root, Path(entry.path) / "resource.yaml")
@@ -2804,6 +3180,7 @@ class ProjectService:
         sources: list[AgentSource],
         parents: dict[str, str] | None = None,
         default_agent_id: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         parent_map = parents or {}
         agents: list[dict[str, Any]] = []
@@ -2825,7 +3202,9 @@ class ProjectService:
         manifest = {
             "schema_version": "1.0",
             "project_version": "1",
-            "project_id": new_uuid7(),
+            "project_id": (
+                require_uuid7(project_id, "project_id") if project_id else new_uuid7()
+            ),
             "name": name,
             "description": description,
             "agents": agents,

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentRunResponse, WorkflowRunResponse } from "@veyra/api-contracts";
+import { projectRoutePaths } from "@veyra/api-contracts";
 import { Alert, Button, ErrorState, LinkButton, LoadingState, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { newUuidV7 } from "../../api/uuid";
@@ -15,6 +16,9 @@ export function RunEvidence({ run, locale, api }: { run: AgentRunResponse | Work
   const lineage = run.events?.find((event) => event.kind === "run.created")?.payload;
   const origin = lineage?.retry_of_run_id ?? lineage?.resume_of_run_id;
   return <>
+    <div className="button-row">
+      {"agent_id" in run ? <LinkButton href={projectRoutePaths.agent(run.project_id, run.agent_id)}>{locale === "zh" ? "返回应用" : "Back to Agent"}</LinkButton> : null}
+    </div>
     <h3>{run.run_id}</h3>
     <StatusBadge label={runStatusLabel(run.status, locale)} tone={runTone(run.status)} />
     <dl className="detail-list">

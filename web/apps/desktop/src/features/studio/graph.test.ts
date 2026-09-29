@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
-import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
+import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, isLoopAgent, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
 
@@ -62,6 +62,8 @@ describe("Studio graph adapter", () => {
       outputs: { caption: { type: "string", required: true } },
     })).toBe(true);
     expect(isAgentSourceCandidate({ ...source, inputs: { photo: "blob" }, outputs: { caption: "string" } })).toBe(false);
+    expect(isAgentSourceCandidate({ ...source, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "chat" } } })).toBe(true);
+    expect(isAgentSourceCandidate({ ...source, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "voice" } } })).toBe(false);
   });
 
   it("round-trips catalog bindings without turning them into Flow nodes", () => {
@@ -77,6 +79,39 @@ describe("Studio graph adapter", () => {
     expect(next.nodes.map((node) => node.id)).toEqual(["start", "out"]);
     expect(next.ui.bindings?.bind_skill).toEqual({ kind: "skill", reference: "veyra.skill.research-brief@1.0.0", x: 99, y: 13 });
     expect(next.extensions.veyra.skill_refs).toEqual(["veyra.skill.research-brief@1.0.0"]);
+  });
+
+  it("renders a loop Agent as a capability map instead of a Start-Output DAG", () => {
+    const loop: AgentSource = {
+      ...source,
+      name: "Translation Agent",
+      outputs: { translation: "string" },
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "model", component_type: "Model", model_ref: "model.primary", system_prompt: "Translate." },
+        { id: "output", component_type: "Output", output_name: "translation" },
+      ],
+      transitions: [
+        { from: "start", port: "next", to: "model" },
+        { from: "model", port: "next", to: "output" },
+      ],
+      extensions: { veyra: { ...source.extensions.veyra, execution_kind: "loop", instructions: "Translate.", max_turns: 8 } },
+      ui: {
+        positions: { start: { x: 0, y: 80 }, model: { x: 240, y: 80 }, output: { x: 480, y: 80 } },
+        bindings: { bind_tool1: { kind: "tool", reference: "veyra.tool.web.search@1.0.0", x: 480, y: 130 } },
+      },
+      lock: { "veyra.tool.web.search@1.0.0": "a".repeat(64) },
+    };
+    expect(isLoopAgent(loop)).toBe(true);
+    const graph = toCanvas(loop);
+    expect(graph.nodes.some((node) => node.data.flow?.component_type === "Start")).toBe(false);
+    expect(graph.nodes.some((node) => node.data.flow?.component_type === "Output")).toBe(false);
+    expect(graph.nodes.some((node) => node.data.flow?.component_type === "Model")).toBe(true);
+    expect(graph.nodes.some((node) => node.id === "bind_tool1")).toBe(true);
+    const next = sourceWithGraph(loop, graph.nodes, graph.edges);
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "model", "output"]);
+    expect(next.transitions).toEqual(loop.transitions);
+    expect(graphDiagnostics(loop)).toEqual([]);
   });
 
   it("blocks saving a write tool until a HumanApproval node exists", () => {
@@ -227,7 +262,7 @@ describe("Studio graph adapter", () => {
     };
     const initial = toCanvas(noted);
     const next = autoLayoutCanvasNodes(initial.nodes, initial.edges);
-    expect(next.find((node) => node.id === "start")?.position).toEqual({ x: 0, y: 1 });
+    expect(next.find((node) => node.id === "start")?.position.x).toBe(0);
     expect(next.find((node) => node.id === "out")?.position.x).toBeGreaterThan(0);
     expect(next.find((node) => node.id === "note_intro")?.position).toEqual({ x: 730, y: -90 });
     expect(sourceWithGraph(noted, next, initial.edges).ui.notes?.note_intro).toMatchObject({
@@ -281,10 +316,10 @@ describe("Studio graph adapter", () => {
   });
 
   it("centers a single outgoing port and fans multiple ports around mid-height", () => {
-    expect(portHandleTop(0, 1)).toBe(50);
-    expect(portHandleTop(0, 0)).toBe(50);
-    expect(portHandleTop(0, 2)).toBe(36);
-    expect(portHandleTop(1, 2)).toBe(64);
+    expect(portHandleTop(0, 1)).toBe("50%");
+    expect(portHandleTop(0, 0)).toBe("50%");
+    expect(portHandleTop(0, 2)).toBe("calc(50% - 9px)");
+    expect(portHandleTop(1, 2)).toBe("calc(50% + 9px)");
   });
 
   it("picks the unique edge into Output as the default splice target", () => {

@@ -8,6 +8,7 @@ from .registry import (
     load_overlay_packages,
     node_definition,
 )
+from .resource_factory import ResourceFactory, ResourceFactoryError
 from .workshop import ResourceWorkshop, ResourceWorkshopError
 
 __all__ = [
@@ -15,6 +16,8 @@ __all__ = [
     "NodePackageError",
     "ResourceCatalog",
     "ResourceCatalogError",
+    "ResourceFactory",
+    "ResourceFactoryError",
     "ResourceWorkshop",
     "ResourceWorkshopError",
     "default_nodes_root",

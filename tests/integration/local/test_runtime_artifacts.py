@@ -324,7 +324,7 @@ def test_pdf_string_output_is_invalid_and_tool_emits_artifact_created(
         assert record.run_id == done["run_id"]
 
 
-def test_image_model_run_fails_before_provider_without_vision(
+def test_image_model_run_sends_data_url_not_host_path(
     tmp_path: Path,
 ) -> None:
     transport = ScriptedRuntimeTransport("a product description")
@@ -346,17 +346,58 @@ def test_image_model_run_fails_before_provider_without_vision(
             f"/api/v1/projects/{project['project_id']}/agents/"
             f"{agent['agent_id']}/runtime-readiness"
         ).json()
-        assert ready["ready"] is False
-        modality = next(item for item in ready["checks"] if item["id"] == "modalities")
-        assert modality["code"] == "runtime_model_incompatible"
-        assert modality["detail"] == "Runtime model does not support image input"
-        assert ready["model"]["modalities"]["image_input"] == "unsupported"
+        assert ready["ready"] is True
+        assert ready["model"]["modalities"]["image_input"] == "supported"
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         started = client.post(
             url,
             json={"inputs": {"photo": ref}},
             headers={"Idempotency-Key": new_uuid7()},
         )
-        assert started.status_code == 422
-        assert started.json()["code"] == "runtime_model_incompatible"
-        assert transport.calls == []
+        assert started.status_code == 200
+        done = _await_run(client, url, started.json()["run_id"])
+        assert done["status"] in {"unverified", "verified"}
+        assert transport.calls
+        dumped = str(transport.calls)
+        assert "artifact://" not in dumped
+        assert "file:" not in dumped
+        assert str(tmp_path) not in dumped
+        assert "data:image/png;base64," in dumped
+
+
+def test_pdf_model_run_sends_extracted_text_not_bytes(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedRuntimeTransport("a wrapping plan")
+    source = _agent_source()
+    source["inputs"] = {"brief": "pdf"}
+    pdf = (
+        b"%PDF-1.4\n1 0 obj\n<< /Length 44 >>\nstream\n"
+        b"BT (Christmas candy box) Tj ET\nendstream\nendobj\n"
+    )
+    with _client(tmp_path, runtime_transport=transport) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        uploaded = _upload(
+            client, project["project_id"], "brief.pdf", pdf, "application/pdf"
+        ).json()
+        ref = {
+            "kind": "artifact",
+            "artifact_id": uploaded["artifact_id"],
+            "media_type": "application/pdf",
+            "filename": "brief.pdf",
+        }
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        started = client.post(
+            url,
+            json={"inputs": {"brief": ref}},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
+        assert started.status_code == 200
+        done = _await_run(client, url, started.json()["run_id"])
+        assert done["status"] in {"unverified", "verified"}
+        dumped = str(transport.calls)
+        assert "Christmas candy box" in dumped
+        assert "%PDF" not in dumped
+        assert pdf.decode("latin-1") not in dumped
+        assert str(tmp_path) not in dumped

@@ -5,6 +5,7 @@ import type { AgentRunResponse, AgentSource } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { LocalApiClient } from "../../api/local-client";
 import { TestRunPanel } from "./TestRunPanel";
+import { STUDIO_CHROME_STORAGE_KEY } from "./studio-chrome";
 
 const source: AgentSource = {
   schema_version: "1.0",
@@ -50,7 +51,10 @@ const run: AgentRunResponse = {
   finished_at: "2026-08-28T10:00:01Z",
 };
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.localStorage.removeItem(STUDIO_CHROME_STORAGE_KEY);
+});
 
 describe("TestRunPanel", () => {
   it("submits typed inputs and renders durable run evidence", async () => {
@@ -72,6 +76,7 @@ describe("TestRunPanel", () => {
     const user = userEvent.setup();
 
     render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     await user.type(screen.getByRole("textbox"), "Ada");
     await user.click(screen.getByRole("button", { name: "Test run" }));
 
@@ -97,6 +102,7 @@ describe("TestRunPanel", () => {
     const api = { runAgent: client.runAgent.bind(client), getAgentRun: client.getAgentRun.bind(client) } as LocalProjectApi;
     const user = userEvent.setup();
     render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale={locale} />);
+    await user.click(screen.getByRole("button", { name: locale === "zh" ? "展开测试面板" : "Expand test panel" }));
     await user.click(screen.getByRole("button", { name: locale === "zh" ? "测试运行" : "Test run" }));
     expect(await screen.findByText(locale === "zh" ? "工具失败" : "Tool failed")).toBeInTheDocument();
     expect(screen.getByText("tool.failed").closest("li")).toHaveClass("bad");
@@ -129,6 +135,7 @@ describe("TestRunPanel", () => {
     const api = { runAgent: vi.fn().mockResolvedValue(waiting), getAgentRun, commandAgentRun } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     await user.click(screen.getByRole("button", { name: "Test run" }));
     expect(await screen.findByText("Write notes.txt?")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
@@ -145,6 +152,7 @@ describe("TestRunPanel", () => {
     const api = { runAgent: vi.fn().mockResolvedValue(running), getAgentRun: vi.fn().mockResolvedValue(running), watchAgentRunEvents } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     await user.click(screen.getByRole("button", { name: "Test run" }));
     await waitFor(() => expect(watchAgentRunEvents).toHaveBeenCalled());
     emit?.({
@@ -161,9 +169,10 @@ describe("TestRunPanel", () => {
     expect(screen.getByRole("list", { name: "Node run states" }).querySelector('[data-state="running"]')).toHaveTextContent("transform");
   });
 
-  it("prefills a selected Project file into a file-like Agent input", () => {
+  it("prefills a selected Project file into a file-like Agent input", async () => {
     const fileSource = { ...source, inputs: { document_path: "string" } };
     render(<TestRunPanel api={{} as LocalProjectApi} projectId="project-1" agentId="agent-1" source={fileSource} disabled={false} locale="en" initialFilePath="resources/note.md" />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Expand test panel" }));
 
     expect(screen.getByRole("textbox", { name: /document_path/ })).toHaveValue("resources/note.md");
   });
@@ -177,6 +186,7 @@ describe("TestRunPanel", () => {
       watchAgentRunEvents: vi.fn((_p, _a, _r, handlers) => { emit = handlers.onEvent; return () => undefined; }),
     } as unknown as LocalProjectApi;
     render(<TestRunPanel api={api} projectId="project-1" agentId="agent-1" source={source} disabled={false} locale="en" />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Expand test panel" }));
     await userEvent.setup().click(screen.getByRole("button", { name: "Test run" }));
     await waitFor(() => expect(api.watchAgentRunEvents).toHaveBeenCalled());
     await act(async () => emit({ schema_version: "1.0", run_id: run.run_id, event_id: "terminal", sequence: 10, kind: "run.failed", node_id: null, payload: {}, timestamp: run.finished_at! }));

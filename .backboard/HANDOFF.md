@@ -1,6 +1,253 @@
 # Veyra Development Handoff
 
-## Current checkpoint（2026-09-22，Agent Composition Slice 5 locally verified）
+## Current checkpoint（2026-09-29，Builder Generation Architecture V2）
+
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。本轮把 Builder 从 Prompt+Resource 挂载器升级为任务编译器。
+- 主链：`plan_task_structure` → `decide_product_shape` → `compile_execution_plan` → `derive_plan_capabilities` → `ResourceResolver` → `compose_execution_product` → Proposal → `apply_composite`。Factory `generate()` 走 `_generate_v2_product`，不再用用户措辞锁死 Agent。
+- Shape 由 TaskStructure / ExecutionBoundary 决定：`PURE_AGENT` / `WORKFLOW` / `AGENT_WORKFLOW` / `MULTI_AGENT_WORKFLOW`。`user_requested_surface` 只是偏好；「不要 Workflow」可强制 PURE_AGENT 并带 warning。
+- 验收矩阵：Translation / Research / Workspace Editor / Software Engineer = PURE_AGENT；Document / Gift / Secondhand = AGENT_WORKFLOW（Gift 缺 image_generation 则 Apply blocked）；CRM = WORKFLOW + persistent entity。负向：包装产业/包装是否完整/搜索翻译工具/software engineer 研究报告 不再职业劫持。
+- HumanInput = `HumanApproval.review="input"` + Workflow `reply`。业务审批 ≠ tool approval。State = `local_0034_project_entities` + entity tools。Verifier 是 DAG 节点。
+- Resolver 仍只接 capability，不接 hallucinated resource id。Resource Factory 职责未改。
+- V2 Closeout（2026-09-30）：0034 增加索引与 events→records CASCADE；`EntityStore.write` 拒绝跨 Project/type 覆写；Workflow Tool 节点默认把 values 中的 `entity_id` 传给 entity 工具（mapping key 只能是连字符 slug），无 `result` 时 payload 取 values 快照；Factory `generate()` 不再要求 Builder Provider；Community test fixture 注入 `registry_storage_root`（原 sandbox PermissionError 根因）。
+- Live 8771 已重启：`pid=9315` `status=ok` `database_ready=true` `database_revision=local_0034_project_entities` `build_sha=0ad7a3e0…-dirty`。迁移前自动备份 `app.sqlite3.pre-migration`，核心表行数不变。未重启 5173/5174/8772。未 stage / commit / push。
+- 门禁：`env -u PYTHONPATH make check` **947 passed** + ruff + mypy；Desktop **68 / 536**；typecheck/build 通过；`git diff --check` 干净。Live Entity Store smoke 通过并清理。Browser E2E unavailable。Real Provider 未执行。
+- 明确未做：通用数据库/表单设计器、完整 chat/form 产品系统、图形化改 DAG、Community marketplace、browser automation、MCP 产品化、任意可执行 Tool、loop 出图。
+- Remaining：`_generate_loop_agent_product` 死代码仍在 `factory/service.py`；`infer_agent_specification` 只用于显示名；修改方案不是 graph editor；HumanInput 复用 HumanApproval；真实 LLM planner 未跑；V2 composer 只生成 entity.write，不生成 entity.read；Project purge 不清理 entity 行；真实 Application Support 下 Community registry 目录残留历史测试写入（未删除）。
+
+## Current checkpoint（2026-09-28，V1 Release Candidate Cleanup）
+
+- 本轮不是 V1.1。不增加 image generation、browser automation、MCP 产品化、完整 Policy、vector RAG、Community marketplace、AV、新 Workflow primitives、任意可执行 Tool。
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。
+- Local head：`local_0033_agent_app_versions`。Community 仍是 `community_0015_cloud_runs`。
+- 对话 UI 不再把 UUID 当标题。API `_public_title` + 前端 `displayConversationTitle`。旧 title=null/UUID 显示 New conversation / 首条消息。
+- Agent App：compact header（名称 / 版本 / 状态 / Edit in Studio）；conversation rail 次要；主列是交互区；activity 是 compact strip；Run 列表不展示 raw run_id。
+- 测试 Fixture 隔离回归：`tests/integration/local/test_fixture_isolation.py`。Complex acceptance 仍用 `tmp_path` sqlite + projects。不删除真实 Local DB 里无法证明归属的 Project。
+- `.gitignore` 忽略 `.backboard/sessions/` 与 `$DB`。磁盘上仍有 4499 个 session objects，不再进入 `git status`。
+- `env -u PYTHONPATH make check`：**915 passed**；ruff/mypy 通过。Desktop `npm test`：**68 files / 519 passed**；typecheck/build 通过；`git diff --check` 干净。未 stage / commit / push。
+- 8771 已安全重启加载本轮代码：`pid=46045` `status=ok` `database_ready=true` `database_revision=local_0033_agent_app_versions` `build_sha=0ad7a3e0…-dirty`。未重启 5173/5174/8772（仍 HTTP 200；8772 `community_0015_cloud_runs`）。
+- Browser E2E unavailable。Real Provider smoke plan 只写步骤，未执行。
+
+## Current checkpoint（2026-09-28，Complex Agent Product Acceptance）
+
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。本轮不是新产品模块，是全链产品验收 + 阻断闭环的 hardening。
+- 主链：User Request → `infer_agent_specification` → CapabilityRequirement → ResourceResolver → ResourcePlan →（missing 且可生成则 Resource Factory approve/publish）→ `compose_loop_agent` → Apply pin/lock → Draft → Commit immutable version → Agent App `source=committed` → AgentLoopRuntime。
+- Research / Software Engineer / Packaging Analysis 都是 acceptance fixture，产品代码无职业 hardcode。generate 为 **Specification-seeded HTTP Factory chain**（scripted Kimi interview + scripted Runtime）；不是 Full HTTP Builder chain with a real Provider。
+- Composer 现在把 `needs_configuration` 工具写入 Agent lock/bindings/permissions；Apply 校验 snapshot 含这些 lock。GitHub 无 secret 时 App preflight 422 `needs_configuration`，不创建 Run。
+- App activity 使用 structured events：Starting Agent / Thinking / Using Web Search / Reading Knowledge / Waiting for approval。不是假进度条。
+- 验收：`tests/integration/local/test_complex_agent_acceptance.py`（research full-chain、engineer repair+reject、packaging multimodal+image_gen gap、factory skill、error/tool_failed、github preflight、draft isolation、second turn、Project Runs/Run Detail）。
+- 无新 migration：live 仍是 `local_0033_agent_app_versions`。
+- `env -u PYTHONPATH make check`：**909 passed**；ruff/mypy 通过。Desktop `npm test`：**67 files / 515 passed**；typecheck/build 通过；`git diff --check` 干净。未 stage / commit / push。
+- 8771 已重启加载本轮代码：before `pid=21076`；after `pid=91820` `status=ok` `database_ready=true` `database_revision=local_0033_agent_app_versions` `build_sha=0ad7a3e0…-dirty`。未重启 5173/5174/8772（仍 HTTP 200；8772 `community_0015_cloud_runs`）。
+- 本环境无 browser MCP：Browser E2E unavailable。
+- Real Provider acceptance was not performed.
+- 本轮明确未做：loop image generation、browser automation、完整 Policy Engine、vector/advanced RAG、MCP 产品化、任意可执行 Tool 生成、Community marketplace、audio/video、desktop signing、新 Workflow 能力、新 Resource 类型。
+- 下一阶段应基于本轮结果决定 V1 cleanup / commit / release readiness，而不是继续加功能。
+
+## Current checkpoint（2026-09-28，Agent Run App V1）
+
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。
+- Studio Test Run = 当前 Draft（`POST /run` 默认 `source=draft`）。Agent App = committed immutable version（`source=committed` / `version_id`）。未 Commit 时 App fail-closed：`agent_has_no_committed_version`。
+- Conversation pin `agent_conversations.agent_version_id`；后续 Commit 不静默升级旧对话。新对话默认 latest committed。hybrid 首次 typed inputs 存在 `metadata_json.initial_inputs`，后续 message 合并 Artifact refs。
+- `interaction_mode`：`auto|chat|form|hybrid`。缺省/legacy = `auto`，由 typed inputs 推导 chat/form/hybrid，无领域关键词。Runtime 不按 mode 改 tool 语义。Studio Form 视图可编辑；Builder Composer bounded 推导。
+- 路由：`#/projects/:id/agents/:aid` = App；`/design` = Studio；`/run?run_id=` = Run Detail；`/run` 无 run_id = App。树点击仍进 Studio；Open App 为 Play 次级链接。Test Run 文案仍是当前草稿。
+- Preflight：Runtime model 未配置 → `runtime_not_configured`；GitHub 等 secret 缺口 → `needs_configuration`，不创建失败 Run。审批摘要 Server 生成。Cancel 走 Runtime stop；Retry 新 `run_id`，旧 Run 保留。
+- Migration：`local_0033_agent_app_versions`（`agent_versions.committed`，conversation pin/metadata）。隐式 Test-Run version `committed=0`，Studio Commit 才 `mark_version_committed`。
+- 验收：`tests/integration/local/test_agent_run_app.py`（committed vs Draft、pin、form/hybrid/image/document、approval、cancel/retry、runtime/github preflight）。Desktop AgentChatSurface + interaction-mode + activity。
+- `env -u PYTHONPATH make check`：**901 passed**；ruff/mypy 通过。Desktop `npm test`：**67 files / 515 passed**；typecheck/build 通过；`git diff --check` 干净。未 stage / commit / push。
+- 8771 已重启加载本轮代码与 `local_0033_agent_app_versions`：before `pid=34200` `database_revision=local_0032_factory_specification`；after `pid=21076` `status=ok` `database_ready=true` `database_revision=local_0033_agent_app_versions` `build_sha=0ad7a3e0…-dirty`。未重启 5173/5174/8772。
+- 本环境无 browser MCP：Browser acceptance unavailable。
+- 本轮明确未做：loop image generation、browser automation、完整 Policy Engine、advanced/vector RAG、MCP 产品化、任意 Tool 生成、Community marketplace、audio/video、完整桌面分发/签名。
+
+## Current checkpoint（2026-09-28，Resource Factory V1）
+
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。
+- 主链：`missing_required` → `ResourceFactoryStrategy` / `ResourceFactoryPlan` → quarantined Draft → 校验 → 用户确认 → Workshop overlay 发布 → Catalog 发现 → Resolver retry → Composer pin/lock。Resolver 不 `force_select` factory 资源。
+- 复用：`ResourceWorkshop` overlay/`approve`/`set_enabled`；Custom Component `tool_wrapper` 语义（declarative specialization，不新建 executor）；Catalog overlay + `factory` tag。无新 migration：Plan 存在既有 `factory_sessions.specification_json` extras（`resource_factory_plans` / `factory_wrappers`）。
+- 策略：`generatable`（Skill / 已配置 wrapper）、`requires_user_configuration`（HTTP 需 host+endpoint；FS 需 path_prefix）、`requires_external_integration`（github_/mcp_）、`unsupported`（shell/python/eval/write/image/browser/policy）。
+- Skill：结构化 instruction（Purpose / When to use / Procedure / Expected output / Constraints / Failure handling）；先 `quarantined` + `factory_selectable=false`；Approve 后 `ready`；改 instruction → 新 version draft，旧 lock hash 不变。
+- Tool Wrapper：只特化 `veyra.runtime.http.request` 与 filesystem read/search/list；host/method/path_prefix 固化；wildcard HTTP、任意 URL/method/headers、shell/python/eval 拒绝。Runtime receipt 带 `factory_resource_id` / version / `base_adapter`。
+- `env -u PYTHONPATH make check`：**890 passed**；ruff/mypy 通过。Desktop `npm test`：**65 files / 498 passed**；typecheck/build 通过；`git diff --check` 干净。未 stage / commit / push。
+- 8771 已重启以加载本轮代码。未重启 5173/5174/8772。本环境无 browser MCP。
+- 本轮明确未做：任意 Python/shell/JS Tool 生成、完整 Policy Engine、Template Factory、MCP 自动安装、image generation Runtime、browser automation、Agent Run App、Workflow Builder、Community Marketplace。
+
+## Current checkpoint（2026-09-28，Resource Resolver & Agent Composer）
+
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。
+- create_agent：`derive_capability_requirements` → `ResourceResolver.resolve` → `ResourcePlan` → `compose_loop_agent`。Factory generate 不再调用 `_CAPABILITY_TOOLS` / `_select_tools`。
+- Capability Requirement 不绑定 resource ID。Resolver 按 capability tags、availability、factory_selectable、runtime adapter、配置状态、Project pin ranking；tie-break 为更具体 capability 然后稳定 resource_id。
+- ResourcePlan bind_status：`already_bound` / `will_bind` / `needs_configuration` / `missing`。Apply 使用 Proposal snapshot hash，不重新 resolve 最新 Catalog。
+- Skill/Knowledge 由 metadata 与 Project inventory 进入 Composer；Policy 可绑定但 `runtime_support=partial`；Template `loop_compatible=false` 不进入 loop Agent。
+- 验收：Translation 不过度装配；Research 选 Search+Skill+Knowledge；Workspace read-only 无 write；Editor write 保持 catalog `approval_required`；image_generation missing；GitHub needs_configuration；metadata-driven fixture 改变 capabilities 即改变选择；伪造 `veyra.tool.fake.super_search` 被拒绝。
+- `env -u PYTHONPATH make check`：**854 passed**；ruff/mypy 通过。Desktop `npm test`：**65 files / 497 passed**；typecheck/build 通过；`git diff --check` 干净。未 stage / commit / push。
+- 8771 已重启：before `pid=50514` `build_sha=0ad7a3e0…-dirty` `database_revision=local_0032_factory_specification`；after `pid=47898` 同 SHA / revision / `database_ready=true`。未重启 5173/5174/8772。
+- 本轮明确未做：Resource Factory、自动生成 Skill/Tool/Policy、mature Run App、`interaction_mode`、loop 出图、完整 Policy Engine、高级 RAG、MCP 产品化、浏览器自动化。
+
+## Current checkpoint（2026-09-28，Loop Agent Resource Truth）
+
+- 产品模型未改：Agent = model/tool loop；Workflow = typed DAG。
+- Catalog 存在 ≠ 可运行。Loop Agent 使用资源必须同时：Catalog 存在且 availability 允许、Project pin、Agent lock hash 一致、权限允许、Runtime adapter 存在、必要配置就绪。Apply 按 Proposal lock hash pin，禁止换成更新版本。
+- Builder Proposal `resource_plan.bind_status`：`already_bound` / `will_bind` / `requires_configuration` / `unavailable`。Desktop Agent 方案显示「已在 Project 中 / 将加入 Project / 需要配置 / 不可用」。
+- AgentLoopRuntime 加载 `skill_refs`（结构化 Skill prompt + `skill.loaded`）、复用 `read_knowledge_context`（`knowledge.retrieved`）、typed I/O 经既有 `_model_user_content`（image → Image ContentPart；document/pdf → 有界抽取）。HTTP/Browser 无 host allowlist fail-closed。Policy 绑定只发 `policy.partial`，Tool 级 approval/权限/网络仍 enforce。
+- 验收 fixture：`tests/integration/local/test_loop_resource_truth.py`（Research / unbound / Apply pin / Skill / Knowledge marker / image / document / PDF / Workspace Inspector）。未调用真实外部 Provider。
+- `env -u PYTHONPATH make check`：**831 passed**；ruff format/check、mypy 通过。Desktop `npm test`：**65 files / 497 passed**；`npm run typecheck` 通过；`npm run build` 通过（既有 >500 KB chunk warning）；`git diff --check` 干净。
+- 未 stage / commit / push。8771 仍是旧进程，需重启后 Factory Apply pin 与 loop Resource Truth 才对正在跑的本机服务生效。本环境无 browser MCP：Browser acceptance unavailable。
+- 本轮明确未做：Resource Resolver ranking、NL Skill/Tool generation、完整 Resource Factory、loop 出图、Packaging Designer 终稿、mature Run App、`interaction_mode`、完整 Policy Engine、PDF/vector RAG、MCP 产品化、浏览器自动化。
+
+## Current checkpoint（2026-09-28，Agent / Workflow 产品模型分开 — 门禁）
+
+- `env -u PYTHONPATH make check`：**808 passed**；ruff format/check、mypy 通过。
+- Desktop `npm test`：**65 files / 497 passed**；`npm run typecheck` 通过；
+  `npm run build` 通过（既有 >500 KB chunk warning）；`git diff --check` 干净。
+- 未 stage / commit / push。8771 在本轮结束后需要加载新代码。本环境无 browser
+  MCP，未能在 5173 实际点击创建 Agent/Workflow；Project 树 / Studio / Runs 由
+  Desktop 测试覆盖。
+- 本轮不做 Community marketplace、RAG、Loop/Parallel/Schedule/Webhook 节点、
+  AV Runtime、浏览器自动化。
+
+## Current checkpoint（2026-09-28，Agent / Workflow 产品模型分开 — Studio / tree / Runs）
+
+- 上一轮中断的 AgentSpecification 主链未回滚：规格改造成 loop Agent；SemanticPlan / typed
+  dataflow / quality / simulation 归 Workflow。Factory generate 不再走 SemanticPlan DAG。
+- Builder 分类 `create_agent` / `create_workflow`；create 指令使用用户原文，interview
+  Provider 失败在 Builder 路径会重新抛出。
+- Desktop Project 树现为 Agents / Workflows / Knowledge / Files / Runs。Agent Studio
+  是能力图 + 运行时间线；Workflow Studio 是 typed DAG，左侧 Agents/Tools/Logic/Human/Data/Output。
+- 未 stage / commit / push；保留 Community / Cloud dirty work。本轮不做 Community /
+  RAG / Loop 节点 / Parallel / Scheduler / Webhook / AV / Browser automation。
+
+## Current checkpoint（2026-09-28，Agent / Workflow 产品模型分开）
+
+- 用户停止了「AgentSpecification → SemanticPlan → 把每个 Agent 编译成复杂 DAG」主链。
+  未 reset / restore / clean / stash / rebase / commit / push。上一轮 typed dataflow
+  保留为 Workflow 基础设施；AgentSpecification 改造成 loop Agent 规格，不走 DAG compiler。
+- 产品：Agent = 自主 loop；Workflow = typed DAG。Builder 分类 `create_agent` /
+  `create_workflow`。AgentRuntime 是 model/tool loop（`max_turns`）；Workflow
+  AgentCall 调用已提交 Agent version。Desktop Agent Studio 是能力图，Workflow
+  Studio 是节点 DAG。Runs 带 `run_target_kind`。
+- 旧 graph Agent 保持 `execution_kind=graph`，可打开，不静默迁移。
+- 未 stage / commit / push；保留 Community / Cloud dirty work。
+
+## Current checkpoint（2026-09-27，类型化 I/O 按内容可用）
+
+- 产品目标不再是 V1 窄契约：图片/PDF/文档要能输入、预览和显示结果。Chat 与 Studio Test Run 共用 `RuntimeInputForm` / `RuntimeOutputView`；必填 Artifact 未上传不能开跑。
+- 编译：PDF/document/file 输入可编译，Runtime 抽文本；image 输出编译为 `model.image`（纯图直接改终端 Model，混合输出追加生成步）。不再因缺少 image_generation Tool 把生成挡住。PDF 输出仍要 renderer。Factory 原语要求真实 compact type，禁止把照片写成 string、把出图改成 prompt 数组。
+- Chat 把纯图片/文件结果留在对话里直接渲染，不再当成 JSON 打开结果画布。画布里的结构化结果也走 `RuntimeOutputView`，混合输出里的图能显示。
+- 验证：compiler / hardening / extract **80 passed**；ruff 通过；Desktop Chat + Runtime I/O + canvas **20 passed**；Test Run panel **7 passed**。未 stage / commit / push。8771 仍是旧进程，需重启后新生成的 Agent 才会带 `model.image`。已有礼品包装设计师需重新生成。运行 image 输出仍需绑定 User Runtime image model。未做真实浏览器复验（本环境无 browser 工具）。
+
+## Current checkpoint（2026-09-27，生成质量是执行模型问题）
+
+- 生成 Agent 效果差的根因不是 prompt 里少几条禁令。Factory 把用户一句话立刻标 ready 并一次生成图；SemanticPlan 禁止步骤数据流，但 Factory 仍生成「分析→草案→确认→终稿」这种看起来像流水线的图；HumanApproval 的 rejected 以前一律接到 Output，所以模型只能再发明 `decision == "confirm"`；Runtime 只有共享 values 袋，审批不写业务字段；编译器写的 Model prompt 几乎没有字段说明和步骤契约。历史 Builder real-provider 验收也卡在 Condition 无法做自然语言分类、Transform 无法读上一步 Model。
+- 本轮按可运行原语改 harness，而不是再堆 Don't：`RUNNABLE_AGENT_PRIMITIVES` 进入 create_agent / planning / repair；policy `builder-policy-v2`。HumanApproval 可用 `branch_key=approved|rejected` 接两条后续职责。编译器会把「审批后再用 Condition(confirm)」折叠成审批端口。中间 Model 写 named working note，终态 Model 才交 Agent JSON，prompt 带输出 description。
+- 验证：compiler/hardening/condition/capabilities **94 passed**；factory/builder/contracts **84 passed**；ruff + mypy 通过。未 stage / commit / push。已有「礼品包装设计师」是旧编译源，需重新生成后才走审批双端口。8771 需加载此代码后新生成才生效。
+
+## Current checkpoint（2026-09-27，生成 Agent 按步骤可用）
+
+- 礼品包装设计师新运行 `01a0e24e-a94f` 已跑完（unverified）。详情页红字是更早的 `01a0e247`。批准后 `decision` 为空，条件 `decision == "confirm"` 走了修改分支，跳过最终方案；`image-generation-prompts` 为空数组。
+- 中间 Model 不再被要求交最终 JSON，只把步骤笔记交给下一个节点；能直接走到 Output 的 Model 才校验 Agent 输出。空白批准会填上条件里的确认字面量；用户已填写的意见保留。
+- 编译器只让最后一级 Model 写最终字段契约。运行画布连线使用明确描边。
+- 验证：capabilities / compiler **55 passed**；ruff 通过。未 stage / commit。8771 需加载后，已有 Agent 的下一次运行才按新规则执行。
+
+## Current checkpoint（2026-09-27，Test Run JSON 输出失败）
+
+- 礼品包装设计师 `analyze_item` 失败码 `agent_output_invalid`：Agent 输出是 `object`/`array`，Runtime 要 JSON；kimi-k3 回了 Markdown 分析。HTTP Runtime 未发 `response_format`。
+- 现对结构化输出发送 `response_format=json_object`，并在 system prompt 末尾追加权威字段名（YAML slug，如 `final-packaging-design`）。编译器提示也改用 slug。不从 Markdown 刮 JSON。
+- 验证：unit client/capabilities/compiler **57 passed**；ruff 通过。未 stage / commit / push。8771 需加载此代码后才能对这次 Agent 生效。
+
+## Current checkpoint（2026-09-27，Test Run 图像预检是旧 8771）
+
+- 礼品包装设计师有 image 输入；当时 8771 未 reload，仍把 `kimi-k3` 标成 `image_input=unsupported`。磁盘能力表已开放。已重启 8771：该 Agent `runtime-readiness.ready=true`，`image_input=supported`。
+- Studio 左侧 Model「待配置」是目录只看 host `RuntimeModelClient.configured`，忽略已就绪的 User Runtime Provider。现与 `runtime/status` 同一套判断。
+- 验证：unit readiness/capabilities **20 passed**；ruff 通过；live `/runtime-readiness` ready。未 stage / commit / push。
+
+## Current checkpoint（2026-09-27，Runtime 模态开放 + 文档抽取）
+
+- 用户策略：用户绑定的 Runtime 模型默认开放图像输入，不为「其它模型」fail-close；PDF / 文档 / Office / 普通文件应对模型开放，而不是在 Run 前挡住。
+- `RuntimeModelCapabilities`：精确 model id。`kimi-k3` 以及其它用户绑定模型 `image_input=supported`。仅 `kimi-k2`、`moonshot-v1-8k`、`moonshot-v1-32k` 保持图像关闭。`video_input` / `audio_input` 仍为 unsupported（adapter 未启用）。
+- 非图像 Artifact 经 `artifacts/extract.py` 抽取有界纯文本写入 prompt；图像仍走 `image_url` data URL。Run JSON / events 不含 bytes、host path 或 `artifact://`。文件夹不是 ArtifactRef 种类。
+- 验证：pytest 24 passed（capabilities / extract / artifact runtime / runtime status）；ruff check 通过；mypy 4 files 通过；Desktop `local-client.test.ts` 40 passed。未 stage / commit / push；保留其它未归属 working-tree 修改。未做真实浏览器 Test Run 复验。
+
+## Current checkpoint（2026-09-27，Runtime 预检误报未绑定）
+
+- 账号默认 User Runtime Provider 解析为内部 `user_default` / Agent 绑定为 `explicit` 时，Studio `runtime-readiness` 解析失败，测试运行误报「尚未绑定」。
+- 现将预检 `profile_source` 映射为契约值 `agent` / `project` / `default`；前端同时接受旧值，并在预检失败时回退 `runtime/status`。
+- Studio Model 节点检查器是 `model.primary` → User Runtime Provider / 模型的调用映射；绑定写 `runtime_bindings`，不把 API Key 或 credential id 写进 Agent 源。
+- 验证：capabilities / credential readiness pytest **14 passed**；Desktop `local-client.test.ts` **41 passed**。未 stage / commit / push。
+
+## Current checkpoint（2026-09-27，不再做 Cloud data plane）
+
+- 对照 `0ad7a3e0b2a11ccf9186f23dab40628375509c73`：生成、Chat 和本机页面在这一版是正常的。之后的 Cloud Project / Conversation / File / Credential / Run 不再是产品。
+- `5173` + `8771` 是本机软件。`5174` 只保留公开展示和社区目录/账号。`8772` 启动 `veyra_agent_platform.community.app:app`。
+- Desktop 不再自动把 Project 或 Builder 对话同步到云端。最近聊天读本机 Builder activity。
+- 文档已改：`README.md`、`docs/PROJECT_DESIGN.md`、`docs/AI_DEVELOPMENT_BRIEF.md`、`docs/DEVELOPMENT.md`。未 stage、commit 或 push。
+
+## Current checkpoint（2026-09-27，Connected Account workspace redesign）
+
+- Desktop `#/account` 已从两张同权重大卡片重组为三层：账号身份摘要、公开资料编辑、会话与设备安全。身份摘要同时显示头像、display name、handle、登录邮箱、连接状态与“Community 元数据 / 本机执行”边界。
+- 公开资料表单保留原头像选择/替换/删除、display name、handle、只读登录邮箱和显式保存行为；字段改为响应式两列，头像编辑独立成浅色编辑区，保存动作放在表单 footer。
+- 根据原 Account / Community 设计补入“Community 中的你”：真实链接到 Creator workspace、Published releases、Starred resources，并展示当前已启用的发布不可变版本、保存/评审和 Fork lineage 能力；未展示尚未实现的组织、计费或私有备份。
+- 新增明确的本机数据边界清单：Project / Agent / Workflow source、Run / approval / receipt、Secret 值和主机凭据不会因登录自动上传或按账号分割；只有显式 Publish/Sync 才离开设备。
+- 会话列表不再直接显示长 User-Agent。浏览器与平台会归一为 `Mac · Chrome`、`Windows · Edge` 等；显式 `device_name` 仍优先保留。当前会话显示“退出此设备”，其它会话显示“撤销访问”。桌面端 17 个真实会话使用固定高度内部滚动，窄屏恢复自然页面滚动。
+- 退出账号独立为 Account access 区，并明确只结束登录，不删除本地 Project 或 Community release。未修改 account/session API，也未执行头像、资料、撤销或退出 mutation。
+- 验证：Desktop 全量 **66 files / 490 tests passed**；Account/App 定向 **59 passed**；Desktop typecheck、production build 与 `git diff --check` 通过；保留既有 Vite >500 KB chunk warning 与 jsdom Canvas stderr。实际浏览器检查了当前真实账号、Community 路由卡、17 个会话、浅色/暗色与窄 viewport。
+- 未 stage、commit 或 push；保留其它未归属 working-tree 修改。
+
+## Current checkpoint（2026-09-27，Creator workspace redesign + Star state consistency）
+
+- Desktop `#/community/mine` 已改为紧凑的创作者工作台：真实 Published / In review / Rejected / Total stars 指标，完整单块 Release Studio 背景，以及 Agent / Project / Workflow / Plugin Pack / Template / reusable resources 六类发布入口。
+- 当前真正接通 Community 发布的仍只有 Agent immutable release 与 declarative Plugin Pack。Project 只有现有本地 `.vproject.zip` export，Community Registry publication 尚未实现；Workflow / Template / Component / Tool / standalone Skill 同样以 planned 状态显示，不伪装为可点击能力。
+- Agent 与 Plugin Pack 选择、来源选择、检查和确认都留在同一 Release Studio 内；删除了并不存在持久后端的 Community Draft 指标和空白草稿面板。Discover 恢复紧凑的 Community 标题与真实能力说明。
+- 修复 Discover 与 Published 对同一 release 收藏图标不一致：Published 现在与 Discover 共用认证 `listStarredRegistryAgents()` 恢复的 version-bound Star 集合；Starred 页仍以列表本身作为权威集合。新增 Published 同步回归测试。
+- 验证：Desktop 全量 **66 files / 490 tests passed**；Community + App 定向 **64 passed**；Desktop typecheck、production build、`git diff --check` 通过。保留既有 Vite >500 KB chunk warning 与 jsdom Canvas stderr。
+- 实际浏览器：浅色/暗色与窄 viewport 下检查 Mine；Agent / Plugin Pack 切换正常；真实 Discover 与 Published 对同一 `Community Acceptance Transform Agent` 都显示“取消收藏”。没有调用发布、上传、Star/Unstar 或其它 mutation。
+- 未 stage、commit 或 push；保留其它未归属 working-tree 修改。
+
+## Current checkpoint（2026-09-26，Community flagship visual refinement）
+
+- 在上一轮 Community information architecture 基础上继续收敛视觉：Discover 从大块营销 Hero 改成轻量产品头部；Published 改为紧凑版本记录；Starred 有独立标题和可控空态；Mine 收紧标题和发布区留白。
+- 统一使用克制的浅色/暗色 token、GitHub 风格底线导航、版本记录行、轻量 hover/淡入/轨道浮动动效；`prefers-reduced-motion` 会关闭动画。
+- 保留真实 Registry / Star / Review / 发布导入 API、现有路由和侧栏；没有新增假指标、假帖子或未实现资源类型入口。
+- 实际 Chrome 检查：Discover、Published、Starred、Mine 四个页面在当前 5173 正常渲染；Published 不再一条记录占满整屏，Starred 不再使用大块空白卡片。
+- 验证：Desktop 全量 **488 passed**；Desktop typecheck；Web Desktop/Community build；Desktop build 的既存 >500 KB chunk warning 与 jsdom Canvas stderr 保留。
+- 未 stage、commit 或 push。不要 reset/clean/stash/覆盖其它未归属改动。
+
+## Current checkpoint（2026-09-26，Community catalog view switch）
+
+- Discover / Starred 现在支持卡片与按行两种真实显示模式，按钮使用 `aria-pressed`，偏好保存到 `veyra.community-view-mode.v1`，刷新后保留。
+- 列表模式已在 Chrome 5173 实际点击确认，显示为紧凑 release row；随后已恢复默认卡片模式。
+- 只改 Community Page/Card/CSS 相关 UI，并修复一个重复 mine loader 的 TypeScript 不可达分支；没有改 Community 后端、契约或数据。
+- 定向 Community page tests **3 passed**；Desktop 全量 **488 passed**；Desktop typecheck/build 通过。未 stage、commit 或 push。
+
+## Current checkpoint（2026-09-26，Community reference design implementation）
+
+- 当前 Community UI 已按用户提供的主设计图落地：Discover 为 Community + 几何装饰 + search/category chips/recommended cards；Published 为 metrics/filter/table；Starred 为 search/sort/card collection；Mine 为 Creator Center + metrics + resource launch tiles + recent releases + draft boundary。
+- Discover / Starred 的 grid/list toggle 已保留并实际验证；card preview 是声明式 Agent graph visual，不是伪造的资源截图或后端字段。
+- 未实现的 Workflow/Skill/Tool/Plugin discovery 不伪装为可用；Plugin Pack 的现有 publish lane 在 Creator Center 可展开。
+- Desktop 全量 **488 passed**；App suite **59 passed**；Community 页面定向 **3 passed**；Web build、Desktop typecheck 通过；已有大 chunk/jsdom warnings 保留。
+- 未 stage、commit 或 push。
+
+## Current checkpoint（2026-09-26，Community information architecture and visual refresh）
+
+- Desktop Community 当前工作树已从发布后台式布局刷新为开发者社区入口：Discover 有社区 Hero、真实 Agent release feed、版本检查路径、下一步引导和诚实的 Discussions coming-next 状态；`mine` 是创作者工作台，发布为主列、版本与安全检查为侧栏，Plugin Packs 默认折叠。
+- 只改了 `web/apps/desktop/src/pages/community.tsx`、`web/apps/desktop/src/features/community/community.css`、`web/packages/connected-account/src/styles.css` 的本轮社区 UI；已有 Community 发布/导入/Star/Review/API 和其它 dirty worktree 范围保持不动。
+- 讨论帖子、creator follow、Feed 后端仍不存在，当前 UI 不伪造内容；版本详情的真实评价仍是现阶段可用的交流边界。
+- 实际浏览器检查：5173 Discover 与 Mine 浅色、深色均正常；页内 Browse releases / Start publishing 不改变路由；Mine 下方 Plugin Packs 已变为折叠 secondary lane。
+- 验证：Desktop 全量 **488 passed**；Web Community **23 passed**；Web typecheck、Desktop build、Community build 通过。Desktop build 仍有既存大 chunk warning；测试仍有既存 jsdom Canvas stderr。
+- 未 stage、commit 或 push。不要 reset/clean/stash/覆盖其它未归属改动。
+
+## Current checkpoint（2026-09-23，5174 Showcase V1）
+
+- Branch：`codex/agent-platform`；HEAD：`0ad7a3e0b2a11ccf9186f23dab40628375509c73`；working tree dirty，未暂存。
+- Product boundary：5173 Desktop owns daily work and Community interaction；8771 is Local API；8772 is the separate Community account/Registry service；5174 is the anonymous Public Showcase.
+- 5174 now serves product/features/how-it-works/safety/sharing/docs/build-status sections. It has no account/Registry routes or `/api` proxy and renders while 8772 is offline. `web/apps/community` package rename and unreachable legacy-page cleanup are deferred.
+- Verified content is bilingual, light/dark aware, responsive by CSS breakpoints, and explicit that the preview is illustrative and no public installer is available. Repository links are on the active branch and may require GitHub access.
+- Browser evidence: actual 5174 root and sections rendered with 8772 down; legacy `#/community/published` reload normalized to `#home`; Chinese/English and light/dark toggles worked; 200% zoom showed the collapsed mobile navigation breakpoint. The user took control before the narrow-screen menu click, so that interaction is covered by unit test, not claimed as manual mobile E2E.
+- Tests: Showcase focused 22 passed; full web Desktop 472 + Community 22 passed; both typechecks/builds passed. `conda run -n veyra-agent-platform env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check`: 703 passed, Ruff format/check, dependency/lock and mypy 187 files passed. Desktop 1.16 MB bundle-size warning and existing Alembic `path_separator` deprecation warnings remain; Showcase JS bundle is 230.93 KB.
+- Offline acceptance was run with 8772 stopped: 5174 root stayed HTTP 200, legacy Registry hash returned to `#home`, and the page showed no Registry/account controls. Afterward the four-service stack was started with real settings: 5173/5174 HTTP 200; 8771/8772 HTTP 200, `database_ready=true`, revisions `local_0026_builder_semantic_plan` / `community_0008_plugin_registry`, build `0ad7a3e0b2a11ccf9186f23dab40628375509c73-dirty`. The DBs were already at head; no migration ran.
+- No migration, Registry/API/schema/data change, Builder Provider call, or Project data mutation. No staging, commit, push, PR, or tag.
+- Preserve the existing Community Sharing work, independent shell/sidebar/scroll UI edits, `$DB`, `.backboard/sessions/`, and `.backboard/settings.json`; none is to be reset or swept into a commit.
+- Next: keep this slice bounded. If the user later authorizes it, handle public GitHub/document access and publishable desktop artifacts separately; do not resume Community Marketplace expansion.
+
+## Historical checkpoint（2026-09-22，Agent Composition Slice 5 locally verified；状态已被后续记录取代）
 
 - Branch：`codex/agent-platform` → `origin/codex/agent-platform`
 - 权威 release HEAD：`5f8e8a8bda0946b1f29cdae38ee4cedaa3560fbe`
@@ -1975,3 +2222,327 @@ Slice 1–5 均未发布。
   写入 Component。以上是 manual browser evidence，不把 unit/integration 当 browser E2E。
 - 本轮结束点：未开始 Community/Workflow/新功能；无 bug hotfix；没有 commit/push/stage，
   当前 Builder real-provider semantic blocker 仍保留，真实 Provider acceptance 仍需以后单独授权。
+
+## Community Sharing UI refresh（2026-09-23，本地工作树）
+
+- 新用户构想“Discover / Published / Starred / Following”已落到 Desktop 与独立 Community Web 的横向二级导航；Veyra 全局侧栏没有新增第二套 Community 左栏。Discover 使用真实注册表 API，可搜索并按发布时间、真实 Star 数或 Review 评分排序；无虚构 Featured、下载量、导入量或 graph workflow 摘要。
+- Published 使用新增的认证 `GET /api/v1/registry/mine/agents`；Starred 使用新增的认证 `GET /api/v1/registry/starred`，两者复用现有 Agent version 和 `community_agent_stars`。Published 列出实际状态，没有虚构的持久 Community Draft。
+- Following 页面明确说明当前无 creator-follow / activity-feed API，导航带“Later”标记；没有添加账号关系表、迁移、feed 或示例动态。Discover 只展示现有 Agent Registry；现有 Plugin Pack 发布仍在 Publish 区，但其浏览/导入详情、Workflow/Component/独立 Tool/Skill 市场都未伪装成已实现。
+- 本轮先前的发布/导入闭环也保留：Agent source 本机预览、显式确认、Community API 的 Secret ref/机器路径二次硬拒绝；下载后本地 Project 依赖预览，Confirm 前零 Project mutation，Confirm 时检查来源与依赖快照未漂移，只创建新 Draft。
+- 验证：Community Registry + Agent Import + Local export 集成定向 **7 passed**；Desktop Community focused **7 passed**；独立 Community app **7 passed**；Ruff 相关路径通过；全仓 `make check` **703 passed**；Web 全量 Desktop **471 passed**、Community **18 passed**，typecheck/build 通过。手工浏览器只验证了真实 5174 Discover（0 个发布版本）和 Following 未开放状态，未执行真实账户的 Star/Publish/Import。
+- 当前 5173/5174 为工作树前端；8771/8772 health 仍 HTTP 200，但仍服务 `0ad7a3e`，DB revision 分别为 `local_0026_builder_semantic_plan` 与 `community_0008_plugin_registry`。未重启任一服务；新 `mine/agents`、`starred` 路由和 `target_project_id` 导入预览尚未 live，后续需用户授权后重启对应 API 再做实时验收。
+- 本轮没有 stage/commit/push。保留既有 shell/navigation-fold UI 修改、`$DB`、`.backboard/settings.json` 与 `.backboard/sessions/`。尚未完成：Following 后端关系/Feed、插件包的统一 Discover 浏览/导入、Community API live restart/browser acceptance、独立 PR/发布。
+
+## Community Sharing V1 — live API reload + read-only browser acceptance（2026-09-23）
+
+- 本轮只重启 `8771` Local API 与 `8772` Community API；没有重启 `5173` / `5174`，没有调用真实 Provider。
+  旧 listener 已确认分别为 Conda Uvicorn Local/Community app 后才按 PID 停止；新 listener 为 27611 / 27612。
+  使用 Conda `veyra-agent-platform` Python 3.11.15、仓库根目录、`PYTHONPATH=backend/src`、原有应用配置，
+  `VEYRA_BUILD_SHA=0ad7a3e0b2a11ccf9186f23dab40628375509c73-dirty`。没有设置 temp DB、E2E root、fake/loopback
+  provider；没有读取、输出或覆盖 `.env` secret。Community 使用仓库已有 dotenv 启动入口。
+- 两个 health 均 HTTP 200、`database_ready=true`、`schema_version=health.v1`，Local DB revision
+  `local_0026_builder_semantic_plan`，Community DB revision `community_0008_plugin_registry`；两服务
+  报告同一完整 dirty build marker。OpenAPI 3.1.0 确认 Local Agent import analyze/read/apply 路由和
+  Project Agent import 已加载；Community publish/list/detail/version/download/star/unstar/moderation 与新增
+  `GET /api/v1/registry/mine/agents`、`GET /api/v1/registry/starred` 已加载。
+- Live 只读 API：匿名 `GET /api/v1/registry/agents` → HTTP 200、0 releases；mine/starred → HTTP 401
+  `authentication_required`。没有 Project、账号、Agent、Run、release、Star 或 Component mutation；没有测试 fixture。
+- Manual browser acceptance（隔离 Codex IAB，非自动 E2E）：独立 Community Web Discover 显示真实 0 releases，
+  search field 可输入，Recently published / Most starred / Top rated 可切换；Published 与 Starred 显示登录边界；
+  Following 明确提示未开放、无 Follow API，并区分 Star release 与 Follow creator。Light/dark 页面无明显破版。
+  Desktop Community deep link 因无登录会话重定向至 Login。5173/5174 最后检查均 HTTP 200。未把该检查称为
+  Playwright、jsdom 或 API test。
+- 未完成的真实认证闭环：Publish、authenticated Published listing、Star/Unstar reload、Agent detail、Import Preview
+  前后 Project 状态对照、Import as Draft、Studio open。注册会触发 verification-code dispatch；没有指定隔离测试
+  账号/邮箱，本轮没有请求验证码、创建账号、发送邮件或借用用户账号。公开目录保持真实 0 releases，没有 fake content。
+  这是一项明确的 release blocker；不能把 Community Sharing V1 标记 complete。
+- 本轮 full gates：`conda run -n veyra-agent-platform env -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check`
+  通过（703 passed、Ruff format/check、dependency lock、mypy 187 source files）；Web `npm test` Desktop
+  471 / Community 18 passed；typecheck/build 都通过。Desktop build 的既有 >500 KB chunk warning 与 Alembic
+  `path_separator` deprecation warnings 保留。`git diff --check` clean。
+- HEAD 仍 `0ad7a3e0b2a11ccf9186f23dab40628375509c73`、branch `codex/agent-platform`；没有 staged files，未 commit/push。
+  保留 Community implementation、用户独立 shell/sidebar-scroll/UI 修改、`$DB` 与 `.backboard` 状态。
+- 恢复完整真实验收前，需要用户提供/确认一个隔离 Community 测试账号，或指定测试邮箱并授权注册流程的验证码投递；
+  在此之前保持当前服务运行、不要创建临时假账号或发布数据。拿到授权后，从隔离 Project A 的 deterministic Agent
+  version 开始完成 Publish → Discover/Star → Project B Import Preview 零变更 → Confirm as Draft → Studio。
+
+## Builder Provider re-acceptance + Custom Component lifecycle — 2026-09-24
+
+- 当前验收只使用两个隔离 Local Projects：Builder 项目 `01a0cee5-90fb-78f4-99ab-e42e9a6365c9`；
+  Component 项目 `01a0cef1-4384-702e-a63c-40d7ba6e469a`。不要改用户的 `test` 或其他 Project。
+- Builder 只发出一次获准的合成请求；一个正常 Builder turn 内包含意图解析、Semantic Plan 和两次有界
+  repair，最终 `factory_generation_invalid` / `semantic_generation`，没有 proposal_id。不是 429；没有
+  reviewable graph。不要点 UI Retry 或再调用真实 Provider，除非用户另行授权。没有 Confirm/Apply/Run，
+  Builder acceptance failed，不得记为完成。
+- Custom Component `Acceptance Echo`：Project 组件 ID `01a0cef2-ec07-7379-b55c-8eb581150d0e`，
+  published ref `@1.0.0`，hash `e7de5249088a601226431f3e8946ad22a6b226b4226717e8f0996200fd67a2bc`；
+  另有修改描述后的 unpublished Draft。隔离 Agent `Acceptance Harness` ID
+  `01a0cef6-a4fc-7d7b-aa0c-d8f0dbf3e346`，revision 2，含 `CustomComponent` node、精确 `uses`/lock 与
+  `text <- request` / `result -> result` 映射。Studio validate 显示 component dependency ready；未 commit
+  Agent 版本、未 Run、未调用模型或外部工具。
+- 发现并修复 Local Library 将 `CustomComponent.uses` 误判为 Tool 的 bug；Project-owned component
+  published reference/hash 现在独立校验，dependency inspector 使用真实 Project Custom Component descriptor。
+  8771 已按当前 dirty working tree 重启，health 200、`local_0026_builder_semantic_plan`、
+  `0ad7a3e0b2a11ccf9186f23dab40628375509c73-dirty`。5173/5174/8772 未重启，仍健康。
+- Focused 后端测试 37 passed；全仓 Conda `make check` **704 passed**，Ruff format/check、dependency
+  lock、mypy 187 source files 通过。Web Desktop **472 passed**、Community **22 passed**，两端
+  typecheck/build 通过。保留既有 Alembic `path_separator`、jsdom Canvas `getContext` 和 Desktop
+  large-chunk warnings。Git 不 stage/commit/push；保留原有 Community/Showcase、Sidebar、
+  `.backboard`、`$DB` 与其他独立用户改动。两验收 Project 和数据保留、不清理。
+
+## Builder Semantic Generation Failure RCA + Offline Hardening（2026-09-24）
+
+- 延续当前 HEAD `0ad7a3e0b2a11ccf9186f23dab40628375509c73` / `codex/agent-platform`。
+  不要覆盖既有 Community/Showcase/Registry、Sidebar/scroll、Custom Component、Branch Semantics、
+  `.backboard/sessions/`、`.backboard/settings.json` 或 `$DB`。无 staged files；没有 commit/push。
+- 失败 session identity：Project `01a0cee5-90fb-78f4-99ab-e42e9a6365c9`；conversation
+  `01a0ceeb-5dfb-7f5a-9944-2320254d181c`；operation
+  `01a0ceeb-5dfb-71b8-a4f7-06a1542144f6`；Factory session
+  `01a0ceeb-cabd-7e1e-bc58-df67cdeb51fc`。只读，不要删除或继续修改 acceptance Project。
+- 三个 Semantic Plan Provider attempts 都是成功的 strict JSON Schema / MFJS 调用。三次都通过 JSON
+  parse、当时的 Python SemanticPlan contract 和 branch/obligation validation，在 semantic compiler
+  失败：依次为 `normalize_result` 的 `advice_priority` 未知输入、`normalize_result` 的
+  `urgent_priority` 未知输入、`normalize_urgent` 的 `advice_priority` 未知输入。最终
+  `factory_generation_invalid` / `semantic_generation`，无 Proposal/Blueprint、Draft、Run 或 Component。
+  只有第三次 SemanticPlan JSON 被安全保存；首次和 repair 1 的 raw structure、exact repair prompt 和
+  numeric HTTP status 不可用，不能从 diagnostics 中反推完整原文。
+- Root cause: ordinary step-level `inputs/outputs` 被误认为 Model→Transform 数据流。Compiler 只允许
+  Transform 映射 Agent top-level inputs/literals 到 Agent top-level outputs；`depends_on` 只表达控制/顺序。
+  Old repair 有 diagnostic 但没有 field allowlist 或 machine code/path/expected，Transform preservation
+  obligation 又把这个 invalid mapping-only step 锁死。MFJS nested branch/output projection 无损，非根因。
+- 当前修复：非 reusable step-level I/O 以 `unsupported_step_io` + exact path/expected 拒绝；有效的
+  reusable `model` / `transform` / `capability` component contract typed I/O 保留；普通 Model 必须产出
+  Agent declared fields，Transform 只映射顶层输入/literal。Compiler source 错误输出 machine code/path/
+  expected/allowed input；Repair 明确分辨 genuine deterministic Transform 与非法的 Model-output rename。
+  非法 mapping-only Transform 不再被当成 user obligation，但 approvals/branches/multiple-model 等真实职责
+  仍 fail closed。MFJS schema path 与 nested item 保持。
+- Regression fixture：`contracts/fixtures/invalid/agent-semantic-plan-real-provider-failure.json`，只含
+  保存下来的 final plan sanitized shape；不可声称它包含丢失的前两次 raw response。Scripted integration
+  使用真实 fixture → derived compiler-invalid repair → neutral valid plan，进入 waiting/review graph，未
+  Apply；验证两个 sibling Approval 不串联、两字段输出、branch labels/Note 与 compiled graph 相符。另有
+  three-invalid-repair exhaustion 保持 `factory_generation_invalid` 且无 Project mutation。
+- 验证：Builder/Factory/SemanticPlan/MFJS/Compiler/Proposal/Custom Component focused **156 passed**；
+  全仓 Conda `env -u PYTHONPATH -u MOONSHOT_API_KEY -u GITHUB_TOKEN make check` **713 passed**、
+  Ruff format/check、dependency lock、mypy 187 files 全通过；Web Desktop **472 passed**、Community
+  **22 passed**，typecheck/build 全通过。既有 Alembic `path_separator`、jsdom Canvas 与 Desktop chunk
+  warnings 保留。无 migration、真实 Provider 调用、service restart、Project 数据 mutation。
+- 下一步只可单独授权 **Builder Real Provider Re-Acceptance #2**。在那之前 Builder 仍未 real-provider
+  accepted，不可标记 Composition V1 complete，不要 Retry，不要 stage/commit/push/release audit。
+
+## Builder Real Provider Re-Acceptance #2（2026-09-24，本次 FAIL）
+
+- 当前 branch/HEAD 仍是 `codex/agent-platform` / `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；工作树原先 dirty、无 staged files。旧 Project `01a0cee5-90fb-78f4-99ab-e42e9a6365c9` 和旧失败 Conversation/Operation/Factory session 都保持原样。
+- 只发送一次获准 Builder turn；新 Conversation `01a0d1a6-3580-71d9-84d4-550407c34ef7`、Operation `01a0d1a6-3580-721b-b709-57c59c0a17e3`、Factory session `01a0d1a6-72d7-713a-b749-ca0df9c9eaf7`。Provider `moonshot/kimi-k3`；receipts 为 resolve_intent/json_object、interview/none、semantic_plan/strict_json_schema+mfjs，全部 success；Semantic Plan 1 attempt / 0 repair。没有 Retry 或后续真实调用。
+- Blueprint 结构有 Condition + urgent/routine branch-local Approval + 各自 Model、typed outputs `priority`/`summary`；sibling branches 未串联。**Acceptance FAIL**：Compiler 将自然语言 Condition purpose 静默回退成 `request != ""`，实际判断空/非空，并不区分两个业务类别；Note 却声称按请求内容分类。同时 operation `proposal_id=null`，只有 Factory session review Blueprint，没有附件要求的持久化 canonical Proposal ID。不要把 `builder.proposal.ready` 事件误称为带 ID 的 canonical Proposal。
+- User asked about screenshot login error: 原因是当时 8772 Community API 未启动；后来只因用户明确说“全部都启动”，启动了 8772，并也启动了原先不可用的 5173、5174。恢复后登录错误提示消失，但 browser 登录表单仍为空、客户端提示邮箱/密码必填；没有读取/输入/传输账号凭据。因此浏览器 Proposal UI/Canvas acceptance 未完成，API/Factory session proof 不冒称浏览器验收。
+- API counts before/after：Agent 0、Workflow 0、Custom Component 0、Project-owned resource binding 0、Runtime Run 0、Workflow Run 0。没有 Apply/Confirm、Agent Draft、Component、Run、外部 Tool/HTTP 或 migration。旧失败 Conversation 仍 `factory_generation_invalid`。
+- 有根因的最小 compiler 修复已落地：Natural-language Condition purpose 不再推断为 `field != ""` / 默认结果；仅接受 Runtime 支持且引用已声明 Agent input 的显式比较表达式，否则 fail closed 并提供 machine-readable `code/path/expected/allowed_inputs`。Prompt/schema 描述同步。新脱敏回归 fixture `contracts/fixtures/invalid/agent-semantic-plan-condition-fallback-reacceptance-2.json`；新增单测确认真实 plan 形状不再默默生成错误分支。没有实现 proposal-ID persistence 或自然语言 classifier feature。
+- 代码修复后未再调用 Provider；focused SemanticPlan/Compiler/Factory/Builder/Proposal/Custom Component suite **158 passed**；Conda `make check` **714 passed**、Ruff/dependency lock/mypy 187 通过；Web Desktop **472**、Community **22**，typecheck/build 通过。Warnings: Alembic `path_separator`, jsdom Canvas, Desktop chunk size。
+- 所有四服务当前均健康：5173/5174 HTTP 200；8771/8772 health 200、ready，revision `local_0026_builder_semantic_plan` / `community_0008_plugin_registry`，build `0ad7a3e0b2a11ccf9186f23dab40628375509c73-dirty`。代码修正后只重启 8771 载入当前树；Community/Showcase未改。
+- `docs/DEVELOPMENT.md` 已记录完整证据与失败门禁。本轮未 stage/commit/push；不做 Release Audit。Builder Re-Acceptance #2 = **FAIL**；Agent Composition V1 不能 accepted / release ready。下一轮需先解决 Proposal persistence 身份与 Condition 自然语言分类可表达性，再单独授权 Re-Acceptance #3。
+
+## Condition Semantic Contract + Canonical Proposal Identity Hardening（2026-09-24，本地 dirty slice）
+
+- 继续使用 `codex/agent-platform` / HEAD `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；保留 Community/Showcase、Sidebar/scroll、Custom Component、Branch Semantics、`.backboard` 与 `$DB` 等既有 dirty 范围。
+- 版本审计结论：`8bef91c → 0ad7a3e` 是大范围能力扩展，不是代码整体退化；当前真实问题集中在 Condition executable boundary、Factory Proposal persistence 与未完成的 release evidence。
+- Condition Runtime grammar 是 `==` / `!=` + string/boolean/integer literal。新增 `condition_expression` 与 `purpose` 分离；普通自然语言分类无可执行表达式时 fail closed；不引入隐式 Model classifier、`eval` 或 generic intermediate state。
+- `edit_proposals` 复用为 canonical Builder creation Proposal store，新增 `proposal_kind=create_agent`、candidate snapshot/provenance，并通过 `local_0027_builder_creation_proposals` 以 `project_id + builder_creation_operation_id` 做唯一关联。Proposal、operation.proposal_id 和 ready event 在同一 SQLite transaction 中 materialize；重复调用复用原 proposal。
+- `POST .../builder/conversations/{id}/records` 对 proposal_id 做 server-side ownership 校验，拒绝随机或跨 operation proposal reference。
+- 本 Slice 没有真实 Provider、Confirm/Apply、Run、服务重启、stage、commit 或 push。没有修改既有 acceptance Project。
+- 验证：focused **129 passed**；full `make check` **720 passed**；Ruff/format/dependency lock/mypy 188 source files；Web Desktop 472 / Community 22，typecheck/build；`git diff --check` clean。保留 Alembic `path_separator`、jsdom Canvas stderr 和 Desktop large-chunk warnings。
+- 下一步：仅在用户单独授权后做 Builder Real Provider Re-Acceptance #3；要求 proposal-only、稳定 proposal reload、truthful Condition、零 Agent/Run mutation。Confirm/Apply/Release Audit 仍未执行。
+
+## Server Execution Plane V1（2026-09-25，最新）
+
+- Branch/HEAD 仍为 `codex/agent-platform` / `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；
+  dirty worktree 全部保留，不 commit、不 push、不 reset/clean/stash/rebase。
+- Cloud DB 已 forward-only 到 `community_0015_cloud_runs`，Local DB 为
+  `local_0031_project_artifact_sync_state`。新增 migration 不修改旧 revision。
+- Platform Provider、User Runtime Credential、Device Credential 已分域。Cloud API key
+  只以 AES-GCM ciphertext 存储；master key 不进 SQLite；API/Artifact/Proposal/Conversation/
+  Run event/result/evidence 不含 plaintext secret。解析顺序 Agent > Project > account default，
+  无 Platform key fallback。
+- Cloud Run 已覆盖 immutable Agent Version integrity、Cloud File ownership、Model/
+  Transform/Condition/Verifier/Output/HumanApproval、Tool `local_host_required`、durable
+  events/SSE、approval、stop、retry lineage、resume checkpoint、restart recovery。Cloud
+  Host 不导入 Local app/SQLite。
+- Builder `create_agent` waiting operation 仍是 durable Local Conversation state；Cloud
+  credential selection 先写入 Cloud Project `primary_model` binding，再用显式
+  `credential_scope=cloud` 恢复 operation。普通 Chat 不要求 Runtime Credential。
+- Focused **8 passed**；Cloud **27 passed**；backend full **767 passed / 399 warnings**、
+  mypy **234 source files**、Ruff/dependency lock PASS；Desktop **487 passed / 66 files**、
+  Community **23 passed / 4 files**；typecheck/build PASS。真实 mock Cloud acceptance 与
+  restart persistence 通过。Real Provider / Real Runtime Model / Real Agent Model Run：
+  **NOT RUN**；没有新的 Cloud 页面或 UI redesign。
+- 下一步只有用户单独授权后再做 **Builder Real Provider Re-Acceptance #3**；不要自动进入
+  Workflow Builder、RAG、Community 扩展或真实 Provider 请求。
+- Web closure：5174 当前默认是 authenticated Cloud Workspace，`#/showcase` 保留公开展示；
+  Web 页面只走 Cloud API，不暴露 Local Host 能力。Desktop 仍是 Local Host + Cloud 的完整
+  工作台。
+- Deployment/packaging：production compose now selects Cloud Host, requires PostgreSQL/S3/
+  credential master key/auth/origin/CORS settings, and Cloud readiness checks DB/blob/cipher.
+  Fresh/copy SQLite migrations and PostgreSQL SQL audit pass; live PostgreSQL NOT RUN because
+  Docker is unavailable. Package static smoke PASS; macOS Cargo build and signing/notarization
+  NOT RUN because tools/Apple credentials are unavailable.
+- Share/cross-client evidence: isolated two-account API harness proved Publish → Discover →
+  Star → Download → Local Import Preview (no mutation before Confirm) → Draft → Local Run;
+  authenticated Web/Desktop simulation proved shared project/conversation/run IDs. Real
+  Browser E2E remains NOT RUN because Chrome debugger is unavailable.
+
+## Cloud Files & Library Foundation #1（2026-09-25，已完成）
+
+- 当前仍为 `codex/agent-platform` / HEAD
+  `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；保护全部既有 dirty worktree，
+  不 commit、不 push、不 reset/clean/stash/rebase。
+- Cloud migration 已 forward-only 从 `community_0011_project_artifacts` 升级到
+  `community_0012_cloud_files`，真实 8772 已重启到该 head；Local 保持
+  `local_0031_project_artifact_sync_state`。新增 `cloud_files` 和
+  `cloud_project_file_references`，没有把 Cloud bytes 放入 SQLite。
+- 新增 `cloud/files/BlobStore` 与 `FilesystemBlobStore`。Cloud File upload 通过
+  temporary object 流式计算 SHA-256/size，超过配置 limit 或中断时不产生 active
+  metadata；finalize 使用 server-generated key。API 只返回 file_id、文件 metadata、
+  hash 和 lifecycle，不返回 owner/storage path/storage key。
+- Cloud routes：`/api/v1/cloud/files` 的 list/upload/get/content/delete，以及
+  `/api/v1/cloud/projects/{project_id}/files` 的 list/attach/detach。Project reference
+  是 relation，不复制 blob；跨账号 list/get/download/attach/delete 非披露 404；
+  referenced file delete 为 409 `file_in_use`。
+- Local routes/client 提供显式安全 materialize foundation（仅 `assets/` / `knowledge/`，
+  hash/size 校验，拒绝 traversal/symlink）以及 Knowledge `cloud_file` source-ref。
+  Project Artifact envelope 只携带 file identity metadata，不携带 bytes；不自动上传
+  Local Project，不自动 index Knowledge。
+- 真实 acceptance：Chrome 真实打开并确认既有账号、Sidebar、Artifact Project 页面正常；
+  Cloud upload/attach/download 使用 isolated authenticated acceptance harness。验收记录：
+  首次 upload/list/get/download/attach 通过；重启 8772 后 metadata/blob/download 通过；
+  detach/delete/archive 清理通过，最终 blob count=0。没有真实 Provider、Runtime 或
+  Agent Run。Harness 不是纯 UI upload E2E，页面与 API 证据边界已明确记录。
+- 最终 gate：backend **754 passed / 399 warnings**，mypy **216 source files**；Desktop
+  **484 passed / 64 files**，Community **22 passed / 3 files**；typecheck/build PASS，
+  `git diff --check` PASS。不要复用上一 Slice 的 746/482 作为本轮数字。
+- Verdict：**CLOUD FILES & LIBRARY FOUNDATION #1 COMPLETE**。下一阶段候选是
+  **Cloud Chat & Conversation Persistence #1**，但不自动进入。
+
+## Existing Chat Server Authority & Cross-Client Persistence #1（2026-09-25，已完成）
+
+- 当前仍为 `codex/agent-platform` / HEAD
+  `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；保留全部既有 dirty worktree，
+  不 commit、不 push、不 reset/clean/stash/rebase。
+- 当前原始 Chat authority 已审计为 Local Builder：`ProjectBuilderConversation` →
+  LocalApiClient → Local `BuilderConversationService` / `BuilderConversationStore`，
+  数据位于 Local `builder_conversations`、`builder_messages`、`builder_operations`。
+  Agent Runtime conversations 和 Factory sessions 仍是不同的 Local domain，本轮没有
+  把它们错误合并成 Chat。
+- 新增 Cloud migration `community_0013_conversations`，Cloud 8772 已重启到该 head。
+  Server Conversation/Message API 是账号级 authority，包含 Project/Agent relation、
+  revision、stable message sequence、idempotent message_id、operation/proposal/event refs、
+  attachment Cloud File refs、owner isolation 和 archive/restore。
+- 新增 shared Cloud contracts 与 connected-account client。Desktop 新增
+  `ConversationMigrationCoordinator`：账号 session 可用时从现有 Local Builder snapshots
+  做 stable-ID import；不删除 Local rows。Recent 读取 Server list，旧 Local API 只作为
+  server unavailable 的 cache/执行 bridge；没有新增 Cloud Chat 页面，没有长期双主 Chat
+  sync，也没有把 Server 代码依赖到 8771、Local SQLite 或本机路径。
+- Message attachment 只保存当前 owner 的 `cloud_file_id` 及服务端 metadata snapshot；
+  不保存 bytes、API key、credential、Keychain、session token、absolute/local path。
+- 真实 API acceptance：A/B 两个账号会话模拟 Desktop/Web；同一 conversation_id 读取
+  M1、追加 M2，另一端重新读取 M1/M2；同一 Cloud File attachment ref 可见并可下载；
+  8772 restart 后 Conversation、Messages、Project relation、attachment ref 保持，最后
+  清理 acceptance 数据。没有 Real Platform Provider、Runtime Provider 或 Agent Run。
+- 最终 gate：backend **758 passed / 399 warnings**，mypy **221 source files**；Desktop
+  **486 passed / 65 files**，Community **22 passed / 3 files**；typecheck/build PASS，
+  `git diff --check` PASS。Focused Cloud Conversation **4 passed**、migration coordinator
+  **2 passed**。UI 没有大改；本轮尝试打开现有 Chat 页面时 Chrome debugger connection
+  不可用，因此不把页面检查伪称为通过；数据 cross-client 证据使用 authenticated API
+  harness。
+- Verdict：**EXISTING CHAT SERVER AUTHORITY #1 COMPLETE**。下一阶段只可在单独授权后评估
+  **Server Credential Vault & Cloud Runtime Foundation**，不自动进入。
+
+## Canonical create_agent Proposal Confirm / Apply identity closure（2026-09-24，本地 dirty slice）
+
+- 当前仍在 `codex/agent-platform` / HEAD `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；既有 dirty 范围全部保留。本 Slice 没有 Provider、真实 Run、服务重启、stage、commit 或 push。
+- canonical Builder create-agent 的 Apply authority 现在是持久化 `edit_proposals` Proposal snapshot，不是可变 Factory session Blueprint。Proposal 保存 source/behavior/lock hashes；Apply 校验四重归属、依赖 readiness 和完整 hash，再 preserve identity 安装 exact source。
+- Builder Desktop Confirm/Reject 已使用 `.../agent-proposals/{proposal_id}/commands`；旧 direct Factory apply 仅作为兼容路径。Apply 后 Factory session 由 canonical result 关闭；同一 Proposal 重复 Apply 不新增 Agent、不追加终态 event/result。Rejected、跨 operation/Project、身份冲突和 tampered snapshot 均拒绝。
+- 回归：canonical Apply + mutable session drift + idempotent replay、Reject 后 Apply、tampered Proposal snapshot，以及已有 Custom Component lifecycle；本 Slice 的 backend/web gates 已完成。不要把这些 local/scripted 证据称为 real-provider/browser/release acceptance。
+- 最终 local gates：Builder conversation **32 passed**；backend `make check` **724 passed**，Ruff/mypy **188 source files**；Desktop **472**、Community **22**，双端 typecheck/build；services 保持停止，未做 real Provider、Browser、Run、restart、commit 或 push。
+
+## Credential Storage Foundation V2 + Applied Agent Local Runtime Closure（2026-09-25，本地 dirty slice）
+
+- 当前仍在 `codex/agent-platform`；保留既有 dirty worktree。本轮没有真实 Moonshot/外部 Runtime 请求、没有 commit 或 push。
+- Platform Builder Provider 与 User Runtime Provider 仍严格分域。新增 `local_0029_provider_credential_scope`；Local Credential API 当前只支持 `credential_scope=device`，`cloud` 只作为 future seam，不伪造 Cloud Vault。
+- `DeviceSecretStore` 通过 `keyring` 选择系统 credential backend：macOS Keychain、Windows Credential Manager、Linux Secret Service/KWallet。业务层不依赖 OS API；null、file、alternate-file backend 会 fail closed。SQLite 只保存 metadata + opaque `secret_ref`。
+- Credential metadata 增加动态 `secret_state` / `readiness`：系统 secret 缺失显示 `needs_reentry`，backend 不可用显示 `unavailable`；不删除 stale metadata、不伪装 active、正常 Local API 不使用 MemorySecretStore。
+- Phase A acceptance：使用本地 `127.0.0.1:8790` synthetic Mock，通过正式 Replace Credential API 写入 device store；8771 停止并按正常入口重启后 metadata 与 secret resolver 均恢复；API/SQLite/Project/export 扫描无 secret。
+- Applied Agent 已确认 active：Project `01a0cee5-90fb-78f4-99ab-e42e9a6365c9`，Agent `01a0d4ae-3f45-7dba-a40e-fecd9ec7a2a1`，`Request Review Agent`。未重新调用 Builder Provider。修复了 Applied source 的输出命名残留 `status-2 → status`，通过正式 Draft → Validate → Commit 生成 immutable version `01a0d6da-2f8e-7ff6-a933-30f2f32bd313`；并修复 Runtime model output 与同名 input 的解析边界。
+- Runtime binding：Project `primary_model` → Browser Mock Runtime / `openai_compatible` / `mock-model`，source=project，scope=device。Studio Canvas 与 Test Run 面板均显示已绑定；Catalog 的静态 Model `requires_configuration` 与 Agent Instance Runtime binding 分开显示。
+- Final local Runtime A：`01a0d6dd-9cf1-763a-b656-524be469d4ee`，approved branch only，输出 status=approved 和 Approved summary。Final local Runtime B：`01a0d6dd-9ddb-7675-af9e-708b8a10a67c`，non-approved branch only，输出 status=pending 和 further-review summary。两次均为 `unverified`（Mock 没有独立 verifier），不是失败。
+- Model evidence 只包含 provider/model/credential_type=user/credential_alias/credential_scope=device，不包含 secret。网络边界只使用 localhost Mock；Phase B 未请求 `api.moonshot.cn`、OpenAI、Anthropic 或 OpenRouter。
+- 最终验证：backend full `make check` **733 passed**、mypy **190 source files**；Desktop **475 passed**、Community **22 passed**；Desktop typecheck/build 通过；真实 Studio Browser acceptance 通过；`git diff --check` clean。保留既有 jsdom Canvas stderr 与 Desktop large-chunk warning。下一步不自动进入 Cloud Host Foundation 或其它模块。
+
+## Project Sync Foundation #1（2026-09-25，当前切片）
+
+- 用户最新产品决定：Local Project 和 Cloud Project 不是两个产品。当前唯一
+  Create Project 入口先写 Local Working Copy，再以同一 project_id ensure
+  Cloud Replica；Cloud UI 卡片、独立创建页和独立 Sidebar 项目均已撤回。
+- 新增 Cloud migration community_0010_project_sync_revision，Local migration
+  local_0030_project_sync_state。当前真实数据库已 forward-only 升级：
+  Community community_0010_project_sync_revision，Local
+  local_0030_project_sync_state。既有账号、Local Projects 和上一轮
+  Cloud Foundation Acceptance 数据保留。
+- 代码边界：Cloud ensure/pull/push 使用 explicit UUIDv7 identity 与 monotonic
+  revision；Local ProjectSyncService 只管理 SQLite sync metadata；Desktop
+  ProjectSyncCoordinator 调用 Cloud API，不把 HttpOnly Cookie 传给 8771。只
+  同步 metadata，不进入 Artifact/Agent/Workflow/File/Chat。
+- 实际 Browser acceptance（Chrome 真实页面，不是 jsdom）：登录测试账号后用原
+  新建项目入口创建 Project Sync Acceptance 20260925-1400，Local 与 Cloud
+  project_id 均为 01a0d724-7230-7208-b0a7-5a7543fcf9cc，Local state synced、
+  Cloud revision 1；刷新后侧边栏只有一个该 Project。停止 8772 后用同一入口
+  创建 Project Sync Offline Acceptance 20260925-1400，Local 成功、state=
+  pending_upload、Cloud 尚无行；恢复 8772 并刷新后自动 retry，变为 synced、
+  Cloud 使用同一 project_id、revision 1。
+- 当前服务：8771/8772 已重启并 health/readiness ready；5173 原进程继续提供页面。
+  没有真实 Platform Provider、Runtime Provider 或 Agent Run 请求。
+- 最终门禁已通过：backend make check **741 passed**、Ruff/format/依赖锁、mypy
+  **201 source files**；Desktop **479 passed**、Community **22 passed**；两端
+  typecheck/build；Coordinator focused **4 passed**、Local sync integration
+  **2 passed**；git diff --check clean。保留既有 Alembic path_separator、
+  jsdom Canvas stderr 和 Desktop large-chunk warnings。不要 commit、push，也不要
+  进入 Project Artifact Sync #2。
+
+## Project Artifact Sync #2（2026-09-25，已完成）
+
+- 当前仍为 codex/agent-platform / HEAD 0ad7a3e0b2a11ccf9186f23dab40628375509c73，
+  保护原有 dirty worktree，不 commit、不 push、不清理其它 session 状态。
+- 前置 migration 已按 forward-only 继续到 local_0031_project_artifact_sync_state
+  与 community_0011_project_artifacts。真实 Local/Cloud 服务已重启到新 head。
+- 新增统一 portable Artifact envelope 与 Cloud project_artifacts persistence，支持
+  agent、agent_version、workflow、custom_component、knowledge_metadata。Cloud
+  Artifact manifest/get/put 已有 owner isolation、per-artifact revision、immutable
+  hash integrity 和 payload forbidden-field validation。
+- Local discovery/materialize API 已接入现有 AgentSource/WorkflowSource/
+  CustomComponentDefinition/Knowledge metadata；pull 不写 raw Knowledge，不带 local
+  path、credential 或 Runtime state。新增 second-device Local integration test，已
+  验证 Agent、Workflow、Knowledge metadata materialization。
+- Desktop ProjectArtifactSyncCoordinator 已实现 dependency order、delta push、pull、
+  no-op、pending/conflict 结果；UI 没有新增页面或视觉入口。真实 Chrome 已打开
+  Artifact Sync Acceptance Project 并触发 Local artifact discovery；同一验收 Project
+  的初始 4 个 artifact 已通过 authenticated local acceptance harness 写入 Cloud，Cloud
+  rows 为 agent、agent_version、workflow、knowledge_metadata，均 revision 1。随后真实
+  Chrome 创建的第二个 Agent 也完成上传并记录 Local synced；该 Agent 做了一次 Cloud
+  revision 2 -> Local materialize 的 round-trip，描述变更已在 Local 生效。没有真实
+  Provider/Runtime/Agent Run。
+- 最终 gate 已通过：Cloud/Local Artifact 与 Project Sync focused **31 passed**；
+  Desktop Artifact Coordinator **5 passed**、既有 Project Sync **4 passed**；Local
+  second-device materialization **3 passed**；backend `make check` **746 passed**、
+  mypy **208 source files**、Ruff/format/依赖锁 PASS；Desktop **482 passed**、
+  Community **22 passed**；typecheck/build/git diff check PASS。真实 Chrome 页面触发
+  Project artifact discovery，初始 4 个 artifact 及第二个 Agent 均已写入 Cloud 并记录 Local synced；
+  不要自动进入 Cloud Files。
+
+## Condition Semantic Contract + Canonical Proposal Identity Hardening（2026-09-24，本地 dirty slice）
+
+- 继续使用 `codex/agent-platform` / HEAD `0ad7a3e0b2a11ccf9186f23dab40628375509c73`；保留 Community/Showcase、Sidebar/scroll、Custom Component、Branch Semantics、`.backboard` 与 `$DB` 等既有 dirty 范围。
+- 版本审计结论：`8bef91c → 0ad7a3e` 是大范围能力扩展，不是代码整体退化；当前真实问题集中在 Condition executable boundary、Factory Proposal persistence 与未完成的 release evidence。
+- Condition Runtime grammar 是 `==` / `!=` + string/boolean/integer literal。新增 `condition_expression` 与 `purpose` 分离；普通自然语言分类无可执行表达式时 fail closed；不引入隐式 Model classifier、`eval` 或 generic intermediate state。
+- `edit_proposals` 复用为 canonical Builder creation Proposal store，新增 `proposal_kind=create_agent`、candidate snapshot/provenance，并通过 `local_0027_builder_creation_proposals` 以 `project_id + builder_operation_id` 做唯一关联。Proposal、operation.proposal_id 和 ready event 在同一 SQLite transaction 中 materialize；重复调用复用原 proposal。
+- `POST .../builder/conversations/{id}/records` 对 proposal_id 做 server-side ownership 校验，拒绝随机或跨 operation proposal reference。
+- 本 Slice 没有真实 Provider、Confirm/Apply、Run、服务重启、stage、commit 或 push。没有修改既有 acceptance Project。
+- 验证：focused **118 passed**；full `make check` **720 passed**；Ruff/format/dependency lock/mypy 188 source files；Web Desktop 472 / Community 22，typecheck/build；`git diff --check` clean。保留 Alembic `path_separator`、jsdom Canvas stderr 和 Desktop large-chunk warnings。
+- 下一步：仅在用户单独授权后做 Builder Real Provider Re-Acceptance #3；要求 proposal-only、稳定 proposal reload、truthful Condition、零 Agent/Run mutation。Confirm/Apply/Release Audit 仍未执行。

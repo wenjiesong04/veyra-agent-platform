@@ -1,162 +1,521 @@
-import { ArrowLeft, Download, GitFork, Globe2, RefreshCw, Search, ShieldCheck } from "lucide-react";
-import { communityRoutePaths, desktopRoutePaths, projectRoutePaths, type CommunityRegistryEntry } from "@veyra/api-contracts";
-import { Button, EmptyState, ErrorState, LinkButton, ListSkeleton, LoadingState, Panel, SectionHeading, StatusBadge, Tag, toast, useLocale } from "@veyra/ui";
-import { useAuth } from "@veyra/connected-account";
+import { ArrowRight, Bookmark, Bot, Boxes, CheckCircle2, CircleAlert, Clock3, FilePenLine, FolderKanban, LayoutGrid, LayoutTemplate, List as ListIcon, Mail, MessageSquare, PackageCheck, PackageOpen, Search, Star, Workflow } from "lucide-react";
+import { communityRoutePaths, type CommunityPluginEntry, type CommunityRegistryEntry } from "@veyra/api-contracts";
+import { EmptyState, ErrorState, LinkButton, ListSkeleton, Panel, StatusBadge, toast, useLocale } from "@veyra/ui";
+import { accountInitials, CommunityApiError, CommunitySectionNav, useAuth, type CommunitySection } from "@veyra/connected-account";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useProjectWorkspace } from "../api/project-workspace";
+import { CommunityCatalogCard, CommunityCatalogTable, agentCatalogCard, pluginCatalogCard, type CatalogCard } from "../features/community/community-agent-card";
+import { CommunityReleaseDetail } from "../features/community/community-release-detail";
 import { CommunityPublishPanel } from "../features/community/community-publish-panel";
-import { CommunityFeedbackPanel } from "../features/community/community-feedback-panel";
-import { CommunityCapabilitySummary } from "../features/community/community-capability-summary";
 import { CommunityModerationPanel } from "../features/community/community-moderation-panel";
 import { CommunityPluginPanel } from "../features/community/community-plugin-panel";
 import { CommunityPluginModerationPanel } from "../features/community/community-plugin-moderation-panel";
-import { useCallback, useEffect, useState } from "react";
 import { NotFoundPage } from "./not-found";
 
-export function CommunityPage({ owner, slug, versionId }: { owner?: string; slug?: string; versionId?: string }) {
+type CommunitySort = "recent" | "stars" | "rating";
+type ReleaseFilter = "all" | "published" | "quarantined" | "rejected";
+type CatalogFilter = "all" | "agent" | "plugin" | "workflow" | "skill" | "tool";
+type CommunityViewMode = "grid" | "list";
+const COMMUNITY_VIEW_STORAGE = "veyra.community-view-mode.v1";
+
+function readCommunityViewMode(): CommunityViewMode {
+  try {
+    return window.localStorage.getItem(COMMUNITY_VIEW_STORAGE) === "list" ? "list" : "grid";
+  } catch {
+    return "grid";
+  }
+}
+function releaseKey(entry: CommunityRegistryEntry): string {
+  return `${entry.owner_handle}/${entry.slug}/${entry.version}`;
+}
+
+export function CommunityPage({
+  section = "discover",
+  owner,
+  slug,
+  versionId,
+}: {
+  section?: CommunitySection;
+  owner?: string;
+  slug?: string;
+  versionId?: string;
+}) {
   const { locale } = useLocale();
-  const { api } = useAuth();
+  const { api, account } = useAuth();
   const { api: localApi, projects, refresh: refreshProjects } = useProjectWorkspace();
   const zh = locale === "zh";
-  const copy = zh ? {
-    backCommunity: "返回社区",
-    eyebrow: "社区注册表",
-    title: "社区 Agent 注册表",
-    unavailableTitle: "社区目录暂时不可用。",
-    description: "浏览已发布的 Agent 版本，先检查来源和哈希，再下载到本机 Project 导入。Community 不会执行下载的 Agent。",
-    openAccount: "打开账号",
-    emptyTitle: "还没有已发布的 Agent",
-    emptyDetail: "发布后的 Agent 版本会出现在这里。下载后仍需在本机 Project 中再次导入和校验。",
-    lineageTitle: "导入是第二道验证边界。",
-    lineageDetail: "包会携带哈希、权限、兼容性和来源信息；本机导入前会再次检查。现在没有可检查的远程条目。",
-  } : {
-    backCommunity: "Back to Community",
-    eyebrow: "Community registry",
-    title: "Community Agent registry",
-    unavailableTitle: "The Community catalog is not connected.",
-    description: "Browse published Agent versions, inspect provenance and hashes, then download them for local Project import. Community never executes downloaded Agents.",
-    openAccount: "Open account",
-    emptyTitle: "No published Agents yet",
-    emptyDetail: "Published Agent versions will appear here. Downloaded packages still require local Project import and validation.",
-    lineageTitle: "Import is a second validation boundary.",
-    lineageDetail: "Packages carry hashes, permissions, compatibility, and provenance; local import checks them again before use. There is nothing remote to inspect yet.",
-  };
+  const isDetail = Boolean(owner && slug);
   const [entries, setEntries] = useState<CommunityRegistryEntry[]>([]);
+  const [plugins, setPlugins] = useState<CommunityPluginEntry[]>([]);
+  const [discoverFilter, setDiscoverFilter] = useState<CatalogFilter>("all");
+  const [starredFilter, setStarredFilter] = useState<CatalogFilter>("all");
+  const [viewMode, setViewMode] = useState<CommunityViewMode>(readCommunityViewMode);
+  const [starredKeys, setStarredKeys] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<CommunityRegistryEntry | null>(null);
   const [versions, setVersions] = useState<CommunityRegistryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [downloading, setDownloading] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [targetProjectId, setTargetProjectId] = useState("");
   const [query, setQuery] = useState("");
+  const [collectionQuery, setCollectionQuery] = useState("");
+  const [sort, setSort] = useState<CommunitySort>("recent");
+  const [releaseFilter, setReleaseFilter] = useState<ReleaseFilter>("all");
+  const [publishKind, setPublishKind] = useState<"agent" | "plugin">("agent");
+  const [notice, setNotice] = useState("");
+
+  const copy = zh ? {
+    search: "搜索 Agent 名称或描述",
+    sort: "排序",
+    recent: "最近发布",
+    stars: "收藏数",
+    rating: "评分",
+    refresh: "刷新",
+    noAgents: "还没有发布的 Agent",
+    noAgentsDetail: "发布前会先在本机预览并确认，Community 只保存版本，不执行 Agent。",
+    noPublished: "你还没有发布 Agent 版本",
+    noPublishedDetail: "先从本地 Project 选择一个 Agent，检查预览后再发布。发布包不包含 Run 历史或 Knowledge 正文。",
+    noStarred: "还没有收藏版本",
+    noStarredDetail: "在发现页或版本详情中收藏 Agent，之后可以从这里回来。",
+    minePublish: "发布到社区",
+    minePublishDetail: "从本机 Project 选择 Agent，检查权限、依赖和来源后再发布。Community 只保存不可变版本，不执行 Agent。",
+    publishedRecords: "查看已发布",
+    filters: { all: "全部", published: "已发布", quarantined: "审核中", rejected: "已拒绝" },
+    publishedCount: "已发布",
+    reviewCount: "审核中",
+    rejectedCount: "已拒绝",
+    starTotal: "总收藏",
+    releases: "版本记录",
+    noMatches: "没有匹配的 Agent",
+    retry: "重试",
+    publishQueued: "版本已进入审核队列，审核通过后才会公开。",
+    publishComplete: "Agent 版本已发布。",
+    sectionApiUnavailable: "当前 Community 服务尚未提供此列表接口；更新服务后可重试。",
+  } : {
+    search: "Search Agent names or descriptions",
+    sort: "Sort",
+    recent: "Recently published",
+    stars: "Most starred",
+    rating: "Top rated",
+    refresh: "Refresh",
+    noAgents: "No published Agents yet",
+    noAgentsDetail: "Review and confirm the local publication preview. Community stores immutable releases and never executes Agents.",
+    noPublished: "You have not published an Agent release yet",
+    noPublishedDetail: "Choose an Agent from a local Project, inspect its preview, then publish it. Run history and Knowledge bodies are not part of the package.",
+    noStarred: "No starred releases yet",
+    noStarredDetail: "Star an Agent from Discover or its release page to save it here.",
+    minePublish: "Publish to Community",
+    minePublishDetail: "Choose an Agent from a local Project and review permissions, dependencies, and provenance before publishing. Community stores immutable releases and never executes Agents.",
+    publishedRecords: "View published",
+    filters: { all: "All", published: "Published", quarantined: "In review", rejected: "Rejected" },
+    publishedCount: "Published",
+    reviewCount: "In review",
+    rejectedCount: "Rejected",
+    starTotal: "Total stars",
+    releases: "Release history",
+    noMatches: "No Agents match this search",
+    retry: "Retry",
+    publishQueued: "The release is in the moderation queue and will appear publicly after approval.",
+    publishComplete: "Agent release published.",
+    sectionApiUnavailable: "This Community service has not loaded the Published/Starred list API yet. Update the service, then retry.",
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      if (owner && slug) {
+      if (isDetail && owner && slug) {
         const [entry, history] = await Promise.all([
           api.getRegistryAgent(owner, slug, versionId),
           api.listRegistryAgentVersions(owner, slug),
         ]);
         setSelected(entry);
         setVersions(history);
+        setEntries([]);
       } else {
         setSelected(null);
         setVersions([]);
-        setEntries(await api.listRegistryAgents(query));
+        const releases = section === "published" || section === "mine"
+          ? await api.listMyRegistryAgents()
+          : section === "starred"
+            ? await api.listStarredRegistryAgents()
+            : await api.listRegistryAgents(query);
+        setEntries(releases);
+        if (section === "discover") {
+          try {
+            setPlugins(await api.listRegistryPlugins(query));
+          } catch {
+            setPlugins([]);
+          }
+        } else {
+          setPlugins([]);
+        }
+        if (section === "starred") {
+          setStarredKeys(new Set(releases.map(releaseKey)));
+        } else {
+          try {
+            const starred = await api.listStarredRegistryAgents();
+            setStarredKeys(new Set(starred.map(releaseKey)));
+          } catch {
+            // Lists remain usable when the account Star endpoint is unavailable.
+            setStarredKeys(new Set());
+          }
+        }
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (zh ? "Community 注册表暂时不可用。" : "The Community registry is unavailable."));
+      const missingSectionApi = (section === "published" || section === "starred")
+        && cause instanceof CommunityApiError
+        && cause.status === 404;
+      setError(missingSectionApi
+        ? copy.sectionApiUnavailable
+        : cause instanceof Error
+          ? cause.message
+          : (zh ? "Community 注册表暂时不可用。" : "The Community registry is unavailable."));
+      setSelected(null);
+      setEntries([]);
+      setPlugins([]);
+      setStarredKeys(new Set());
     } finally {
       setLoading(false);
     }
-  }, [api, owner, query, slug, versionId, zh]);
-  useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); }, query.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [load, query]);
-  useEffect(() => {
-    if (projects.some((project) => project.project_id === targetProjectId)) return;
-    setTargetProjectId(projects[0]?.project_id ?? "");
-  }, [projects, targetProjectId]);
+  }, [api, isDetail, owner, query, section, slug, versionId, zh]);
 
-  const download = async () => {
-    if (!selected) return;
-    setDownloading(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, section === "discover" && query.trim() ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [load, query, section]);
+
+  useEffect(() => {
     try {
-      const blob = await api.downloadRegistryAgent(selected.owner_handle, selected.slug, selected.version);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${selected.slug}-${selected.version}.vagent.yaml`;
-      link.click();
-      URL.revokeObjectURL(url);
-      toast.success(zh ? "已开始下载。" : "Download started.");
+      window.localStorage.setItem(COMMUNITY_VIEW_STORAGE, viewMode);
+    } catch {
+      // View preference is optional; the page remains usable without storage.
+    }
+  }, [viewMode]);
+
+  const visibleEntries = useMemo(() => {
+    const filtered = section === "published" && releaseFilter !== "all"
+      ? entries.filter((entry) => entry.status === releaseFilter)
+      : section === "starred" && collectionQuery.trim()
+        ? entries.filter((entry) => `${entry.name} ${entry.description} ${entry.owner_handle}`.toLowerCase().includes(collectionQuery.trim().toLowerCase()))
+        : entries;
+    if (section !== "discover" && section !== "starred") return filtered;
+    return [...filtered].sort((left, right) => sort === "stars"
+      ? right.star_count - left.star_count
+      : sort === "rating"
+        ? right.average_rating - left.average_rating || right.review_count - left.review_count
+        : (right.published_at ?? right.created_at).localeCompare(left.published_at ?? left.created_at));
+  }, [collectionQuery, entries, releaseFilter, section, sort]);
+
+  const starEntry = async (entry: CommunityRegistryEntry) => {
+    try {
+      const feedback = await api.starRegistryAgent(entry.owner_handle, entry.slug, entry.version);
+      setEntries((current) => current.map((item) => item.owner_handle === entry.owner_handle && item.slug === entry.slug && item.version === entry.version
+        ? { ...item, star_count: feedback.star_count, review_count: feedback.review_count, average_rating: feedback.average_rating }
+        : item));
+      setStarredKeys((current) => new Set(current).add(releaseKey(entry)));
+      toast.success(zh ? "已收藏这个版本。" : "Release starred.");
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : (zh ? "下载失败。" : "Download failed."));
-    } finally {
-      setDownloading(false);
+      toast.error(cause instanceof Error ? cause.message : (zh ? "收藏失败。" : "Could not star this release."));
+      throw cause;
     }
   };
-  const importToProject = async () => {
-    if (!selected || !targetProjectId) return;
-    setImporting(true);
-    setError("");
+
+  const unstarEntry = async (entry: CommunityRegistryEntry, removeFromList = true) => {
     try {
-      const blob = await api.downloadRegistryAgent(selected.owner_handle, selected.slug, selected.version);
-      const file = new File([blob], `${selected.slug}-${selected.version}.vagent.yaml`, { type: "application/yaml" });
-      const imported = await localApi.importAgent(targetProjectId, {
-        file,
-        community_origin: {
-          owner_handle: selected.owner_handle,
-          slug: selected.slug,
-          version: selected.version,
-          source_hash: selected.source_hash,
-          imported_at: selected.published_at || selected.created_at,
-        },
+      const feedback = await api.unstarRegistryAgent(entry.owner_handle, entry.slug, entry.version);
+      setEntries((current) => removeFromList
+        ? current.filter((item) => !(item.owner_handle === entry.owner_handle && item.slug === entry.slug && item.version === entry.version))
+        : current.map((item) => item.owner_handle === entry.owner_handle && item.slug === entry.slug && item.version === entry.version
+          ? { ...item, star_count: feedback.star_count, review_count: feedback.review_count, average_rating: feedback.average_rating }
+          : item));
+      setStarredKeys((current) => {
+        const next = new Set(current);
+        next.delete(releaseKey(entry));
+        return next;
       });
-      void refreshProjects().catch(() => undefined);
-      toast.success(zh ? "已导入到 Project。" : "Imported into Project.");
-      window.location.hash = projectRoutePaths.agentDesign(targetProjectId, imported.agent_id);
+      toast.success(zh ? "已取消收藏。" : "Release unstarred.");
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : (zh ? "导入本地 Project 失败。" : "Local Project import failed."));
-    } finally {
-      setImporting(false);
+      toast.error(cause instanceof Error ? cause.message : (zh ? "取消收藏失败。" : "Could not remove this Star."));
+      throw cause;
     }
   };
-  const onPublished = useCallback((entry: CommunityRegistryEntry) => {
+
+  const onPublished = (entry: CommunityRegistryEntry) => {
     setEntries((current) => [entry, ...current.filter((item) => !(item.owner_handle === entry.owner_handle && item.slug === entry.slug && item.version === entry.version))]);
     if (entry.status === "published") {
+      setNotice(copy.publishComplete);
       window.location.hash = communityRoutePaths.version(entry.owner_handle, entry.slug, entry.version);
     } else {
-      setError(zh ? "版本已进入审核队列，审核通过后才会出现在公开目录。" : "The version is in the moderation queue and will appear publicly after approval.");
+      setNotice(copy.publishQueued);
     }
-  }, [zh]);
-  if (owner || slug || versionId) {
-    if (loading) return <LoadingState label={zh ? "正在读取社区 Agent…" : "Loading Community Agent…"} />;
-    if (error || !selected) return <NotFoundPage backHref={communityRoutePaths.catalog} backLabel={copy.backCommunity} />;
-    return <div className="page-stack"><div className="page-intro"><div><span className="ui-eyebrow">{copy.eyebrow}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><LinkButton href={communityRoutePaths.catalog} icon={ArrowLeft} variant="ghost">{copy.backCommunity}</LinkButton></div><Panel><div className="community-entry-header"><div><strong>{selected.owner_display_name || selected.owner_handle}</strong><small>@{selected.owner_handle} / {selected.slug}</small></div><Tag>v{selected.version}</Tag><StatusBadge label={selected.status} tone="good" /></div>{selected.fork_of ? <p className="resource-detail-muted">{zh ? "Fork 自" : "Forked from"} @{selected.fork_of.owner_handle}/{selected.fork_of.slug} v{selected.fork_of.version}</p> : null}<SectionHeading eyebrow={zh ? "版本证据" : "Version evidence"} title={zh ? "发布哈希" : "Published hashes"} detail={zh ? "下载前先核对不可变来源；导入时本机还会再次校验。" : "Check the immutable provenance before download; local import validates it again."} /><div className="settings-facts"><div><span>Source SHA-256</span><strong>{selected.source_hash}</strong></div><div><span>Behavior SHA-256</span><strong>{selected.behavior_hash}</strong></div><div><span>Lock SHA-256</span><strong>{selected.lock_hash}</strong></div><div><span>{zh ? "发布时间" : "Published"}</span><strong>{selected.published_at || selected.created_at}</strong></div></div>{selected.capabilities ? <CommunityCapabilitySummary capabilities={selected.capabilities} scan={selected.scan} zh={zh} /> : null}<div className="button-row"><Button icon={Download} variant="primary" disabled={downloading || importing} onClick={() => void download()}>{downloading ? "…" : (zh ? "下载 Agent" : "Download Agent")}</Button><select aria-label={zh ? "目标 Project" : "Target Project"} value={targetProjectId} onChange={(event) => setTargetProjectId(event.target.value)} disabled={importing || !projects.length}><option value="">{projects.length ? (zh ? "选择目标 Project" : "Choose a Project") : (zh ? "暂无本地 Project" : "No local Project")}</option>{projects.map((project) => <option value={project.project_id} key={project.project_id}>{project.name}</option>)}</select><Button variant="secondary" disabled={importing || !targetProjectId} onClick={() => void importToProject()}>{importing ? "…" : (zh ? "导入到 Project" : "Import to Project")}</Button></div>{versions.length > 1 ? <div className="community-version-list"><strong>{zh ? "版本列表" : "Versions"}</strong>{versions.map((item) => <a key={item.version} href={communityRoutePaths.version(item.owner_handle, item.slug, item.version)} className={item.version === selected.version ? "is-current" : ""}>v{item.version} · {item.source_hash.slice(0, 12)}</a>)}</div> : null}{error ? <ErrorState message={error} onRetry={() => void load()} /> : null}</Panel><CommunityFeedbackPanel entry={selected} communityApi={api} /></div>;
-  }
-  return (
-    <div className="page-stack">
-        <div className="page-intro">
-        <div>
-          <span className="ui-eyebrow">{copy.eyebrow}</span>
-          <h2>{error ? copy.unavailableTitle : copy.title}</h2>
-          <p>{copy.description}</p>
-        </div>
-        <div className="intro-actions"><label className="resource-library-search"><Search size={15} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索 Agent" : "Search Agents"} aria-label={zh ? "搜索 Agent" : "Search Agents"} /></label><Button icon={RefreshCw} variant="ghost" onClick={() => void load()} disabled={loading}>{zh ? "刷新" : "Refresh"}</Button><LinkButton href={desktopRoutePaths.account} icon={Globe2} variant="ghost">{copy.openAccount}</LinkButton></div>
-      </div>
-      {loading ? <Panel><ListSkeleton label={zh ? "正在读取社区目录…" : "Loading Community registry…"} /></Panel> : error ? <><ErrorState message={error} onRetry={() => void load()} /><Panel><EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} /></Panel></> : entries.length ? <Panel><SectionHeading eyebrow={zh ? "已发布" : "Published"} title={`${entries.length} ${zh ? "个版本" : "versions"}`} /><div className="run-list">{entries.map((entry) => <a className="run-row" href={communityRoutePaths.entry(entry.owner_handle, entry.slug)} key={`${entry.owner_handle}/${entry.slug}/${entry.version}`}><span className="run-state-icon"><Globe2 size={17} /></span><span className="row-copy"><strong>{entry.name}</strong><small>@{entry.owner_handle} · {entry.slug} · v{entry.version}</small><em>{entry.description}</em></span><StatusBadge label={entry.status} tone="good" /></a>)}</div></Panel> : <EmptyState icon={Globe2} title={copy.emptyTitle} detail={copy.emptyDetail} />}
-      {!loading && !error ? <CommunityPublishPanel projects={projects} localApi={localApi} communityApi={api} onPublished={onPublished} /> : null}
-      {!loading && !error ? <CommunityPluginPanel communityApi={api} localApi={localApi} /> : null}
-      {!loading && !error ? <CommunityPluginModerationPanel communityApi={api} /> : null}
-      {!loading && !error ? <CommunityModerationPanel communityApi={api} /> : null}
-      <Panel className="lineage-panel">
-        <div className="boundary-mark"><GitFork size={17} /></div>
-        <div><strong>{copy.lineageTitle}</strong><p>{copy.lineageDetail}</p></div>
-        <ShieldCheck size={19} />
-      </Panel>
+  };
+
+  if (isDetail && loading) return <div className="community-workspace"><CommunitySectionNav active="discover" /><Panel><ListSkeleton label={zh ? "正在读取社区 Agent…" : "Loading Community release…"} /></Panel></div>;
+  if (isDetail && (!selected || error)) return <NotFoundPage backHref={communityRoutePaths.catalog} backLabel={zh ? "返回发现" : "Back to Discover"} />;
+
+  const publishedCount = entries.filter((entry) => entry.status === "published").length;
+  const reviewCount = entries.filter((entry) => entry.status === "quarantined").length;
+  const rejectedCount = entries.filter((entry) => entry.status === "rejected").length;
+  const starTotal = entries.reduce((sum, entry) => sum + (entry.star_count ?? 0), 0);
+  const reviewTotal = entries.reduce((sum, entry) => sum + (entry.review_count ?? 0), 0);
+  const recentMine = [...entries]
+    .sort((left, right) => (right.published_at ?? right.created_at).localeCompare(left.published_at ?? left.created_at))
+    .slice(0, 4);
+  const releaseStatusLabel = (status: CommunityRegistryEntry["status"]) => status === "quarantined"
+    ? copy.filters.quarantined
+    : status === "rejected"
+      ? copy.filters.rejected
+      : copy.filters.published;
+  const releaseStatusTone = (status: CommunityRegistryEntry["status"]) => status === "published"
+    ? "good"
+    : status === "quarantined"
+      ? "warn"
+      : "bad";
+  const pendingItems = [
+    reviewCount > 0 ? {
+      key: "review",
+      tone: "warn" as const,
+      text: zh ? `${reviewCount} 个版本审核中` : `${reviewCount} release${reviewCount === 1 ? "" : "s"} in review`,
+      href: communityRoutePaths.published,
+    } : null,
+    rejectedCount > 0 ? {
+      key: "rejected",
+      tone: "bad" as const,
+      text: zh ? `${rejectedCount} 个版本被拒绝，等待修改` : `${rejectedCount} rejected release${rejectedCount === 1 ? "" : "s"} need changes`,
+      href: communityRoutePaths.published,
+    } : null,
+  ].filter((item): item is NonNullable<typeof item> => item !== null);
+  const toAgentCards = (list: CommunityRegistryEntry[], saved: boolean) => list.map((entry) => agentCatalogCard(entry, {
+    starred: saved || starredKeys.has(releaseKey(entry)),
+    onToggleStar: async () => {
+      if (saved || starredKeys.has(releaseKey(entry))) await unstarEntry(entry, saved);
+      else await starEntry(entry);
+    },
+  }));
+  const discoverPool = [...toAgentCards(entries, false), ...plugins.map(pluginCatalogCard)];
+  const discoverCards = discoverPool
+    .filter((card) => discoverFilter === "all" || card.kind === discoverFilter)
+    .sort((left, right) => sort === "stars"
+      ? (right.starCount ?? 0) - (left.starCount ?? 0)
+      : sort === "rating"
+        ? right.rating - left.rating
+        : (right.publishedAt ?? "").localeCompare(left.publishedAt ?? ""));
+  const pageCards = toAgentCards(visibleEntries, section === "starred").sort((left, right) => sort === "stars"
+    ? (right.starCount ?? 0) - (left.starCount ?? 0)
+    : sort === "rating"
+      ? right.rating - left.rating
+      : (right.publishedAt ?? "").localeCompare(left.publishedAt ?? ""));
+  const resultBar = <div className="community-result-bar">
+    <div className="community-view-toggle" role="group" aria-label={zh ? "切换显示方式" : "Change view mode"}>
+      <button type="button" className={viewMode === "grid" ? "is-active" : ""} aria-label={zh ? "卡片显示" : "Grid view"} aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}><LayoutGrid size={16} aria-hidden="true" /></button>
+      <button type="button" className={viewMode === "list" ? "is-active" : ""} aria-label={zh ? "按行显示" : "List view"} aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}><ListIcon size={16} aria-hidden="true" /></button>
     </div>
-  );
+    <select className="community-sort-select" aria-label={copy.sort} value={sort} onChange={(event) => setSort(event.target.value as CommunitySort)}><option value="recent">{section === "starred" ? (zh ? "最新收藏" : "Recently starred") : (zh ? "最新发布" : "Latest")}</option><option value="stars">{copy.stars}</option><option value="rating">{copy.rating}</option></select>
+  </div>;
+  const categoryTabs = (cards: CatalogCard[], active: CatalogFilter, onSelect: (kind: CatalogFilter) => void) => {
+    const counts = {
+      all: cards.length,
+      agent: cards.filter((card) => card.kind === "agent").length,
+      plugin: cards.filter((card) => card.kind === "plugin").length,
+      workflow: 0,
+      skill: 0,
+      tool: 0,
+    };
+    const labels = { all: zh ? "全部" : "All", agent: "Agent", plugin: "Plugin Pack", workflow: "Workflow", skill: "Skill", tool: zh ? "工具" : "Tools" };
+    return <div className="community-category-tabs" aria-label={zh ? "资源类型" : "Resource types"}>{(["all", "agent", "plugin", "workflow", "skill", "tool"] as const).map((kind) => <button type="button" key={kind} className={active === kind ? "is-active" : ""} onClick={() => onSelect(kind)}>{labels[kind]} {counts[kind]}</button>)}</div>;
+  };
+  const starredCards = pageCards.filter((card) => starredFilter === "all" || card.kind === starredFilter);
+  const showCards = (cards: CatalogCard[]) => viewMode === "list"
+    ? <CommunityCatalogTable cards={cards} locale={locale} />
+    : <div className="community-resource-grid">{cards.map((card, index) => <div className="community-card-motion" style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }} key={card.id}><CommunityCatalogCard card={card} /></div>)}</div>;
+
+  const navSearch = !isDetail && section === "discover"
+    ? <label className="community-search community-nav-search" htmlFor="community-agent-search"><Search size={16} aria-hidden="true" /><input id="community-agent-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索名称或作者" : "Search name or author"} /></label>
+    : !isDetail && section === "starred"
+      ? <label className="community-search community-nav-search" htmlFor="community-starred-search"><Search size={16} aria-hidden="true" /><input id="community-starred-search" value={collectionQuery} onChange={(event) => setCollectionQuery(event.target.value)} placeholder={zh ? "搜索收藏" : "Search saved"} /></label>
+      : null;
+
+  return <div className="community-workspace community-stage">
+    <div className="community-nav-row">
+      <CommunitySectionNav active={section} />
+      {navSearch}
+    </div>
+
+    {notice ? <Panel className="community-inline-notice"><p>{notice}</p></Panel> : null}
+
+    {isDetail && selected ? <>
+      <LinkButton href={communityRoutePaths.catalog} size="sm" variant="ghost">{zh ? "← 返回发现" : "← Back to Discover"}</LinkButton>
+      <CommunityReleaseDetail entry={selected} versions={versions} projects={projects} communityApi={api} localApi={localApi} refreshProjects={refreshProjects} />
+    </> : null}
+
+    {!isDetail && section === "discover" ? <section className="community-catalog">
+      <div className="community-filter-row">
+        {categoryTabs(discoverPool, discoverFilter, setDiscoverFilter)}
+        {resultBar}
+      </div>
+      {loading ? <Panel><ListSkeleton label={zh ? "正在读取已发布的 Agent…" : "Loading published Agents…"} /></Panel> : error ? <ErrorState message={error} onRetry={() => void load()} /> : discoverCards.length ? showCards(discoverCards) : <Panel><EmptyState icon={Search} title={copy.noMatches} detail={copy.noAgentsDetail} /></Panel>}
+      <CommunityModerationPanel communityApi={api} />
+      <CommunityPluginModerationPanel communityApi={api} />
+    </section> : null}
+
+    {!isDetail && section === "published" ? <section className="community-catalog">
+      {!loading && !error ? <div className="community-filter-row"><div className="community-status-filters"><button type="button" className={releaseFilter === "all" ? "is-active" : ""} onClick={() => setReleaseFilter("all")}>{zh ? "全部" : "All"} {entries.length}</button><button type="button" className={releaseFilter === "published" ? "is-active" : ""} onClick={() => setReleaseFilter("published")}>{zh ? "公开" : "Public"} {publishedCount}</button><button type="button" className={releaseFilter === "quarantined" ? "is-active" : ""} onClick={() => setReleaseFilter("quarantined")}>{copy.filters.quarantined} {reviewCount}</button><button type="button" className={releaseFilter === "rejected" ? "is-active" : ""} onClick={() => setReleaseFilter("rejected")}>{copy.filters.rejected} {rejectedCount}</button></div>{resultBar}</div> : null}
+      {loading ? <Panel><ListSkeleton label={zh ? "正在读取已发布版本…" : "Loading your releases…"} /></Panel> : error ? <ErrorState message={error} onRetry={() => void load()} /> : pageCards.length ? showCards(pageCards) : <Panel><EmptyState icon={PackageCheck} title={copy.noPublished} detail={copy.noPublishedDetail} /></Panel>}
+    </section> : null}
+
+    {!isDetail && section === "starred" ? <section className="community-catalog">
+      <div className="community-filter-row">
+        {categoryTabs(pageCards, starredFilter, setStarredFilter)}
+        {resultBar}
+      </div>
+      {loading ? <Panel><ListSkeleton label={zh ? "正在读取收藏…" : "Loading starred releases…"} /></Panel> : error ? <ErrorState message={error} onRetry={() => void load()} /> : starredCards.length ? showCards(starredCards) : <Panel><EmptyState icon={Bookmark} title={copy.noStarred} detail={copy.noStarredDetail} /></Panel>}
+    </section> : null}
+
+    {!isDetail && section === "mine" ? <section className="community-catalog community-creator-center">
+      <header className="community-creator-lead">
+        <div className="community-creator-profile">
+          <div className={`community-creator-avatar${account?.avatar_url ? " has-photo" : ""}`} aria-hidden="true">
+            {account?.avatar_url
+              ? <img src={account.avatar_url} alt="" />
+              : <span>{account ? accountInitials(account.display_name, account.handle) : (zh ? "未" : "?")}</span>}
+          </div>
+          <div className="community-creator-identity">
+            <div className="community-creator-name-row">
+              <h1>{account?.display_name || account?.handle || (zh ? "未登录" : "Not signed in")}</h1>
+              {account ? <span className="community-creator-connected"><i aria-hidden="true" />{zh ? "账号已连接" : "Account connected"}</span> : null}
+            </div>
+            {account ? <div className="community-creator-meta">
+              <span>@{account.handle}</span>
+              <span><Mail size={13} aria-hidden="true" />{account.email}</span>
+            </div> : null}
+            <p>{zh
+              ? "管理公开资料与发布身份；Project 与 Agent 仍在本机运行。"
+              : "Manage your public profile and publishing identity. Projects and Agents still run locally."}</p>
+          </div>
+        </div>
+        <div className="community-creator-ornament" aria-hidden="true">
+          <span /><span /><span /><span /><span />
+        </div>
+      </header>
+
+      {!loading && !error ? <div className="community-creator-metrics" aria-label={zh ? "创作者概览" : "Creator overview"}>
+        <div><Bot size={16} aria-hidden="true" /><strong>{publishedCount}</strong><span>{copy.publishedCount}</span></div>
+        <div><Clock3 size={16} aria-hidden="true" /><strong>{reviewCount}</strong><span>{copy.reviewCount}</span></div>
+        <div><CircleAlert size={16} aria-hidden="true" /><strong>{rejectedCount}</strong><span>{copy.rejectedCount}</span></div>
+        <div><Star size={16} aria-hidden="true" /><strong>{starTotal}</strong><span>{copy.starTotal}</span></div>
+      </div> : null}
+
+      <div className="community-mine-layout">
+        <div className="community-publish-column">
+          <section id="community-publish-studio" className="community-creator-block community-publish-studio">
+            <div className="community-publish-studio-head">
+              <div className="community-section-title">
+                <span className="community-section-kicker">{zh ? "发布中心" : "Release studio"}</span>
+                <h2>{zh ? "选择要发布的内容" : "Choose what to publish"}</h2>
+                <p>{zh ? "先选择资源类型，再在同一块工作区完成来源选择、检查和确认。" : "Choose a resource type, then select its source, inspect it, and confirm in the same workspace."}</p>
+              </div>
+              <span className="community-live-lanes"><span aria-hidden="true" />{zh ? "2 种已接通发布" : "2 live publish lanes"}</span>
+            </div>
+            <div className="community-publish-options">
+              <button type="button" className={`community-publish-option is-available${publishKind === "agent" ? " is-selected" : ""}`} onClick={() => setPublishKind("agent")}>
+                <span className="community-publish-option-icon agent"><Bot size={22} aria-hidden="true" /></span>
+                <span><strong>Agent</strong><small>{zh ? "发布不可变 Agent 版本" : "Immutable Agent release"}</small></span>
+                <em className="community-lane-status is-live">{zh ? "可发布" : "Live"}</em>
+                <ArrowRight size={16} aria-hidden="true" />
+              </button>
+              <button type="button" className="community-publish-option is-planned" disabled aria-disabled="true">
+                <span className="community-publish-option-icon project"><FolderKanban size={22} aria-hidden="true" /></span>
+                <span><strong>Project</strong><small>{zh ? "完整工作空间包；本地导出已存在" : "Workspace package; local export exists"}</small></span>
+                <em className="community-lane-status">{zh ? "社区接口待接入" : "Registry planned"}</em>
+              </button>
+              <button type="button" className="community-publish-option is-planned" disabled aria-disabled="true">
+                <span className="community-publish-option-icon workflow"><Workflow size={22} aria-hidden="true" /></span>
+                <span><strong>Workflow</strong><small>{zh ? "固定 Agent 版本的工作流" : "Workflow with pinned Agent versions"}</small></span>
+                <em className="community-lane-status">{zh ? "设计范围" : "Planned"}</em>
+              </button>
+              <button type="button" className={`community-publish-option is-available${publishKind === "plugin" ? " is-selected" : ""}`} onClick={() => setPublishKind("plugin")}>
+                <span className="community-publish-option-icon plugin"><PackageOpen size={22} aria-hidden="true" /></span>
+                <span><strong>Plugin Pack</strong><small>{zh ? "声明式 Skill + MCP 包" : "Declarative Skill + MCP pack"}</small></span>
+                <em className="community-lane-status is-live">{zh ? "可发布" : "Live"}</em>
+                <ArrowRight size={16} aria-hidden="true" />
+              </button>
+              <button type="button" className="community-publish-option is-planned" disabled aria-disabled="true">
+                <span className="community-publish-option-icon template"><LayoutTemplate size={22} aria-hidden="true" /></span>
+                <span><strong>Template</strong><small>{zh ? "可复用的起点与配置" : "Reusable starting point"}</small></span>
+                <em className="community-lane-status">{zh ? "设计范围" : "Planned"}</em>
+              </button>
+              <button type="button" className="community-publish-option is-planned" disabled aria-disabled="true">
+                <span className="community-publish-option-icon resource"><Boxes size={22} aria-hidden="true" /></span>
+                <span><strong>{zh ? "可复用资源" : "Reusable resources"}</strong><small>{zh ? "Component、Tool 与独立 Skill" : "Component, Tool, and standalone Skill"}</small></span>
+                <em className="community-lane-status">{zh ? "后续扩展" : "Later"}</em>
+              </button>
+            </div>
+            <div className="community-publish-editor">
+              <div className="community-publish-editor-head">
+                <div>
+                  <span>{zh ? "当前类型" : "Current type"}</span>
+                  <strong>{publishKind === "agent" ? "Agent" : "Plugin Pack"}</strong>
+                </div>
+                <p>{publishKind === "agent"
+                  ? (zh ? "本地检查通过后才上传，不包含 Run、聊天记录或 Knowledge 正文。" : "Upload starts only after local checks. Runs, chats, and Knowledge bodies stay local.")
+                  : (zh ? "Community 保存不可变包与清单，但不会执行 Skill 指令或启动 MCP。" : "Community stores the immutable package and manifest, but never runs Skills or starts MCP.")}</p>
+              </div>
+              {publishKind === "agent" ? <div id="community-publish-panel" className="community-publish-stack"><CommunityPublishPanel projects={projects} localApi={localApi} communityApi={api} onPublished={onPublished} /></div> : null}
+              {publishKind === "plugin" ? <div id="community-plugin-lane"><CommunityPluginPanel communityApi={api} localApi={localApi} /></div> : null}
+            </div>
+          </section>
+        </div>
+
+        <aside className="community-mine-side">
+          <section className="community-side-panel">
+            <div className="community-side-section-heading">
+              <h2>{zh ? "最近发布" : "Recent releases"}</h2>
+              <LinkButton href={communityRoutePaths.published} size="sm" variant="ghost">{zh ? "查看全部" : "View all"}</LinkButton>
+            </div>
+            {loading ? <p className="community-muted-line">{zh ? "正在读取…" : "Loading…"}</p>
+              : error ? <p className="community-muted-line">{error}</p>
+                : recentMine.length ? <ul className="community-release-activity">
+                  {recentMine.map((entry) => <li key={releaseKey(entry)}>
+                    <a href={communityRoutePaths.version(entry.owner_handle, entry.slug, entry.version)}>
+                      <strong>{entry.name}</strong>
+                      <small>Agent · v{entry.version}</small>
+                      <span className="community-release-activity-meta">
+                        <StatusBadge label={releaseStatusLabel(entry.status)} tone={releaseStatusTone(entry.status)} />
+                        <time dateTime={entry.published_at ?? entry.created_at}>{(entry.published_at ?? entry.created_at) ? new Date(entry.published_at ?? entry.created_at).toLocaleDateString(locale) : "—"}</time>
+                      </span>
+                    </a>
+                  </li>)}
+                </ul>
+                  : <div className="community-empty-soft">
+                    <strong>{zh ? "暂无发布记录" : "No releases yet"}</strong>
+                    <p>{zh ? "发布第一个资源后，它会出现在这里。" : "Your first published resource will show up here."}</p>
+                  </div>}
+          </section>
+
+          <section className="community-side-panel">
+            <div className="community-side-section-heading"><h2>{zh ? "待处理" : "Needs attention"}</h2></div>
+            {loading ? <p className="community-muted-line">{zh ? "正在读取…" : "Loading…"}</p>
+              : pendingItems.length ? <ul className="community-pending-list">
+                {pendingItems.map((item) => <li key={item.key} className={`is-${item.tone}`}>
+                  <a href={item.href}>{item.tone === "warn" ? <Clock3 size={14} aria-hidden="true" /> : item.tone === "bad" ? <CircleAlert size={14} aria-hidden="true" /> : <FilePenLine size={14} aria-hidden="true" />}<span>{item.text}</span></a>
+                </li>)}
+              </ul>
+                : <p className="community-pending-clear"><CheckCircle2 size={15} aria-hidden="true" />{zh ? "暂无待处理事项" : "Nothing needs attention"}</p>}
+          </section>
+
+          <section className="community-side-panel">
+            <div className="community-side-section-heading"><h2>{zh ? "社区反馈" : "Community feedback"}</h2></div>
+            {loading ? <p className="community-muted-line">{zh ? "正在读取…" : "Loading…"}</p>
+              : (starTotal > 0 || reviewTotal > 0) ? <ul className="community-feedback-summary">
+                <li><Star size={14} aria-hidden="true" /><span>{zh ? `总收藏：${starTotal}` : `Total stars: ${starTotal}`}</span></li>
+                <li><MessageSquare size={14} aria-hidden="true" /><span>{zh ? `评价：${reviewTotal}` : `Reviews: ${reviewTotal}`}</span></li>
+              </ul>
+                : <div className="community-empty-soft">
+                  <strong>{zh ? "还没有新的社区反馈" : "No community feedback yet"}</strong>
+                  <p>{zh ? "当别人收藏或评价你的资源时，摘要会出现在这里。" : "Stars and reviews on your releases will appear here."}</p>
+                </div>}
+          </section>
+        </aside>
+      </div>
+    </section> : null}
+  </div>;
 }

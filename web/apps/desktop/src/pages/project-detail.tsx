@@ -8,10 +8,10 @@ import { AgentRelationGraph } from "../features/projects/AgentRelationGraph";
 import { agentTree, type AgentTreeNode } from "../features/projects/agent-tree";
 import { ProjectFilesPanel } from "./files";
 
-export function ProjectDetailPage({ projectId }: { projectId: string }) {
+export function ProjectDetailPage({ projectId, collection = "overview" }: { projectId: string; collection?: "overview" | "agents" }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
-  const { api, upsertProject } = useProjectWorkspace();
+  const { api, upsertProject, syncProjectArtifacts } = useProjectWorkspace();
   const [project, setProject] = useState<ProjectSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +35,9 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     }
   }, [api, copy.serviceError, projectId, upsertProject]);
   useEffect(() => { void loadProject(); }, [loadProject]);
+  useEffect(() => {
+    if (project) void syncProjectArtifacts(project.project_id).catch(() => undefined);
+  }, [project, syncProjectArtifacts]);
   const revealProject = () => {
     if (!api.revealProject || !project) return;
     void api.revealProject(project.project_id).catch((cause) => {
@@ -52,7 +55,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     {error ? <ErrorState message={error} onRetry={() => void loadProject()} /> : null}
     <Panel><SectionHeading eyebrow={copy.agents} title={`${project.agents.length} ${copy.agents}`} />{tree.length === 0 ? <EmptyState icon={Bot} title={copy.noAgents} detail={copy.noAgentsDetail} /> : <div className="project-agent-tree">{tree.map((node) => <AgentTreeRows key={node.agent_id} projectId={project.project_id} node={node} />)}</div>}</Panel>
     <Panel><SectionHeading eyebrow={copy.graph} title={copy.graph} /><AgentRelationGraph projectId={project.project_id} agents={project.agents} emptyLabel={copy.noGraph} /></Panel>
-    <ProjectFilesPanel projectId={project.project_id} projectName={project.name} />
+    {collection === "overview" ? <ProjectFilesPanel projectId={project.project_id} projectName={project.name} /> : null}
   </div>;
 }
 

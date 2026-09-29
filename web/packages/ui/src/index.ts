@@ -4,6 +4,7 @@ export * from "./skeleton";
 export * from "./toast";
 export * from "./pane-resize";
 export * from "./shell";
+export * from "./scroll-driven-sections";
 export * from "./theme";
 export * from "./types";
 export * from "./i18n";

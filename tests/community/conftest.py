@@ -51,6 +51,7 @@ def community(tmp_path: Path) -> CommunityHarness:
         mode="test",
         database_url=f"sqlite:///{database_path}",
         avatar_storage_root=tmp_path / "avatars",
+        registry_storage_root=tmp_path / "registry",
         auth_hmac_secret="test-only-auth-hmac-secret-that-is-long-enough",
     )
     app = create_app(settings, database=database, mail_provider=mail)

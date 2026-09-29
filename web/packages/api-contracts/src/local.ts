@@ -6,6 +6,8 @@
  * routes in `backend/src/veyra_agent_platform/local/api/projects/routes.py`.
  */
 
+import type { ConversationAttachment, ProjectOrigin } from "./cloud";
+
 export const LOCAL_API_SCHEMA_VERSION = "1.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -26,10 +28,11 @@ export const COMPACT_FIELD_TYPES = [
   "file",
   "audio",
   "video",
+  "collection",
 ] as const;
 
 export type CompactFieldType = (typeof COMPACT_FIELD_TYPES)[number];
-export type ArtifactKind = "image" | "pdf" | "document" | "file" | "audio" | "video";
+export type ArtifactKind = "image" | "pdf" | "document" | "file" | "audio" | "video" | "collection";
 export type FieldValueType =
   | "string"
   | "number"
@@ -68,6 +71,7 @@ export const ARTIFACT_FIELD_TYPES: readonly ArtifactKind[] = [
   "file",
   "audio",
   "video",
+  "collection",
 ];
 
 export function isArtifactCompactType(type: string): type is ArtifactKind {
@@ -92,8 +96,24 @@ export function acceptedMediaTypes(spec: TypedFieldSpec): string[] {
   if (type === "audio") return ["audio/*"];
   if (type === "video") return ["video/*"];
   if (type === "document") {
-    return [".pdf", ".txt", ".md", ".doc", ".docx", "application/pdf", "text/plain"];
+    return [
+      ".pdf",
+      ".txt",
+      ".md",
+      ".csv",
+      ".rtf",
+      ".doc",
+      ".docx",
+      ".xlsx",
+      "application/pdf",
+      "text/plain",
+      "text/csv",
+      "application/rtf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ];
   }
+  if (type === "collection" || type === "file") return [];
   return [];
 }
 
@@ -102,6 +122,13 @@ export type ArtifactRef = {
   artifact_id: string;
   media_type: string;
   filename: string;
+  relative_path?: string;
+};
+
+export type ArtifactCollection = {
+  kind: "collection";
+  collection_id: string;
+  items: ArtifactRef[];
 };
 
 export function isArtifactRef(value: unknown): value is ArtifactRef {
@@ -111,6 +138,13 @@ export function isArtifactRef(value: unknown): value is ArtifactRef {
   return typeof record.artifact_id === "string" && record.artifact_id.length > 0
     && typeof record.media_type === "string" && record.media_type.length > 0
     && typeof record.filename === "string" && record.filename.length > 0;
+}
+
+export function isArtifactCollection(value: unknown): value is ArtifactCollection {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "collection" || typeof record.collection_id !== "string") return false;
+  return Array.isArray(record.items) && record.items.every(isArtifactRef);
 }
 
 export type ArtifactRecord = ArtifactRef & {
@@ -130,6 +164,8 @@ export type RuntimeModelCapabilities = {
   model_id: string;
   text_input: CapabilityState;
   image_input: CapabilityState;
+  video_input: CapabilityState;
+  audio_input: CapabilityState;
   structured_json_output: CapabilityState;
   source: "static_profile" | "unknown";
 };
@@ -184,6 +220,19 @@ export type FlowNode = {
   prompt?: string;
   checks?: string[];
   output_name?: string;
+  inputs?: TypedFields;
+  outputs?: TypedFields;
+};
+
+export type DataPortRef = {
+  kind: "run_input" | "node" | "run_output";
+  port: string;
+  node_id?: string;
+};
+
+export type DataEdge = {
+  source: DataPortRef;
+  target: DataPortRef;
 };
 
 export type FlowTransition = {
@@ -200,6 +249,7 @@ export type StudioNote = {
   text: string;
   color?: StudioNoteColor;
   width?: number;
+  height?: number;
   manual_position?: boolean;
 };
 
@@ -224,6 +274,11 @@ export type AgentSource = {
       skill_refs?: string[];
       policy_refs?: string[];
       knowledge_refs?: string[];
+      execution_kind?: "loop" | "graph";
+      instructions?: string;
+      max_turns?: number;
+      interaction_mode?: "auto" | "chat" | "form" | "hybrid";
+      handoff_agent_refs?: string[];
     };
   };
   ui: {
@@ -234,6 +289,7 @@ export type AgentSource = {
     branch_labels?: Record<string, { true: string; false: string }>;
   };
   lock: Record<string, string>;
+  data_edges?: DataEdge[];
 };
 
 export type AgentImportCapability = {
@@ -265,6 +321,23 @@ export type AgentImportPreview = {
   source_path?: string;
 };
 
+export type CommunityAgentImportOrigin = {
+  owner_handle: string;
+  slug: string;
+  version: string;
+  source_hash: string;
+};
+
+export type AgentImportProjectValidation = {
+  project_id: string;
+  source_hash: string;
+  assessment_hash: string;
+  dependencies: AgentDependencyCheck[];
+  dependency_summary: AgentDependencySummary;
+  runtime_ready: boolean;
+  runtime_ready_scope: "agent_dependencies";
+};
+
 export type AgentImportRecord = {
   schema_version: "agent.import.v1";
   import_id: string;
@@ -279,6 +352,8 @@ export type AgentImportRecord = {
   warnings: AgentImportWarning[];
   generated_source: AgentSource;
   manifest: Record<string, JsonValue>;
+  community_origin?: CommunityAgentImportOrigin;
+  project_validation?: AgentImportProjectValidation;
   applied_agent?: CreatedAgentResponse;
 };
 
@@ -359,6 +434,8 @@ export type BuilderOperationEventKind =
   | "builder.operation.started"
   | "builder.intent.started"
   | "builder.intent.resolved"
+  | "builder.specification.started"
+  | "builder.specification.completed"
   | "builder.semantic_plan.started"
   | "builder.semantic_plan.completed"
   | "builder.capabilities.started"
@@ -464,6 +541,7 @@ export type BuilderConversationMessage = {
   content: string;
   operation_id: string | null;
   payload: Record<string, string>;
+  attachments?: ConversationAttachment[];
   created_at: string;
 };
 export type BuilderOperationStatus = "in_progress" | "waiting" | "succeeded" | "failed" | "rejected";
@@ -773,6 +851,11 @@ export type ComponentProposalCommandRequest = {
   confirm: boolean;
   locale: "zh" | "en";
 };
+export type AgentCreationProposalCommandRequest = {
+  command: "apply" | "reject";
+  confirm: boolean;
+  locale: "zh" | "en";
+};
 export type ListEditProposalsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   proposals: EditProposal[];
@@ -785,6 +868,7 @@ export type AgentVersionSnapshot = {
   behavior_hash: string;
   created_at: string;
   source: AgentSource;
+  committed?: boolean;
 };
 export type ListAgentVersionsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
@@ -804,7 +888,7 @@ export type ListWorkflowVersionsResponse = {
 };
 
 export type CatalogBinding = {
-  kind: "skill" | "policy" | "template" | "mcp_tool" | "knowledge";
+  kind: "skill" | "policy" | "template" | "mcp_tool" | "knowledge" | "tool";
   reference: string;
   x: number;
   y: number;
@@ -867,6 +951,11 @@ export type KnowledgeProcessing = {
   updated_at: string;
 };
 
+export type KnowledgeCloudFileReference = {
+  kind: "cloud_file";
+  file_id: string;
+};
+
 export type ProjectKnowledgeRecord = {
   knowledge_id: string;
   processing?: KnowledgeProcessing;
@@ -876,11 +965,13 @@ export type ProjectKnowledgeRecord = {
   version?: string;
   source_path: string;
   source_file_hash: string;
+  source_ref?: KnowledgeCloudFileReference;
 };
 
 export type ProjectSummaryResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   project_id: string;
+  origin?: ProjectOrigin;
   root_path: string;
   name: string;
   description: string;
@@ -935,6 +1026,88 @@ export type AgentDetailResponse = {
 export type ListProjectsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   projects: ProjectSummaryResponse[];
+};
+
+export type ProjectSyncState =
+  | "local_only"
+  | "pending_upload"
+  | "synced"
+  | "pending_push"
+  | "pending_pull"
+  | "conflict"
+  | "error";
+
+export type ProjectSyncOperation = "ensure" | "push" | "pull" | "archive";
+
+export type ProjectSyncStateResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  sync_enabled: boolean;
+  state: ProjectSyncState;
+  cloud_revision: number | null;
+  local_metadata_hash: string | null;
+  last_synced_hash: string | null;
+  last_synced_at: string | null;
+  pending_operation: ProjectSyncOperation | null;
+  remote_name: string | null;
+  remote_description: string | null;
+  error_code: string | null;
+};
+
+export type MarkProjectSyncPendingRequest = {
+  operation: ProjectSyncOperation;
+};
+
+export type RecordProjectSyncRequest = {
+  state: ProjectSyncState;
+  cloud_revision?: number | null;
+  last_synced_hash?: string | null;
+  pending_operation?: ProjectSyncOperation | null;
+  remote_name?: string | null;
+  remote_description?: string | null;
+  error_code?: string | null;
+};
+
+export type LocalArtifactSyncState =
+  | "local_only"
+  | "synced"
+  | "pending_push"
+  | "pending_pull"
+  | "conflict"
+  | "error";
+
+export type LocalArtifactManifestItem = {
+  artifact_kind: string;
+  artifact_id: string;
+  content_hash: string | null;
+  revision: number;
+  cloud_revision: number | null;
+  deleted: boolean;
+  state: LocalArtifactSyncState;
+};
+
+export type LocalArtifactManifestResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  artifacts: LocalArtifactManifestItem[];
+};
+
+export type LocalArtifactEnvelopeResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  artifact: Record<string, unknown>;
+};
+
+export type MaterializeArtifactRequest = {
+  envelope: Record<string, unknown>;
+};
+
+export type RecordArtifactSyncRequest = {
+  artifact_kind: string;
+  artifact_id: string;
+  state: Exclude<LocalArtifactSyncState, "local_only">;
+  cloud_revision?: number | null;
+  last_synced_hash?: string | null;
+  error_code?: string | null;
 };
 
 export type ListAgentsResponse = {
@@ -1019,6 +1192,67 @@ export type RuntimeProfileResponse = {
   profile: RuntimeApiProfileSummary | null;
 };
 
+export type ProviderCredentialStatus = "unverified" | "active" | "invalid" | "disabled";
+export type ProviderCredentialScope = "device" | "cloud";
+export type ProviderCredentialSecretState = "available" | "missing" | "unavailable";
+export type ProviderCredentialReadiness = "ready" | "needs_reentry" | "unavailable" | "disabled" | "invalid" | "unverified";
+export type ProviderCredential = {
+  schema_version?: typeof LOCAL_API_SCHEMA_VERSION;
+  credential_id: string;
+  owner_id: string;
+  provider_type: string;
+  label: string;
+  base_url: string;
+  status: ProviderCredentialStatus;
+  credential_scope: ProviderCredentialScope;
+  masked_hint: string;
+  capabilities: Record<string, JsonValue>;
+  default_model_id: string | null;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+  validated_at: string | null;
+  last_used_at: string | null;
+  secret_state: ProviderCredentialSecretState;
+  readiness: ProviderCredentialReadiness;
+};
+export type ProviderCredentialListResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  credentials: ProviderCredential[];
+};
+export type ProviderCredentialValidationResponse = {
+  valid: boolean;
+  code: string;
+  message: string;
+  credential: ProviderCredential;
+};
+export type CreateProviderCredentialRequest = {
+  provider_type: string;
+  label: string;
+  api_key: string;
+  base_url?: string;
+  default_model_id?: string;
+  make_default?: boolean;
+};
+export type RuntimeBinding = {
+  project_id: string;
+  agent_id: string | null;
+  slot: string;
+  credential_id: string;
+  model_id: string;
+  source: "explicit" | "project" | "user_default";
+  updated_at: string;
+};
+export type RuntimeBindingResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  agent_id: string | null;
+  slot: string;
+  binding: RuntimeBinding | null;
+  credential: ProviderCredential | null;
+  explicit: RuntimeBinding | null;
+};
+
 export type OpenProjectRequest = {
   root_path: string;
 };
@@ -1058,6 +1292,15 @@ export type ProjectFileContentResponse = ProjectFileRecord & {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   project_id: string;
   text: string;
+};
+
+export type ProjectFileMaterializeResponse = {
+  schema_version: typeof LOCAL_API_SCHEMA_VERSION;
+  project_id: string;
+  status: "materialized";
+  relative_path: string;
+  sha256: string;
+  size_bytes: number;
 };
 
 export type RevealProjectRequest = {
@@ -1181,6 +1424,7 @@ export type KnowledgeDocumentResponse = {
   source_path: string;
   source_file_hash: string;
   text: string;
+  source_ref?: KnowledgeCloudFileReference;
 };
 
 export type DeleteKnowledgeResponse = {
@@ -1276,6 +1520,8 @@ export type CommitRequest = {
 export type StartAgentRunRequest = {
   inputs: Record<string, JsonValue>;
   conversation_id?: string | null;
+  source?: "draft" | "committed";
+  version_id?: string | null;
 };
 
 export type RunCommandRequest = {
@@ -1349,6 +1595,7 @@ export type ResourceDescriptor = {
   required_permissions: ResourcePermissions;
   tags: string[];
   spec: JsonObject;
+  capabilities?: string[];
   configuration_requirements?: Array<{ code: string; message: string; satisfied: boolean }>;
   blocking_reasons?: Array<{ code: string; message: string }>;
   dependencies?: JsonValue[];
@@ -1499,11 +1746,46 @@ export type FactoryMessage = {
   created_at: string;
 };
 
+export type FactoryResourceBindStatus =
+  | "already_bound"
+  | "will_bind"
+  | "requires_configuration"
+  | "needs_configuration"
+  | "unavailable"
+  | "missing";
+
+export type FactoryResourcePlanKind = ResourceKind | "knowledge" | "capability";
+
 export type FactoryResourcePlanItem = {
   reference: string;
-  kind: ResourceKind;
+  kind: FactoryResourcePlanKind;
   availability: ResourceAvailability;
   runtime_status: ResourceRuntimeStatus;
+  name?: string;
+  bind_status?: FactoryResourceBindStatus;
+  capability?: string;
+  reason?: string;
+  source_count?: number;
+  runtime_support?: "full" | "partial" | "none";
+  factory_status?: "generatable" | "requires_user_configuration" | "requires_external_integration" | "unsupported";
+  factory_strategy?: "skill_instruction" | "http_tool_wrapper" | "filesystem_tool_wrapper" | "none";
+};
+
+export type ResourceFactoryPlan = {
+  capability: string;
+  status: "generatable" | "requires_user_configuration" | "requires_external_integration" | "unsupported";
+  strategy: "skill_instruction" | "http_tool_wrapper" | "filesystem_tool_wrapper" | "none";
+  can_generate: boolean;
+  reason: string;
+  risk_level: "low" | "medium" | "high";
+  resource_kind?: string | null;
+  requirements: string[];
+  draft?: JsonObject | null;
+  validation?: JsonObject | null;
+  published?: JsonObject | null;
+  snapshot_hash?: string | null;
+  proposal_id?: string | null;
+  operation_id?: string | null;
 };
 
 export type FactoryMissingCapability = {
@@ -1528,12 +1810,18 @@ export type FactorySession = {
   diagnostics: string[];
   missing_capabilities: FactoryMissingCapability[];
   candidate: { name: string; slug?: string } | null;
+  target_kind?: "agent" | "workflow";
+  execution_kind?: "loop" | "graph" | "workflow";
   run_availability: FactoryRunAvailability;
   executes_drafts: false;
   revision: number;
   created_at: string;
   updated_at: string;
   messages: FactoryMessage[];
+  resource_factory_plans?: ResourceFactoryPlan[];
+  product_shape?: string;
+  proposal_preview?: JsonObject;
+  blocked_reason?: string;
 };
 
 export type ProviderCapabilitySupport = "supported" | "unsupported" | "unknown";
@@ -1642,6 +1930,7 @@ export type RuntimeReadiness = {
   dependencies: AgentDependencyCheck[];
   tool_checks: RuntimeToolReadiness[];
   checks: RuntimeReadinessCheck[];
+  version_id?: string;
 };
 
 export type WorkflowRuntimeReadinessCheck = {
@@ -1724,7 +2013,10 @@ export type RuntimeEventKind =
   | "artifact.created"
   | "checkpoint.created"
   | "verification.completed"
-  | "verifier.result";
+  | "verifier.result"
+  | "skill.loaded"
+  | "knowledge.retrieved"
+  | "policy.partial";
 
 export type KnowledgeRetrievalHit = {
   reference: string;
@@ -1772,6 +2064,7 @@ export type AgentRunResponse = {
   agent_id: string;
   version_id: string;
   conversation_id?: string | null;
+  run_target_kind?: "agent" | "workflow";
   status: RuntimeRunStatus;
   result: JsonObject | null;
   error: { code: string; message: string } | null;
@@ -1797,6 +2090,7 @@ export type AgentConversationSummary = {
   conversation_id: string;
   project_id: string;
   agent_id: string;
+  agent_version_id?: string | null;
   title: string;
   message_count: number;
   created_at: string;
@@ -1805,6 +2099,7 @@ export type AgentConversationSummary = {
 
 export type AgentConversation = Omit<AgentConversationSummary, "message_count"> & {
   messages: AgentConversationMessage[];
+  initial_inputs?: JsonObject;
 };
 
 export type ListAgentConversationsResponse = {
@@ -1814,11 +2109,25 @@ export type ListAgentConversationsResponse = {
 
 export type CreateAgentConversationRequest = {
   title?: string;
+  agent_version_id?: string;
 };
 
 export type ListAgentRunsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   runs: AgentRunResponse[];
+};
+
+export type CommunityAgentPackageExport = {
+  source_text: string;
+  file_hash: string;
+  source_hash: string;
+  behavior_hash: string;
+  lock_hash: string;
+  dependencies: string[];
+  version: string;
+  slug: string;
+  name: string;
+  description: string;
 };
 
 export type ExportResponse = {
@@ -1827,6 +2136,7 @@ export type ExportResponse = {
   source: AgentSource;
   source_text: string;
   file_hash: string;
+  community_package: CommunityAgentPackageExport;
   community_origin?: CommunityAgentOrigin;
 };
 

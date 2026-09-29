@@ -3,6 +3,7 @@ availability: ready
 description: 根据你的问题和已有材料，整理已知、未知、证据和下一步。当前不会上网搜索，也不编造来源。
 factory_selectable: true
 kind: template
+loop_compatible: false
 name: 问题研究
 required_permissions:
   filesystem_read_roots: []

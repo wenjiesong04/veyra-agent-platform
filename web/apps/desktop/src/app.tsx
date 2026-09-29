@@ -131,11 +131,11 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "project-resources") return <ProjectResourcesPage projectId={route.projectId} />;
   if (route.kind === "project-chat") return <ProjectChatPage projectId={route.projectId} conversationId={route.conversationId} />;
   if (route.kind === "project-analysis") return <ProjectAnalysisPage projectId={route.projectId} />;
-  if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} />;
+  if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} collection="agents" />;
   if (route.kind === "project-workflows") return <ProjectWorkflowsPage projectId={route.projectId} />;
   if (route.kind === "project-workflow") return <StudioPage projectId={route.projectId} workflowId={route.workflowId ?? ""} />;
   if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") return <ProjectKnowledgePage projectId={route.projectId} knowledgeId={route.knowledgeId} />;
-  if (route.kind === "project-files") return <ProjectDetailPage projectId={route.projectId} />;
+  if (route.kind === "project-files") return <FilesPage projectId={route.projectId} />;
   if (route.kind === "project-runs") return <RunsPage projectId={route.projectId} />;
   if (route.kind === "agent-detail") return <AgentDetailPage projectId={route.projectId} agentId={route.agentId ?? ""} />;
   if (route.kind === "agent-version") return <AgentVersionPage projectId={route.projectId} agentId={route.agentId ?? ""} versionId={route.versionId ?? ""} workflowId={route.workflowId} />;
@@ -149,9 +149,12 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "file") return <FilesPage fileId={route.fileId} />;
   if (route.kind === "runs") return <RunsPage />;
   if (route.kind === "monitor") return <MonitorPage />;
-  if (route.kind === "community") return <CommunityPage />;
-  if (route.kind === "community-entry") return <CommunityPage owner={route.owner} slug={route.slug} />;
-  if (route.kind === "community-version") return <CommunityPage owner={route.owner} slug={route.slug} versionId={route.versionId} />;
+  if (route.kind === "community") return <CommunityPage section="discover" />;
+  if (route.kind === "community-published") return <CommunityPage section="published" />;
+  if (route.kind === "community-starred") return <CommunityPage section="starred" />;
+  if (route.kind === "community-mine") return <CommunityPage section="mine" />;
+  if (route.kind === "community-entry") return <CommunityPage section="discover" owner={route.owner} slug={route.slug} />;
+  if (route.kind === "community-version") return <CommunityPage section="discover" owner={route.owner} slug={route.slug} versionId={route.versionId} />;
   if (route.kind === "account") return <AccountPage />;
   if (route.kind === "settings") return <SettingsPage />;
   if (route.kind === "trash") return <TrashPage />;
@@ -191,7 +194,7 @@ function DesktopWorkspace() {
     ? desktopRoutePaths.chat
     : route.kind === "component" || route.kind === "components" ? (window.location.hash.startsWith("#/components") ? window.location.hash : desktopRoutePaths.components)
       : route.kind === "file" || route.kind === "files" ? desktopRoutePaths.files
-        : route.kind === "community-entry" || route.kind === "community-version" ? desktopRoutePaths.community
+        : route.kind === "community-entry" || route.kind === "community-version" || route.kind === "community-published" || route.kind === "community-starred" || route.kind === "community-mine" ? desktopRoutePaths.community
           : route.kind === "not-found" ? desktopRoutePaths.projects : (route.kind in desktopRoutePaths ? desktopRoutePaths[route.kind as keyof typeof desktopRoutePaths] : desktopRoutePaths.projects);
   const suppressProjectTreeHighlight = Boolean(workspaceRoute && workspaceRoute.kind !== "project" && workspaceRoute.kind !== "project-files" && projectContextActiveHref(workspaceRoute));
   const { navigation: projectNavigation, dialogs } = useProjectNavigation({ scopedProjectId, activeAgentId, selection: treeSelection, routeKey: route.path, suppressProjectHighlight: suppressProjectTreeHighlight });
@@ -216,6 +219,7 @@ function DesktopWorkspace() {
         displayName: account.display_name || account.handle,
         detail: account.email,
         initials: accountInitials(account.display_name, account.handle),
+        avatarUrl: account.avatar_url,
         authenticated: true,
         accountHref: desktopRoutePaths.account,
         settingsHref: desktopRoutePaths.settings,
@@ -254,7 +258,7 @@ export function DesktopApp({ api, communityApi }: DesktopAppProps = {}) {
     <ThemeProvider>
       <AuthProvider api={accountApi}>
         <DesktopSession>
-          <ProjectWorkspaceProvider api={projectApi}>
+          <ProjectWorkspaceProvider api={projectApi} cloudApi={accountApi}>
             <DesktopWorkspace />
           </ProjectWorkspaceProvider>
         </DesktopSession>

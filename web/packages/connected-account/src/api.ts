@@ -65,6 +65,8 @@ export type CommunityApi = {
   replaceAvatar: (file: File) => Promise<CommunityAccount>;
   deleteAvatar: () => Promise<void>;
   listRegistryAgents: (query?: string) => Promise<CommunityRegistryEntry[]>;
+  listMyRegistryAgents: (limit?: number) => Promise<CommunityRegistryEntry[]>;
+  listStarredRegistryAgents: (limit?: number) => Promise<CommunityRegistryEntry[]>;
   getRegistryAgent: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityRegistryEntry>;
   listRegistryAgentVersions: (ownerHandle: string, slug: string) => Promise<CommunityRegistryEntry[]>;
   listRegistryModerationQueue: () => Promise<CommunityRegistryEntry[]>;
@@ -157,6 +159,10 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
 
   function accountWithNormalizedAvatar(account: CommunityAccount): CommunityAccount {
     return { ...account, avatar_url: normalizeCommunityAvatarUrl(account.avatar_url, apiBaseUrl) };
+  }
+
+  function withOwnerAvatar<T extends { owner_avatar_url?: string | null }>(entry: T): T {
+    return { ...entry, owner_avatar_url: normalizeCommunityAvatarUrl(entry.owner_avatar_url, apiBaseUrl) };
   }
 
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -265,7 +271,17 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
     async listRegistryAgents(query) {
       const suffix = query?.trim() ? `?query=${encodeURIComponent(query.trim())}` : "";
       const response = await request<CommunityRegistryListResponse>(`/registry/agents${suffix}`);
-      return response.entries;
+      return response.entries.map(withOwnerAvatar);
+    },
+
+    async listMyRegistryAgents(limit = 100) {
+      const response = await request<CommunityRegistryListResponse>(`/registry/mine/agents?limit=${encodeURIComponent(String(limit))}`);
+      return response.entries.map(withOwnerAvatar);
+    },
+
+    async listStarredRegistryAgents(limit = 100) {
+      const response = await request<CommunityRegistryListResponse>(`/registry/starred?limit=${encodeURIComponent(String(limit))}`);
+      return response.entries.map(withOwnerAvatar);
     },
 
     async getRegistryAgent(ownerHandle, slug, version) {
@@ -332,7 +348,7 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
     async listRegistryPlugins(query) {
       const suffix = query?.trim() ? `?query=${encodeURIComponent(query.trim())}` : "";
       const response = await request<CommunityPluginListResponse>(`/registry/plugins${suffix}`);
-      return response.entries;
+      return response.entries.map(withOwnerAvatar);
     },
 
     async getRegistryPlugin(ownerHandle, slug, version) {
@@ -365,6 +381,7 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
     async moderateRegistryPlugin(ownerHandle, slug, version, input) {
       return request<CommunityPluginEntry>(`/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/moderate`, { method: "POST", body: jsonBody(input) });
     },
+
   };
 
   return api;

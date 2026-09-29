@@ -2,6 +2,8 @@
 availability: ready
 description: Extract claims, decisions, risks, and traceable citations from documents.
 factory_selectable: true
+capabilities:
+- document_analysis
 kind: skill
 name: Document Analyzer
 required_permissions:

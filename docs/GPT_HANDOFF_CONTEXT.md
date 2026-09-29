@@ -2,6 +2,8 @@
 
 > 更新时间：2026-09-12
 > 本文是给继续接手 Veyra Agent Platform 的 GPT/Agent 的工作上下文。它不是新的产品需求；如果它与用户的新消息冲突，以用户新消息和 `docs/PROJECT_DESIGN.md` 为准。
+>
+> 2026-09-27：当前产品没有 Cloud data plane。`5173`/`8771` 是本机工作台，`5174` 是公开展示加社区目录，`8772` 是 Community 账号和 Registry。下文里的 Cloud Workspace、Cloud Run 和 Cloud Host 描述已过时，以 `docs/DEVELOPMENT.md` 与 `.backboard/HANDOFF.md` 最新 checkpoint 为准。
 
 ## 0. 交接指令
 
@@ -34,7 +36,7 @@
 - Desktop Vite：`http://127.0.0.1:5173/`，唯一的日常主要界面。
 - Local API：`http://127.0.0.1:8771/`，本机 Project、Factory、Studio 和 Runtime sidecar。
 - Community API：`http://127.0.0.1:8772/`，独立账号/公开社区服务。
-- `5174` 只保留给后续公开展示、技术文档、下载和分享站，不是日常操作入口。
+- `5174` 是匿名公开 Showcase：介绍产品、能力、local-first/安全边界、Getting Started、文档与真实发行状态；不承载 Registry 登录、Published/Starred/Following 管理、发布或导入操作。
 
 最后一次 live 检查：
 

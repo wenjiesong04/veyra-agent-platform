@@ -34,7 +34,9 @@ FieldValueType = Literal[
     "table",
     "artifact",
 ]
-ArtifactKind = Literal["image", "pdf", "document", "file", "audio", "video"]
+ArtifactKind = Literal[
+    "image", "pdf", "document", "file", "audio", "video", "collection"
+]
 CompactFieldType = Literal[
     "string",
     "number",
@@ -49,11 +51,14 @@ CompactFieldType = Literal[
     "file",
     "audio",
     "video",
+    "collection",
 ]
 
 SCALAR_TYPES = frozenset({"string", "number", "integer", "boolean"})
 JSON_TYPES = frozenset({"object", "array", "table"})
-ARTIFACT_KINDS = frozenset({"image", "pdf", "document", "file", "audio", "video"})
+ARTIFACT_KINDS = frozenset(
+    {"image", "pdf", "document", "file", "audio", "video", "collection"}
+)
 COMPACT_TYPES = SCALAR_TYPES | JSON_TYPES | ARTIFACT_KINDS
 VALUE_TYPES = SCALAR_TYPES | JSON_TYPES | {"artifact"}
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -76,7 +81,9 @@ _DESCRIPTOR_FIELDS = {
     "description",
     "accepted_media_types",
     "json_schema",
+    "enum",
 }
+MAX_ENUM_VALUES = 32
 _ARTIFACT_REF_FORBIDDEN = frozenset(
     {
         "bytes",
@@ -104,6 +111,7 @@ class TypedField:
     artifact_kind: ArtifactKind | None = None
     accepted_media_types: tuple[str, ...] = ()
     json_schema: Mapping[str, Any] | None = None
+    enum: tuple[str, ...] = ()
 
     @property
     def compact_type(self) -> CompactFieldType:
@@ -144,6 +152,8 @@ class TypedField:
             payload["accepted_media_types"] = list(self.accepted_media_types)
         if self.json_schema:
             payload["json_schema"] = thaw_json(self.json_schema)
+        if self.enum:
+            payload["enum"] = list(self.enum)
         return payload
 
     def _compact_wire(self) -> bool:
@@ -153,6 +163,7 @@ class TypedField:
             and not self.multiple
             and not self.description
             and self.json_schema is None
+            and not self.enum
             and self.accepted_media_types in {(), defaults}
         )
 
@@ -204,6 +215,7 @@ def parse_typed_field(value: Any, field: str) -> TypedField:
         artifact_kind=artifact_kind,
         accepted_media_types=media,
         json_schema=schema,
+        enum=_enum_values(record.get("enum"), field, value_type),
     )
 
 
@@ -291,6 +303,24 @@ def looks_like_artifact_ref(value: Any) -> bool:
     return True
 
 
+def looks_like_collection_ref(value: Any) -> bool:
+    """True when a value is an ArtifactCollection of ArtifactRef items."""
+
+    if not isinstance(value, Mapping):
+        return False
+    if value.get("kind") != "collection":
+        return False
+    if _ARTIFACT_REF_FORBIDDEN.intersection(value):
+        return False
+    collection_id = value.get("collection_id")
+    items = value.get("items")
+    if not isinstance(collection_id, str) or not collection_id.strip():
+        return False
+    if not isinstance(items, list):
+        return False
+    return all(looks_like_artifact_ref(item) for item in items)
+
+
 def value_matches_field(field: TypedField, value: Any) -> bool:
     """Type-level Runtime check. Store isolation is enforced later."""
 
@@ -307,9 +337,12 @@ def value_matches_field(field: TypedField, value: Any) -> bool:
             artifact_kind=field.artifact_kind,
             accepted_media_types=field.accepted_media_types,
             json_schema=field.json_schema,
+            enum=field.enum,
         )
         return all(value_matches_field(inner, item) for item in value)
     if field.is_artifact():
+        if field.artifact_kind == "collection":
+            return looks_like_collection_ref(value)
         if not looks_like_artifact_ref(value):
             return False
         if set(value) == {"$artifact"}:
@@ -317,7 +350,9 @@ def value_matches_field(field: TypedField, value: Any) -> bool:
         media = str(value.get("media_type", "")).casefold()
         return field.accepts_media(media)
     if field.type == "string":
-        return isinstance(value, str)
+        if not isinstance(value, str):
+            return False
+        return not field.enum or value in field.enum
     if field.type == "boolean":
         return isinstance(value, bool)
     if field.type == "integer":
@@ -420,6 +455,28 @@ def _media_types(
             )
         seen.add(media)
         parsed.append(media)
+    return tuple(parsed)
+
+
+def _enum_values(value: Any, field: str, value_type: FieldValueType) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if value_type != "string":
+        raise ContractValidationError(f"{field}.enum is only valid for strings")
+    if not isinstance(value, list) or not value:
+        raise ContractValidationError(f"{field}.enum must be a non-empty list")
+    if len(value) > MAX_ENUM_VALUES:
+        raise ContractValidationError(f"{field}.enum exceeds {MAX_ENUM_VALUES} values")
+    parsed: list[str] = []
+    for index, item in enumerate(value):
+        text = require_string(item, f"{field}.enum[{index}]").strip()
+        if not text or len(text) > 80:
+            raise ContractValidationError(
+                f"{field}.enum values must be 1 to 80 characters"
+            )
+        if text in parsed:
+            raise ContractValidationError(f"{field}.enum values must be unique")
+        parsed.append(text)
     return tuple(parsed)
 
 

@@ -25,11 +25,15 @@ from .api.projects import TypedApiError, typed_error_response
 from .api.projects import build_router as build_projects_router
 from .api.resources import build_router as build_resources_router
 from .api.runtime import build_router as build_runtime_router
+from .api.runtime.credentials_routes import (
+    build_router as build_runtime_credentials_router,
+)
 from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
 from .api.trash import build_router as build_trash_router
 from .api.workflows import build_router as build_workflow_router
 from .artifacts import ArtifactService
+from .artifacts.project_sync import ProjectArtifactSyncService
 from .builder.conversation_service import BuilderConversationService
 from .builder.conversation_store import BuilderConversationStore
 from .builder.resolution import BuilderResolutionService
@@ -47,6 +51,7 @@ from .orchestrator import OrchestratorService, OrchestratorStore
 from .plugins import PluginService
 from .projects import ProjectService
 from .projects.custom_components import CustomComponentService
+from .projects.sync_service import ProjectSyncService
 from .resources import ResourceCatalog, ResourceWorkshop
 from .resources.project import ProjectResourceService
 from .runtime import (
@@ -59,8 +64,10 @@ from .runtime import (
 )
 from .runtime.client import RuntimeModelTransport
 from .runtime.conversations import AgentConversationService
+from .runtime.credentials import ProviderCredentialService, ProviderCredentialStore
 from .runtime.workflow_service import WorkflowRuntimeService
-from .secrets import MacOSKeychainSecretStore, SecretStore
+from .secrets import DeviceSecretStore, SecretStore
+from .state import EntityStore
 from .storage import LocalRepository, migrate_local_database
 from .storage.bootstrap import HEAD_REVISION
 from .system import DirectoryPicker, MacOSDirectoryPicker
@@ -90,6 +97,7 @@ def create_app(
     factory_settings: FactorySettings | None = None,
     runtime_transport: RuntimeModelTransport | None = None,
     runtime_settings: RuntimeSettings | None = None,
+    runtime_preflight: bool | None = None,
     mcp_transport_factory: TransportFactory | None = None,
     mcp_http_client: httpx.Client | None = None,
     tool_adapters: Mapping[str, ToolAdapter] | None = None,
@@ -102,7 +110,7 @@ def create_app(
     resolved_factory_settings = factory_settings or FactorySettings()
     host_key_allowed = resolved_settings.mode not in {"production", "release"}
     resolved_runtime_settings = runtime_settings or RuntimeSettings(
-        allow_process_environment_key=host_key_allowed
+        allow_process_environment_key=False
     )
     if not host_key_allowed and resolved_runtime_settings.allow_process_environment_key:
         resolved_runtime_settings = resolved_runtime_settings.model_copy(
@@ -111,11 +119,12 @@ def create_app(
     database_path = _sqlite_database_path(resolved_settings.database_url)
     overlay_root = database_path.parent / "overlays"
     catalog = ResourceCatalog(overlay_root=overlay_root)
-    resolved_secret_store = secret_store or MacOSKeychainSecretStore()
+    resolved_secret_store = secret_store or DeviceSecretStore()
     runtime_client = RuntimeModelClient(
         resolved_runtime_settings,
         runtime_transport,
         secret_store=resolved_secret_store,
+        secret_ref="runtime.unbound",
     )
 
     @asynccontextmanager
@@ -128,23 +137,43 @@ def create_app(
             object_root,
             project_storage_root=resolved_settings.project_storage_root,
         )
+        project_sync = ProjectSyncService(repository)
         application.state.repository = repository
         application.state.projects = projects
+        application.state.project_sync = project_sync
         application.state.artifacts = ArtifactService(repository, object_root)
         application.state.agent_imports = AgentImportService(
             database_path.parent / "agent-imports", projects, catalog
         )
         custom_components = CustomComponentService(projects, catalog)
         application.state.custom_components = custom_components
+        application.state.project_artifacts = ProjectArtifactSyncService(
+            repository, projects, custom_components
+        )
         application.state.project_resources = ProjectResourceService(
             projects, catalog, custom_components
         )
-        application.state.library = LibraryService(repository, projects, catalog)
+        application.state.library = LibraryService(
+            repository, projects, catalog, custom_components
+        )
         application.state.conversations = AgentConversationService(
             repository, application.state.library
         )
         runtime_profiles = RuntimeProfileStore(repository)
         application.state.runtime_profiles = runtime_profiles
+        provider_credentials = ProviderCredentialStore(
+            repository, resolved_secret_store
+        )
+        application.state.provider_credentials = provider_credentials
+        application.state.provider_credential_service = ProviderCredentialService(
+            provider_credentials,
+            resolved_runtime_settings,
+            runtime_transport,
+        )
+        workshop = ResourceWorkshop(overlay_root, catalog)
+        application.state.workshop = workshop
+        entity_store = EntityStore(database_path)
+        application.state.entity_store = entity_store
         application.state.factory = FactoryService(
             FactorySessionRepository(database_path),
             projects,
@@ -155,6 +184,9 @@ def create_app(
                 secret_store=resolved_secret_store,
             ),
             project_resources=application.state.project_resources,
+            workshop=workshop,
+            library=application.state.library,
+            entity_store=entity_store,
         )
         mcp = McpService(
             McpServerStore(database_path),
@@ -165,8 +197,6 @@ def create_app(
             http_client=mcp_http_client,
         )
         application.state.mcp = mcp
-        workshop = ResourceWorkshop(overlay_root, catalog)
-        application.state.workshop = workshop
         application.state.plugins = PluginService(
             database_path.parent / "plugins", catalog, workshop, mcp
         )
@@ -180,12 +210,14 @@ def create_app(
                 mcp=mcp,
                 adapters=tool_adapters,
                 secret_store=application.state.secrets,
+                entity_store=entity_store,
             ),
             runtime_profiles,
             application.state.conversations,
             project_resources=application.state.project_resources,
             artifacts=application.state.artifacts,
             custom_components=custom_components,
+            credentials=provider_credentials,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime
@@ -201,6 +233,7 @@ def create_app(
             project_resources=application.state.project_resources,
             resource_readiness=application.state.resource_readiness,
             custom_components=custom_components,
+            entity_store=entity_store,
         )
         application.state.builder = BuilderResolutionService(
             application.state.edit_proposals
@@ -212,6 +245,11 @@ def create_app(
             application.state.factory,
             runtime=application.state.runtime,
             edits=application.state.edit_proposals,
+            runtime_preflight=(
+                factory_transport is None
+                if runtime_preflight is None
+                else runtime_preflight
+            ),
         )
         application.state.trash = TrashService(
             projects,
@@ -240,6 +278,10 @@ def create_app(
     application.state.database_revision = None
     application.state.resource_catalog = catalog
     application.state.secrets = resolved_secret_store
+    application.state.provider_credentials = None
+    application.state.provider_credential_service = None
+    application.state.project_sync = None
+    application.state.project_artifacts = None
     application.add_exception_handler(TypedApiError, typed_error_response)
 
     application.include_router(
@@ -254,6 +296,7 @@ def create_app(
     application.include_router(build_agent_import_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())
+    application.include_router(build_runtime_credentials_router())
     application.include_router(build_workflow_router())
     application.include_router(build_factory_router())
     application.include_router(build_edit_proposals_router())

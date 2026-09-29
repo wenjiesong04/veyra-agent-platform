@@ -2,6 +2,8 @@
 availability: ready
 description: Search the web and return bounded titles, links, and snippets.
 factory_selectable: true
+capabilities:
+- web_search
 kind: tool
 name: Web Search
 resource_id: veyra.tool.web.search

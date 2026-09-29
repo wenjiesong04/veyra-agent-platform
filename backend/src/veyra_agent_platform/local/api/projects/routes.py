@@ -20,6 +20,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.contracts.project_artifact import ProjectArtifactEnvelope
+from veyra_agent_platform.local.artifacts.project_sync import (
+    ProjectArtifactSyncError,
+    ProjectArtifactSyncService,
+)
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
 from veyra_agent_platform.local.projects.custom_components import (
     CustomComponentError,
@@ -34,6 +39,10 @@ from veyra_agent_platform.local.projects.service import (
     MAX_AGENT_IMPORT_BYTES,
     ProjectError,
     ProjectService,
+)
+from veyra_agent_platform.local.projects.sync_service import (
+    ProjectSyncError,
+    ProjectSyncService,
 )
 from veyra_agent_platform.local.resources.project import (
     ProjectResourceError,
@@ -76,6 +85,45 @@ class AddProjectResourceRequest(_ClosedModel):
     reference: str = Field(min_length=3, max_length=200)
     content_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     source: Literal["manual", "factory", "imported", "reconciled"] = "manual"
+
+
+class MarkProjectSyncPendingRequest(_ClosedModel):
+    operation: Literal["ensure", "push", "pull", "archive"]
+
+
+class RecordProjectSyncRequest(_ClosedModel):
+    state: Literal[
+        "local_only",
+        "pending_upload",
+        "synced",
+        "pending_push",
+        "pending_pull",
+        "conflict",
+        "error",
+    ]
+    cloud_revision: int | None = Field(default=None, ge=1)
+    last_synced_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    pending_operation: Literal["ensure", "push", "pull", "archive"] | None = None
+    remote_name: str | None = Field(default=None, max_length=160)
+    remote_description: str | None = Field(default=None, max_length=4000)
+    error_code: str | None = Field(default=None, max_length=80)
+
+
+class RecordArtifactSyncRequest(_ClosedModel):
+    artifact_kind: str = Field(min_length=1, max_length=32)
+    artifact_id: str = Field(min_length=1, max_length=160)
+    state: Literal["synced", "pending_push", "pending_pull", "conflict", "error"]
+    cloud_revision: int | None = Field(default=None, ge=1)
+    last_synced_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    error_code: str | None = Field(default=None, max_length=80)
+
+
+class MaterializeArtifactRequest(_ClosedModel):
+    envelope: dict[str, Any]
+
+
+class KnowledgeCloudFileReferenceRequest(_ClosedModel):
+    file_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 
 class UpdateProjectRequest(_ClosedModel):
@@ -324,6 +372,92 @@ def build_router() -> APIRouter:
             )
         )
 
+    @router.get("/{project_id}/sync")
+    def get_project_sync(project_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _project_sync(request).get(project_id))
+
+    @router.post("/{project_id}/sync/pending")
+    def mark_project_sync_pending(
+        project_id: str,
+        payload: MarkProjectSyncPendingRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _project_sync(request).mark_pending(
+                project_id, operation=payload.operation
+            )
+        )
+
+    @router.post("/{project_id}/sync/record")
+    def record_project_sync(
+        project_id: str,
+        payload: RecordProjectSyncRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _project_sync(request).record(
+                project_id,
+                state=payload.state,
+                cloud_revision=payload.cloud_revision,
+                last_synced_hash=payload.last_synced_hash,
+                pending_operation=payload.pending_operation,
+                remote_name=payload.remote_name,
+                remote_description=payload.remote_description,
+                error_code=payload.error_code,
+            )
+        )
+
+    @router.get("/{project_id}/artifact-sync/manifest")
+    def artifact_manifest(project_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _artifact_sync(request).manifest(project_id))
+
+    @router.get("/{project_id}/artifact-sync/{artifact_kind}/{artifact_id}")
+    def get_artifact(
+        project_id: str, artifact_kind: str, artifact_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: {
+                "schema_version": "1.0",
+                "artifact": _artifact_sync(request)
+                .get(project_id, artifact_kind, artifact_id)
+                .to_dict(),
+            }
+        )
+
+    @router.post("/{project_id}/artifact-sync/materialize")
+    def materialize_artifact(
+        project_id: str,
+        payload: MaterializeArtifactRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        def operation() -> dict[str, Any]:
+            envelope = ProjectArtifactEnvelope.from_dict(payload.envelope)
+            if envelope.project_id != project_id:
+                raise ProjectArtifactSyncError(
+                    "artifact project_id does not match Project"
+                )
+            return _artifact_sync(request).materialize(envelope)
+
+        return _translate(operation)
+
+    @router.post("/{project_id}/artifact-sync/record")
+    def record_artifact_sync(
+        project_id: str,
+        payload: RecordArtifactSyncRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _artifact_sync(request).record(
+                project_id,
+                artifact_kind=payload.artifact_kind,
+                artifact_id=payload.artifact_id,
+                state=payload.state,
+                cloud_revision=payload.cloud_revision,
+                last_synced_hash=payload.last_synced_hash,
+                error_code=payload.error_code,
+            )
+        )
+
     @router.get("/{project_id}")
     def get_project(project_id: str, request: Request) -> dict[str, Any]:
         projects, _ = _services(request)
@@ -398,6 +532,29 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         projects, _ = _services(request)
         return _translate(lambda: projects.file_content(project_id, path))
+
+    @router.post("/{project_id}/files/materialize", status_code=status.HTTP_201_CREATED)
+    def materialize_project_file(
+        project_id: str,
+        request: Request,
+        file: Annotated[UploadFile, File()],
+        relative_path: Annotated[str, Form(min_length=1)],
+        expected_sha256: Annotated[str | None, Form()] = None,
+        expected_size: Annotated[int | None, Form(ge=0)] = None,
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        try:
+            return _translate(
+                lambda: projects.materialize_cloud_file(
+                    project_id,
+                    relative_path,
+                    file.file,
+                    expected_sha256=expected_sha256,
+                    expected_size=expected_size,
+                )
+            )
+        finally:
+            file.file.close()
 
     @router.get("/{project_id}/files")
     def list_project_files(project_id: str, request: Request) -> dict[str, Any]:
@@ -828,6 +985,22 @@ def build_router() -> APIRouter:
 
         return _translate(operation)
 
+    @router.post("/{project_id}/knowledge/{knowledge_id}/source-ref")
+    def set_knowledge_source_ref(
+        project_id: str,
+        knowledge_id: str,
+        payload: KnowledgeCloudFileReferenceRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        projects, _ = _services(request)
+        return _translate(
+            lambda: projects.set_knowledge_cloud_file(
+                project_id=project_id,
+                knowledge_id=knowledge_id,
+                file_id=payload.file_id,
+            )
+        )
+
     @router.get("/{project_id}/custom-components")
     def list_custom_components(project_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _custom_components(request).list(project_id))
@@ -958,6 +1131,18 @@ def _profiles(request: Request) -> RuntimeProfileStore:
     return cast(RuntimeProfileStore, request.app.state.runtime_profiles)
 
 
+def _project_sync(request: Request) -> ProjectSyncService:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(ProjectSyncService, request.app.state.project_sync)
+
+
+def _artifact_sync(request: Request) -> ProjectArtifactSyncService:
+    if not bool(getattr(request.app.state, "database_ready", False)):
+        raise TypedApiError(503, "database_unavailable", "local database is starting")
+    return cast(ProjectArtifactSyncService, request.app.state.project_artifacts)
+
+
 def _resource_projection(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
     return cast(ResourceReadiness, request.app.state.resource_readiness).response(
         payload
@@ -1041,6 +1226,10 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
         raise TypedApiError(
             status_code, exc.code, str(exc), details=exc.details
         ) from exc
+    except ProjectSyncError as exc:
+        raise TypedApiError(404, "project_sync_not_found", str(exc)) from exc
+    except ProjectArtifactSyncError as exc:
+        raise TypedApiError(422, "project_artifact_sync_invalid", str(exc)) from exc
     except ProjectResourceError as exc:
         status_code = (
             409

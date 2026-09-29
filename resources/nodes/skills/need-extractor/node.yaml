@@ -2,6 +2,8 @@
 availability: ready
 description: Distinguish the user's actual need from extra or generic information.
 factory_selectable: true
+capabilities:
+- need_extraction
 kind: skill
 name: Need Extractor
 required_permissions:

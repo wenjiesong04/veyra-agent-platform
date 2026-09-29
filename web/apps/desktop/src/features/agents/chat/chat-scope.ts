@@ -31,13 +31,12 @@ export function sameChatTarget(left: ChatTarget, right: ChatTarget): boolean {
 }
 
 export function useChatScopeNavigation() {
-  const { api, upsertProject } = useProjectWorkspace();
+  const { createProject: createLocalProject } = useProjectWorkspace();
 
   const createProject = React.useCallback(async () => {
-    const created = await api.createProject({ description: "" });
-    upsertProject(created);
+    const created = await createLocalProject({ description: "" });
     window.location.hash = projectRoutePaths.projectChat(created.project_id);
-  }, [api, upsertProject]);
+  }, [createLocalProject]);
 
   const select = React.useCallback((target: ChatTarget) => {
     navigateChatTarget(target);

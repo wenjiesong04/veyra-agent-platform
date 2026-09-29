@@ -96,6 +96,14 @@ class CommunitySettings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("VEYRA_COMMUNITY_ORIGIN", "VEYRA_PUBLIC_ORIGIN"),
     )
+    allowed_origins: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "VEYRA_COMMUNITY_ALLOWED_ORIGINS",
+            "VEYRA_ALLOWED_ORIGINS",
+            "allowed_origins",
+        ),
+    )
     require_moderation: bool = False
     moderator_handles: str = ""
 
@@ -142,6 +150,10 @@ class CommunitySettings(BaseSettings):
                 raise ValueError("production Community mode requires moderator handles")
             if self.object_storage_backend != "s3":
                 raise ValueError("production Community mode requires S3 object storage")
+            if "*" in self.allowed_origin_set:
+                raise ValueError(
+                    "production Community mode forbids wildcard CORS origins"
+                )
         if len(self.auth_hmac_secret.get_secret_value().encode("utf-8")) < 32:
             raise ValueError("auth HMAC secret must contain at least 32 bytes")
         if self.object_storage_backend == "s3":
@@ -203,3 +215,22 @@ class CommunitySettings(BaseSettings):
             for item in self.moderator_handles.split(",")
             if item.strip()
         )
+
+    @property
+    def allowed_origin_set(self) -> frozenset[str]:
+        values = {
+            item.strip().rstrip("/")
+            for item in self.allowed_origins.split(",")
+            if item.strip()
+        }
+        for origin in values:
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("allowed origins must be plain HTTP(S) origins")
+        return frozenset(values)

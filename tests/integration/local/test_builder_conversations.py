@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -74,7 +75,7 @@ class ResolveThenProviderError:
         if not self.intent_sent:
             self.intent_sent = True
             return _completion(json.dumps(self.payload))
-        return _completion("Ready for a proposal.")
+        raise FactoryProviderError(self.code, self.message, details=self.details)
 
 
 def _turn(client: Any, project_id: str, **body: Any) -> Any:
@@ -92,6 +93,111 @@ def _kinds(payload: dict[str, Any]) -> list[str]:
 def _event_kinds(payload: dict[str, Any]) -> list[str]:
     events = payload["operations"][0].get("events") or []
     return [item["kind"] for item in events]
+
+
+def _real_provider_failure_plan() -> dict[str, Any]:
+    fixture = (
+        Path(__file__).resolve().parents[3]
+        / "contracts/fixtures/invalid/agent-semantic-plan-real-provider-failure.json"
+    )
+    return json.loads(fixture.read_text(encoding="utf-8"))
+
+
+def _compiler_invalid_repair_plan() -> dict[str, Any]:
+    """Keep the incident's bad mapping, omit unsupported step-local I/O."""
+
+    payload = _real_provider_failure_plan()
+    for step in payload["step_intents"]:
+        step.pop("inputs", None)
+        step.pop("outputs", None)
+        if step.get("semantic_key") == "classify_request":
+            step["purpose"] = 'request != ""'
+            step["condition_expression"] = 'request != ""'
+    return payload
+
+
+def _valid_neutral_branch_plan() -> dict[str, Any]:
+    payload = deepcopy(VALID_SEMANTIC_PLAN)
+    payload.update(
+        {
+            "goal": "Route a mode through approval and prepare a response.",
+            "suggested_name": "Mode Review",
+            "description": "Each mode follows its own approval path.",
+            "inputs": [{"name": "mode", "type": "string"}],
+            "outputs": [
+                {"name": "status", "type": "string"},
+                {"name": "summary", "type": "string"},
+            ],
+            "steps": ["Classify mode", "Approve response", "Prepare output"],
+            "capability_intents": [],
+            "knowledge_intents": [],
+            "approval_points": [],
+            "success_criteria": [],
+            "user_constraints": [],
+            "step_intents": [
+                {
+                    "semantic_key": "classify_mode",
+                    "name": "Classify mode",
+                    "purpose": 'mode == "valid"',
+                    "operation_kind": "condition",
+                    "condition_expression": 'mode == "valid"',
+                    "branches": [
+                        {"key": "valid", "label": "Valid"},
+                        {"key": "invalid", "label": "Invalid"},
+                    ],
+                },
+                {
+                    "semantic_key": "approve_valid",
+                    "name": "Approve valid response",
+                    "purpose": "Approve the valid response.",
+                    "operation_kind": "approval",
+                    "depends_on": ["classify_mode"],
+                    "branch_condition": "classify_mode",
+                    "branch_key": "valid",
+                },
+                {
+                    "semantic_key": "prepare_valid",
+                    "name": "Prepare valid response",
+                    "purpose": "Return status and summary for the valid case.",
+                    "operation_kind": "model",
+                    "depends_on": ["approve_valid"],
+                    "branch_condition": "classify_mode",
+                    "branch_key": "valid",
+                },
+                {
+                    "semantic_key": "approve_invalid",
+                    "name": "Approve invalid response",
+                    "purpose": "Approve the invalid response.",
+                    "operation_kind": "approval",
+                    "depends_on": ["classify_mode"],
+                    "branch_condition": "classify_mode",
+                    "branch_key": "invalid",
+                },
+                {
+                    "semantic_key": "prepare_invalid",
+                    "name": "Prepare invalid response",
+                    "purpose": "Return status and summary for the invalid case.",
+                    "operation_kind": "model",
+                    "depends_on": ["approve_invalid"],
+                    "branch_condition": "classify_mode",
+                    "branch_key": "invalid",
+                },
+            ],
+        }
+    )
+    return payload
+
+
+def _last_user_content(call: object) -> str:
+    assert isinstance(call, tuple)
+    messages = call[0]
+    assert isinstance(messages, list)
+    user_messages = [
+        item["content"]
+        for item in messages
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    return str(user_messages[-1])
 
 
 def _assert_no_secrets(payload: dict[str, Any]) -> None:
@@ -286,7 +392,7 @@ def test_retry_creates_new_operation_without_rewriting_failure(tmp_path: Path) -
         assert "builder.proposal.ready" in [
             item["kind"] for item in retried["operations"][1]["events"]
         ]
-        assert retried["conversation"]["title"] == "礼物包装 Agent"
+        assert retried["conversation"]["title"] == "Packaging Designer Agent"
         assert [item["kind"] for item in retried["messages"]].count("user") == 1
         _assert_chat_kinds(retried)
         before = client.get(f"/api/v1/projects/{project}").json()
@@ -394,8 +500,8 @@ def test_confirm_apply_and_validation_records_persist(tmp_path: Path) -> None:
             json={"confirm": True},
         )
         assert applied.status_code == 200, applied.text
-        assert applied.json()["agent"]["name"] == "礼物包装 Agent"
-        _name, expected_slug = agent_candidate_identity("礼物包装 Agent")
+        assert applied.json()["agent"]["name"] == "Packaging Designer Agent"
+        _name, expected_slug = agent_candidate_identity("Packaging Designer Agent")
         assert applied.json()["agent"]["slug"] == expected_slug
         assert "Generated Agent" not in applied.json()["agent"]["name"]
         summary = client.post(
@@ -429,7 +535,9 @@ def test_confirm_apply_and_validation_records_persist(tmp_path: Path) -> None:
         assert "validation_summary" not in _kinds(validation)
         assert "result" in _kinds(validation)
         assert validation["messages"][-1]["kind"] == "result"
-        assert "礼物包装 Agent已经创建" in validation["messages"][-1]["content"]
+        assert (
+            "Packaging Designer Agent已经创建" in validation["messages"][-1]["content"]
+        )
         assert "builder.operation.completed" in _event_kinds(validation)
         assert validation["operations"][0]["status"] == "succeeded"
         restored = client.get(prefix).json()
@@ -444,6 +552,211 @@ def test_confirm_apply_and_validation_records_persist(tmp_path: Path) -> None:
             },
         ).json()
         assert _event_kinds(immutable) == _event_kinds(restored)
+
+
+def test_canonical_agent_proposal_apply_is_snapshot_bound_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+            _completion(json.dumps(_valid_neutral_branch_plan())),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        before = client.get(f"/api/v1/projects/{project}").json()
+        proposed = _turn(client, project, content="帮我生成礼物包装 Agent").json()
+        operation = proposed["operations"][0]
+        proposal = client.get(
+            f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
+        ).json()
+        expected_source = proposal["candidate_source"]
+
+        drifted_blueprint = deepcopy(proposed["factory_session"]["blueprint"])
+        drifted_blueprint["goal"] = "This mutable Factory session must not win."
+        with client.app.state.repository.transaction() as connection:
+            connection.execute(
+                "UPDATE factory_sessions SET blueprint_json = ? WHERE session_id = ?",
+                (json.dumps(drifted_blueprint), operation["factory_session_id"]),
+            )
+
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{proposed['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/agent-proposals/{operation['proposal_id']}"
+            "/commands"
+        )
+        applied = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert applied.status_code == 200, applied.text
+        final = applied.json()
+        assert final["operations"][0]["status"] == "succeeded"
+        assert final["factory_session"]["state"] == "completed"
+        assert "builder.proposal.confirmed" in _event_kinds(final)
+        assert "builder.apply.completed" in _event_kinds(final)
+        assert _event_kinds(final)[-1] == "builder.operation.completed"
+
+        applied_proposal = client.get(
+            f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
+        ).json()
+        assert applied_proposal["state"] == "applied"
+        agent_id = next(
+            event["facts"]["agent_id"]
+            for event in final["operations"][0]["events"]
+            if event["kind"] == "builder.apply.completed"
+        )
+        exported = client.get(
+            f"/api/v1/projects/{project}/agents/{agent_id}/export"
+        ).json()
+        assert exported["source"] == expected_source
+        assert client.get(f"/api/v1/projects/{project}").json()["agent_count"] == (
+            before["agent_count"] + 1
+        )
+
+        replay = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert replay.status_code == 200, replay.text
+        replayed = replay.json()
+        assert replayed["operations"][0]["status"] == "succeeded"
+        assert _event_kinds(replayed) == _event_kinds(final)
+        assert [item["kind"] for item in replayed["messages"]].count("result") == 1
+        assert client.get(f"/api/v1/projects/{project}").json()["agent_count"] == (
+            before["agent_count"] + 1
+        )
+
+
+def test_canonical_agent_proposal_reject_denies_later_apply(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        proposed = _turn(client, project, content="帮我生成礼物包装 Agent").json()
+        operation = proposed["operations"][0]
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{proposed['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/agent-proposals/{operation['proposal_id']}"
+            "/commands"
+        )
+        rejected = client.post(
+            command_url,
+            json={"command": "reject", "confirm": True, "locale": "zh"},
+        )
+        assert rejected.status_code == 200, rejected.text
+        assert rejected.json()["operations"][0]["status"] == "rejected"
+        assert (
+            client.get(
+                f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
+            ).json()["state"]
+            == "rejected"
+        )
+
+        denied = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert denied.status_code == 409, denied.text
+        assert denied.json()["code"] == "agent_proposal_closed"
+        assert client.get(f"/api/v1/projects/{project}").json()["agent_count"] == 1
+
+
+def test_canonical_agent_proposal_tamper_is_rejected_without_install(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        proposed = _turn(client, project, content="帮我生成礼物包装 Agent").json()
+        operation = proposed["operations"][0]
+        proposal_id = operation["proposal_id"]
+        proposal = client.get(
+            f"/api/v1/projects/{project}/edit-proposals/{proposal_id}"
+        ).json()
+        proposal["candidate_source"]["description"] = "tampered after review"
+        with client.app.state.repository.transaction() as connection:
+            connection.execute(
+                "UPDATE edit_proposals SET payload_json = ? WHERE proposal_id = ?",
+                (json.dumps(proposal), proposal_id),
+            )
+        command_url = (
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{proposed['conversation']['conversation_id']}/operations/"
+            f"{operation['operation_id']}/agent-proposals/{proposal_id}/commands"
+        )
+        failed = client.post(
+            command_url,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert failed.status_code == 200, failed.text
+        assert failed.json()["operations"][0]["status"] == "failed"
+        assert failed.json()["operations"][0]["error_code"] == (
+            "agent_proposal_snapshot_invalid"
+        )
+        assert client.get(f"/api/v1/projects/{project}").json()["agent_count"] == 1
+
+
+def test_canonical_agent_proposal_is_project_and_operation_bound(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project_a, _, _ = _target(client, "agent")
+        project_b, _, _ = _target(client, "agent")
+        proposed = _turn(client, project_a, content="帮我生成礼物包装 Agent").json()
+        operation = proposed["operations"][0]
+        conversation_id = proposed["conversation"]["conversation_id"]
+        proposal_id = operation["proposal_id"]
+
+        wrong_proposal = (
+            f"/api/v1/projects/{project_a}/builder/conversations/{conversation_id}"
+            f"/operations/{operation['operation_id']}/agent-proposals/not-the-proposal"
+            "/commands"
+        )
+        wrong = client.post(
+            wrong_proposal,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert wrong.status_code == 422, wrong.text
+        assert wrong.json()["code"] == "agent_proposal_operation_mismatch"
+
+        foreign = (
+            f"/api/v1/projects/{project_b}/builder/conversations/{conversation_id}"
+            f"/operations/{operation['operation_id']}/agent-proposals/{proposal_id}"
+            "/commands"
+        )
+        denied = client.post(
+            foreign,
+            json={"command": "apply", "confirm": True, "locale": "zh"},
+        )
+        assert denied.status_code == 422, denied.text
+        assert denied.json()["code"] == "edit_proposal_not_found"
+        assert client.get(f"/api/v1/projects/{project_a}").json()["agent_count"] == 1
+        assert client.get(f"/api/v1/projects/{project_b}").json()["agent_count"] == 1
 
 
 def test_project_isolation_and_recent_activity(tmp_path: Path) -> None:
@@ -541,8 +854,11 @@ def test_proposal_reference_persists_without_creating_agent(tmp_path: Path) -> N
         before = client.get(f"/api/v1/projects/{project}").json()
         payload = _turn(client, project, content="帮我生成礼物包装 Agent").json()
         assert payload["factory_session"]["state"] == "review"
-        assert payload["factory_session"]["candidate"]["name"] == "礼物包装 Agent"
-        assert payload["conversation"]["title"] == "礼物包装 Agent"
+        assert (
+            payload["factory_session"]["candidate"]["name"]
+            == "Packaging Designer Agent"
+        )
+        assert payload["conversation"]["title"] == "Packaging Designer Agent"
         assert all(
             "方案已准备好" not in item["content"] for item in payload["messages"]
         )
@@ -555,8 +871,8 @@ def test_proposal_reference_persists_without_creating_agent(tmp_path: Path) -> N
         assert kinds.index("builder.intent.started") < kinds.index(
             "builder.intent.resolved"
         )
-        assert kinds.index("builder.semantic_plan.started") < kinds.index(
-            "builder.semantic_plan.completed"
+        assert kinds.index("builder.specification.started") < kinds.index(
+            "builder.specification.completed"
         )
         assert kinds.index("builder.capabilities.started") < kinds.index(
             "builder.capabilities.resolved"
@@ -570,6 +886,41 @@ def test_proposal_reference_persists_without_creating_agent(tmp_path: Path) -> N
         assert kinds[-1] == "builder.proposal.ready"
         assert payload["operations"][0]["target_kind"] == "agent"
         assert payload["operations"][0]["status"] == "waiting"
+        proposal_id = payload["operations"][0]["proposal_id"]
+        assert proposal_id
+        proposal = client.get(
+            f"/api/v1/projects/{project}/edit-proposals/{proposal_id}"
+        )
+        assert proposal.status_code == 200
+        assert proposal.json()["proposal_kind"] == "create_agent"
+        ready_event = next(
+            event
+            for event in payload["operations"][0]["events"]
+            if event["kind"] == "builder.proposal.ready"
+        )
+        assert ready_event["facts"]["proposal_id"] == proposal_id
+        assert ready_event["facts"]["proposal_kind"] == "create_agent"
+        restored = client.get(
+            f"/api/v1/projects/{project}/builder/conversations/"
+            f"{payload['conversation']['conversation_id']}"
+        ).json()
+        assert restored["operations"][0]["proposal_id"] == proposal_id
+        proposal_payload = proposal.json()
+        materialized_again = client.app.state.edit_proposals.create_agent_proposal(
+            project,
+            candidate={
+                "source": proposal_payload["candidate_source"],
+                "blueprint": proposal_payload["candidate_blueprint"],
+                "resource_plan": proposal_payload["resource_plan"],
+                "semantic_plan": proposal_payload["semantic_plan"],
+                "identity": proposal_payload["identity"],
+                "run_availability": proposal_payload["validation"]["run_availability"],
+            },
+            conversation_id=payload["conversation"]["conversation_id"],
+            operation_id=payload["operations"][0]["operation_id"],
+            factory_session_id=payload["operations"][0]["factory_session_id"],
+        )
+        assert materialized_again["proposal_id"] == proposal_id
         _assert_chat_kinds(payload)
         assert client.get(f"/api/v1/projects/{project}").json() == before
         recorded = client.post(
@@ -582,10 +933,73 @@ def test_proposal_reference_persists_without_creating_agent(tmp_path: Path) -> N
                 "proposal_id": new_uuid7(),
             },
         )
-        assert recorded.status_code == 200
-        assert _event_kinds(recorded.json()).count("builder.proposal.ready") == 1
-        _assert_chat_kinds(recorded.json())
-        _assert_no_secrets(recorded.json())
+        assert recorded.status_code == 404
+        assert recorded.json()["code"] == "builder_proposal_not_found"
+        _assert_chat_kinds(payload)
+        _assert_no_secrets(payload)
+
+
+def test_create_agent_stays_a_loop_instead_of_repairing_a_branch_graph(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        before = client.get(f"/api/v1/projects/{project}").json()
+        payload = _turn(
+            client,
+            project,
+            content="Create a mode review Agent with separate approvals.",
+            locale="en",
+        ).json()
+
+        assert len(transport.calls) == 2
+        assert payload["operations"][0]["status"] == "waiting"
+        assert payload["factory_session"]["state"] == "review"
+        types = [
+            node["component_type"]
+            for node in payload["factory_session"]["blueprint"]["nodes"]
+        ]
+        assert types == ["Start", "Model", "Output"]
+        assert "HumanApproval" not in types
+        assert "Condition" not in types
+        proposal_id = payload["operations"][0].get("proposal_id")
+        assert proposal_id
+        proposal = client.get(
+            f"/api/v1/projects/{project}/edit-proposals/{proposal_id}"
+        )
+        assert proposal.status_code == 200
+        assert proposal.json()["proposal_kind"] == "create_agent"
+        assert "builder.proposal.ready" in _event_kinds(payload)
+        assert client.get(f"/api/v1/projects/{project}").json() == before
+
+
+def test_loop_generate_does_not_exhaust_semantic_plan_repairs(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        payload = _turn(
+            client,
+            project,
+            content="Create a mode review Agent with separate approvals.",
+            locale="en",
+        ).json()
+        assert payload["operations"][0]["status"] == "waiting"
+        assert "builder.proposal.ready" in _event_kinds(payload)
+        assert payload["factory_session"]["state"] == "review"
+        assert len(transport.calls) == 2
 
 
 def test_turn_sse_emits_real_operation_events(tmp_path: Path) -> None:
@@ -607,7 +1021,7 @@ def test_turn_sse_emits_real_operation_events(tmp_path: Path) -> None:
         assert "text/event-stream" in response.headers.get("content-type", "")
         body = response.text
         assert "event: builder.event" in body
-        assert "builder.semantic_plan.started" in body
+        assert "builder.specification.started" in body
         assert "event: builder.snapshot" in body
         assert "chain-of-thought" not in body.casefold()
         assert "reasoning_content" not in body
@@ -664,17 +1078,13 @@ def test_failed_operation_keeps_events_and_retry_is_a_new_row(
         assert retried["operations"][1]["status"] == "waiting"
 
 
-def test_missing_capability_keeps_failed_operation_without_creating_agent(
+def test_github_capability_is_locked_as_needs_configuration(
     tmp_path: Path,
 ) -> None:
-    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
-    plan["capability_intents"] = ["read GitHub issues"]
-    plan["suggested_name"] = "会议纪要整理 Agent"
     transport = ScriptedKimiTransport(
         [
             _completion(json.dumps(intent(intent="create", create_kind="agent"))),
             _completion("Ready for a proposal."),
-            _completion(json.dumps(plan)),
         ]
     )
     with _client(tmp_path, transport) as client:
@@ -686,29 +1096,26 @@ def test_missing_capability_keeps_failed_operation_without_creating_agent(
             content="创建一个可以读取 GitHub 的 Agent。",
             locale="zh",
         ).json()
-        assert payload["factory_session"]["state"] == "missing_capability"
-        assert payload["operations"][0]["status"] == "failed"
-        assert payload["operations"][0]["error_code"] == "factory_missing_capability"
-        assert "builder.capabilities.resolved" in _event_kinds(payload)
-        assert "builder.compile.completed" not in _event_kinds(payload)
-        assert _event_kinds(payload)[-1] == "builder.operation.failed"
-        assert "result" not in _kinds(payload)
-        _assert_chat_kinds(payload)
-        restored = client.get(
-            f"/api/v1/projects/{project}/builder/conversations/"
-            f"{payload['conversation']['conversation_id']}"
-        ).json()
-        assert _event_kinds(restored) == _event_kinds(payload)
-        assert restored["operations"][0]["status"] == "failed"
+        assert payload["factory_session"]["state"] == "review"
+        assert payload["operations"][0]["status"] == "waiting"
+        assert payload["factory_session"]["missing_capabilities"] == []
+        bindings = (
+            payload["factory_session"]["blueprint"].get("ui_suggestions") or {}
+        ).get("bindings") or {}
+        assert any("github.read" in str(item).casefold() for item in bindings.values())
+        github = [
+            item
+            for item in payload["factory_session"].get("resource_plan") or []
+            if "github.read" in str(item.get("reference") or "")
+        ]
+        assert github
+        assert github[0]["bind_status"] in {
+            "needs_configuration",
+            "requires_configuration",
+        }
         after = client.get(f"/api/v1/projects/{project}").json()
         assert after["agent_count"] == before["agent_count"]
         assert payload["conversation"]["title"] != "Chat"
-        assert (
-            payload["factory_session"]["missing_capabilities"][0]["proposal"][
-                "executable"
-            ]
-            is False
-        )
 
 
 def test_direct_component_proposal_requires_confirmation_and_never_creates_agent(
@@ -948,32 +1355,13 @@ def test_component_apply_failure_is_recorded_on_builder_operation(
         )
 
 
-def test_reusable_component_confirmation_resumes_original_agent_plan(
+def test_normalization_request_creates_a_loop_agent_without_custom_component(
     tmp_path: Path,
 ) -> None:
-    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
-    plan.update(
-        inputs=[{"name": "text", "type": "string"}],
-        outputs=[{"name": "normalized", "type": "string"}],
-        steps=["Normalize the text"],
-        step_intents=[
-            {
-                "semantic_key": "normalize",
-                "name": "Normalize text",
-                "purpose": "normalized: {{text}}",
-                "operation_kind": "transform",
-                "capability_requirement": "Text normalization",
-                "reusable_capability": True,
-                "inputs": [{"name": "text", "type": "string"}],
-                "outputs": [{"name": "normalized", "type": "string"}],
-            }
-        ],
-    )
     transport = ScriptedKimiTransport(
         [
             _completion(json.dumps(intent(intent="create", create_kind="agent"))),
             _completion("Ready for a proposal."),
-            _completion(json.dumps(plan)),
         ]
     )
     with _client(tmp_path, transport) as client:
@@ -986,65 +1374,17 @@ def test_reusable_component_confirmation_resumes_original_agent_plan(
             locale="zh",
         ).json()
         operation = snapshot["operations"][0]
-        assert snapshot["factory_session"]["state"] == "missing_capability"
-        assert operation["proposal_id"]
-        proposal_url = (
-            f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
-        )
-        proposal = client.get(proposal_url).json()
-        assert proposal["continuation"] == "agent"
-        assert proposal["component_plan"]["capability_requirement"] == (
-            "Text normalization"
-        )
-
-        command_url = (
-            f"/api/v1/projects/{project}/builder/conversations/"
-            f"{snapshot['conversation']['conversation_id']}/operations/"
-            f"{operation['operation_id']}/component-proposals/"
-            f"{operation['proposal_id']}/commands"
-        )
-        resumed = client.post(
-            command_url,
-            json={"command": "apply", "confirm": True, "locale": "zh"},
-        )
-        assert resumed.status_code == 200, resumed.text
-        result = resumed.json()
-        assert result["factory_session"]["state"] == "review"
-        assert result["factory_session"]["candidate"]["name"] == "礼物包装 Agent"
-        assert result["operations"][0]["status"] == "waiting"
-        assert result["operations"][0]["proposal_id"] == operation["proposal_id"]
-        published_proposal = client.get(proposal_url).json()
-        component = published_proposal["created_component"]
-        assert any(
-            item["reference"] == component["reference"]
-            for item in result["factory_session"]["resource_plan"]
-        )
+        assert snapshot["factory_session"]["state"] == "review"
+        assert operation["status"] == "waiting"
+        types = [
+            node["component_type"]
+            for node in snapshot["factory_session"]["blueprint"]["nodes"]
+        ]
+        assert types == ["Start", "Model", "Output"]
+        assert "CustomComponent" not in types
         assert (
             client.get(f"/api/v1/projects/{project}").json()["agent_count"]
-            == (before["agent_count"])
-        )
-
-        created = client.post(
-            f"/api/v1/projects/{project}/factory/sessions/"
-            f"{result['factory_session']['session_id']}/apply-draft",
-            json={"confirm": True},
-        )
-        assert created.status_code == 200, created.text
-        agent_id = created.json()["agent"]["agent_id"]
-        exported = client.get(
-            f"/api/v1/projects/{project}/agents/{agent_id}/export"
-        ).json()
-        assert (
-            exported["source"]["lock"][component["reference"]]
-            == component["content_hash"]
-        )
-        assert any(
-            node["component_type"] == "CustomComponent"
-            and node["uses"] == component["reference"]
-            for node in exported["source"]["nodes"]
-        )
-        assert client.get(f"/api/v1/projects/{project}").json()["agent_count"] == (
-            before["agent_count"] + 1
+            == before["agent_count"]
         )
 
 
@@ -1149,15 +1489,15 @@ def test_success_upgrades_provisional_title_to_suggested_name(tmp_path: Path) ->
             locale="zh",
         ).json()
         assert payload["operations"][0]["status"] == "waiting"
-        assert payload["factory_session"]["candidate"]["name"] == "中英文翻译助手"
-        assert payload["conversation"]["title"] == "中英文翻译助手"
+        assert payload["factory_session"]["candidate"]["name"] == "Translation Agent"
+        assert payload["conversation"]["title"] == "Translation Agent"
         restored = client.get(
             f"/api/v1/projects/{project}/builder/conversations/"
             f"{payload['conversation']['conversation_id']}"
         ).json()
-        assert restored["conversation"]["title"] == "中英文翻译助手"
+        assert restored["conversation"]["title"] == "Translation Agent"
         recent = client.get(f"/api/v1/projects/{project}/builder/activity").json()
-        assert recent["items"][0]["title"] == "中英文翻译助手"
+        assert recent["items"][0]["title"] == "Translation Agent"
 
 
 def test_retry_same_conversation_does_not_duplicate_title(tmp_path: Path) -> None:
@@ -1189,7 +1529,7 @@ def test_retry_same_conversation_does_not_duplicate_title(tmp_path: Path) -> Non
             retry_of=failed["operations"][0]["operation_id"],
         ).json()
         assert retried["conversation"]["conversation_id"] == conversation_id
-        assert retried["conversation"]["title"] == "中英文翻译助手"
+        assert retried["conversation"]["title"] == "Translation Agent"
         recent = client.get(f"/api/v1/projects/{project}/builder/activity").json()
         matches = [
             item
@@ -1197,7 +1537,7 @@ def test_retry_same_conversation_does_not_duplicate_title(tmp_path: Path) -> Non
             if item["conversation_id"] == conversation_id
         ]
         assert len(matches) == 1
-        assert matches[0]["title"] == "中英文翻译助手"
+        assert matches[0]["title"] == "Translation Agent"
 
 
 def test_different_conversations_keep_independent_titles(tmp_path: Path) -> None:
@@ -1357,3 +1697,42 @@ def test_rename_and_delete_builder_conversation(tmp_path: Path) -> None:
             item["id"] != conversation_id
             for item in client.get("/api/v1/trash").json()["items"]
         )
+
+
+def test_packaging_pipeline_creates_a_workflow_proposal(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        payload = _turn(
+            client,
+            project,
+            content=(
+                "创建一个商品包装设计流程。"
+                "先让商品分析 Agent 分析上传的商品图片，"
+                "再让市场研究 Agent 调研竞品，"
+                "然后让包装设计 Agent 提出设计，"
+                "我确认后再生成最终包装效果图。"
+            ),
+            locale="zh",
+        ).json()
+        assert payload["operations"][0]["kind"] == "create_workflow"
+        assert payload["operations"][0]["status"] == "waiting"
+        assert payload["factory_session"]["target_kind"] == "workflow"
+        types = [
+            node["component_type"]
+            for node in payload["factory_session"]["blueprint"]["nodes"]
+        ]
+        assert types[0] == "Start"
+        assert types.count("AgentCall") >= 3
+        assert "HumanApproval" in types
+        proposal = client.get(
+            f"/api/v1/projects/{project}/edit-proposals/"
+            f"{payload['operations'][0]['proposal_id']}"
+        )
+        assert proposal.status_code == 200
+        assert proposal.json()["proposal_kind"] == "create_workflow"

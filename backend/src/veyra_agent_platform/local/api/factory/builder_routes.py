@@ -15,11 +15,13 @@ from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.builder.conversation_service import (
     BUILDER_ACTIVITY_MAX,
+    AgentCreationProposalCommandRequest,
     BuilderConversationError,
     BuilderConversationService,
     ComponentProposalCommandRequest,
     RecordRequest,
     RenameRequest,
+    RuntimeBindingCommandRequest,
     TestRepairRequest,
     TestRunCommandRequest,
     TestRunRequest,
@@ -214,6 +216,49 @@ def build_router() -> APIRouter:
 
     @router.post(
         "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+        "/operations/{operation_id}/agent-proposals/{proposal_id}/commands"
+    )
+    def command_agent_creation_proposal(
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        proposal_id: str,
+        payload: AgentCreationProposalCommandRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).command_agent_creation_proposal(
+                project_id,
+                conversation_id,
+                operation_id,
+                proposal_id,
+                payload.command,
+                confirm=payload.confirm,
+                locale=payload.locale,
+            ),
+        )
+
+    @router.post(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
+        "/operations/{operation_id}/runtime-binding"
+    )
+    def command_runtime_binding(
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        payload: RuntimeBindingCommandRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _conversation_translate(
+            request,
+            lambda: _conversations(request).command_runtime_binding(
+                project_id, conversation_id, operation_id, payload
+            ),
+        )
+
+    @router.post(
+        "/api/v1/projects/{project_id}/builder/conversations/{conversation_id}"
         "/operations/{operation_id}/test-repair"
     )
     def propose_test_repair(
@@ -272,9 +317,14 @@ def _turn_stream(
     def emit(event: dict[str, Any]) -> None:
         outgoing.put(("event", event))
 
+    def preview(text: str) -> None:
+        outgoing.put(("preview", {"text": text}))
+
     def worker() -> None:
         try:
-            snapshot = _conversations(request).turn(project_id, payload, on_event=emit)
+            snapshot = _conversations(request).turn(
+                project_id, payload, on_event=emit, on_preview=preview
+            )
             outgoing.put(("snapshot", snapshot))
         except Exception as exc:
             outgoing.put(("error", exc))
@@ -291,6 +341,8 @@ def _turn_stream(
             kind, data = item
             if kind == "event":
                 yield _sse_frame("builder.event", data, str(data.get("event_id") or ""))
+            elif kind == "preview":
+                yield _sse_frame("builder.preview", data)
             elif kind == "snapshot":
                 yield _sse_frame("builder.snapshot", data)
             else:

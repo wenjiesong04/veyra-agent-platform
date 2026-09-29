@@ -34,7 +34,11 @@ class CreateResourceDraftRequest(_ClosedModel):
 
 
 class ApproveResourceDraftRequest(_ClosedModel):
-    instruction: str = Field(min_length=1, max_length=20_000)
+    instruction: str | None = Field(default=None, max_length=20_000)
+
+
+class EnableResourceRequest(_ClosedModel):
+    enabled: StrictBool
 
 
 def build_router() -> APIRouter:
@@ -78,6 +82,21 @@ def build_router() -> APIRouter:
             _workshop_translate(
                 lambda: _workshop(request).approve_skill(
                     resource_id, version, payload.instruction
+                )
+            )
+        )
+
+    @router.post("/{resource_id}/versions/{version}/enable")
+    def enable_resource(
+        resource_id: str,
+        version: str,
+        payload: EnableResourceRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _readiness(request).response(
+            _workshop_translate(
+                lambda: _workshop(request).set_enabled(
+                    resource_id, version, enabled=payload.enabled
                 )
             )
         )

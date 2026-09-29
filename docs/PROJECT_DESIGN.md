@@ -14,36 +14,58 @@ This document starts from a new, independent project. It does not assume that th
 
 ## 0. Executive Decision
 
-Veyra Agent Platform will be a local-first desktop product with six connected surfaces:
+Veyra is an **Agent + Workflow AI studio**. Local Desktop (`5173` + `8771`) is
+the working product. Community (`5174` + `8772`) is accounts and a public
+registry, not a cloud workspace.
 
-1. **Veyra Studio** — inspect and manually design Agents/Workflows using Form, Canvas, and Source views; natural-language building starts in Veyra Chat.
-2. **Veyra Runtime** — run an Agent locally with tools, state, approvals, checkpoints, cancellation, and verification.
-3. **Veyra Orchestrator** — a deterministic scheduler for tasks, dependencies, isolated workspaces, retries, and multiple Agent runs.
-4. **Veyra Monitor** — live workflow visualization, run timelines, evidence, failures, and human controls.
-5. **Veyra Library** — manage Agent files, Component files, packages, versions, imports, exports, and artifacts.
-6. **Veyra Community** — required V1 accounts and a remote registry for publishing, downloading, Forking, starring, and reviewing Agent versions and templates.
+The two first-class Project objects are peers:
 
-Veyra's own Factory Agent uses the configurable Kimi Open Platform provider.
-The client discovers `/v1/models` and currently defaults to **kimi-k3**.
-Generated Agents remain provider-neutral and may use Kimi or another configured
-model.
+```text
+Project
+├── Agents
+├── Workflows
+├── Knowledge
+├── Files
+└── Runs
+```
+
+**Agent** is an autonomous capability unit. It is not a fixed DAG.
+
+```text
+Agent = Model + Instructions + Tools + Knowledge + Memory/Context
+      + Skills + Policies/Guardrails + Input/Output contract
+      + Agent Runtime Loop (max_turns)
+```
+
+At run time an Agent receives a task, decides whether to call a permitted
+Tool / Knowledge / Skill, observes the result, and continues until it returns
+a final output or hits `max_turns`. Users do not have to draw those turns as
+nodes. HumanApproval inside an Agent Run is a **tool-permission gate**, not a
+business DAG node.
+
+**Workflow** is an explicit typed execution graph. It owns Start, AgentCall,
+Tool, Condition, Transform, HumanApproval, Verifier, Output, typed ports, and
+`data_edges`. AgentCall must pin `agent_id@version_id` (never Draft).
+HumanApproval here is a **business step**.
+
+They share Provider, Tools, Knowledge, Files/Artifacts, Credentials, runtime
+infrastructure, Runs/Events/Receipts, and Resource Library. They do **not**
+share Builder compilers, Studio semantics, source files, or schedulers.
 
 Core product loop:
 
 ```text
 Describe requirement
-→ configured Kimi model emits AgentSemanticPlanV1
-→ Veyra compiles a canonical AgentBlueprint
-→ user reviews and confirms
-→ server creates an Agent Draft
-→ user edits Form / Canvas / Source
-→ validate schema, graph, components, permissions, secrets and verifier
-→ save immutable version
+→ Builder classifies create_agent or create_workflow
+→ Agent: specification → capability resolution → canonical AgentSource
+  Workflow: specification → typed graph compile → WorkflowSource
+→ user reviews the matching Proposal
+→ apply Draft (Workflow may also commit companion Agents)
+→ edit in Agent Studio (capability map) or Workflow Studio (typed DAG)
 → run locally
-→ Run Canvas shows every node and event
-→ user can stop / approve / reject / resume
-→ verifier establishes result status
-→ export, Fork or publish a version
+→ Agent Run shows a model/tool timeline; Workflow Run shows node overlay
+→ stop / approve / reject / resume
+→ export a version without secrets
 ```
 
 Product promise:
@@ -52,7 +74,32 @@ Product promise:
 
 Chinese promise:
 
-> **描述你的需求，得到一个真正属于你的 Agent；看见它如何工作，并把可靠版本分享给别人。**
+> **描述你的需求，得到真正属于你的 Agent 或 Workflow；看见它如何工作，并把可靠版本分享给别人。**
+
+Historical Flow graphs (Start → Model → Condition → Approval → Output) remain
+openable as `execution_kind=graph` Agents. They are not silently migrated.
+Simple Start→Model→Output graphs are loop-Agent candidates; graphs with
+Condition / HumanApproval / multiple Models are Workflow candidates.
+
+### 0.1 Legacy graph Agent migration plan
+
+Existing committed Agent versions keep their bytes, hashes, and
+`execution_kind=graph` runtime. Studio continues to open them as DAG editors.
+No automatic rewrite runs in this slice.
+
+Deterministic classification (`classify_legacy_graph_agent`) is:
+
+| Classification | Typical graph | Planned action |
+|---|---|---|
+| `loop_agent` | already `execution_kind=loop` | keep |
+| `simple_graph_loop_candidate` | Start → Model → Output (optional Tool bindings) | convert to loop Agent in a later explicit migration |
+| `multi_model_graph_candidate` | two or more Model/Agent stages | convert to Workflow |
+| `orchestration_workflow_candidate` | Condition, HumanApproval, Transform, Verifier, or AgentCall | convert to Workflow |
+| `legacy_graph` | anything else | keep readable as a graph Agent |
+
+`silent_migrate` is always false. Users must opt in before any rewrite.
+
+---
 
 ---
 
@@ -344,6 +391,30 @@ Community does not execute downloaded Agents on the server. Users explicitly imp
 
 Cloud Runtime, billing, organizations, branch/merge collaboration, recommendation algorithms, and arbitrary code components are later work.
 
+### 3.3 Desktop, Web, Community service, and Showcase boundary
+
+The four local development ports are distinct product surfaces, not four names
+for one Community application:
+
+- `5173` is Veyra Desktop, the authenticated day-to-day workspace. It owns
+  Project work and the interactive Community discovery, publish, release
+  inspection, Star, and import-preview flows.
+- `8771` is the loopback-only Local API and trusted local execution boundary
+  for Project files, Agent/Workflow source, Builder, Runtime, Knowledge,
+  Resources, Import, approvals, receipts, and Orchestration.
+- `8772` is the separate Community service for accounts and the existing
+  immutable Agent/Plugin release registry, metadata, moderation, feedback, and
+  artifact downloads. It never executes a downloaded Agent.
+- `5174` is the public site. The default route is the anonymous product
+  Showcase. `#/community`, login, and account are the Community catalog. It
+  does not provide Cloud Projects, Cloud Conversations, Cloud Files, Cloud
+  Runs, or Cloud Credentials.
+
+The Registry is a service capability, not a second execution host. The
+`web/apps/community` package name is retained. Desktop Community discovery,
+publish, Star, and import stay on `5173`. Generation and Chat stay on the
+Local API. A Cloud data plane is not part of the current product.
+
 ---
 
 ## 4. System Architecture
@@ -434,10 +505,17 @@ now has different content than the Project hash; Studio and Agent Runtime
 preflight surface that drift for explicit re-binding rather than silently
 accepting a changed capability.
 
-The Agent Chat surface uses the same local Runtime preflight as Studio and can
-offer indexed Project file paths for explicitly declared path-like inputs. A
-suggestion only fills a relative path value; it does not turn the Files page
-into implicit model context or bypass the Agent's Filesystem Tool permission.
+Studio Test Run executes the current Agent Draft. The Agent App / Run surface
+(`#/projects/:projectId/agents/:agentId`, and `/run` without `run_id`) executes
+only a committed immutable Agent version. Conversations pin that version; a later
+commit does not silently upgrade an existing conversation. `interaction_mode`
+(`auto|chat|form|hybrid`) chooses the product surface only; Runtime still receives
+typed inputs, conversation context, and artifacts. The App reuses the same local
+Runtime preflight as Studio and can offer indexed Project file paths for
+explicitly declared path-like inputs. A suggestion only fills a relative path
+value; it does not turn the Files page into implicit model context or bypass the
+Agent's Filesystem Tool permission. Run Detail (`?run_id=`) keeps the technical
+timeline. Project Runs remains the project-level history.
 
 The manifest contains a stable UUIDv7 `project_id`, Project name, listed Agent
 UUIDs/slugs/paths, `default_agent_id`, resource policy, and schema version.
@@ -622,8 +700,8 @@ stable.
 
 Declared modality is not a runtime capability claim. An Agent may declare
 `image` input or `pdf` output and still be designable. Running it requires a
-compatible Runtime model, parser, renderer, or generator. Missing capability
-must remain a truthful blocker. Values must not silently collapse to strings.
+compatible Runtime model or adapter. Missing capability must remain a truthful
+blocker. Values must not silently collapse to strings.
 
 Binary values are `ArtifactRef` records, not inline Run JSON. Bytes live in the
 existing content-addressed object store (`objects/sha256/<digest>`). Metadata
@@ -633,13 +711,20 @@ models, APIs, or UI.
 
 Runtime model modality truth is `RuntimeModelCapabilities` on the Agent
 Runtime profile. It is not `ProviderCapabilityProfile` and is not inferred in
-the UI from a model id substring. `unknown` is not `supported`. The current
-Moonshot `kimi-k3` Runtime model is `image_input=unsupported`. An Agent graph
-with image input may be saved; Run readiness is incompatible until a vision-
-capable Runtime model is configured. Provider HTTP calls may use OpenAI-
-compatible `image_url` data URLs; they must not send `file://`, host paths, or
-raw `artifact://` URLs. PDF/document bytes are not sent to the model. Missing
-parser, renderer, or image generation stays a truthful `missing_capability`.
+the UI from a model id substring. Exact model ids only. Known text-only
+Moonshot models (`kimi-k2`, `moonshot-v1-8k`, `moonshot-v1-32k`) keep
+`image_input=unsupported`. Moonshot vision models including `kimi-k3`, and any
+other user-bound Runtime model, keep `image_input=supported`; the Provider may
+still reject a request. `unknown` is not used to fail-close vision. Audio and
+video adapters remain unsupported until they exist. PDF, document, Office
+(`docx`/`xlsx`), and generic file inputs extract bounded plain text into the
+model prompt; bytes, host paths, and `artifact://` URLs never enter Run JSON
+or Provider HTTP. Folders are filesystem tools, not ArtifactRef kinds.
+Provider HTTP calls may use OpenAI-compatible `image_url` data URLs; they
+must not send `file://`, host paths, or raw `artifact://` URLs. PDF, document, and file inputs compile as designable graphs; Runtime extracts
+bounded text into the prompt. Image outputs compile onto `model.image` and
+need a bound User Runtime image model at Run time. Missing PDF renderers stay
+a truthful `missing_capability`. Audio and video adapters remain unsupported.
 
 Agent Playground is not implemented. Workflow Builder Compiler is not
 implemented. Conversation restore still returns the latest canvas;
@@ -855,8 +940,11 @@ Skills, Knowledge files, external workflow steps, and raw permission claims
 remain visible as `partial` or `unsupported` findings; they are never silently
 discarded or granted. The applied Agent keeps `import/manifest.json` beside
 its source so the original mapping decision remains inspectable. Model API
-credentials are never imported; the user configures the host Keychain profile
-through the normal Runtime settings.
+credentials are never imported; the user configures the device credential
+profile through the normal Runtime settings. Device credentials use the host
+system credential service through `SecretStore`; the concrete backend may be
+macOS Keychain, Windows Credential Manager, or Linux Secret Service/KWallet.
+The Agent contract does not depend on any one operating system.
 
 The import record is persisted in local application data so analysis and
 application are separate actions:
@@ -896,13 +984,17 @@ templates, and only Tool/MCP entries backed by real adapters. The UI may display
 an unavailable Tool/MCP descriptor, but Factory cannot select it for a runnable
 Agent.
 
-If no registered resource satisfies a requirement, Factory returns a typed
-`MissingCapabilityProposal`. With explicit user approval, Kimi may produce a
-quarantined Resource Draft containing a declarative specification,
-input/output schemas, permissions, documentation, test cases, and an adapter
-scaffold. It may not register, authorize, install, or execute generated code.
-Promotion into the catalog is a separate Resource Workshop flow with human
-review, static/security checks, tests, and an immutable version.
+If no registered resource satisfies a required capability, Resource Resolver
+returns `missing_required`. Resource Factory V1 classifies that gap with
+`ResourceFactoryStrategy` (`generatable`, `requires_user_configuration`,
+`requires_external_integration`, `unsupported`) and persists a
+`ResourceFactoryPlan` on the canonical Proposal. It may generate a quarantined
+Skill instruction or a declarative Tool Wrapper over an existing Runtime
+adapter (`http.request`, filesystem read/search/list). It does not write
+Python, shell, eval, MCP, Policy-enforced, Template, or image-generation
+runtimes. User review is mandatory: Draft → validate → approve exact snapshot
+→ immutable published overlay. Resolver rediscovers the resource from Catalog
+metadata; Factory never `force_select`s it.
 
 ### 5.6 Version hashes
 
@@ -1005,13 +1097,22 @@ Project-only versus Library choice. Community publication is outside this slice.
 The safety protocol is User Request → Intent/Plan → Candidate → persisted Proposal
 → actual Diff/Impact → explicit Confirm → Apply → Validate → Result. Source-edit
 mode returns a complete typed Source; the server builds the Proposal envelope and
-derives impact, never trusting a model claim of success. Confirm applies exactly the
-stored candidate, rechecks revision/ETag and dependencies, and leaves immutable
-versions/Runs untouched. Reject, guarded Undo and conflict recovery are retained.
+derives impact, never trusting a model claim of success. For canonical Builder
+`create_agent`, the reviewed `AgentBlueprint`, compiled `AgentSource`, resource
+plan, semantic plan and provenance are persisted as one `create_agent` Proposal
+snapshot before review. The operation link and `builder.proposal.ready` event are
+written in the same transaction. Confirm resolves the Proposal by `proposal_id`,
+verifies its source/behavior/lock hashes and current Project dependencies, then
+installs exactly that persisted source while preserving its reviewed identity;
+the mutable Factory session Blueprint is not recompiled or used as Apply authority.
+Duplicate Apply returns the persisted result without another Agent, while rejected,
+cross-operation, cross-Project, conflicting-identity, or tampered Proposals fail
+closed. The Factory session remains the review/workbench lifecycle and is closed
+after canonical Apply. Reject, guarded Undo and conflict recovery are retained.
 The first Chat editing slice targets one existing Agent/Workflow; automatic intent
 routing, multi-object transactions, resource authoring and auto-approval are deferred.
-Legacy Blueprint creation keeps its existing review protocol until it is migrated
-to the same persisted creation-proposal envelope; do not claim that migration done.
+The legacy direct Factory session apply endpoint remains a compatibility adapter;
+the canonical Builder create-agent path must use the persisted Proposal command.
 
 ### 6.1 Official API baseline
 
@@ -1039,10 +1140,34 @@ The model produces a small `AgentSemanticPlanV1` describing user intent:
 - inputs/outputs
 - summary steps
 - optional `step_intents` graph intent (`semantic_key`, `name`, `purpose`,
-  `operation_kind`, `depends_on`, optional `capability_requirement`).
-  Provider-facing plans do not emit branch objects; the server expands extra
-  ports. `capability_requirement` names a Project-bound tool; it is not a
-  node ID, hash, version pin, or canvas coordinate.
+  `operation_kind`, `depends_on`, optional `capability_requirement`, semantic
+  Condition `branches`, executable `condition_expression`, branch-local
+  `branch_condition` / `branch_key`, and deterministic `output_mapping`). A
+  Condition declares exactly two `{key, label}` branches; the compiler maps
+  them in declaration order to Runtime `true` / `false` ports and preserves
+  labels. `purpose` is human-readable intent; `condition_expression` is the
+  only executable predicate. V1 accepts only a bounded `field == literal` or
+  `field != literal` comparison over a declared Agent input, with string,
+  boolean, or integer literals. A branch-local step depends only on its own
+  branch or its parent Condition. `depends_on` is ordering/control, not
+  inter-step value transfer. Only the last Model on each path to Output
+  emits the declared top-level Agent outputs. Earlier Model steps write a
+  working note named by `semantic_key`; Runtime may pass those notes in the
+  shared run values bag, but Transform and Condition cannot read them.
+  Human confirmation is `approval`. Later duties may set `branch_condition`
+  to that approval and `branch_key` to `approved` or `rejected`; rejected
+  may continue a revise Model instead of jumping to Output. A Condition
+  still compares only a declared Agent input supplied at Run start. Do not
+  represent the same confirmation as both approval and a Condition on a
+  synthetic `decision` field. Transform mappings may read only declared
+  Agent inputs or
+  literals and target declared Agent outputs. Step-level typed I/O is reserved
+  for `reusable_capability=true` Model, Transform, or capability steps; it
+  defines that reusable component contract and does not define general step
+  dataflow. A natural-language classification that cannot be represented by
+  this predicate grammar is unsupported and must fail closed; the server must
+  not invent a non-empty check or hidden Model call. `capability_requirement` names a Project-bound tool;
+  it is not a node ID, hash, version pin, or canvas coordinate.
 - capability intents and knowledge intents
 - approval points, success criteria, user constraints
 
@@ -1071,6 +1196,13 @@ The server owns node/edge IDs, Tool/Knowledge refs, `source.lock`, required
 permissions, graph wiring and verification defaults. Ambiguous mentions become
 clarification. Unbound capabilities become `missing_capability`. Catalog
 auto-add, silent upgrades and permission overgrant are forbidden.
+
+An invalid Transform that only tries to rename/copy a prior Model output is not
+a user-required deterministic Transform: that dataflow is not represented by
+this contract. Repair may remove only that mapping step and preserve the
+producing Model duty by returning the declared Agent output fields. A genuine
+input/literal-to-output Transform remains a required duty. Both paths fail
+closed if the remaining semantic graph cannot be compiled truthfully.
 
 The compiled Blueprint still goes through `AgentBlueprint.from_dict`, schema and
 graph validation, dependency checks, Factory review, Proposal/Diff/Impact, and
@@ -1141,8 +1273,9 @@ User requirement
 → graph validation
 → bounded repair loop, maximum three attempts
 → user-visible Blueprint and Resource Plan
-→ user confirms
-→ server creates or replaces an Agent Draft
+→ persist canonical `create_agent` Proposal snapshot
+→ user confirms the Proposal identity
+→ server installs the exact persisted AgentSource as an Agent Draft
 → immutable version
 ```
 
@@ -1162,9 +1295,12 @@ VEYRA_FACTORY_REASONING_EFFORT=high
 VEYRA_FACTORY_MAX_COMPLETION_TOKENS=16384
 ```
 
-The key belongs in the host Keychain/environment, never SQLite, Agent source,
-browser storage, logs, or packages. Desktop Settings can bind the model key to
-`model.primary`; headless development may continue using `MOONSHOT_API_KEY`.
+The Platform key belongs in server/deployment configuration and is never
+exposed through User Runtime Credential APIs. User Runtime keys are added through
+the Provider Credentials surface and are resolved only through an explicit
+binding or User default; `MOONSHOT_API_KEY` is not an implicit Runtime path.
+The current local implementation supports `credential_scope=device`; the
+`cloud` scope is a future contract seam, not an implemented Cloud Vault.
 
 Blueprint generation uses the `ProviderCapabilityProfile` attached to
 `GET /api/v1/factory/status`. The profile is a request-protocol fact for one
@@ -1265,27 +1401,33 @@ only.
 - 20 real requirements; at least 15 produce valid Drafts after bounded repair
 
 Factory and user Runtime models use separate configuration, keys, and budgets.
-Both may be unconfigured. Without a Factory provider the user can still create,
-import, and edit Agents manually. Without a Runtime model profile the Agent can
-still be generated, validated, versioned, and exported, but model-based Run is
-disabled with an explicit configuration requirement. Provider secrets live in
-Keychain/process environment and Agent source stores only `model_ref` or
-`secretRef`.
+The Platform Builder Provider is deployment-owned: it is used for Builder Chat,
+intent detection, Semantic Plan generation, repair, and Proposal generation. It
+is never exposed through the local User Credential API. User Runtime Providers
+are local credential metadata plus a device-system secret, and are selected by a
+Project/Agent binding slot. A Runtime resolver applies the precedence
+`explicit Agent binding → Project binding → User default → missing`.
 
-Project and Agent creation may optionally save a non-secret Runtime API profile
-(`provider`, API base URL, model ID, and API-key environment-variable name) in
-application SQLite. An Agent profile overrides its Project profile; a Project
-profile overrides the default Runtime profile. The API-key value itself remains
-in the host Keychain/environment and is never written to a Project manifest,
-Agent source, SQLite profile JSON, browser storage, or logs.
+`provider_credentials` stores only local metadata (`provider_type`, label, base
+URL, status, `credential_scope`, capabilities, masked hint, timestamps and an
+opaque `secret_ref`). The actual API key is stored in the device system
+credential service through the existing
+`SecretStore`; it is never stored in SQLite, Agent source, Project YAML,
+Proposals, Builder events, Run evidence, exports, or Community payloads.
+`runtime_bindings` stores the local Project/Agent binding slot and model ID.
+This is a call mapping, not Agent source. Studio Model/Agent node inspectors
+map `model_ref` (currently `model.primary`) onto a User Runtime Provider and
+model ID. The node keeps the slot; the API key never enters Agent YAML,
+Draft, or the inspector form. Disabled, invalid, deleted, or missing
+credentials cannot resolve for a Run.
 
-The Desktop Project and Agent dialogs expose a password field for the host
-Runtime API key. A user action stores it under the opaque `model.primary`
-Keychain reference and can immediately verify the selected profile. Verification
-performs only the OpenAI-compatible `GET /models` request and returns a safe
-status/code pair; it never sends a prompt or returns the key. The effective
-Agent preflight also checks the model credential, locked dependencies, Tool
-authorization, and configured MCP server without starting an MCP process.
+The Desktop Settings Provider Credentials surface supports Add/Test & Save,
+replace, enable/disable, delete, and User default selection. Validation uses a
+provider model-list request only; it never sends a generation prompt. The
+Platform credential is not editable from this surface. A Builder `create_agent`
+operation performs a durable Runtime preflight before Semantic generation: it
+waits for a User credential or explicit credential/model binding confirmation.
+Ordinary chat and non-Runtime operations remain usable without a Runtime key.
 
 Workflow has a matching no-effect preflight at
 `GET /api/v1/projects/{project_id}/workflows/{workflow_id}/runtime-readiness`.
@@ -1296,10 +1438,10 @@ version, contacts the model provider, or starts a child Run. Workflow execution
 applies the same permission containment check, including
 `shell_workspace_only`.
 
-Local development may use the host process Runtime profile
-(`VEYRA_RUNTIME_*` / `MOONSHOT_API_KEY`) so Agent nodes can run for testing.
-Production and release modes do not use that shared host key for user-created
-or Factory-generated Agents; those runs require a user-provided Runtime API.
+Local development tests may inject a Runtime transport. The normal Local app does
+not use `MOONSHOT_API_KEY` or the Platform Builder secret as an implicit Runtime
+fallback. User Runtime execution requires an active credential and binding (or
+an explicit User default); production and release modes have the same boundary.
 
 ---
 
@@ -1372,14 +1514,17 @@ Project
     <workflow>
   Knowledge         long-lived documents, plus to add
     <document>
-  Files             collection page; raw Project files
+  Files             collection page; indexed Project files
+  Runs              collection page; Agent and Workflow run history
 ```
 
 Do not list Agents as bare children of a Project. Agent and Workflow are
-siblings. Knowledge documents nest under Knowledge; Files stay a collection
-leaf because it is an index, not a Canvas instance. Run history is not a
-Project-tree item. The header History control opens `#/runs` on the home
-workspace and `#/projects/:projectId/runs` inside a Project.
+siblings. Knowledge documents nest under Knowledge; Files and Runs stay
+collection leaves because they are indexes, not Canvas instances. Clicking
+Files opens `#/projects/:projectId/files`. Clicking Runs opens
+`#/projects/:projectId/runs`. The header History control still opens
+`#/runs` on the home workspace and `#/projects/:projectId/runs` inside a
+Project.
 
 Resource Catalog is a Home workspace surface for discovering all immutable
 platform resources. Project Resource Library is a separate Project workspace
@@ -1434,12 +1579,15 @@ These decisions override earlier oscillating sentences in this document.
 Do not hide Components, do not promote MCP into a product layer, and do
 not rename Agent into Workflow.
 
-1. **Agent is not renamed to Workflow.** An Agent remains a runnable
-   capability whose internal graph may contain Start, Model, Tool, Condition,
-   Transform, HumanApproval, Verifier, and Output. A Workflow is a separate
-   source that only orchestrates immutable Agent versions via AgentCall plus
-   control flow. Both declare their own inputs and outputs. AgentCall is
-   Workflow-only.
+1. **Agent is not renamed to Workflow, and Agent is not a DAG.** An Agent is a
+   runnable capability (model, instructions, tools, knowledge, skills,
+   policies, typed I/O, bounded runtime loop). New Builder-created Agents use
+   `execution_kind=loop`. The Agent Canvas is a **capability map**, not
+   Start→Condition→Model→Output. A Workflow is a separate source that
+   orchestrates immutable Agent versions via AgentCall plus typed dataflow and
+   control flow. AgentCall is Workflow-only and pins `agent_id@version_id`.
+   Typed ports, `data_edges`, structural simulation, and quality validation
+   belong to Workflow infrastructure; Artifact / multimodal types remain shared.
 2. **Shared editor does not mean every page is a Canvas.** Agent and
    Workflow share one Canvas shell. Components use Resource Library
    (list + detail). Knowledge uses document management. Runs use list +
@@ -1452,6 +1600,11 @@ not rename Agent into Workflow.
    record under Tools. After normalization it lands on the Canvas as a
    Tool node. Studio groups MCP with Tools. Architecture diagrams must
    not draw MCP as a sibling of Agent, Workflow, Component, or Knowledge.
+5. **Studio Test is Draft; Agent App is a committed version.** Tree click
+   opens Studio (`/design`). Open App is a secondary action to the Agent
+   App. Never run Draft from the App, and never auto-commit an unconfirmed
+   Draft to open the App. Legacy Agents without `interaction_mode` default
+   to `auto`.
 
 ### 7.3 Studio layout
 
@@ -1471,14 +1624,15 @@ Studio shows this report after validation without turning a missing host
 credential into a fake successful Run.
 
 ```text
-Left      Catalog projection (Agent: Model / Tool / Condition / Transform /
-          HumanApproval / Verifier / Knowledge; Workflow: AgentCall / control
-          flow). AgentCall never appears on the Agent palette.
+Left      Agent (loop): Tools / Knowledge / Skills / Policies (capability map).
+          Agent (legacy graph): Model / Tool / Condition / Transform /
+          HumanApproval / Verifier. AgentCall never appears on the Agent palette.
+          Workflow: Agents / Tools / Logic / Human / Data / Output.
           MCP appears under Tools, not as its own product class.
           Canvas notes are UI-only annotations; they are default, not required,
           and they are not Flow nodes.
-Center    Canvas. Hover a connection to insert a node; select it to
-          delete or reconnect an endpoint. Notes can hold free text.
+Center    Agent Canvas is a capability map. Workflow Canvas is a typed DAG.
+          Hover a Workflow connection to insert a node.
 Right     parameter inspector
 Top       name, version, validation, save
 Bottom    local Agent / Workflow run, immutable version, events, approval and stop
@@ -1597,11 +1751,15 @@ run.interrupted
 ```
 
 Persist append-only events using `(run_id, seq)`. Stream ephemeral token deltas to UI but persist only merged user-visible content/reasoning summaries.
+Model node start evidence may include provider type, model ID, `credential_type=user`,
+and a safe credential alias; it never includes the secret or secret reference value.
 
 ### 8.4 Secret broker
 
 - Agent contains `secretRef`, never a value.
-- Values live in macOS Keychain/system keyring.
+- Values live in the device system credential service (macOS Keychain, Windows
+  Credential Manager, or Linux Secret Service/KWallet through the system-keyring
+  adapter).
 - Export/import preserves references only.
 - Import requires rebinding.
 - Logs/errors/artifacts/packages are scanned and redacted.
@@ -1761,6 +1919,8 @@ Draft is mutable with revision. Version is immutable. Every run materializes or 
 - `file_versions`
 - `agent_version_files`
 - `runtime_api_profiles` (non-secret Project/Agent provider metadata)
+- `provider_credentials` (local User Runtime credential metadata only)
+- `runtime_bindings` (local Project/Agent slot → credential/model binding)
 - `project_artifacts` (Project-scoped ArtifactRef metadata; bytes stay in the object store)
 
 Actual bytes live at `objects/sha256/<hash>`. SQLite never stores large files or long stdout.
@@ -1860,7 +2020,8 @@ email challenge. The implementation requires:
 - email/IP/device rate limits and anti-enumeration responses
 - device/session revoke
 
-Desktop tokens live in Keychain, not local SQLite plaintext. SMTP credentials
+Desktop tokens live in the host system credential service, not local SQLite
+plaintext. SMTP credentials
 come from explicitly supplied process environment variables; the services never
 auto-load a Project-directory `.env`.
 
@@ -2388,3 +2549,167 @@ All new work retains the clean-room legacy boundary. No implementation phase
 copies legacy Veyra directories or loads a Project `.env` automatically.
 The local sidecar may load a repository-root gitignored `.env` at process
 start for development credentials.
+
+## Project Sync Foundation
+
+Veyra treats a Project as one logical identity rather than separate Local and
+Cloud products. The Desktop creates a Local Working Copy first and uses its
+UUIDv7 `project_id` when it ensures a Cloud Replica. Cloud persistence is a
+server-side account-owned replica; it is not a second Project shown in the
+Project picker and it does not access the local Project directory.
+
+Project Sync Foundation #1 synchronizes only Project metadata: identity, name,
+description, lifecycle state, and schema metadata. Agent and Workflow
+definitions, Knowledge, Files, Runs, Chat, Provider Credentials, and Runtime
+Bindings remain outside this slice. Local sync state is stored in the
+`project_sync_states` SQLite table and records the Cloud revision, metadata
+hash, pending operation, and conflict information. It never stores a Cloud
+session or secret.
+
+The local sidecar does not read the Cloud HttpOnly session cookie. A Desktop
+ProjectSyncCoordinator coordinates the 8771 Local API and authenticated 8772
+Cloud API. Create is Local-first: Cloud failure leaves the Project usable and
+records `pending_upload`; retry is bounded and event-driven. Cloud mutations
+use a monotonic revision and expected revision. A stale push returns a
+conflict and never silently overwrites the newer replica.
+
+Cloud payloads must not contain local paths, device identifiers, Keychain
+references, credential IDs, API keys, or Local Runtime configuration. Provider
+secrets and device-local Runtime bindings remain outside Project Sync.
+
+## Project Artifact Sync #2
+
+Project Artifact Sync extends the same Logical Project and project_id. It uses
+one portable Project Artifact envelope with a domain kind, stable artifact ID,
+canonical payload, content hash, revision, immutable flag, deleted flag, and
+schema version. V1 kinds are agent, agent_version, workflow, custom_component,
+and knowledge_metadata. Files, raw Knowledge content, Runs, Chat, Credentials,
+Runtime Binding implementations, and Cloud Runtime are not Artifact Sync
+payloads.
+
+Cloud stores envelopes in project_artifacts, owner-scoped through the Cloud
+Project Replica. Mutable artifacts use their own optimistic revision; an
+immutable Agent version is idempotent only when its identity and hash match.
+Reusing an immutable ID with different content is an integrity conflict. A
+deleted mutable artifact is represented by a tombstone rather than a row
+delete. The Project revision remains separate from per-artifact revisions.
+
+Local discovery serializes the existing AgentSource, WorkflowSource,
+CustomComponentDefinition, immutable Agent version, and Knowledge metadata
+contracts. It never serializes local paths, raw Knowledge content, credentials,
+or Runtime state. Pulls pass through the existing domain validators and
+canonical writers; Cloud data is treated as untrusted even when owned by the
+same account.
+
+## Cloud Files & Library Foundation #1
+
+Cloud Files are a separate private Account Library domain. A `CloudFile` has a
+server-issued UUIDv7 `file_id`, owner identity, display filename, MIME metadata,
+byte size, SHA-256, lifecycle state, and timestamps. Metadata is stored in the
+Cloud/Community database lineage (`cloud_files`); bytes are never stored in the
+primary database. `ProjectFileReference` rows connect one account-owned file
+to one or more Cloud Project replicas without copying the blob.
+
+The Cloud Host exposes authenticated list, upload, metadata get, streaming
+download, delete, Project attach, Project detach, and Project File list
+operations. Upload is an explicit multipart action only; opening a Project
+does not scan or upload its Local directory. Ownership is checked for every
+operation and a non-owner receives a non-disclosing 404. Library deletion is
+separate from Project detach and returns `file_in_use` while any Project
+reference remains.
+
+`BlobStore` is intentionally narrow: stream put, open/read, stat, delete, and
+readiness. The development/self-host adapter is `FilesystemBlobStore`, whose
+root is a server-owned Cloud data directory configured by Cloud settings, not a
+Desktop Project root. The protocol is the seam for a future S3, MinIO, or R2
+adapter; this slice does not add a production cloud SDK.
+
+Cloud File responses never expose storage keys, server paths, Local Project
+paths, credentials, sessions, or secrets. Downloads stream as safe
+`Content-Disposition: attachment` responses with `nosniff`, length, and hash
+headers. Local materialization is an explicit Local API operation restricted to
+safe `assets/` or `knowledge/` paths, with traversal/symlink checks and
+hash/size verification.
+
+Knowledge remains Local-first and is not indexed by Cloud Files. An explicit
+Cloud File source reference may be stored as Knowledge metadata and carried by
+the existing metadata-only Project Artifact envelope. It is a `cloud_file`
+identity seam, not raw source bytes and not an index-success claim. Project
+Artifact Sync continues to exclude Cloud File bytes.
+
+Web and Desktop share the Cloud File contracts and connected-account client;
+this foundation adds no new page, Sidebar entry, Cloud Library redesign,
+Community publication, or Cloud Runtime behavior.
+
+## Existing Chat Server Authority & Cross-Client Persistence #1
+
+Veyra's existing Chat is not duplicated as a second Cloud Chat product. The
+account-owned Conversation and Message domain is persisted in the Cloud Host
+database lineage (`conversations`, `conversation_messages`). Web and Desktop
+consume the same server `conversation_id` and `message_id`; Recent
+Conversations is a view of that server list when the account session is
+available.
+
+The server Conversation record keeps the optional `project_id` and `agent_id`,
+title, status, revision, and activity timestamps. Project binding is accepted
+only when the Cloud Project belongs to the same account. Message append is
+sequence-backed and locks the Conversation row on the server; a client-supplied
+message ID makes network retry idempotent. Reusing that ID with different
+content is a conflict, not a second Message.
+
+Builder operation and event references are stored beside the Conversation so
+`operation_id`, `proposal_id`, retry lineage, and event identity survive the
+authority transition. The existing Builder UI, Proposal identity, Confirm,
+Reject, and Apply semantics are unchanged. Desktop Local Host remains the
+execution bridge for the current Local Project Working Copy; it is not a
+second authoritative Chat store. During the transition, a thin Desktop
+bridge imports the existing Local Builder snapshot to the server by stable
+identities and leaves the old Local rows intact as legacy/cache execution
+state.
+
+Message attachments contain only an owned `cloud_file_id` plus server-derived
+metadata snapshots. Bytes remain in the Cloud File domain. Conversation
+payloads reject credentials, secrets, session tokens, Keychain references,
+local paths, and storage keys. The server never accesses `8771`, a Tauri API,
+or a Desktop filesystem.
+
+Offline Chat may show the Local cached view or an unavailable state, but the
+Desktop Local Project, Studio, Git, Shell, MCP, and Local Runtime do not become
+dependent on the Chat server. No Chat layout, composer, Sidebar, or new Chat
+page is introduced by this slice.
+
+## Server Execution Plane V1
+
+The Cloud Host is the execution authority for Web and Desktop. The domains are
+separate: Platform Provider credentials serve Builder/intent/semantic/proposal
+generation; User Runtime Credentials serve Cloud Agent Runs; Device
+Credentials remain Local Host state. Cloud Runtime never reads the Platform
+Builder key, Local SQLite, a Project `.env`, or `DeviceSecretStore` as a
+fallback.
+
+Cloud credential metadata and binding slots are stored in
+`cloud_credentials` and `cloud_runtime_bindings`. The API key is stored only
+as an authenticated AES-GCM ciphertext envelope; the deployment master key is
+outside SQLite (`VEYRA_CLOUD_CREDENTIAL_MASTER_KEY` in production). No
+plaintext secret is returned by API, written to AgentSource, Project Artifact,
+Proposal, Conversation, Run input/result, event, receipt, or evidence. Runtime
+binding resolution is Agent > Project > account default > missing, and
+disabled/unverified/deleted credentials cannot resolve.
+
+Cloud Runs load an exact immutable `agent_version` and verify AgentSource,
+source/behavior/lock hashes, Project ownership, and Cloud File references.
+V1 reuses the existing Agent contracts for Start, Model, Transform, Condition,
+Verifier, Output, and HumanApproval. Local-only Tool nodes fail closed with
+`local_host_required`; the Cloud Host does not access Desktop filesystem,
+Shell, Git, MCP, or Local Runtime state. Cloud Run records, ordered events,
+SSE cursors, idempotent commands, approvals, and checkpoints are durable.
+Approval pauses as `waiting`; stop cancels, retry creates a child attempt,
+resume requires an explicit checkpoint, and a restart marks lost `running`
+attempts `interrupted` without rewriting history.
+
+Forward-only migrations are `community_0014_server_credentials` and
+`community_0015_cloud_runs`. Web and Desktop share the Cloud contracts and
+connected-account API; the existing Settings Provider card prefers Cloud
+Credentials without introducing a new page or redesign. Workflow provider
+routing, shared/team vaults, billing, quotas, load balancing, and Community
+credential sync remain out of scope.

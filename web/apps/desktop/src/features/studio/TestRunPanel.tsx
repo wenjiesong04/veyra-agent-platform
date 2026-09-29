@@ -7,8 +7,10 @@ import { nodeRunStates, useLiveRun } from "./live-run";
 import { RunApprovalBar } from "./RunApprovalBar";
 import { RunEvidence } from "../runs/RunDetail";
 import { useStudioChrome } from "./studio-chrome";
+import { requiredArtifactsReady } from "../runtime/RuntimeInputForm";
 import {
   initialSourceInputs,
+  loopTimelineLabel,
   nodeStateLabel,
   RunInputFields,
   RuntimeKeyNote,
@@ -92,14 +94,14 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             api={api}
           />
           <div className="studio-run-actions">
-            <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runAgent} onClick={() => void live.start(inputs)}>
+            <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runAgent || !requiredArtifactsReady(source.inputs, inputs)} onClick={() => void live.start(inputs)}>
               {inFlight ? (zh ? "运行中…" : "Running…") : (zh ? "测试运行" : "Test run")}
             </Button>
             {run?.status === "running" ? <Button variant="ghost" size="sm" disabled={live.busy} onClick={() => void live.sendCommand("stop")}>{zh ? "停止运行" : "Stop Run"}</Button> : null}
             {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => live.clear()}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
           <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
-          {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
+          {disabled ? <Alert type="warning" title={zh ? "请先保存并通过校验。" : "Save the draft and resolve diagnostics first."} /> : null}
           {!api.runAgent ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
           {(api.runtimeStatus || api.runtimeReadiness) && !disabled ? <RuntimeKeyNote api={api} projectId={projectId} agentId={agentId} locale={locale} /> : null}
         </div>
@@ -107,6 +109,16 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
           {live.error ? <Alert type="error" title={live.error} /> : null}
           {inFlight && run?.stream_text ? <pre aria-label={zh ? "模型流式输出" : "Streaming model output"}><code>{run.stream_text}</code></pre> : null}
           {run ? (
+            source.extensions.veyra.execution_kind === "loop" ? (
+              <ol className="run-loop-timeline" aria-label={zh ? "运行时间线" : "Run timeline"}>
+                {(run.events ?? []).filter((event) => ["node.started", "node.completed", "tool.requested", "tool.started", "tool.completed", "run.completed", "run.failed", "run.cancelled", "run.interrupted", "approval.requested"].includes(event.kind)).map((event) => (
+                  <li key={event.sequence}>
+                    <strong>{loopTimelineLabel(event.kind, event.payload, locale)}</strong>
+                    <small>{event.timestamp}</small>
+                  </li>
+                ))}
+              </ol>
+            ) : (
             <ol className="studio-run-nodes" aria-label={zh ? "节点运行状态" : "Node run states"}>
               {nodes.map((node) => (
                 <li key={node.id} data-state={node.state}>
@@ -115,6 +127,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
                 </li>
               ))}
             </ol>
+            )
           ) : null}
           {run ? <RunEvidence run={run} locale={locale} api={api} /> : !live.error ? <p className="studio-run-empty">{zh ? "运行结果会显示在这里" : "Run output will appear here"}</p> : null}
         </div>

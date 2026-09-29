@@ -4,9 +4,11 @@ import io
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 
@@ -160,3 +162,111 @@ def test_external_agent_import_analyzes_yaml_zip_and_folder_then_applies(
         assert folder_import.json()["preview"]["knowledge_files"] == [
             "knowledge/notes.md"
         ]
+
+
+def test_community_agent_import_preserves_verified_source_origin_until_confirm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = (
+        Path(__file__).resolve().parents[3]
+        / "contracts/fixtures/project/agents/github-triage/agent.vagent.yaml"
+    )
+    source_bytes = fixture.read_bytes()
+    source = AgentSource.from_dict(yaml.safe_load(source_bytes))
+    origin = {
+        "community_owner_handle": "community-maker",
+        "community_slug": source.slug,
+        "community_version": source.version,
+        "community_source_hash": source.source_hash,
+    }
+    app = create_app(
+        LocalSettings(
+            database_url=f"sqlite:///{tmp_path / 'community-import.sqlite3'}",
+            project_storage_root=tmp_path / "community-import-projects",
+        )
+    )
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Community import"})
+        assert project.status_code == 201, project.text
+        project_id = project.json()["project_id"]
+        preview_request = {**origin, "target_project_id": project_id}
+
+        analyzed = client.post(
+            "/api/v1/agent-imports",
+            data=preview_request,
+            files={
+                "file": ("github-triage.vagent.yaml", source_bytes, "application/yaml")
+            },
+        )
+        assert analyzed.status_code == 201, analyzed.text
+        preview = analyzed.json()
+        assert preview["community_origin"] == {
+            "owner_handle": "community-maker",
+            "slug": source.slug,
+            "version": source.version,
+            "source_hash": source.source_hash,
+        }
+        assert preview["project_validation"]["project_id"] == project_id
+        assert preview["project_validation"]["source_hash"] == source.source_hash
+        assert preview["project_validation"]["runtime_ready"] is True
+        assert preview["project_validation"]["dependency_summary"] == {
+            "total": 0,
+            "ready": 0,
+            "attention": 0,
+        }
+
+        refused = client.post(
+            f"/api/v1/agent-imports/{preview['import_id']}/apply",
+            json={"project_id": project_id, "confirm": False},
+        )
+        assert refused.status_code == 422
+        assert client.get(f"/api/v1/projects/{project_id}").json()["agent_count"] == 0
+
+        applied = client.post(
+            f"/api/v1/agent-imports/{preview['import_id']}/apply",
+            json={"project_id": project_id, "confirm": True},
+        )
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["agent"]["community_origin"] == {
+            "owner_handle": "community-maker",
+            "slug": source.slug,
+            "version": source.version,
+            "source_hash": source.source_hash,
+            "imported_at": applied.json()["agent"]["community_origin"]["imported_at"],
+        }
+
+        stale_preview = client.post(
+            "/api/v1/agent-imports",
+            data=preview_request,
+            files={
+                "file": ("github-triage.vagent.yaml", source_bytes, "application/yaml")
+            },
+        )
+        assert stale_preview.status_code == 201, stale_preview.text
+        imports = app.state.agent_imports
+        current_validation = imports._project_validation
+
+        def changed_validation(imported_source: AgentSource, selected_project: str):
+            return {
+                **current_validation(imported_source, selected_project),
+                "assessment_hash": "f" * 64,
+            }
+
+        monkeypatch.setattr(imports, "_project_validation", changed_validation)
+        stale_apply = client.post(
+            f"/api/v1/agent-imports/{stale_preview.json()['import_id']}/apply",
+            json={"project_id": project_id, "confirm": True},
+        )
+        assert stale_apply.status_code == 409
+        assert stale_apply.json()["code"] == "agent_import_dependencies_changed"
+        assert client.get(f"/api/v1/projects/{project_id}").json()["agent_count"] == 1
+
+        mismatched = client.post(
+            "/api/v1/agent-imports",
+            data={**preview_request, "community_source_hash": "f" * 64},
+            files={
+                "file": ("github-triage.vagent.yaml", source_bytes, "application/yaml")
+            },
+        )
+        assert mismatched.status_code == 422
+        assert mismatched.json()["code"] == "community_origin_mismatch"

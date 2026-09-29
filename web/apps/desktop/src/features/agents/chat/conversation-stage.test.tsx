@@ -106,6 +106,25 @@ describe("ConversationStage canvas chrome", () => {
     expect(screen.queryByRole("separator", { name: "Resize canvas" })).not.toBeInTheDocument();
   });
 
+  it("anchors the empty-state project picker to the composer corner", () => {
+    render(
+      <ThemeProvider storageKey="conversation-canvas-test">
+        <ConversationStage
+          empty
+          canvasOpen={false}
+          contextBar={<div>Picker</div>}
+          composer={<div>Composer</div>}
+        />
+      </ThemeProvider>,
+    );
+    const stage = document.querySelector(".agent-conversation") as HTMLElement;
+    const dock = document.querySelector(".agent-convo-dock") as HTMLElement;
+    expect(stage).toHaveClass("is-empty");
+    expect(dock.firstElementChild).toHaveTextContent("Picker");
+    expect(dock.lastElementChild).toHaveTextContent("Composer");
+    expect(dock.firstElementChild?.nextElementSibling).toBe(dock.lastElementChild);
+  });
+
   it("keeps the composer below the transcript without a covering workspace slot", () => {
     render(
       <ThemeProvider storageKey="conversation-canvas-test">

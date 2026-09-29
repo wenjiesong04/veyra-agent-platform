@@ -81,6 +81,14 @@ describe("canvas edit toolbar", () => {
 });
 
 describe("studio chrome pane sizes", () => {
+  it("starts with the test panel collapsed so the canvas stays visible", () => {
+    expect(readStudioChrome()).toMatchObject({
+      paletteCollapsed: false,
+      inspectorCollapsed: false,
+      runCollapsed: true,
+    });
+  });
+
   it("clamps palette and run sizes into the stored range", () => {
     expect(clampStudioPane("paletteWidth", 10)).toBe(STUDIO_PANE_LIMITS.paletteWidth.min);
     expect(clampStudioPane("paletteWidth", 999)).toBe(STUDIO_PANE_LIMITS.paletteWidth.max);
@@ -175,6 +183,7 @@ describe("studio chrome pane sizes", () => {
     window.localStorage.setItem(STUDIO_CHROME_STORAGE_KEY, "{not-json");
     expect(readStudioChrome()).toMatchObject({
       paletteCollapsed: false,
+      runCollapsed: true,
       paletteWidth: STUDIO_PANE_LIMITS.paletteWidth.default,
     });
   });

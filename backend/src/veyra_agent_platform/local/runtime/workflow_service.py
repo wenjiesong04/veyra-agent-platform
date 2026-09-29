@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import ComponentType
@@ -378,13 +379,69 @@ class WorkflowRuntimeService:
                     context["verified"] = passed
                     port = "passed" if passed else "failed"
                 elif node.component_type is ComponentType.HUMAN_APPROVAL:
+                    kind = "input" if node.review == "input" else "approval"
+                    expected = list((node.inputs or {}).keys())
                     context["waiting"] = {
-                        "kind": "approval",
+                        "kind": kind,
                         "node_id": current,
                         "prompt": _interpolate(node.prompt or "", values),
+                        "expected_fields": expected,
                     }
                     self._checkpoint(run_id, context, "waiting")
                     return
+                elif node.component_type is ComponentType.TOOL:
+                    mapped = {
+                        name: values.get(source_name)
+                        for name, source_name in (node.input_mapping or {}).items()
+                    }
+                    if "entity_type" not in mapped or not mapped.get("entity_type"):
+                        mapped["entity_type"] = (
+                            values.get("entity_type") or "ProjectEntity"
+                        )
+                    if "status" not in mapped or not mapped.get("status"):
+                        mapped["status"] = values.get("status") or "active"
+                    if "payload" not in mapped or mapped.get("payload") is None:
+                        mapped["payload"] = values.get("result") or dict(values)
+                    # Mapping keys must be hyphenated slugs, so entity_id can
+                    # only reach entity tools through this default.
+                    if not mapped.get("entity_id") and values.get("entity_id"):
+                        mapped["entity_id"] = values["entity_id"]
+                    host = _workflow_tool_host(source)
+                    authorization = self.runtime.tools.authorize(
+                        source=host,  # type: ignore[arg-type]
+                        node=node,
+                        values=mapped,
+                    )
+                    if authorization.decision != "allowed":
+                        raise RuntimeError(authorization.code, authorization.reason)
+                    project = self.runtime.repository.project(row["project_id"])
+                    if project is None:
+                        raise RuntimeError("project_invalid", "Project is unavailable")
+                    execution = self.runtime.tools.execute(
+                        project_root=self.runtime.projects._existing_root(
+                            project["root_path"]
+                        ),
+                        source=host,  # type: ignore[arg-type]
+                        node=node,
+                        values=mapped,
+                        authorization=authorization,
+                        approved=True,
+                        project_id=row["project_id"],
+                    )
+                    values.update(
+                        {
+                            target: execution.output.get(name)
+                            for name, target in (node.output_mapping or {}).items()
+                        }
+                    )
+                    if not node.output_mapping:
+                        values.update(
+                            {
+                                key: value
+                                for key, value in execution.output.items()
+                                if isinstance(key, str)
+                            }
+                        )
                 elif node.component_type is ComponentType.AGENT_CALL:
                     call = calls[current]
                     inputs = {
@@ -528,15 +585,22 @@ class WorkflowRuntimeService:
         return child
 
     def command(
-        self, project_id: str, workflow_id: str, run_id: str, command: str, key: str
+        self,
+        project_id: str,
+        workflow_id: str,
+        run_id: str,
+        command: str,
+        key: str,
+        inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         IdempotencyKey("1.0", key)
-        if command not in {"approve", "reject", "stop"}:
+        if command not in {"approve", "reject", "stop", "reply"}:
             raise RuntimeError(
-                "command_invalid", "Workflow supports approve, reject, and stop"
+                "command_invalid",
+                "Workflow supports approve, reject, reply, and stop",
             )
         scope = f"workflow-command:{run_id}"
-        digest = sha256_digest({"command": command})
+        digest = sha256_digest({"command": command, "inputs": inputs or {}})
         with self._commands:
             self.detail(project_id, workflow_id, run_id)
             with self.repository.transaction() as connection:
@@ -572,9 +636,20 @@ class WorkflowRuntimeService:
                 waiting = context.get("waiting")
                 if row["status"] != "waiting" or not waiting:
                     raise RuntimeError(
-                        "command_not_applicable", "Workflow is not waiting for approval"
+                        "command_not_applicable",
+                        "Workflow is not waiting for approval or input",
                     )
-                if waiting["kind"] == "agent":
+                if command == "reply":
+                    if waiting.get("kind") != "input":
+                        raise RuntimeError(
+                            "command_not_applicable",
+                            "Reply is only valid while waiting for human input",
+                        )
+                    values = context.setdefault("values", {})
+                    for name, value in (inputs or {}).items():
+                        values[name] = value
+                    port = "approved"
+                elif waiting["kind"] == "agent":
                     self.runtime.command(
                         project_id,
                         waiting["agent_id"],
@@ -582,9 +657,11 @@ class WorkflowRuntimeService:
                         command,
                         key,
                     )
+                    port = None
                 else:
-                    source = self._source(row["version_id"])
                     port = "approved" if command == "approve" else "rejected"
+                if port is not None:
+                    source = self._source(row["version_id"])
                     context["node_id"] = next(
                         edge.to_node
                         for edge in source.transitions
@@ -683,3 +760,11 @@ def _workflow_readiness_failure(
             },
         ],
     }
+
+
+def _workflow_tool_host(source: WorkflowSource) -> SimpleNamespace:
+    return SimpleNamespace(
+        lock=source.lock,
+        permissions=source.permissions,
+        secret_refs=(),
+    )

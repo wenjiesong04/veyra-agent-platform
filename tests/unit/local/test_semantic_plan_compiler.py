@@ -278,8 +278,61 @@ def test_meeting_notes_plan_compiles_structured_io() -> None:
         if node["component_type"] == "Model"
     )
     assert "包装" not in prompt
+    assert "summary (string)" in prompt
     assert "decisions" in prompt
+    assert "decisions (string)" in prompt
     assert "todos" in prompt
+    assert "todos (string)" in prompt
+    assert "exactly these declared fields" in prompt
+    prompts = [
+        node["system_prompt"]
+        for node in payload["nodes"]
+        if node["component_type"] == "Model"
+    ]
+    assert "working result" in prompts[0]
+    assert "exactly these declared fields" not in prompts[0]
+    assert "exactly these declared fields" in prompts[-1]
+
+
+def test_underscored_output_names_are_prompted_as_contract_slugs() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            goal="Design gift packaging.",
+            suggested_name="Gift Packaging",
+            description="Design packaging.",
+            inputs=[{"name": "item_image", "type": "string"}],
+            outputs=[
+                {"name": "final_packaging_design", "type": "object"},
+                {"name": "image_generation_prompts", "type": "array"},
+            ],
+            steps=["Analyze the item", "Draft concepts"],
+            capability_intents=[],
+            knowledge_intents=[],
+            success_criteria=["Design is complete"],
+        ),
+        builder_project_context(
+            project_id="project",
+            knowledge=[],
+            project_resources=[],
+            catalog_resources=[],
+        ),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    assert payload["outputs"] == {
+        "final-packaging-design": "object",
+        "image-generation-prompts": "array",
+    }
+    prompt = "\n".join(
+        node["system_prompt"]
+        for node in payload["nodes"]
+        if node["component_type"] == "Model"
+    )
+    assert "final-packaging-design (object)" in prompt
+    assert "image-generation-prompts (array)" in prompt
+    assert "- final_packaging_design" not in prompt
+    assert "- image_generation_prompts" not in prompt
 
 
 def test_meeting_notes_keeps_chinese_extra_outputs_in_prompt() -> None:
@@ -377,6 +430,8 @@ def _step(
         payload["depends_on"] = depends_on
     if capability_requirement:
         payload["capability_requirement"] = capability_requirement
+    if kind == "condition":
+        payload["condition_expression"] = purpose
     return payload
 
 
@@ -862,8 +917,8 @@ def test_image_to_text_keeps_image_input() -> None:
     ]
 
 
-def test_pdf_and_image_generation_are_truthful_missing_capabilities() -> None:
-    pdf_in = compile_semantic_plan(
+def test_pdf_input_compiles_with_document_extract() -> None:
+    compiled = compile_semantic_plan(
         _plan(
             inputs=[{"name": "report", "type": "pdf"}],
             outputs=[{"name": "summary", "type": "string"}],
@@ -871,12 +926,14 @@ def test_pdf_and_image_generation_are_truthful_missing_capabilities() -> None:
         ),
         _empty_context(),
     )
-    assert pdf_in.status == "missing_capability"
-    assert pdf_in.blueprint is None
-    assert pdf_in.missing[0]["kind"] == "pdf_parser"
-    assert pdf_in.missing[0]["proposal"]["executable"] is False
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    assert compiled.blueprint.to_dict()["inputs"] == {"report": "pdf"}
+    assert "requires_runtime_document_extract" in compiled.warnings
 
-    pdf_out = compile_semantic_plan(
+
+def test_pdf_output_still_needs_a_renderer() -> None:
+    compiled = compile_semantic_plan(
         _plan(
             inputs=[{"name": "text", "type": "string"}],
             outputs=[{"name": "report", "type": "pdf"}],
@@ -884,19 +941,54 @@ def test_pdf_and_image_generation_are_truthful_missing_capabilities() -> None:
         ),
         _empty_context(),
     )
-    assert pdf_out.status == "missing_capability"
-    assert pdf_out.missing[0]["kind"] == "pdf_renderer"
+    assert compiled.status == "missing_capability"
+    assert compiled.blueprint is None
+    assert compiled.missing[0]["kind"] == "pdf_renderer"
 
-    image_out = compile_semantic_plan(
+
+def test_image_output_compiles_an_image_model() -> None:
+    compiled = compile_semantic_plan(
         _plan(
             inputs=[{"name": "prompt", "type": "string"}],
             outputs=[{"name": "picture", "type": "image"}],
+            steps=["生成图片"],
             capability_intents=[],
         ),
         _empty_context(),
     )
-    assert image_out.status == "missing_capability"
-    assert image_out.missing[0]["kind"] == "image_generation"
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    assert "requires_runtime_image_output" in compiled.warnings
+    payload = compiled.blueprint.to_dict()
+    models = [node for node in payload["nodes"] if node["component_type"] == "Model"]
+    assert models[0]["model_ref"] == "model.image"
+    assert models[0]["outputs"] == {"picture": "image"}
+
+
+def test_mixed_outputs_append_an_image_generation_step() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "item", "type": "image"}],
+            outputs=[
+                {"name": "design", "type": "object"},
+                {"name": "picture", "type": "image"},
+            ],
+            steps=["设计包装"],
+            capability_intents=[],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    models = [node for node in payload["nodes"] if node["component_type"] == "Model"]
+    assert models[0]["model_ref"] == "model.primary"
+    assert models[-1]["model_ref"] == "model.image"
+    assert models[-1]["outputs"] == {"picture": "image"}
+    edges = {
+        (edge["from"], edge["port"], edge["to"]) for edge in payload["transitions"]
+    }
+    assert (models[-1]["id"], "next", "output") in edges
 
 
 def test_catalog_pdf_parser_is_not_auto_installed() -> None:
@@ -916,9 +1008,11 @@ def test_catalog_pdf_parser_is_not_auto_installed() -> None:
             catalog_resources=[catalog],
         ),
     )
-    assert compiled.status == "missing_capability"
-    assert compiled.blueprint is None
-    assert compiled.missing[0]["kind"] == "pdf_parser"
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    types = [node["component_type"] for node in compiled.blueprint.to_dict()["nodes"]]
+    assert "Tool" not in types
+    assert "requires_runtime_document_extract" in compiled.warnings
 
 
 def test_multiple_image_inputs_compile_to_artifact_descriptor() -> None:
@@ -1165,3 +1259,139 @@ def test_custom_component_versions_are_not_silently_preferred() -> None:
         first["reference"],
         second["reference"],
     }
+
+
+def test_approval_fork_wires_rejected_to_the_revise_model() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[{"name": "item", "type": "string"}],
+            outputs=[
+                {
+                    "name": "design",
+                    "type": "object",
+                    "description": "完整终稿，含材料与结构",
+                }
+            ],
+            step_intents=[
+                _step("draft", "草案", "写出三个方向", "model"),
+                _step(
+                    "choose",
+                    "确认方向",
+                    "请确认包装方向",
+                    "approval",
+                    depends_on=["draft"],
+                ),
+                {
+                    **_step(
+                        "finalize",
+                        "终稿",
+                        "写出完整终稿",
+                        "model",
+                        depends_on=["choose"],
+                    ),
+                    "branch_condition": "choose",
+                    "branch_key": "approved",
+                },
+                {
+                    **_step(
+                        "revise",
+                        "修改",
+                        "按反对意见修改",
+                        "model",
+                        depends_on=["choose"],
+                    ),
+                    "branch_condition": "choose",
+                    "branch_key": "rejected",
+                },
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    payload = compiled.blueprint.to_dict()
+    edges = {
+        (edge["from"], edge["port"], edge["to"]) for edge in payload["transitions"]
+    }
+    assert ("choose", "approved", "finalize") in edges
+    assert ("choose", "rejected", "revise") in edges
+    assert ("choose", "rejected", "output") not in edges
+    models = {
+        node["id"]: node["system_prompt"]
+        for node in payload["nodes"]
+        if node["component_type"] == "Model"
+    }
+    assert "working result" in models["draft"]
+    assert "exactly these declared fields" not in models["draft"]
+    assert "完整终稿，含材料与结构" in models["finalize"]
+    assert "earlier working notes" in models["finalize"]
+    assert "draft" in models["finalize"]
+
+
+def test_approval_then_confirm_condition_collapses_to_approval_ports() -> None:
+    compiled = compile_semantic_plan(
+        _plan(
+            inputs=[
+                {"name": "item", "type": "string"},
+                {"name": "decision", "type": "string"},
+            ],
+            outputs=[{"name": "design", "type": "object"}],
+            step_intents=[
+                _step("draft", "草案", "写出方向", "model"),
+                _step(
+                    "choose",
+                    "确认",
+                    "请确认方向",
+                    "approval",
+                    depends_on=["draft"],
+                ),
+                {
+                    **_step(
+                        "route",
+                        "分流",
+                        'decision == "confirm"',
+                        "condition",
+                        depends_on=["choose"],
+                    ),
+                    "branches": [
+                        {"key": "confirm", "label": "确认"},
+                        {"key": "revise", "label": "修改"},
+                    ],
+                },
+                {
+                    **_step(
+                        "finalize",
+                        "终稿",
+                        "写出终稿",
+                        "model",
+                        depends_on=["route"],
+                    ),
+                    "branch_condition": "route",
+                    "branch_key": "confirm",
+                },
+                {
+                    **_step(
+                        "revise",
+                        "修改",
+                        "修改方案",
+                        "model",
+                        depends_on=["route"],
+                    ),
+                    "branch_condition": "route",
+                    "branch_key": "revise",
+                },
+            ],
+        ),
+        _empty_context(),
+    )
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    assert "collapsed_redundant_approval_condition" in compiled.warnings
+    payload = compiled.blueprint.to_dict()
+    types = [node["component_type"] for node in payload["nodes"]]
+    assert "Condition" not in types
+    edges = {
+        (edge["from"], edge["port"], edge["to"]) for edge in payload["transitions"]
+    }
+    assert ("choose", "approved", "finalize") in edges
+    assert ("choose", "rejected", "revise") in edges

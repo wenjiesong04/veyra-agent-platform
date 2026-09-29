@@ -66,12 +66,16 @@ _FAMILY_KINDS: Final[dict[str, str]] = {
     "git": "tool",
     "shell": "tool",
     "web": "tool",
+    "entity": "tool",
     "mcp": "mcp_tool",
     "skills": "skill",
     "policies": "policy",
     "templates": "template",
 }
-_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset({"component_class"})
+_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset(
+    {"component_class", "capabilities", "loop_compatible"}
+)
+_CAPABILITY_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _OVERLAY_FAMILIES: Final[frozenset[str]] = frozenset({"workshop", "discovered"})
 _COMPONENT_NAMES: Final[frozenset[str]] = frozenset(
     item.value for item in ComponentType
@@ -262,6 +266,8 @@ def _validated(
         "tags": list(tags),
         "spec": deepcopy(spec),
         "version": version,
+        "capabilities": _capabilities(path, payload.get("capabilities")),
+        "loop_compatible": _loop_compatible(path, payload, kind),
     }
     if component_class is not None and "component_class" in payload:
         result["component_class"] = component_class.value
@@ -355,6 +361,25 @@ def _component_class(
                 f"{path}: composite components cannot reuse a primitive graph type name"
             )
     return component_class
+
+
+def _capabilities(path: Path, value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and _CAPABILITY_NAME.fullmatch(item) for item in value
+    ):
+        raise NodePackageError(f"{path}: capabilities must be snake_case strings")
+    return list(dict.fromkeys(value))
+
+
+def _loop_compatible(path: Path, payload: dict[str, Any], kind: str) -> bool:
+    raw = payload.get("loop_compatible")
+    if raw is None:
+        return kind != "template"
+    if not isinstance(raw, bool):
+        raise NodePackageError(f"{path}: loop_compatible must be a boolean")
+    return raw
 
 
 def _text(path: Path, field: str, value: object) -> str:

@@ -2,6 +2,8 @@
 availability: ready
 description: Write GitHub repository resources using a host-configured token and approval.
 factory_selectable: true
+capabilities:
+- github_write
 kind: tool
 name: GitHub Write
 required_permissions:

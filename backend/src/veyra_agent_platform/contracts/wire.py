@@ -54,6 +54,9 @@ class RunEventKind(StrEnum):
     CHECKPOINT_CREATED = "checkpoint.created"
     VERIFICATION_COMPLETED = "verification.completed"
     VERIFIER_RESULT = "verifier.result"
+    SKILL_LOADED = "skill.loaded"
+    KNOWLEDGE_RETRIEVED = "knowledge.retrieved"
+    POLICY_PARTIAL = "policy.partial"
 
 
 class RunCommandKind(StrEnum):
@@ -132,6 +135,9 @@ EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
     RunEventKind.CHECKPOINT_CREATED: True,
     RunEventKind.VERIFICATION_COMPLETED: True,
     RunEventKind.VERIFIER_RESULT: True,
+    RunEventKind.SKILL_LOADED: True,
+    RunEventKind.KNOWLEDGE_RETRIEVED: True,
+    RunEventKind.POLICY_PARTIAL: True,
 }
 
 COMMAND_NODE_ID_REQUIRED: Mapping[RunCommandKind, bool] = {

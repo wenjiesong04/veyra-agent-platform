@@ -5,7 +5,7 @@
 .community-page-stack {
   display: grid;
   gap: 20px;
-  max-width: 1320px;
+  max-width: 1280px;
   margin: 0 auto;
 }
 
@@ -800,5 +800,64 @@
 
   .auth-secondary-actions .ui-button {
     width: 100%;
+  }
+}
+.community-owned-list {
+  display: grid;
+}
+
+.community-owned-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  padding: 18px 0;
+}
+
+.community-owned-row:first-child {
+  border-top: 0;
+}
+
+.community-owned-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.community-owned-copy > div,
+.community-owned-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.community-owned-copy strong {
+  color: var(--ink);
+}
+
+.community-owned-copy small {
+  color: var(--muted);
+}
+
+.community-owned-copy code {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.community-browse-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .community-owned-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

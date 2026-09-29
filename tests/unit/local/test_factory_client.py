@@ -7,6 +7,8 @@ import httpx
 from veyra_agent_platform.local.factory.client import (
     FactoryProviderError,
     HttpKimiTransport,
+    completion_timeout,
+    visible_json_field,
 )
 from veyra_agent_platform.local.factory.config import FactorySettings
 
@@ -183,6 +185,49 @@ def test_http_transport_maps_invalid_schema_to_typed_diagnostic() -> None:
         assert "invalid_request_error" in str(exc)
     else:
         raise AssertionError("expected FactoryProviderError")
+
+
+def test_visible_reply_grows_before_the_json_closes() -> None:
+    assert visible_json_field('{"intent":"create","message":"正在', "message") == "正在"
+    assert visible_json_field('{"message":"你好\\n世界"}', "message") == "你好\n世界"
+
+
+def test_streamed_completion_publishes_the_visible_reply() -> None:
+    import json
+
+    seen: list[str] = []
+
+    def frame(content: str, finish: str | None = None) -> str:
+        choice: dict[str, object] = {"delta": {"content": content}}
+        if finish:
+            choice["finish_reason"] = finish
+        return "data: " + json.dumps({"id": "c1", "choices": [choice]}) + "\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "kimi-k3"}]})
+        body = (
+            frame('{"message":"')
+            + frame("你好，这是一段设计解读")
+            + frame('"}', "stop")
+            + "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body)
+
+    transport = _transport(handler)
+    completion = transport.complete(
+        [{"role": "user", "content": "hi"}],
+        response_format={"type": "json_object"},
+        on_visible=seen.append,
+    )
+    assert completion.content.startswith('{"message":')
+    assert seen
+    assert seen[-1].startswith("你好")
+
+
+def test_semantic_plan_read_is_not_cut_off() -> None:
+    assert completion_timeout(None).read is None
+    assert completion_timeout(90).read == 90
 
 
 def _transport(

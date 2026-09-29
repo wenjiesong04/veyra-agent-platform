@@ -61,7 +61,12 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _runtime(request).command(
-                project_id, workflow_id, run_id, payload.command, idempotency_key
+                project_id,
+                workflow_id,
+                run_id,
+                payload.command,
+                idempotency_key,
+                inputs=payload.inputs,
             )
         )
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0026_builder_semantic_plan"
+HEAD_REVISION = "local_0034_project_entities"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

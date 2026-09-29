@@ -24,17 +24,21 @@ class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     inputs: dict[str, Any]
     conversation_id: str | None = None
+    source: str = "draft"
+    version_id: str | None = None
 
 
 class CreateAgentConversationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str | None = None
+    agent_version_id: str | None = None
 
 
 class RunCommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str
     checkpoint_id: str | None = None
+    inputs: dict[str, Any] | None = None
 
 
 class SetRuntimeApiProfileRequest(BaseModel):
@@ -66,9 +70,16 @@ def build_router() -> APIRouter:
 
     @router.get("/projects/{project_id}/agents/{agent_id}/runtime-readiness")
     def runtime_readiness(
-        project_id: str, agent_id: str, request: Request
+        project_id: str,
+        agent_id: str,
+        request: Request,
+        version_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        return _translate(lambda: _runtime(request).readiness(project_id, agent_id))
+        return _translate(
+            lambda: _runtime(request).readiness(
+                project_id, agent_id, version_id=version_id
+            )
+        )
 
     @router.get("/projects/{project_id}/runtime-profile")
     def get_project_profile(project_id: str, request: Request) -> dict[str, Any]:
@@ -155,6 +166,10 @@ def build_router() -> APIRouter:
         request: Request,
         idempotency_key: str = Header(),
     ) -> dict[str, Any]:
+        if payload.source not in {"draft", "committed"}:
+            raise TypedApiError(
+                422, "run_source_invalid", "Run source must be draft or committed"
+            )
         return _translate(
             lambda: _runtime(request).run(
                 project_id,
@@ -162,6 +177,8 @@ def build_router() -> APIRouter:
                 payload.inputs,
                 idempotency_key,
                 conversation_id=payload.conversation_id,
+                source=payload.source,
+                version_id=payload.version_id,
             )
         )
 
@@ -176,7 +193,12 @@ def build_router() -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         return _translate(
-            lambda: _conversations(request).create(project_id, agent_id, payload.title)
+            lambda: _conversations(request).create(
+                project_id,
+                agent_id,
+                payload.title,
+                agent_version_id=payload.agent_version_id,
+            )
         )
 
     @router.get("/projects/{project_id}/agents/{agent_id}/conversations")

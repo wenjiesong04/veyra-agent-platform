@@ -2,6 +2,8 @@
 availability: ready
 description: Read a bounded Project path and return file contents.
 factory_selectable: true
+capabilities:
+- workspace_read
 kind: tool
 name: Filesystem Read
 required_permissions:

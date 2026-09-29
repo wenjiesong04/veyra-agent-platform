@@ -1,16 +1,16 @@
-"""Host-side secret storage for local Tool adapters.
+"""Host-side secret storage for local adapters.
 
-Project sources contain opaque secret references only. Values are kept in the
-macOS Keychain when available, with process environment variables as the
-development fallback.
+Project sources contain opaque secret references only. Device credentials are
+kept in the operating system's credential service through the cross-platform
+``keyring`` adapter. Process environment variables remain an explicit
+development fallback for deployment-owned Platform credentials, not for User
+Runtime credentials.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
-from collections.abc import Mapping
-from typing import Protocol
+from typing import Any, Protocol
 
 SERVICE_NAME = "Veyra Agent Platform"
 MODEL_SECRET_REF = "model.primary"
@@ -50,93 +50,99 @@ def resolve_secret(
     return os.environ.get(env_name, "").strip() if allow_environment else ""
 
 
-class MacOSKeychainSecretStore:
-    """Use the macOS `security` CLI without persisting secrets in SQLite."""
+_SYSTEM_KEYRING_MODULES = (
+    "keyring.backends.macOS",
+    "keyring.backends.OS_X",
+    "keyring.backends.Windows",
+    "keyring.backends.SecretService",
+    "keyring.backends.kwallet",
+    "keyring.backends.Gnome",
+)
+_UNSAFE_KEYRING_MODULES = (
+    "keyring.backends.fail",
+    "keyring.backends.null",
+    "keyring.backends.file",
+    "keyrings.alt",
+)
 
-    def __init__(
-        self,
-        *,
-        service: str = SERVICE_NAME,
-        environment: Mapping[str, str] | None = None,
-    ) -> None:
+
+class DeviceSecretStore:
+    """Persist device credentials in the host operating system's keyring.
+
+    ``keyring`` owns the platform selection: macOS Keychain, Windows
+    Credential Manager, or a Linux Secret Service/KWallet backend. We reject
+    the null, plaintext-file, and alternate-file backends instead of silently
+    weakening the credential boundary when a system service is unavailable.
+    """
+
+    def __init__(self, *, service: str = SERVICE_NAME) -> None:
         self.service = service
-        self.environment = dict(environment or os.environ)
+        self._keyring: Any | None = None
 
     def get(self, secret_ref: str) -> str | None:
+        keyring = self._client()
         try:
-            result = subprocess.run(
-                [
-                    "security",
-                    "find-generic-password",
-                    "-s",
-                    self.service,
-                    "-a",
-                    secret_ref,
-                    "-w",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-                env=self.environment,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise SecretStoreError("macOS Keychain could not be queried") from exc
-        if result.returncode == 0:
-            value = result.stdout.strip()
-            return value or None
-        return None
+            value = keyring.get_password(self.service, secret_ref)
+        except Exception as exc:
+            raise SecretStoreError(
+                "system credential store could not be queried"
+            ) from exc
+        return value.strip() if isinstance(value, str) and value.strip() else None
 
     def set(self, secret_ref: str, value: str) -> None:
         if not value.strip():
             raise SecretStoreError("secret value must not be empty")
+        keyring = self._client()
         try:
-            result = subprocess.run(
-                [
-                    "security",
-                    "add-generic-password",
-                    "-U",
-                    "-s",
-                    self.service,
-                    "-a",
-                    secret_ref,
-                    "-w",
-                    value,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-                env=self.environment,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise SecretStoreError("macOS Keychain could not store the secret") from exc
-        if result.returncode != 0:
-            raise SecretStoreError("macOS Keychain rejected the secret")
+            keyring.set_password(self.service, secret_ref, value)
+        except Exception as exc:
+            raise SecretStoreError(
+                "system credential store rejected the secret"
+            ) from exc
 
     def delete(self, secret_ref: str) -> None:
+        keyring = self._client()
         try:
-            result = subprocess.run(
-                [
-                    "security",
-                    "delete-generic-password",
-                    "-s",
-                    self.service,
-                    "-a",
-                    secret_ref,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-                env=self.environment,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            keyring.delete_password(self.service, secret_ref)
+        except Exception as exc:
+            # keyring uses PasswordDeleteError for an already absent item.
+            # Deletion is intentionally idempotent, while all other failures
+            # remain visible to the caller.
+            if exc.__class__.__name__ == "PasswordDeleteError":
+                return
             raise SecretStoreError(
-                "macOS Keychain could not remove the secret"
+                "system credential store rejected the removal"
             ) from exc
-        if result.returncode not in {0, 44}:
-            raise SecretStoreError("macOS Keychain rejected the removal")
+
+    def _client(self) -> Any:
+        if self._keyring is not None:
+            return self._keyring
+        try:
+            import keyring
+        except ImportError as exc:
+            raise SecretStoreError("no system credential backend is installed") from exc
+        try:
+            backend = keyring.get_keyring()
+        except Exception as exc:
+            raise SecretStoreError(
+                "system credential backend could not be initialized"
+            ) from exc
+        module = type(backend).__module__
+        if any(module.startswith(prefix) for prefix in _UNSAFE_KEYRING_MODULES):
+            raise SecretStoreError(
+                "configured credential backend is not an approved system store"
+            )
+        if not any(module.startswith(prefix) for prefix in _SYSTEM_KEYRING_MODULES):
+            raise SecretStoreError("no approved system credential backend is available")
+        self._keyring = keyring
+        return keyring
+
+
+# Compatibility names kept for existing tests and integrations. They now
+# resolve to the same cross-platform device store rather than a macOS-only
+# implementation.
+SystemKeyringSecretStore = DeviceSecretStore
+MacOSKeychainSecretStore = DeviceSecretStore
 
 
 def secret_environment_name(secret_ref: str) -> str:

@@ -54,8 +54,8 @@ class FactorySessionRepository:
                 session_id, project_id, state, ready, next_prompt,
                 resource_plan_json, blueprint_json, diagnostics_json,
                 missing_capabilities_json, identity_json, revision,
-                semantic_plan_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '{}', 0, NULL, ?, ?)""",
+                semantic_plan_json, specification_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '{}', 0, NULL, NULL, ?, ?)""",
             (
                 session_id,
                 project_id,
@@ -124,6 +124,7 @@ class FactorySessionRepository:
         missing_capabilities: list[dict[str, Any]] | None = None,
         identity: Mapping[str, str] | None = None,
         semantic_plan: Mapping[str, Any] | None = None,
+        specification: Mapping[str, Any] | None = None,
         revision: int | None = None,
         updated_at: str,
     ) -> None:
@@ -177,6 +178,13 @@ class FactorySessionRepository:
                 if semantic_plan is not None
                 else current["semantic_plan_json"]
             ),
+            "specification_json": (
+                json.dumps(specification, ensure_ascii=False, sort_keys=True)
+                if specification is not None
+                else current["specification_json"]
+                if "specification_json" in set(current.keys())
+                else None
+            ),
             "revision": revision
             if revision is not None
             else int(current["revision"]) + 1,
@@ -190,6 +198,7 @@ class FactorySessionRepository:
                missing_capabilities_json = :missing_capabilities_json,
                identity_json = :identity_json,
                semantic_plan_json = :semantic_plan_json,
+               specification_json = :specification_json,
                revision = :revision, updated_at = :updated_at
                WHERE session_id = :session_id""",
             values,
@@ -197,6 +206,7 @@ class FactorySessionRepository:
 
     @staticmethod
     def payload(row: sqlite3.Row, messages: list[sqlite3.Row]) -> dict[str, Any]:
+        record = _specification_record(row)
         return {
             "schema_version": "1.0",
             "session_id": row["session_id"],
@@ -211,6 +221,9 @@ class FactorySessionRepository:
             "diagnostics": json.loads(row["diagnostics_json"]),
             "missing_capabilities": json.loads(row["missing_capabilities_json"]),
             "candidate": _identity(row),
+            "specification": record.get("specification"),
+            "specification_status": record.get("status"),
+            "specification_missing": record.get("missing") or [],
             "revision": row["revision"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -244,3 +257,63 @@ def _identity(row: sqlite3.Row) -> dict[str, str] | None:
     if slug:
         payload["slug"] = slug
     return payload
+
+
+def _specification_record(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
+    if "specification_json" not in keys:
+        return {"status": None, "missing": [], "specification": None}
+    raw = row["specification_json"]
+    if not raw:
+        return {"status": None, "missing": [], "specification": None}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"status": None, "missing": [], "specification": None}
+    if not isinstance(parsed, dict):
+        return {"status": None, "missing": [], "specification": None}
+    missing = parsed.get("missing") or []
+    if not isinstance(missing, list):
+        missing = []
+    status = parsed.get("status")
+    specification = parsed.get("specification")
+    extras = {
+        key: parsed[key]
+        for key in (
+            "compiled_source",
+            "target_kind",
+            "execution_kind",
+            "workflow",
+            "companions",
+            "flow",
+            "recommendation",
+            "classification_reason",
+            "required_project_resources",
+            "resource_plan_snapshot",
+            "resource_factory_plans",
+            "factory_wrappers",
+            "product_shape",
+            "task_structure",
+            "execution_plan",
+            "proposal_preview",
+            "blocked_reason",
+            "entity_schema",
+        )
+        if key in parsed
+    }
+    return {
+        "status": status if isinstance(status, str) else None,
+        "missing": [str(item) for item in missing if isinstance(item, str)],
+        "specification": specification if isinstance(specification, dict) else None,
+        "extras": extras,
+        "compiled_source": parsed.get("compiled_source"),
+        "target_kind": parsed.get("target_kind"),
+        "execution_kind": parsed.get("execution_kind"),
+        "workflow": parsed.get("workflow"),
+        "companions": parsed.get("companions"),
+        "flow": parsed.get("flow"),
+        "required_project_resources": parsed.get("required_project_resources"),
+        "resource_plan_snapshot": parsed.get("resource_plan_snapshot"),
+        "resource_factory_plans": parsed.get("resource_factory_plans"),
+        "factory_wrappers": parsed.get("factory_wrappers"),
+    }

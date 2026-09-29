@@ -2,6 +2,8 @@
 availability: ready
 description: Read a GitHub API repository path using a host-configured token.
 factory_selectable: true
+capabilities:
+- github_read
 kind: tool
 name: GitHub Read
 required_permissions:

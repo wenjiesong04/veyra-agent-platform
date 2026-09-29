@@ -5,11 +5,17 @@ import { persistRunId } from "../runs/run-location";
 
 export type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
 
+export type StartLiveRunOptions = {
+  conversationId?: string;
+  source?: "draft" | "committed";
+  versionId?: string;
+};
+
 export type LiveRunSession = {
   run: AgentRunResponse | null;
   error: string;
   busy: boolean;
-  start: (inputs: Record<string, JsonValue>, conversationId?: string) => Promise<void>;
+  start: (inputs: Record<string, JsonValue>, options?: StartLiveRunOptions) => Promise<void>;
   sendCommand: (command: "approve" | "reject" | "stop") => Promise<void>;
   clear: () => void;
 };
@@ -103,14 +109,16 @@ function useLiveRunSession({
     };
   }, []);
 
-  const start = React.useCallback(async (inputs: Record<string, JsonValue>, conversationId?: string) => {
+  const start = React.useCallback(async (inputs: Record<string, JsonValue>, options: StartLiveRunOptions = {}) => {
     if (inactive || !api.runAgent || busy) return;
     setBusy(true);
     setError("");
     try {
       const started = await api.runAgent(projectId, agentId, {
         inputs,
-        ...(conversationId ? { conversation_id: conversationId } : {}),
+        ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
+        ...(options.source ? { source: options.source } : {}),
+        ...(options.versionId ? { version_id: options.versionId } : {}),
       });
       if (window.location.hash.split("?")[0]?.endsWith("/design")) persistRunId(started.run_id);
       const detailed = api.getAgentRun
@@ -167,6 +175,7 @@ function useLiveRunSession({
           if (event.run_id === runId && ["run.completed", "run.failed", "run.cancelled", "run.interrupted"].includes(event.kind)) refresh();
         },
         onDone: refresh,
+        onError: () => { refresh(); },
       },
       { after: Math.max(0, ...(run.events ?? []).map((event) => event.sequence)) },
     );

@@ -1,4 +1,4 @@
-import { isArtifactRef, type ArtifactRef, type JsonValue } from "@veyra/api-contracts";
+import { isArtifactRef, type ArtifactRef, type JsonObject, type JsonValue } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { ArtifactCard } from "./RuntimeInputForm";
 
@@ -20,16 +20,10 @@ export function RuntimeOutputView({
     return <ArtifactCard item={result} locale={locale} projectId={projectId} api={api} />;
   }
   if (Array.isArray(result) && result.length > 0 && result.every(isArtifactRef)) {
-    return (
-      <ul className="runtime-artifact-grid">
-        {result.map((item, index) => (
-          <li key={`${item.artifact_id}:${index}`}>
-            <ArtifactCard item={item} locale={locale} projectId={projectId} api={api} />
-          </li>
-        ))}
-      </ul>
-    );
+    return <ArtifactList items={result} locale={locale} projectId={projectId} api={api} />;
   }
+  const rows = objectRows(result);
+  if (rows) return <RuntimeTable rows={rows} locale={locale} projectId={projectId} api={api} />;
   if (result && typeof result === "object" && !Array.isArray(result)) {
     const entries = Object.entries(result);
     if (!entries.length) return <pre><code>{"{}"}</code></pre>;
@@ -68,15 +62,73 @@ function RuntimeValueView({
     return <ArtifactCard item={value} locale={locale} projectId={projectId} api={api} />;
   }
   if (Array.isArray(value) && value.length > 0 && value.every(isArtifactRef)) {
-    return (
-      <ul className="runtime-artifact-grid">
-        {value.map((item: ArtifactRef, index) => (
-          <li key={`${item.artifact_id}:${index}`}>
-            <ArtifactCard item={item} locale={locale} projectId={projectId} api={api} />
-          </li>
-        ))}
-      </ul>
-    );
+    return <ArtifactList items={value} locale={locale} projectId={projectId} api={api} />;
   }
+  const rows = objectRows(value);
+  if (rows) return <RuntimeTable rows={rows} locale={locale} projectId={projectId} api={api} />;
   return <pre><code>{JSON.stringify(value, null, 2)}</code></pre>;
+}
+
+function ArtifactList({
+  items,
+  locale,
+  projectId,
+  api,
+}: {
+  items: ArtifactRef[];
+  locale: Locale;
+  projectId?: string;
+  api?: Pick<LocalProjectApi, "artifactContent">;
+}) {
+  return (
+    <ul className="runtime-artifact-grid">
+      {items.map((item, index) => (
+        <li key={`${item.artifact_id}:${index}`}>
+          <ArtifactCard item={item} locale={locale} projectId={projectId} api={api} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function objectRows(value: JsonValue): JsonObject[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  if (!value.every((item) => item && typeof item === "object" && !Array.isArray(item) && !isArtifactRef(item))) return null;
+  return value as JsonObject[];
+}
+
+function RuntimeTable({
+  rows,
+  locale,
+  projectId,
+  api,
+}: {
+  rows: JsonObject[];
+  locale: Locale;
+  projectId?: string;
+  api?: Pick<LocalProjectApi, "artifactContent">;
+}) {
+  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  return (
+    <div className="runtime-output-table-wrap">
+      <table className="runtime-output-table">
+        <thead>
+          <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index}>
+              {columns.map((column) => (
+                <td key={column}>
+                  {row[column] === undefined ? "" : (
+                    <RuntimeValueView value={row[column] as JsonValue} locale={locale} projectId={projectId} api={api} />
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }

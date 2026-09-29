@@ -41,11 +41,14 @@ import {
   type EditProposalCommand,
   type CustomComponentProposal,
   type ComponentProposalCommandRequest,
+  type AgentCreationProposalCommandRequest,
   type EditTargetKind,
   type ListEditProposalsResponse,
   type AgentImportApplyRequest,
   type AgentImportApplyResponse,
   type AgentImportRecord,
+  type AgentImportProjectValidation,
+  type CommunityAgentImportOrigin,
   type AgentRunResponse,
   type AgentConversation,
   type AgentConversationSummary,
@@ -73,11 +76,13 @@ import {
   type DraftResponse,
   type ExportResponse,
   type FactoryMissingCapability,
+  type FactoryResourceBindStatus,
   type FactoryResourcePlanItem,
   type FactoryRunAvailability,
   type FactorySession,
   type FactorySessionState,
   type FactoryStatus,
+  type ResourceFactoryPlan,
   type ProviderCapabilityProfile,
   type ArtifactRecord,
   type RuntimeModelCapabilities,
@@ -86,6 +91,12 @@ import {
   type RuntimeApiProfileInput,
   type RuntimeApiProfileSummary,
   type RuntimeProfileResponse,
+  type ProviderCredential,
+  type ProviderCredentialListResponse,
+  type ProviderCredentialValidationResponse,
+  type CreateProviderCredentialRequest,
+  type RuntimeBindingResponse,
+  type RuntimeBinding,
   type RuntimeProfileValidation,
   type RuntimeReadiness,
   type RuntimeReadinessCheck,
@@ -101,6 +112,7 @@ import {
   type KnowledgeDocumentResponse,
   type KnowledgeChunkResponse,
   type KnowledgeProcessing,
+  type KnowledgeCloudFileReference,
   type ListAgentRunsResponse,
   type ListAgentConversationsResponse,
   type ListAgentsResponse,
@@ -113,6 +125,11 @@ import {
   type ListResourceFilters,
   type ListResourcesResponse,
   type ListProjectsResponse,
+  type LocalArtifactEnvelopeResponse,
+  type LocalArtifactManifestResponse,
+  type MaterializeArtifactRequest,
+  type RecordArtifactSyncRequest,
+  type MarkProjectSyncPendingRequest,
   type ListWorkItemsResponse,
   type CreateMcpServerRequest,
   type ImportMcpServersRequest,
@@ -129,11 +146,14 @@ import {
   type OpenProjectRequest,
   type ProjectAgentRecord,
   type ProjectFileContentResponse,
+  type ProjectFileMaterializeResponse,
   type ProjectFileKind,
   type ProjectFileRecord,
   type ProjectFilesResponse,
   type ProjectKnowledgeRecord,
   type ProjectSummaryResponse,
+  type ProjectSyncStateResponse,
+  type RecordProjectSyncRequest,
   type ProjectResourceDescriptor,
   type ProjectResourceBindingStatus,
   type ProjectResourcesResponse,
@@ -214,6 +234,13 @@ export type LocalProjectApi = {
   getProject(projectId: string): Promise<ProjectSummaryResponse>;
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse>;
   deleteProject(projectId: string): Promise<DeleteProjectResponse>;
+  getProjectSync?(projectId: string): Promise<ProjectSyncStateResponse>;
+  markProjectSyncPending?(projectId: string, input: MarkProjectSyncPendingRequest): Promise<ProjectSyncStateResponse>;
+  recordProjectSync?(projectId: string, input: RecordProjectSyncRequest): Promise<ProjectSyncStateResponse>;
+  getProjectArtifactManifest?(projectId: string): Promise<LocalArtifactManifestResponse>;
+  getProjectArtifact?(projectId: string, kind: string, artifactId: string): Promise<LocalArtifactEnvelopeResponse>;
+  materializeProjectArtifact?(projectId: string, input: MaterializeArtifactRequest): Promise<Record<string, unknown>>;
+  recordProjectArtifactSync?(projectId: string, input: RecordArtifactSyncRequest): Promise<Record<string, unknown>>;
   updateAgent(projectId: string, agentId: string, input: UpdateAgentRequest): Promise<ProjectSummaryResponse>;
   deleteAgent(projectId: string, agentId: string): Promise<DeleteAgentResponse>;
   listAgentTemplates(projectId: string): Promise<ListAgentTemplatesResponse>;
@@ -228,7 +255,7 @@ export type LocalProjectApi = {
   updateKnowledge?(projectId: string, knowledgeId: string, input: UpdateKnowledgeRequest): Promise<KnowledgeDocumentResponse>;
   deleteKnowledge?(projectId: string, knowledgeId: string): Promise<DeleteKnowledgeResponse>;
   importAgent(projectId: string, input: { file: File; name?: string; description?: string; parent_agent_id?: string; community_origin?: CommunityAgentOrigin }): Promise<CreatedAgentResponse>;
-  analyzeAgentImport?(file: File): Promise<AgentImportRecord>;
+  analyzeAgentImport?(file: File, communityOrigin?: CommunityAgentImportOrigin, targetProjectId?: string): Promise<AgentImportRecord>;
   analyzeAgentImportFolder?(path: string): Promise<AgentImportRecord>;
   getAgentImport?(importId: string): Promise<AgentImportRecord>;
   applyAgentImport?(importId: string, input: AgentImportApplyRequest): Promise<AgentImportApplyResponse>;
@@ -250,6 +277,8 @@ export type LocalProjectApi = {
   exportAgent?(projectId: string, agentId: string): Promise<ExportResponse>;
   listProjectFiles?(projectId: string): Promise<ProjectFilesResponse>;
   getProjectFile?(projectId: string, path: string): Promise<ProjectFileContentResponse>;
+  materializeProjectFile?(projectId: string, input: { file: File; relative_path: string; expected_sha256?: string; expected_size?: number }): Promise<ProjectFileMaterializeResponse>;
+  setKnowledgeCloudFile?(projectId: string, knowledgeId: string, fileId: string | null): Promise<KnowledgeDocumentResponse>;
   listAgentVersions?(projectId: string, agentId: string): Promise<ListAgentVersionsResponse>;
   listWorkflowVersions?(projectId: string, workflowId: string): Promise<ListWorkflowVersionsResponse>;
   getDraft(projectId: string, agentId: string): Promise<DraftResponse>;
@@ -271,7 +300,17 @@ export type LocalProjectApi = {
   probeFactoryCapabilities?(): Promise<FactoryStatus>;
   runtimeStatus?(): Promise<RuntimeStatus>;
   validateRuntimeProfile?(profile: RuntimeApiProfileInput): Promise<RuntimeProfileValidation>;
-  runtimeReadiness?(projectId: string, agentId: string): Promise<RuntimeReadiness>;
+  runtimeReadiness?(projectId: string, agentId: string, options?: { versionId?: string }): Promise<RuntimeReadiness>;
+  listRuntimeCredentials?(): Promise<ProviderCredentialListResponse>;
+  createRuntimeCredential?(input: CreateProviderCredentialRequest): Promise<ProviderCredentialValidationResponse>;
+  validateRuntimeCredential?(credentialId: string): Promise<ProviderCredentialValidationResponse>;
+  replaceRuntimeCredential?(credentialId: string, apiKey: string): Promise<ProviderCredentialValidationResponse>;
+  updateRuntimeCredential?(credentialId: string, input: { label?: string; base_url?: string; default_model_id?: string; make_default?: boolean }): Promise<{ credential: ProviderCredential }>;
+  setRuntimeCredentialStatus?(credentialId: string, enabled: boolean): Promise<{ credential: ProviderCredential }>;
+  deleteRuntimeCredential?(credentialId: string): Promise<{ schema_version: "1.0"; credential_id: string; deleted: true }>;
+  getRuntimeBinding?(projectId: string, agentId?: string, slot?: string): Promise<RuntimeBindingResponse>;
+  setRuntimeBinding?(projectId: string, input: { credential_id: string; model_id: string; slot?: string }, agentId?: string): Promise<RuntimeBindingResponse>;
+  clearRuntimeBinding?(projectId: string, agentId?: string): Promise<RuntimeBindingResponse>;
   uploadArtifact?(projectId: string, file: File): Promise<ArtifactRecord>;
   getArtifact?(projectId: string, artifactId: string): Promise<ArtifactRecord>;
   artifactContent?(projectId: string, artifactId: string): Promise<Blob>;
@@ -283,10 +322,12 @@ export type LocalProjectApi = {
   getAgentRuntimeProfile?(projectId: string, agentId: string): Promise<RuntimeProfileResponse>;
   setAgentRuntimeProfile?(projectId: string, agentId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
   resolveBuilderIntent?(projectId: string, input: BuilderResolveRequest): Promise<BuilderResolution>;
-  submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void }): Promise<BuilderConversationSnapshot>;
+  submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void; onPreview?: (text: string) => void }): Promise<BuilderConversationSnapshot>;
   getBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot>;
   getBuilderComponentProposal?(projectId: string, proposalId: string): Promise<CustomComponentProposal>;
   commandBuilderComponentProposal?(projectId: string, conversationId: string, operationId: string, proposalId: string, input: ComponentProposalCommandRequest): Promise<BuilderConversationSnapshot>;
+  commandBuilderAgentCreationProposal?(projectId: string, conversationId: string, operationId: string, proposalId: string, input: AgentCreationProposalCommandRequest): Promise<BuilderConversationSnapshot>;
+  commandBuilderRuntimeBinding?(projectId: string, conversationId: string, operationId: string, input: { credential_id: string; model_id: string; confirm: boolean; locale: "zh" | "en"; credential_scope?: "device" | "cloud" }): Promise<BuilderConversationSnapshot>;
   recordBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRecordRequest): Promise<BuilderConversationSnapshot>;
   renameBuilderConversation?(projectId: string, conversationId: string, input: BuilderConversationRenameRequest): Promise<BuilderConversationSnapshot>;
   deleteBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationDeleted>;
@@ -307,9 +348,13 @@ export type LocalProjectApi = {
   getFactorySession?(projectId: string, sessionId: string): Promise<FactorySession>;
   addFactoryMessage?(projectId: string, sessionId: string, content: string): Promise<FactorySession>;
   generateFactoryBlueprint?(projectId: string, sessionId: string): Promise<FactorySession>;
+  reviseFactoryPlan?(projectId: string, sessionId: string): Promise<FactorySession>;
+  generateFactoryResourceDraft?(projectId: string, sessionId: string, input: { confirm: boolean; capability: string; wrapper?: Record<string, unknown> }): Promise<FactorySession>;
+  approveFactoryResource?(projectId: string, sessionId: string, input: { confirm: boolean; capability: string; content_hash?: string; bind_to_project?: boolean }): Promise<FactorySession>;
   applyFactoryDraft?(projectId: string, sessionId: string, input: { confirm: boolean; name?: string; description?: string; parent_agent_id?: string }): Promise<ApplyFactoryDraftResponse>;
   createResourceDraft?(input: { confirm: boolean; kind: string; requested_reference: string; name?: string; description?: string; instruction?: string }): Promise<ResourceDraftResponse>;
   approveResourceDraft?(resourceId: string, version: string, instruction: string): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }>;
+  enableResource?(resourceId: string, version: string, enabled: boolean): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }>;
   listMcpServers?(): Promise<ListMcpServersResponse>;
   listPluginPacks?(): Promise<ListPluginPacksResponse>;
   listPluginTrash?(): Promise<ListPluginTrashResponse>;
@@ -502,6 +547,99 @@ function runtimeProfileResponse(value: unknown, status = 502): RuntimeProfileRes
   };
 }
 
+function providerCredential(value: unknown, status = 502): ProviderCredential {
+  const record = asRecord(value, status);
+  const state = asString(record.status, "credential.status", status) as ProviderCredential["status"];
+  if (!["unverified", "active", "invalid", "disabled"].includes(state)) {
+    throw new LocalApiClientError("The local service returned an invalid credential status.", { status, code: "invalid_response" });
+  }
+  const credentialScope = record.credential_scope === undefined
+    ? "device"
+    : asString(record.credential_scope, "credential.credential_scope", status);
+  if (!["device", "cloud"].includes(credentialScope)) {
+    throw new LocalApiClientError("The local service returned an invalid credential scope.", { status, code: "invalid_response" });
+  }
+  const secretState = record.secret_state === undefined
+    ? "available"
+    : asString(record.secret_state, "credential.secret_state", status);
+  if (!["available", "missing", "unavailable"].includes(secretState)) {
+    throw new LocalApiClientError("The local service returned an invalid credential secret state.", { status, code: "invalid_response" });
+  }
+  const readiness = record.readiness === undefined
+    ? state === "active" ? "ready" : state
+    : asString(record.readiness, "credential.readiness", status);
+  if (!["ready", "needs_reentry", "unavailable", "disabled", "invalid", "unverified"].includes(readiness)) {
+    throw new LocalApiClientError("The local service returned an invalid credential readiness.", { status, code: "invalid_response" });
+  }
+  return {
+    credential_id: asString(record.credential_id, "credential.credential_id", status),
+    owner_id: asString(record.owner_id, "credential.owner_id", status),
+    provider_type: asString(record.provider_type, "credential.provider_type", status),
+    label: asString(record.label, "credential.label", status),
+    base_url: asString(record.base_url, "credential.base_url", status),
+    status: state,
+    credential_scope: credentialScope as ProviderCredential["credential_scope"],
+    masked_hint: asString(record.masked_hint, "credential.masked_hint", status),
+    capabilities: asRecord(record.capabilities, status) as ProviderCredential["capabilities"],
+    default_model_id: record.default_model_id === null ? null : asString(record.default_model_id, "credential.default_model_id", status),
+    is_default: asBoolean(record.is_default, "credential.is_default", status),
+    created_at: asString(record.created_at, "credential.created_at", status),
+    updated_at: asString(record.updated_at, "credential.updated_at", status),
+    validated_at: record.validated_at === null ? null : asString(record.validated_at, "credential.validated_at", status),
+    last_used_at: record.last_used_at === null ? null : asString(record.last_used_at, "credential.last_used_at", status),
+    secret_state: secretState as ProviderCredential["secret_state"],
+    readiness: readiness as ProviderCredential["readiness"],
+  };
+}
+
+function providerCredentialList(value: unknown, status = 502): ProviderCredentialListResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    credentials: asArray(record.credentials, "credentials", status).map((item) => providerCredential(item, status)),
+  };
+}
+
+function providerCredentialValidation(value: unknown, status = 502): ProviderCredentialValidationResponse {
+  const record = asRecord(value, status);
+  return {
+    valid: asBoolean(record.valid, "credential_validation.valid", status),
+    code: asString(record.code, "credential_validation.code", status),
+    message: asText(record.message, "credential_validation.message", status),
+    credential: providerCredential(record.credential, status),
+  };
+}
+
+function runtimeBinding(value: unknown, status = 502): RuntimeBinding {
+  const record = asRecord(value, status);
+  const source = asString(record.source, "runtime_binding.source", status);
+  if (!["explicit", "project", "user_default"].includes(source)) {
+    throw new LocalApiClientError("The local service returned an invalid Runtime binding source.", { status, code: "invalid_response" });
+  }
+  return {
+    project_id: asString(record.project_id, "runtime_binding.project_id", status),
+    agent_id: record.agent_id === null ? null : asString(record.agent_id, "runtime_binding.agent_id", status),
+    slot: asString(record.slot, "runtime_binding.slot", status),
+    credential_id: asString(record.credential_id, "runtime_binding.credential_id", status),
+    model_id: asString(record.model_id, "runtime_binding.model_id", status),
+    source: source as RuntimeBinding["source"],
+    updated_at: asString(record.updated_at, "runtime_binding.updated_at", status),
+  };
+}
+
+function runtimeBindingResponse(value: unknown, status = 502): RuntimeBindingResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "runtime_binding.project_id", status),
+    agent_id: record.agent_id === null ? null : asString(record.agent_id, "runtime_binding.agent_id", status),
+    slot: asString(record.slot, "runtime_binding.slot", status),
+    binding: record.binding === null ? null : runtimeBinding(record.binding, status),
+    credential: record.credential === null ? null : providerCredential(record.credential, status),
+    explicit: record.explicit === null ? null : runtimeBinding(record.explicit, status),
+  };
+}
+
 function schemaRecord(value: unknown, status = 502): Record<string, unknown> {
   const record = asRecord(value, status);
   if (record.schema_version !== LOCAL_API_SCHEMA_VERSION) {
@@ -591,6 +729,7 @@ function projectWorkflow(value: unknown, status = 502): ProjectWorkflowRecord {
     source_path: asString(record.source_path, "source_path", status),
     source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
     ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
+    ...(record.source_ref === undefined ? {} : { source_ref: knowledgeCloudFileReference(record.source_ref, status) }),
   };
 }
 
@@ -669,6 +808,24 @@ function listProjects(value: unknown, status = 502): ListProjectsResponse {
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     projects: asArray(record.projects, "projects", status).map((item) => projectSummary(item, status)),
+  };
+}
+
+function projectSyncState(value: unknown, status = 502): ProjectSyncStateResponse {
+  const record = schemaRecord(value, status);
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    sync_enabled: record.sync_enabled === true,
+    state: record.state as ProjectSyncStateResponse["state"],
+    cloud_revision: record.cloud_revision === null ? null : asNumber(record.cloud_revision, "cloud_revision", status),
+    local_metadata_hash: record.local_metadata_hash === null ? null : asString(record.local_metadata_hash, "local_metadata_hash", status),
+    last_synced_hash: record.last_synced_hash === null ? null : asString(record.last_synced_hash, "last_synced_hash", status),
+    last_synced_at: record.last_synced_at === null ? null : asString(record.last_synced_at, "last_synced_at", status),
+    pending_operation: record.pending_operation === null ? null : record.pending_operation as ProjectSyncStateResponse["pending_operation"],
+    remote_name: record.remote_name === null ? null : asString(record.remote_name, "remote_name", status),
+    remote_description: record.remote_description === null ? null : asText(record.remote_description, "remote_description", status),
+    error_code: record.error_code === null ? null : asString(record.error_code, "error_code", status),
   };
 }
 
@@ -754,6 +911,32 @@ function projectFileContent(value: unknown, status = 502): ProjectFileContentRes
     schema_version: LOCAL_API_SCHEMA_VERSION,
     project_id: asString(record.project_id, "project_id", status),
     text: asText(record.text, "text", status),
+  };
+}
+
+function projectFileMaterialize(value: unknown, status = 502): ProjectFileMaterializeResponse {
+  const record = schemaRecord(value, status);
+  if (record.status !== "materialized") {
+    throw new LocalApiClientError("The local service returned an invalid materialization result.", { status, code: "invalid_response" });
+  }
+  return {
+    schema_version: LOCAL_API_SCHEMA_VERSION,
+    project_id: asString(record.project_id, "project_id", status),
+    status: "materialized",
+    relative_path: asString(record.relative_path, "relative_path", status),
+    sha256: asString(record.sha256, "sha256", status),
+    size_bytes: asNumber(record.size_bytes, "size_bytes", status),
+  };
+}
+
+function knowledgeCloudFileReference(value: unknown, status = 502): KnowledgeCloudFileReference {
+  const record = asRecord(value, status);
+  if (record.kind !== "cloud_file") {
+    throw new LocalApiClientError("The local service returned an invalid Cloud File reference.", { status, code: "invalid_response" });
+  }
+  return {
+    kind: "cloud_file",
+    file_id: asString(record.file_id, "file_id", status),
   };
 }
 
@@ -870,7 +1053,12 @@ function agentVersions(value: unknown, status = 502): ListAgentVersionsResponse 
     const agentId = asString(record.agent_id, "agent_id", status);
     const snapshot = source(record.source, status);
     if (snapshot.agent_id !== agentId) throw new LocalApiClientError("Agent version identity mismatch.", { status, code: "invalid_response" });
-    return { ...identity, agent_id: agentId, source: snapshot };
+    return {
+      ...identity,
+      agent_id: agentId,
+      source: snapshot,
+      ...(record.committed === undefined ? {} : { committed: asBoolean(record.committed, "version.committed", status) }),
+    };
   }) };
 }
 
@@ -938,6 +1126,8 @@ const builderEventKinds = new Set<BuilderOperationEventKind>([
   "builder.operation.started",
   "builder.intent.started",
   "builder.intent.resolved",
+  "builder.specification.started",
+  "builder.specification.completed",
   "builder.semantic_plan.started",
   "builder.semantic_plan.completed",
   "builder.capabilities.started",
@@ -1164,7 +1354,10 @@ function builderConversationSnapshot(value: unknown, status = 502): BuilderConve
     try {
       factorySessionValue = factorySession(record.factory_session, status);
     } catch (cause) {
-      if (!(cause instanceof LocalApiClientError) || cause.code !== "invalid_response") throw cause;
+      if (
+        !(cause instanceof LocalApiClientError)
+        || (cause.code !== "invalid_response" && cause.code !== "schema_mismatch")
+      ) throw cause;
     }
   }
   return {
@@ -1629,6 +1822,7 @@ function knowledgeDocument(value: unknown, status = 502): KnowledgeDocumentRespo
     source_file_hash: asString(record.source_file_hash, "source_file_hash", status),
     text: asText(record.text, "text", status),
     ...(record.version === undefined ? {} : { version: asString(record.version, "version", status) }),
+    ...(record.source_ref === undefined ? {} : { source_ref: knowledgeCloudFileReference(record.source_ref, status) }),
   };
 }
 
@@ -1678,6 +1872,7 @@ const runtimeEventKinds = new Set<NonNullable<AgentRunResponse["events"]>[number
   "node.queued", "node.state_changed", "node.started", "node.output", "node.waiting", "node.completed", "node.failed", "node.skipped", "node.cancelled",
   "tool.requested", "tool.started", "tool.completed", "tool.failed", "model.delta", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
   "artifact.created", "checkpoint.created", "verification.completed", "verifier.result",
+  "skill.loaded", "knowledge.retrieved", "policy.partial",
 ]);
 
 function componentDefinition(value: unknown, status = 502): ComponentDefinition {
@@ -1703,6 +1898,8 @@ function listedComponents(value: unknown, status = 502): ListComponentsResponse 
 const resourceKinds = new Set<ResourceKind>(["component", "tool", "mcp_tool", "skill", "policy", "template"]);
 const resourceAvailability = new Set<ResourceAvailability>(["ready", "requires_configuration", "design_only", "quarantined", "disabled", "unavailable"]);
 const resourceRuntimeStatuses = new Set<ResourceRuntimeStatus>(["supported", "runtime_not_configured", "runtime_not_supported"]);
+const factoryPlanKinds = new Set<string>(["component", "tool", "mcp_tool", "skill", "policy", "template", "knowledge", "capability"]);
+const factoryBindStatuses = new Set<FactoryResourceBindStatus>(["already_bound", "will_bind", "requires_configuration", "needs_configuration", "unavailable", "missing"]);
 const resourceOrigins = new Set<ResourceOrigin>(["builtin", "workshop", "discovered", "project"]);
 
 function resourcePermissions(value: unknown, status = 502): ResourceDescriptor["required_permissions"] {
@@ -1743,6 +1940,7 @@ function resource(value: unknown, status = 502): ResourceDescriptor {
     required_permissions: resourcePermissions(record.required_permissions, status),
     tags: asArray(record.tags, "resource.tags", status).map((item) => asString(item, "resource tag", status)),
     spec: asRecord(record.spec, status) as ResourceDescriptor["spec"],
+    ...(record.capabilities === undefined ? {} : { capabilities: asArray(record.capabilities, "resource.capabilities", status).map((item) => asString(item, "resource.capability", status)) }),
     ...(record.configuration_requirements === undefined ? {} : { configuration_requirements: asArray(record.configuration_requirements, "resource.configuration_requirements", status).map((value) => {
       const item = asRecord(value, status);
       if (typeof item.satisfied !== "boolean") throw new LocalApiClientError("Invalid resource requirement.", { status, code: "invalid_response" });
@@ -2129,6 +2327,16 @@ function agentImportWarning(value: unknown, status = 502): AgentImportRecord["wa
   };
 }
 
+function communityAgentImportOrigin(value: unknown, status = 502): CommunityAgentImportOrigin {
+  const record = asRecord(value, status);
+  return {
+    owner_handle: asString(record.owner_handle, "agent_import.community_origin.owner_handle", status),
+    slug: asString(record.slug, "agent_import.community_origin.slug", status),
+    version: asString(record.version, "agent_import.community_origin.version", status),
+    source_hash: asString(record.source_hash, "agent_import.community_origin.source_hash", status),
+  };
+}
+
 function agentImportPreview(value: unknown, status = 502): AgentImportRecord["preview"] {
   const record = asRecord(value, status);
   return {
@@ -2143,6 +2351,23 @@ function agentImportPreview(value: unknown, status = 502): AgentImportRecord["pr
     knowledge_files: asArray(record.knowledge_files, "agent_import.preview.knowledge_files", status).map((item) => asString(item, "agent_import.preview.knowledge_files", status)),
     workflow_present: asBoolean(record.workflow_present, "agent_import.preview.workflow_present", status),
     ...(record.source_path === undefined ? {} : { source_path: asString(record.source_path, "agent_import.preview.source_path", status) }),
+  };
+}
+
+function agentImportProjectValidation(value: unknown, status = 502): AgentImportProjectValidation {
+  const record = asRecord(value, status);
+  const scope = asString(record.runtime_ready_scope, "agent_import.project_validation.runtime_ready_scope", status);
+  if (scope !== "agent_dependencies") {
+    throw new LocalApiClientError("The local service returned an invalid Agent Import validation scope.", { status, code: "invalid_response" });
+  }
+  return {
+    project_id: asString(record.project_id, "agent_import.project_validation.project_id", status),
+    source_hash: asString(record.source_hash, "agent_import.project_validation.source_hash", status),
+    assessment_hash: asString(record.assessment_hash, "agent_import.project_validation.assessment_hash", status),
+    dependencies: asArray(record.dependencies, "agent_import.project_validation.dependencies", status).map((item) => validationDependency(item, status)),
+    dependency_summary: validationDependencySummary(record.dependency_summary, status),
+    runtime_ready: asBoolean(record.runtime_ready, "agent_import.project_validation.runtime_ready", status),
+    runtime_ready_scope: "agent_dependencies",
   };
 }
 
@@ -2171,6 +2396,12 @@ function agentImportRecord(value: unknown, status = 502): AgentImportRecord {
     warnings: asArray(record.warnings, "agent_import.warnings", status).map((item) => agentImportWarning(item, status)),
     generated_source: source(record.generated_source, status),
     manifest: asRecord(record.manifest, status) as AgentImportRecord["manifest"],
+    ...(record.community_origin === undefined ? {} : {
+      community_origin: communityAgentImportOrigin(record.community_origin, status),
+    }),
+    ...(record.project_validation === undefined ? {} : {
+      project_validation: agentImportProjectValidation(record.project_validation, status),
+    }),
     ...(record.applied_agent === undefined ? {} : { applied_agent: createdAgent(record.applied_agent, status) }),
   };
 }
@@ -2344,6 +2575,35 @@ function parsedOrchestratorStatus(value: unknown, status = 502): OrchestratorSta
 
 const factoryStates = new Set<FactorySessionState>(["collecting", "ready", "generating", "review", "missing_capability", "completed", "abandoned"]);
 const factoryRunAvailability = new Set<FactoryRunAvailability>(["ready", "requires_configuration", "design_only", "unavailable"]);
+const factoryPlanStatuses = new Set(["generatable", "requires_user_configuration", "requires_external_integration", "unsupported"]);
+const factoryPlanStrategies = new Set(["skill_instruction", "http_tool_wrapper", "filesystem_tool_wrapper", "none"]);
+const factoryRisks = new Set(["low", "medium", "high"]);
+
+function resourceFactoryPlan(value: unknown, status = 502): ResourceFactoryPlan {
+  const record = asRecord(value, status);
+  const planStatus = asString(record.status, "factory.resource_factory.status", status);
+  const strategy = asString(record.strategy ?? record.generation_strategy, "factory.resource_factory.strategy", status);
+  const risk = asString(record.risk_level, "factory.resource_factory.risk_level", status);
+  if (!factoryPlanStatuses.has(planStatus) || !factoryPlanStrategies.has(strategy) || !factoryRisks.has(risk) || typeof record.can_generate !== "boolean") {
+    throw new LocalApiClientError("The local service returned an invalid Resource Factory plan.", { status, code: "invalid_response" });
+  }
+  return {
+    capability: asString(record.capability, "factory.resource_factory.capability", status),
+    status: planStatus as ResourceFactoryPlan["status"],
+    strategy: strategy as ResourceFactoryPlan["strategy"],
+    can_generate: record.can_generate,
+    reason: asText(record.reason, "factory.resource_factory.reason", status),
+    risk_level: risk as ResourceFactoryPlan["risk_level"],
+    resource_kind: record.resource_kind === undefined || record.resource_kind === null ? record.resource_kind as null | undefined : asString(record.resource_kind, "factory.resource_factory.resource_kind", status),
+    requirements: record.requirements === undefined ? [] : asArray(record.requirements, "factory.resource_factory.requirements", status).map((item) => asString(item, "factory.resource_factory.requirement", status)),
+    draft: record.draft === undefined || record.draft === null ? record.draft as null | undefined : asRecord(record.draft, status) as ResourceFactoryPlan["draft"],
+    validation: record.validation === undefined || record.validation === null ? record.validation as null | undefined : asRecord(record.validation, status) as ResourceFactoryPlan["validation"],
+    published: record.published === undefined || record.published === null ? record.published as null | undefined : asRecord(record.published, status) as ResourceFactoryPlan["published"],
+    snapshot_hash: record.snapshot_hash === undefined || record.snapshot_hash === null ? record.snapshot_hash as null | undefined : asString(record.snapshot_hash, "factory.resource_factory.snapshot_hash", status),
+    proposal_id: record.proposal_id === undefined || record.proposal_id === null ? record.proposal_id as null | undefined : asString(record.proposal_id, "factory.resource_factory.proposal_id", status),
+    operation_id: record.operation_id === undefined || record.operation_id === null ? record.operation_id as null | undefined : asString(record.operation_id, "factory.resource_factory.operation_id", status),
+  };
+}
 
 function factoryMessage(value: unknown, status = 502): FactoryMessage {
   const record = schemaRecord(value, status);
@@ -2363,13 +2623,54 @@ function factoryMessage(value: unknown, status = 502): FactoryMessage {
 
 function factoryPlanItem(value: unknown, status = 502): FactoryResourcePlanItem {
   const record = asRecord(value, status);
-  const kind = asString(record.kind, "factory.plan.kind", status) as ResourceKind;
+  const kind = asString(record.kind, "factory.plan.kind", status) as FactoryResourcePlanItem["kind"];
   const availability = asString(record.availability, "factory.plan.availability", status) as ResourceAvailability;
   const runtimeStatus = asString(record.runtime_status, "factory.plan.runtime_status", status) as ResourceRuntimeStatus;
-  if (!resourceKinds.has(kind) || !resourceAvailability.has(availability) || !resourceRuntimeStatuses.has(runtimeStatus)) {
+  if (!factoryPlanKinds.has(kind) || !resourceAvailability.has(availability) || !resourceRuntimeStatuses.has(runtimeStatus)) {
     throw new LocalApiClientError("The local service returned an invalid Factory resource plan item.", { status, code: "invalid_response" });
   }
-  return { reference: asString(record.reference, "factory.plan.reference", status), kind, availability, runtime_status: runtimeStatus };
+  const bindStatus = record.bind_status === undefined
+    ? undefined
+    : asString(record.bind_status, "factory.plan.bind_status", status) as FactoryResourceBindStatus;
+  if (bindStatus !== undefined && !factoryBindStatuses.has(bindStatus)) {
+    throw new LocalApiClientError("The local service returned an invalid Factory resource bind status.", { status, code: "invalid_response" });
+  }
+  const name = record.name === undefined ? undefined : asText(record.name, "factory.plan.name", status);
+  const capability = record.capability === undefined ? undefined : asText(record.capability, "factory.plan.capability", status);
+  const reason = record.reason === undefined ? undefined : asText(record.reason, "factory.plan.reason", status);
+  const sourceCount = record.source_count === undefined ? undefined : asNumber(record.source_count, "factory.plan.source_count", status);
+  const runtimeSupport = record.runtime_support === undefined
+    ? undefined
+    : asString(record.runtime_support, "factory.plan.runtime_support", status);
+  if (runtimeSupport !== undefined && runtimeSupport !== "full" && runtimeSupport !== "partial" && runtimeSupport !== "none") {
+    throw new LocalApiClientError("The local service returned an invalid Factory runtime support value.", { status, code: "invalid_response" });
+  }
+  const factoryStatus = record.factory_status === undefined
+    ? undefined
+    : asString(record.factory_status, "factory.plan.factory_status", status);
+  if (factoryStatus !== undefined && factoryStatus !== "generatable" && factoryStatus !== "requires_user_configuration" && factoryStatus !== "requires_external_integration" && factoryStatus !== "unsupported") {
+    throw new LocalApiClientError("The local service returned an invalid Factory status.", { status, code: "invalid_response" });
+  }
+  const factoryStrategy = record.factory_strategy === undefined
+    ? undefined
+    : asString(record.factory_strategy, "factory.plan.factory_strategy", status);
+  if (factoryStrategy !== undefined && factoryStrategy !== "skill_instruction" && factoryStrategy !== "http_tool_wrapper" && factoryStrategy !== "filesystem_tool_wrapper" && factoryStrategy !== "none") {
+    throw new LocalApiClientError("The local service returned an invalid Factory strategy.", { status, code: "invalid_response" });
+  }
+  return {
+    reference: asString(record.reference, "factory.plan.reference", status),
+    kind,
+    availability,
+    runtime_status: runtimeStatus,
+    ...(name ? { name } : {}),
+    ...(bindStatus ? { bind_status: bindStatus } : {}),
+    ...(capability ? { capability } : {}),
+    ...(reason ? { reason } : {}),
+    ...(sourceCount !== undefined ? { source_count: sourceCount } : {}),
+    ...(runtimeSupport ? { runtime_support: runtimeSupport as NonNullable<FactoryResourcePlanItem["runtime_support"]> } : {}),
+    ...(factoryStatus ? { factory_status: factoryStatus as NonNullable<FactoryResourcePlanItem["factory_status"]> } : {}),
+    ...(factoryStrategy ? { factory_strategy: factoryStrategy as NonNullable<FactoryResourcePlanItem["factory_strategy"]> } : {}),
+  };
 }
 
 function factoryMissing(value: unknown, status = 502): FactoryMissingCapability {
@@ -2418,12 +2719,22 @@ function factorySession(value: unknown, status = 502): FactorySession {
     diagnostics: asArray(record.diagnostics, "factory.diagnostics", status).map((item) => asString(item, "factory.diagnostic", status)),
     missing_capabilities: asArray(record.missing_capabilities, "factory.missing_capabilities", status).map((item) => factoryMissing(item, status)),
     candidate: factoryCandidate(record.candidate, status),
+    ...(record.target_kind === "agent" || record.target_kind === "workflow" ? { target_kind: record.target_kind } : {}),
+    ...(record.execution_kind === "loop" || record.execution_kind === "graph" || record.execution_kind === "workflow" ? { execution_kind: record.execution_kind } : {}),
     run_availability: runAvailability,
     executes_drafts: false,
     revision: asNumber(record.revision, "factory.revision", status),
     created_at: asString(record.created_at, "factory.created_at", status),
     updated_at: asString(record.updated_at, "factory.updated_at", status),
     messages: asArray(record.messages, "factory.messages", status).map((item) => factoryMessage(item, status)),
+    ...(record.resource_factory_plans === undefined ? {} : {
+      resource_factory_plans: asArray(record.resource_factory_plans, "factory.resource_factory_plans", status).map((item) => resourceFactoryPlan(item, status)),
+    }),
+    ...(typeof record.product_shape === "string" && record.product_shape ? { product_shape: record.product_shape } : {}),
+    ...(record.proposal_preview && typeof record.proposal_preview === "object" && !Array.isArray(record.proposal_preview)
+      ? { proposal_preview: asJsonValue(asRecord(record.proposal_preview, status), "factory.proposal_preview", status) as JsonObject }
+      : {}),
+    ...(typeof record.blocked_reason === "string" && record.blocked_reason ? { blocked_reason: record.blocked_reason } : {}),
   };
 }
 
@@ -2561,8 +2872,15 @@ function runtimeProfileValidation(value: unknown, status = 502): RuntimeProfileV
 
 function runtimeReadiness(value: unknown, status = 502): RuntimeReadiness {
   const record = schemaRecord(value, status);
-  const profileSource = asString(record.profile_source, "runtime readiness profile_source", status);
-  if (profileSource !== "agent" && profileSource !== "project" && profileSource !== "default") {
+  const rawSource = asString(record.profile_source, "runtime readiness profile_source", status);
+  const profileSource = rawSource === "explicit" || rawSource === "agent"
+    ? "agent"
+    : rawSource === "project"
+      ? "project"
+      : rawSource === "user_default" || rawSource === "default"
+        ? "default"
+        : null;
+  if (profileSource === null) {
     throw new LocalApiClientError("The local service returned an invalid Runtime profile source.", { status, code: "invalid_response" });
   }
   const model = asRecord(record.model, status);
@@ -2588,6 +2906,7 @@ function runtimeReadiness(value: unknown, status = 502): RuntimeReadiness {
     dependencies: asArray(record.dependencies, "runtime readiness dependencies", status).map((item) => validationDependency(item, status)),
     tool_checks: toolChecks,
     checks,
+    ...(record.version_id === undefined || record.version_id === null ? {} : { version_id: asString(record.version_id, "runtime readiness version_id", status) }),
   };
 }
 
@@ -2681,6 +3000,16 @@ function capabilityState(value: unknown, field: string, status = 502): "supporte
   return state;
 }
 
+function optionalCapabilityState(
+  value: unknown,
+  field: string,
+  fallback: "supported" | "unsupported" | "unknown",
+  status = 502,
+): "supported" | "unsupported" | "unknown" {
+  if (value === undefined || value === null || value === "") return fallback;
+  return capabilityState(value, field, status);
+}
+
 function runtimeModelCapabilities(value: unknown, status = 502): RuntimeModelCapabilities {
   const record = asRecord(value, status);
   const source = asString(record.source, "runtime.modalities.source", status);
@@ -2692,6 +3021,8 @@ function runtimeModelCapabilities(value: unknown, status = 502): RuntimeModelCap
     model_id: asString(record.model_id, "runtime.modalities.model_id", status),
     text_input: capabilityState(record.text_input, "runtime.modalities.text_input", status),
     image_input: capabilityState(record.image_input, "runtime.modalities.image_input", status),
+    video_input: optionalCapabilityState(record.video_input, "runtime.modalities.video_input", "unsupported", status),
+    audio_input: optionalCapabilityState(record.audio_input, "runtime.modalities.audio_input", "unsupported", status),
     structured_json_output: capabilityState(record.structured_json_output, "runtime.modalities.structured_json_output", status),
     source,
   };
@@ -2770,6 +3101,8 @@ function commonRun(value: unknown, status = 502): Omit<AgentRunResponse, "agent_
   if (runStatus !== "running" && runStatus !== "waiting" && runStatus !== "verified" && runStatus !== "unverified" && runStatus !== "failed" && runStatus !== "interrupted" && runStatus !== "cancelled") {
     throw new LocalApiClientError("The local service returned an unknown run status.", { status, code: "invalid_response" });
   }
+  const targetKind = record.run_target_kind;
+  const runTargetKind = targetKind === "agent" || targetKind === "workflow" ? targetKind : undefined;
   const result = record.result === null ? null : asJsonValue(asRecord(record.result, status), "run.result", status) as JsonObject;
   let error: AgentRunResponse["error"] = null;
   if (record.error !== null) {
@@ -2784,6 +3117,7 @@ function commonRun(value: unknown, status = 502): Omit<AgentRunResponse, "agent_
     ...(record.conversation_id === undefined
       ? {}
       : { conversation_id: record.conversation_id === null ? null : asString(record.conversation_id, "conversation_id", status) }),
+    ...(runTargetKind ? { run_target_kind: runTargetKind } : {}),
     status: runStatus,
     result,
     error,
@@ -2847,6 +3181,9 @@ function conversationSummary(value: unknown, status = 502): AgentConversationSum
     conversation_id: asString(record.conversation_id, "conversation.conversation_id", status),
     project_id: asString(record.project_id, "conversation.project_id", status),
     agent_id: asString(record.agent_id, "conversation.agent_id", status),
+    ...(record.agent_version_id === undefined || record.agent_version_id === null
+      ? {}
+      : { agent_version_id: asString(record.agent_version_id, "conversation.agent_version_id", status) }),
     title: asText(record.title, "conversation.title", status),
     message_count: asNumber(record.message_count, "conversation.message_count", status),
     created_at: asString(record.created_at, "conversation.created_at", status),
@@ -2864,15 +3201,40 @@ function listedAgentConversations(value: unknown, status = 502): ListAgentConver
 
 function agentConversation(value: unknown, status = 502): AgentConversation {
   const record = schemaRecord(value, status);
+  const initial = record.initial_inputs;
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     conversation_id: asString(record.conversation_id, "conversation.conversation_id", status),
     project_id: asString(record.project_id, "conversation.project_id", status),
     agent_id: asString(record.agent_id, "conversation.agent_id", status),
+    ...(record.agent_version_id === undefined || record.agent_version_id === null
+      ? {}
+      : { agent_version_id: asString(record.agent_version_id, "conversation.agent_version_id", status) }),
     title: asText(record.title, "conversation.title", status),
     created_at: asString(record.created_at, "conversation.created_at", status),
     updated_at: asString(record.updated_at, "conversation.updated_at", status),
     messages: asArray(record.messages, "conversation.messages", status).map((item) => conversationMessage(item, status)),
+    ...(initial && typeof initial === "object" && !Array.isArray(initial) ? { initial_inputs: initial as JsonObject } : {}),
+  };
+}
+
+function communityAgentPackageExport(
+  value: unknown,
+  status = 502,
+): ExportResponse["community_package"] {
+  const record = asRecord(value, status);
+  return {
+    source_text: asString(record.source_text, "community_package.source_text", status),
+    file_hash: asString(record.file_hash, "community_package.file_hash", status),
+    source_hash: asString(record.source_hash, "community_package.source_hash", status),
+    behavior_hash: asString(record.behavior_hash, "community_package.behavior_hash", status),
+    lock_hash: asString(record.lock_hash, "community_package.lock_hash", status),
+    dependencies: asArray(record.dependencies, "community_package.dependencies", status)
+      .map((item) => asString(item, "community_package.dependencies[]", status)),
+    version: asString(record.version, "community_package.version", status),
+    slug: asString(record.slug, "community_package.slug", status),
+    name: asString(record.name, "community_package.name", status),
+    description: asText(record.description, "community_package.description", status),
   };
 }
 
@@ -2884,6 +3246,7 @@ function exported(value: unknown, status = 502): ExportResponse {
     source: source(record.source, status),
     source_text: asString(record.source_text, "source_text", status),
     file_hash: asString(record.file_hash, "file_hash", status),
+    community_package: communityAgentPackageExport(record.community_package, status),
     ...(record.community_origin === undefined ? {} : {
       community_origin: communityAgentOrigin(record.community_origin, status),
     }),
@@ -2978,6 +3341,7 @@ function parseSseChunk(chunk: string): { event: string; data: unknown } | null {
 async function readBuilderTurnStream(
   response: Response,
   onEvent?: (event: BuilderOperationEvent) => void,
+  onPreview?: (text: string) => void,
 ): Promise<BuilderConversationSnapshot> {
   const reader = response.body?.getReader();
   if (!reader) {
@@ -2997,6 +3361,9 @@ async function readBuilderTurnStream(
       if (!parsed || typeof parsed.data !== "object" || parsed.data === null) continue;
       if (parsed.event === "builder.event") {
         onEvent?.(builderOperationEvent(parsed.data, 200));
+      } else if (parsed.event === "builder.preview") {
+        const record = parsed.data as Record<string, unknown>;
+        if (typeof record.text === "string") onPreview?.(record.text);
       } else if (parsed.event === "builder.snapshot") {
         snapshot = builderConversationSnapshot(parsed.data, 200);
       } else if (parsed.event === "builder.error") {
@@ -3070,6 +3437,56 @@ export class LocalApiClient {
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectSummaryResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}`, projectSummary, {
       method: "PATCH",
+      body: input,
+    });
+  }
+
+  getProjectSync(projectId: string): Promise<ProjectSyncStateResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/sync`, projectSyncState);
+  }
+
+  markProjectSyncPending(projectId: string, input: MarkProjectSyncPendingRequest): Promise<ProjectSyncStateResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/sync/pending`, projectSyncState, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  recordProjectSync(projectId: string, input: RecordProjectSyncRequest): Promise<ProjectSyncStateResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/sync/record`, projectSyncState, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  getProjectArtifactManifest(projectId: string): Promise<LocalArtifactManifestResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/artifact-sync/manifest`, (value, status) => {
+      const record = schemaRecord(value, status);
+      return {
+        schema_version: LOCAL_API_SCHEMA_VERSION,
+        project_id: asString(record.project_id, "project_id", status),
+        artifacts: asArray(record.artifacts, "artifacts", status) as LocalArtifactManifestResponse["artifacts"],
+      };
+    });
+  }
+
+  getProjectArtifact(projectId: string, kind: string, artifactId: string): Promise<LocalArtifactEnvelopeResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/artifact-sync/${encodeURIComponent(kind)}/${encodeURIComponent(artifactId)}`, (value, status) => {
+      const record = schemaRecord(value, status);
+      return { schema_version: LOCAL_API_SCHEMA_VERSION, artifact: schemaRecord(record.artifact, status) };
+    });
+  }
+
+  materializeProjectArtifact(projectId: string, input: MaterializeArtifactRequest): Promise<Record<string, unknown>> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/artifact-sync/materialize`, (value, status) => schemaRecord(value, status), {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  recordProjectArtifactSync(projectId: string, input: RecordArtifactSyncRequest): Promise<Record<string, unknown>> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/artifact-sync/record`, (value, status) => schemaRecord(value, status), {
+      method: "POST",
       body: input,
     });
   }
@@ -3200,9 +3617,16 @@ export class LocalApiClient {
     });
   }
 
-  analyzeAgentImport(file: File): Promise<AgentImportRecord> {
+  analyzeAgentImport(file: File, communityOrigin?: CommunityAgentImportOrigin, targetProjectId?: string): Promise<AgentImportRecord> {
     const formData = new FormData();
     formData.append("file", file);
+    if (communityOrigin) {
+      formData.append("community_owner_handle", communityOrigin.owner_handle);
+      formData.append("community_slug", communityOrigin.slug);
+      formData.append("community_version", communityOrigin.version);
+      formData.append("community_source_hash", communityOrigin.source_hash);
+    }
+    if (targetProjectId) formData.append("target_project_id", targetProjectId);
     return this.request("agent-imports", agentImportRecord, { method: "POST", formData });
   }
 
@@ -3250,6 +3674,22 @@ export class LocalApiClient {
       `projects/${encodeURIComponent(projectId)}/files/content?${query.toString()}`,
       projectFileContent,
     );
+  }
+
+  materializeProjectFile(projectId: string, input: { file: File; relative_path: string; expected_sha256?: string; expected_size?: number }): Promise<ProjectFileMaterializeResponse> {
+    const formData = new FormData();
+    formData.append("file", input.file, input.file.name);
+    formData.append("relative_path", input.relative_path);
+    if (input.expected_sha256) formData.append("expected_sha256", input.expected_sha256);
+    if (input.expected_size !== undefined) formData.append("expected_size", String(input.expected_size));
+    return this.request(`projects/${encodeURIComponent(projectId)}/files/materialize`, projectFileMaterialize, { method: "POST", formData });
+  }
+
+  setKnowledgeCloudFile(projectId: string, knowledgeId: string, fileId: string | null): Promise<KnowledgeDocumentResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(knowledgeId)}/source-ref`, knowledgeDocument, {
+      method: "POST",
+      body: { file_id: fileId },
+    });
   }
 
   listAgents(projectId: string): Promise<ListAgentsResponse> {
@@ -3516,8 +3956,69 @@ export class LocalApiClient {
     });
   }
 
-  runtimeReadiness(projectId: string, agentId: string): Promise<RuntimeReadiness> {
-    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-readiness`, runtimeReadiness);
+  runtimeReadiness(projectId: string, agentId: string, options: { versionId?: string } = {}): Promise<RuntimeReadiness> {
+    const query = options.versionId ? `?version_id=${encodeURIComponent(options.versionId)}` : "";
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-readiness${query}`, runtimeReadiness);
+  }
+
+  listRuntimeCredentials(): Promise<ProviderCredentialListResponse> {
+    return this.request("runtime-credentials", providerCredentialList);
+  }
+
+  createRuntimeCredential(input: CreateProviderCredentialRequest): Promise<ProviderCredentialValidationResponse> {
+    return this.request("runtime-credentials", providerCredentialValidation, { method: "POST", body: input });
+  }
+
+  validateRuntimeCredential(credentialId: string): Promise<ProviderCredentialValidationResponse> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}/validate`, providerCredentialValidation, { method: "POST" });
+  }
+
+  replaceRuntimeCredential(credentialId: string, apiKey: string): Promise<ProviderCredentialValidationResponse> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}/replace-secret`, providerCredentialValidation, { method: "POST", body: { api_key: apiKey } });
+  }
+
+  updateRuntimeCredential(credentialId: string, input: { label?: string; base_url?: string; default_model_id?: string; make_default?: boolean }): Promise<{ credential: ProviderCredential }> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}`, (value, status = 502) => {
+      const record = schemaRecord(value, status);
+      return { credential: providerCredential(record.credential, status) };
+    }, { method: "PATCH", body: input });
+  }
+
+  setRuntimeCredentialStatus(credentialId: string, enabled: boolean): Promise<{ credential: ProviderCredential }> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}/${enabled ? "enable" : "disable"}`, (value, status = 502) => {
+      const record = schemaRecord(value, status);
+      return { credential: providerCredential(record.credential, status) };
+    }, { method: "POST" });
+  }
+
+  deleteRuntimeCredential(credentialId: string): Promise<{ schema_version: "1.0"; credential_id: string; deleted: true }> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}`, (value, status = 502) => {
+      const record = schemaRecord(value, status);
+      if (record.deleted !== true) throw new LocalApiClientError("The local service returned an invalid credential deletion.", { status, code: "invalid_response" });
+      return { schema_version: LOCAL_API_SCHEMA_VERSION, credential_id: asString(record.credential_id, "credential_id", status), deleted: true as const };
+    }, { method: "DELETE" });
+  }
+
+  getRuntimeBinding(projectId: string, agentId?: string, slot?: string): Promise<RuntimeBindingResponse> {
+    const query = slot ? `?slot=${encodeURIComponent(slot)}` : "";
+    const path = agentId
+      ? `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-binding${query}`
+      : `projects/${encodeURIComponent(projectId)}/runtime-binding${query}`;
+    return this.request(path, runtimeBindingResponse);
+  }
+
+  setRuntimeBinding(projectId: string, input: { credential_id: string; model_id: string; slot?: string }, agentId?: string): Promise<RuntimeBindingResponse> {
+    const path = agentId
+      ? `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-binding`
+      : `projects/${encodeURIComponent(projectId)}/runtime-binding`;
+    return this.request(path, runtimeBindingResponse, { method: "PATCH", body: input });
+  }
+
+  clearRuntimeBinding(projectId: string, agentId?: string): Promise<RuntimeBindingResponse> {
+    const path = agentId
+      ? `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runtime-binding`
+      : `projects/${encodeURIComponent(projectId)}/runtime-binding`;
+    return this.request(path, runtimeBindingResponse, { method: "DELETE" });
   }
 
   uploadArtifact(projectId: string, file: File): Promise<ArtifactRecord> {
@@ -3608,9 +4109,9 @@ export class LocalApiClient {
   submitBuilderTurn(
     projectId: string,
     input: BuilderTurnRequest,
-    options: { onEvent?: (event: BuilderOperationEvent) => void } = {},
+    options: { onEvent?: (event: BuilderOperationEvent) => void; onPreview?: (text: string) => void } = {},
   ): Promise<BuilderConversationSnapshot> {
-    return this.submitBuilderTurnStream(projectId, input, options.onEvent);
+    return this.submitBuilderTurnStream(projectId, input, options.onEvent, options.onPreview);
   }
 
   getBuilderConversation(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot> {
@@ -3636,6 +4137,33 @@ export class LocalApiClient {
   ): Promise<BuilderConversationSnapshot> {
     return this.request(
       `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/operations/${encodeURIComponent(operationId)}/component-proposals/${encodeURIComponent(proposalId)}/commands`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
+    );
+  }
+
+  commandBuilderAgentCreationProposal(
+    projectId: string,
+    conversationId: string,
+    operationId: string,
+    proposalId: string,
+    input: AgentCreationProposalCommandRequest,
+  ): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/operations/${encodeURIComponent(operationId)}/agent-proposals/${encodeURIComponent(proposalId)}/commands`,
+      builderConversationSnapshot,
+      { method: "POST", body: input },
+    );
+  }
+
+  commandBuilderRuntimeBinding(
+    projectId: string,
+    conversationId: string,
+    operationId: string,
+    input: { credential_id: string; model_id: string; confirm: boolean; locale: "zh" | "en"; credential_scope?: "device" | "cloud" },
+  ): Promise<BuilderConversationSnapshot> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/builder/conversations/${encodeURIComponent(conversationId)}/operations/${encodeURIComponent(operationId)}/runtime-binding`,
       builderConversationSnapshot,
       { method: "POST", body: input },
     );
@@ -3769,6 +4297,38 @@ export class LocalApiClient {
     );
   }
 
+  reviseFactoryPlan(projectId: string, sessionId: string): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/revise`,
+      factorySession,
+      { method: "POST" },
+    );
+  }
+
+  generateFactoryResourceDraft(
+    projectId: string,
+    sessionId: string,
+    input: { confirm: boolean; capability: string; wrapper?: Record<string, unknown> },
+  ): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/factory-resources/drafts`,
+      factorySession,
+      { method: "POST", body: input },
+    );
+  }
+
+  approveFactoryResource(
+    projectId: string,
+    sessionId: string,
+    input: { confirm: boolean; capability: string; content_hash?: string; bind_to_project?: boolean },
+  ): Promise<FactorySession> {
+    return this.request(
+      `projects/${encodeURIComponent(projectId)}/factory/sessions/${encodeURIComponent(sessionId)}/factory-resources/approve`,
+      factorySession,
+      { method: "POST", body: input },
+    );
+  }
+
   applyFactoryDraft(
     projectId: string,
     sessionId: string,
@@ -3797,6 +4357,14 @@ export class LocalApiClient {
       `resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}/approve`,
       approvedResourceDraft,
       { method: "POST", body: { instruction } },
+    );
+  }
+
+  enableResource(resourceId: string, version: string, enabled: boolean): Promise<{ schema_version: "1.0"; resource: ResourceDescriptor }> {
+    return this.request(
+      `resources/${encodeURIComponent(resourceId)}/versions/${encodeURIComponent(version)}/enable`,
+      approvedResourceDraft,
+      { method: "POST", body: { enabled } },
     );
   }
 
@@ -4015,6 +4583,7 @@ export class LocalApiClient {
     projectId: string,
     input: BuilderTurnRequest,
     onEvent?: (event: BuilderOperationEvent) => void,
+    onPreview?: (text: string) => void,
   ): Promise<BuilderConversationSnapshot> {
     const path = `projects/${encodeURIComponent(projectId)}/builder/turns`;
     let response: Response;
@@ -4036,7 +4605,7 @@ export class LocalApiClient {
     }
     const type = response.headers.get("content-type") ?? "";
     if (type.includes("text/event-stream") && response.body) {
-      return readBuilderTurnStream(response, onEvent);
+      return readBuilderTurnStream(response, onEvent, onPreview);
     }
     const payload = await response.json().catch(() => undefined);
     if (!response.ok) throw errorEnvelope(payload, response.status);

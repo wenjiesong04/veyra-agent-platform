@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -132,6 +133,21 @@ def resource_plan(
         for reference in references:
             try:
                 _append_plan(plan, seen, catalog.by_reference(reference))
+            except ResourceCatalogError:
+                continue
+    ui = blueprint.ui_suggestions
+    bindings = ui.get("bindings") if isinstance(ui, Mapping) else None
+    if isinstance(bindings, Mapping):
+        for binding in bindings.values():
+            if not isinstance(binding, Mapping):
+                continue
+            if binding.get("kind") not in {"tool", "mcp_tool", "skill", "policy"}:
+                continue
+            bound_ref = binding.get("reference")
+            if not isinstance(bound_ref, str) or not bound_ref:
+                continue
+            try:
+                _append_plan(plan, seen, catalog.by_reference(bound_ref))
             except ResourceCatalogError:
                 continue
     project_by_reference = {

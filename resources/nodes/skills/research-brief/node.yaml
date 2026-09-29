@@ -2,6 +2,8 @@
 availability: ready
 description: Structure a bounded research brief with sources and open questions.
 factory_selectable: true
+capabilities:
+- research_planning
 kind: skill
 name: Research Brief
 required_permissions:

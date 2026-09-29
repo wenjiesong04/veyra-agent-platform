@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
-from veyra_agent_platform.contracts.agent import AgentSource
+from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
 from veyra_agent_platform.contracts.resource import ResourceRef
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
@@ -46,6 +46,7 @@ def inspect_agent_dependencies(
     source: AgentSource,
     *,
     resource_projection: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    project_custom_components: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return stable, bounded dependency evidence for one Agent source.
 
@@ -57,6 +58,11 @@ def inspect_agent_dependencies(
 
     usages: dict[str, dict[str, Any]] = {}
     order: list[str] = []
+    custom_by_reference = {
+        str(item["reference"]): item
+        for item in (project_custom_components or [])
+        if isinstance(item.get("reference"), str)
+    }
 
     def add(
         reference: str,
@@ -83,7 +89,12 @@ def inspect_agent_dependencies(
 
     for node in source.nodes:
         if node.uses:
-            add(node.uses, "tool", node_id=node.id)
+            expected_kind = (
+                "component"
+                if node.component_type is ComponentType.CUSTOM_COMPONENT
+                else "tool"
+            )
+            add(node.uses, expected_kind, node_id=node.id)
     for reference in source.skill_refs:
         add(reference, "skill")
     for reference in source.policy_refs:
@@ -125,6 +136,17 @@ def inspect_agent_dependencies(
                 )
             )
         else:
+            project_component = custom_by_reference.get(reference)
+            project_binding_hash = project_bindings.get(reference)
+            if project_component is not None:
+                project_binding_hash = (
+                    str(
+                        project_component.get("bound_content_hash")
+                        or project_component.get("content_hash")
+                        or ""
+                    )
+                    or None
+                )
             checks.append(
                 _catalog_check(
                     catalog,
@@ -133,8 +155,9 @@ def inspect_agent_dependencies(
                     expected_kinds,
                     usage["node_ids"],
                     usage["binding_ids"],
-                    project_bindings.get(reference),
+                    project_binding_hash,
                     resource_projection,
+                    project_resource=project_component,
                 )
             )
 
@@ -161,6 +184,8 @@ def _catalog_check(
     binding_ids: list[str],
     project_binding_hash: str | None,
     resource_projection: Callable[[dict[str, Any]], dict[str, Any]] | None,
+    *,
+    project_resource: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     expected_kind = _display_kind(expected_kinds)
     result: dict[str, Any] = {
@@ -184,13 +209,26 @@ def _catalog_check(
         result["status"] = "lock_missing"
         result["detail"] = "Agent source does not lock this dependency."
 
-    try:
-        resource = catalog.by_reference(reference)
-    except ResourceCatalogError:
-        if project_binding_hash is None and "tool" in expected_kinds:
-            result["status"] = "resource_unbound"
-            result["detail"] = "Tool is not bound to this Project."
-        return result
+    if project_resource is not None:
+        resource = project_resource
+    else:
+        try:
+            resource = catalog.by_reference(reference)
+        except ResourceCatalogError:
+            if project_binding_hash is None and (
+                "tool" in expected_kinds
+                or ("skill" in expected_kinds and source.is_loop)
+            ):
+                result["status"] = "resource_unbound"
+                result["detail"] = (
+                    "Tool is not bound to this Project."
+                    if "tool" in expected_kinds
+                    else "Skill is not bound to this Project."
+                )
+            elif "component" in expected_kinds:
+                result["status"] = "resource_unbound"
+                result["detail"] = "Custom Component is not published in this Project."
+            return result
 
     if resource_projection is not None:
         resource = resource_projection(resource)
@@ -215,6 +253,10 @@ def _catalog_check(
     elif "tool" in expected_kinds:
         result["status"] = "resource_unbound"
         result["detail"] = "Tool is not bound to this Project."
+        return result
+    elif "skill" in expected_kinds and source.is_loop:
+        result["status"] = "resource_unbound"
+        result["detail"] = "Skill is not bound to this Project."
         return result
 
     allowed_kinds = _allowed_kinds(expected_kinds)

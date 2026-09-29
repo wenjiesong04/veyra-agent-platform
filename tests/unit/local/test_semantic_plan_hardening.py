@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from pathlib import Path
+from typing import Any
 
 from tests.integration.local.test_factory_routes import VALID_SEMANTIC_PLAN
 from tests.unit.local.test_semantic_plan_compiler import _empty_context, _step
@@ -25,6 +27,7 @@ from veyra_agent_platform.local.factory.semantic_plan_repair import (
 from veyra_agent_platform.local.factory.service import (
     _plan_schema,
     _planning_user_content,
+    _repair_prompt,
 )
 from veyra_agent_platform.local.factory.structured_schema import (
     project_moonshot_json_schema,
@@ -35,6 +38,246 @@ def _base(**changes: object) -> dict[str, object]:
     payload = deepcopy(VALID_SEMANTIC_PLAN)
     payload.update(changes)
     return payload
+
+
+def _real_provider_failure_fixture() -> dict[str, Any]:
+    fixture_path = (
+        Path(__file__).resolve().parents[3]
+        / "contracts/fixtures/invalid/agent-semantic-plan-real-provider-failure.json"
+    )
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
+def test_sanitized_real_provider_failure_parses_typed_step_io() -> None:
+    payload = _real_provider_failure_fixture()
+    plan = AgentSemanticPlanV1.from_dict(payload)
+    assert plan.step_intents[2].inputs
+    assert plan.step_intents[2].outputs
+    compiled = compile_semantic_plan(plan, _empty_context())
+    assert compiled.status == "compile_error"
+    assert compiled.error is not None
+    assert "condition_expression_required" in compiled.error
+
+
+def test_sanitized_real_provider_mapping_compiles_typed_transform() -> None:
+    payload = _real_provider_failure_fixture()
+    for step in payload["step_intents"]:  # type: ignore[index,union-attr]
+        if isinstance(step, dict) and step.get("semantic_key") == "classify_request":
+            step["purpose"] = 'request != ""'
+            step["condition_expression"] = 'request != ""'
+    plan = AgentSemanticPlanV1.from_dict(payload)
+
+    compiled = compile_semantic_plan(plan, _empty_context())
+
+    assert compiled.status == "compiled", compiled.error
+    assert compiled.blueprint is not None
+    mapping = next(
+        node["mapping"]
+        for node in compiled.blueprint.to_dict()["nodes"]
+        if node["component_type"] == "Transform"
+    )
+    assert mapping["priority"] == "{{advice_priority}}"
+
+
+def test_sanitized_reacceptance_condition_plan_fails_closed_without_expression() -> (
+    None
+):
+    fixture_path = Path(__file__).resolve().parents[3] / (
+        "contracts/fixtures/invalid/agent-semantic-plan-condition-"
+        "fallback-reacceptance-2.json"
+    )
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    plan = AgentSemanticPlanV1.from_dict(payload)
+
+    compiled = compile_semantic_plan(plan, _empty_context())
+
+    assert compiled.status == "compile_error"
+    assert compiled.blueprint is None
+    assert compiled.error is not None
+    assert "code=condition_expression_required" in compiled.error
+    assert "path=step_intents[classify_priority].condition_expression" in compiled.error
+    assert "expected=declared_input_comparison" in compiled.error
+    assert "allowed_inputs=request" in compiled.error
+
+
+def test_invalid_intermediate_transform_is_not_a_preservation_obligation() -> None:
+    payload = _real_provider_failure_fixture()
+    obligations = graph_obligations(payload)
+    assert "condition" in obligations
+    assert "branch" in obligations
+    assert "approval" in obligations
+    assert "multi_model" in obligations
+    assert "transform" not in obligations
+
+
+def test_repair_prompt_names_allowed_io_and_mapping_only_transform_repair() -> None:
+    prompt = _repair_prompt(
+        [
+            "attempt 1: invalid AgentSemanticPlan "
+            "code=MISSING_REQUIRED_INPUT "
+            "path=step_intents[model_alpha].inputs"
+        ],
+        input_fields=["request:string"],
+        output_fields=["priority:string", "summary:string"],
+    )
+    assert "Declared Agent inputs: request:string" in prompt
+    assert "Declared Agent outputs: priority:string, summary:string" in prompt
+    assert "typed data ports" in prompt
+    assert "Do not omit a user-required approval" in prompt
+
+
+def test_neutral_branch_approvals_compile_with_all_declared_outputs() -> None:
+    payload = _base(
+        goal="Classify a mode and prepare one approved response.",
+        suggested_name="Mode Review",
+        description="Route valid or invalid modes through separate approvals.",
+        inputs=[{"name": "mode", "type": "string"}],
+        outputs=[
+            {"name": "status", "type": "string"},
+            {"name": "summary", "type": "string"},
+        ],
+        steps=["Classify", "Approve the selected response", "Prepare outputs"],
+        success_criteria=[],
+        step_intents=[
+            {
+                **_step(
+                    "classify_mode", "Classify mode", 'mode == "valid"', "condition"
+                ),
+                "branches": [
+                    {"key": "valid", "label": "Valid"},
+                    {"key": "invalid", "label": "Invalid"},
+                ],
+            },
+            {
+                **_step(
+                    "approve_valid",
+                    "Approve valid response",
+                    "Approve the valid response.",
+                    "approval",
+                    depends_on=["classify_mode"],
+                ),
+                "branch_condition": "classify_mode",
+                "branch_key": "valid",
+            },
+            {
+                **_step(
+                    "prepare_valid",
+                    "Prepare valid response",
+                    "Return status and summary for the valid case.",
+                    "model",
+                    depends_on=["approve_valid"],
+                ),
+                "branch_condition": "classify_mode",
+                "branch_key": "valid",
+            },
+            {
+                **_step(
+                    "approve_invalid",
+                    "Approve invalid response",
+                    "Approve the invalid response.",
+                    "approval",
+                    depends_on=["classify_mode"],
+                ),
+                "branch_condition": "classify_mode",
+                "branch_key": "invalid",
+            },
+            {
+                **_step(
+                    "prepare_invalid",
+                    "Prepare invalid response",
+                    "Return status and summary for the invalid case.",
+                    "model",
+                    depends_on=["approve_invalid"],
+                ),
+                "branch_condition": "classify_mode",
+                "branch_key": "invalid",
+            },
+        ],
+    )
+    plan = AgentSemanticPlanV1.from_dict(payload)
+    compiled = compile_semantic_plan(plan, _empty_context())
+
+    assert compiled.status == "compiled"
+    assert compiled.blueprint is not None
+    graph = compiled.blueprint.to_dict()
+    assert graph["outputs"] == {"status": "string", "summary": "string"}
+    edges = {(edge["from"], edge["port"], edge["to"]) for edge in graph["transitions"]}
+    assert ("classify_mode", "true", "approve_valid") in edges
+    assert ("classify_mode", "false", "approve_invalid") in edges
+    assert ("approve_valid", "approved", "prepare_valid") in edges
+    assert ("approve_invalid", "approved", "prepare_invalid") in edges
+    assert ("approve_valid", "approved", "approve_invalid") not in edges
+    models = {
+        node["id"]: node["system_prompt"]
+        for node in graph["nodes"]
+        if node["component_type"] == "Model"
+    }
+    for model_prompt in models.values():
+        assert "status (string)" in model_prompt
+        assert "summary (string)" in model_prompt
+        assert "exactly these declared fields" in model_prompt
+    assert graph["ui_suggestions"]["branch_labels"]["classify_mode"] == {
+        "true": "Valid",
+        "false": "Invalid",
+    }
+    note = graph["ui_suggestions"]["notes"]["note_intro"]["text"]
+    assert "true=Valid" in note and "false=Invalid" in note
+    assert 'classify_mode: mode == "valid"' in note
+
+
+def test_sibling_branch_dependency_is_rejected() -> None:
+    payload = _base(
+        inputs=[{"name": "mode", "type": "string"}],
+        outputs=[{"name": "status", "type": "string"}],
+        step_intents=[
+            {
+                **_step("classify", "Classify", 'mode == "valid"', "condition"),
+                "branches": [
+                    {"key": "valid", "label": "Valid"},
+                    {"key": "invalid", "label": "Invalid"},
+                ],
+            },
+            {
+                **_step(
+                    "approve_valid",
+                    "Approve valid",
+                    "Approve valid",
+                    "approval",
+                    ["classify"],
+                ),
+                "branch_condition": "classify",
+                "branch_key": "valid",
+            },
+            {
+                **_step(
+                    "approve_invalid",
+                    "Approve invalid",
+                    "Approve invalid",
+                    "approval",
+                    ["classify"],
+                ),
+                "branch_condition": "classify",
+                "branch_key": "invalid",
+            },
+            {
+                **_step(
+                    "prepare_valid",
+                    "Prepare valid",
+                    "Prepare valid",
+                    "model",
+                    ["approve_invalid"],
+                ),
+                "branch_condition": "classify",
+                "branch_key": "valid",
+            },
+        ],
+    )
+    try:
+        AgentSemanticPlanV1.from_dict(payload)
+    except ContractValidationError as exc:
+        assert "cannot depend on a sibling branch" in str(exc)
+        return
+    raise AssertionError("sibling branch dependencies must fail closed")
 
 
 def test_approval_semantic_plan_parses() -> None:
@@ -258,6 +501,20 @@ def test_graph_obligations_include_capability_and_multi_model() -> None:
     assert graph_obligations(payload) == frozenset({"capability", "multi_model"})
 
 
+def test_graph_obligations_keep_a_real_input_to_output_transform() -> None:
+    payload = _base(
+        inputs=[{"name": "text", "type": "string"}],
+        outputs=[{"name": "normalized", "type": "string"}],
+        step_intents=[
+            {
+                **_step("normalize", "Normalize", "Normalize source text", "transform"),
+                "output_mapping": {"normalized": "{{text}}"},
+            }
+        ],
+    )
+    assert graph_obligations(payload) == frozenset({"transform"})
+
+
 def test_graph_obligations_include_declared_branch_semantics() -> None:
     payload = _base(
         step_intents=[
@@ -304,9 +561,20 @@ def test_mfjs_projected_plan_schema_keeps_branch_contract_and_enums() -> None:
     projected = project_moonshot_json_schema(original)
     properties = projected["properties"]["step_intents"]["items"]["properties"]
     assert "branches" in properties
+    assert "condition_expression" in properties
     assert "branch_condition" in properties
     assert "branch_key" in properties
     assert "output_mapping" in properties
+    assert "inputs" in properties and "outputs" in properties
+    assert set(properties["branches"]["items"]["properties"]) == {"key", "label"}
+    typed_inputs = properties["inputs"]["items"]["properties"]
+    assert "name" in typed_inputs and "type" in typed_inputs
+    mapping = properties["output_mapping"]
+    assert "output" in mapping["description"].casefold()
+    assert (
+        "supported comparison over a declared Agent input"
+        in (properties["operation_kind"]["description"])
+    )
     dumped = json.dumps(projected)
     assert "$ref" not in dumped
     assert "oneOf" not in dumped
@@ -334,6 +602,7 @@ def test_mfjs_projected_plan_schema_keeps_branch_contract_and_enums() -> None:
         ]["operation_kind"]["enum"]
         == kinds["enum"]
     )
+    assert fmt["json_schema"]["schema"] == projected
 
 
 def test_mfjs_projection_preserves_property_named_then() -> None:
@@ -410,3 +679,51 @@ def test_planning_prompt_reuses_project_capabilities_without_hashes() -> None:
     assert "capability_requirement" in digest
     empty = _planning_user_content([])
     assert "no bound tools" in empty
+    assert "branch_key to approved or rejected" in empty
+    assert "typed data ports" in empty or "data edges" in empty
+    assert "Do not place a condition on decision/confirm/choice" in empty
+    assert "Do not store a photo as string" in empty
+    assert "Image outputs use type image" in empty
+
+
+def test_repairs_internal_names_condition_aliases_and_extra_branches() -> None:
+    payload = _base(
+        inputs=[
+            {"name": "user-decision", "type": "string"},
+            {"name": "selected revision", "type": "string"},
+        ],
+        step_intents=[
+            {
+                "semantic_key": "ask",
+                "name": "判断信息",
+                "purpose": "信息是否足够",
+                "operation_kind": "condition",
+                "condition_expression": "user_decision == yes",
+                "branches": [
+                    {"key": "true", "label": "继续"},
+                    {"key": "false", "label": "追问"},
+                ],
+            },
+            {
+                "semantic_key": "again",
+                "name": "再次判断",
+                "purpose": "检查是否通过",
+                "operation_kind": "condition",
+                "condition_expression": "user_decision == yes",
+                "branches": [
+                    {"key": "true", "label": "输出"},
+                    {"key": "false", "label": "修改"},
+                ],
+                "branch_condition": "again",
+            },
+        ],
+    )
+    repaired, notes = bounded_repair_semantic_plan(payload)
+    names = [item["name"] for item in repaired["inputs"]]
+    assert "selected revision" not in names
+    assert any(item.startswith("field-") for item in names)
+    assert "linearized_extra_branch" in notes
+    assert "aligned_condition_field" in notes
+    kept = repaired["step_intents"][0]
+    assert kept["condition_expression"].startswith("user-decision")
+    assert "branches" not in repaired["step_intents"][1]

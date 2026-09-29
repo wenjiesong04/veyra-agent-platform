@@ -10,7 +10,7 @@ import { assembleGreeting, ConversationGreetingTitle, ConversationHeroMark } fro
 import { ConversationGuides } from "../agents/chat/conversation-guides";
 import { ConversationScopePicker } from "../agents/chat/conversation-scope";
 import { ConversationAttachmentList } from "../agents/chat/conversation-attachments";
-import { composeFactoryPrompt, isConversationFile, readConversationFile, type ConversationAttachment } from "../agents/chat/conversation-attachment";
+import { composeFactoryPrompt, ensureClipboardFileName, isConversationFile, MAX_CONVERSATION_FILE_BYTES, readConversationFile, type ConversationAttachment } from "../agents/chat/conversation-attachment";
 import { takePendingFactoryPrompt } from "../agents/chat/pending-factory-prompt";
 import { DependencyReport } from "../studio/DependencyReport";
 import { notifyBuilderActivity } from "./use-builder-activity";
@@ -18,11 +18,12 @@ import { BuilderValidationIssues } from "./BuilderValidationIssues";
 import { BuilderActivityBlock } from "./BuilderActivityBlock";
 import { EditProposalPanel } from "./EditProposalPanel";
 import { BuilderComponentProposal } from "./BuilderComponentProposal";
+import { BuilderRuntimeBindingCard } from "./BuilderRuntimeBindingCard";
 import { BuilderTestRun, latestWorkspaceTestOperation } from "./BuilderTestRun";
 import { BuilderWorkspaceDock, type BuilderWorkspaceTab } from "./BuilderWorkspaceDock";
 import { RunExecutionCanvas } from "../studio/RunExecutionCanvas";
 import { builderValidationFailed, builderValidationIssues } from "./validation-feedback";
-import { planFacts, workbenchPhase } from "./workbench-phase";
+import { openStageStartedAt, planFacts, workbenchPhase } from "./workbench-phase";
 import "./builder.css";
 
 const CHAT_KINDS = new Set(["user", "assistant", "clarification", "failure", "result"]);
@@ -94,6 +95,34 @@ function syntheticUser(content: string, sequence: number): BuilderConversationMe
   return { message_id: `local-user-${sequence}`, conversation_id: "", sequence, role: "user", kind: "user", content, operation_id: null, payload: {}, created_at: "" };
 }
 
+function snapshotSignature(snapshot: BuilderConversationSnapshot): string {
+  const last = snapshot.messages.at(-1);
+  const operations = snapshot.operations.map((item) => `${item.operation_id}:${item.status}:${item.updated_at}:${item.kind}:${item.events.length}`).join(",");
+  return `${snapshot.conversation.conversation_id}|${snapshot.conversation.updated_at}|${snapshot.messages.length}|${last?.message_id ?? ""}|${operations}|${snapshot.factory_session?.session_id ?? ""}|${snapshot.factory_session?.state ?? ""}`;
+}
+
+function mergeFollowMessages(local: BuilderConversationMessage[], remote: BuilderConversationMessage[]): BuilderConversationMessage[] {
+  const savedUserText = new Set(remote.filter((item) => item.role === "user").map((item) => item.content));
+  const pending = local.filter((item) => item.message_id.startsWith("local-user-") && !savedUserText.has(item.content));
+  return pending.length ? [...remote, ...pending] : remote;
+}
+
+function draftSuperseded(draft: string, messages: BuilderConversationMessage[]): boolean {
+  if (!draft) return false;
+  return messages.some((item) => (
+    item.kind === "assistant" || item.kind === "clarification" || item.kind === "failure" || item.kind === "result"
+  ) && (item.content === draft || item.content.startsWith(draft)));
+}
+
+function followIsCurrent(local: BuilderConversationOperation[], remote: BuilderConversationOperation[]): boolean {
+  const remoteById = new Map(remote.map((item) => [item.operation_id, item]));
+  return local.every((item) => {
+    const match = remoteById.get(item.operation_id);
+    if (!match) return false;
+    return match.events.length >= item.events.length;
+  });
+}
+
 export function ProjectBuilderConversation({ project, locale, scope, conversationId }: { project: ProjectSummaryResponse; locale: "zh" | "en"; scope: FactoryConversationScope; conversationId?: string }) {
   const { api, upsertProject } = useProjectWorkspace();
   const zh = locale === "zh";
@@ -113,6 +142,7 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
   const [session, setSession] = React.useState<FactorySession | null>(null);
   const [createdAgentId, setCreatedAgentId] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [draftReply, setDraftReply] = React.useState("");
   const [error, setError] = React.useState("");
   const [blocked, setBlocked] = React.useState(false);
   const [workspaceTabs, setWorkspaceTabs] = React.useState<Record<string, BuilderWorkspaceTab>>({});
@@ -122,18 +152,29 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
   const [attachHint, setAttachHint] = React.useState("");
   const attachmentSeq = React.useRef(0);
   const inFlight = React.useRef(false);
+  const followToken = React.useRef(0);
+  const pullSeq = React.useRef(0);
+  const followSignature = React.useRef("");
+  const [followLive, setFollowLive] = React.useState(false);
   const refreshProject = async () => upsertProject(await api.getProject(project.project_id));
-  const applySnapshot = React.useCallback((snapshot: BuilderConversationSnapshot) => {
+  const applySnapshot = React.useCallback((snapshot: BuilderConversationSnapshot, mode: "replace" | "follow" = "replace") => {
+    if (!snapshot?.conversation?.conversation_id) return;
+    const signature = snapshotSignature(snapshot);
+    if (mode === "follow" && (signature === followSignature.current || !followIsCurrent(operationsRef.current, snapshot.operations))) return;
+    followSignature.current = signature;
+    if (mode === "replace") followToken.current += 1;
     conversationRef.current = snapshot.conversation.conversation_id;
     operationsRef.current = snapshot.operations;
     setActiveConversationId(snapshot.conversation.conversation_id);
-    setMessages(snapshot.messages);
+    setMessages((current) => mode === "follow" ? mergeFollowMessages(current, snapshot.messages) : snapshot.messages);
     setOperations(snapshot.operations);
     setSession(snapshot.factory_session);
     const createdId = [...snapshot.messages].reverse().find((item) => item.payload.agent_id)?.payload.agent_id
       ?? [...snapshot.operations].reverse().find((item) => item.diagnostic.agent_id)?.diagnostic.agent_id
       ?? null;
     setCreatedAgentId(createdId);
+    if (mode === "replace") setDraftReply("");
+    else setDraftReply((draft) => draftSuperseded(draft, snapshot.messages) ? "" : draft);
     notifyBuilderActivity();
   }, []);
   const rememberConversation = (nextId: string, nextTarget = target) => {
@@ -243,6 +284,7 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
           return next;
         });
       },
+      onPreview: (text) => setDraftReply(text),
     });
     applySnapshot(snapshot);
     rememberConversation(snapshot.conversation.conversation_id);
@@ -256,10 +298,19 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     await adoptResolution(next, userContent, activeConversationId);
   };
   const send = async (text = content, retryOf?: string) => {
+    if (!retryOf && !content.trim() && attachments.length > 0 && attachments.every((item) => item.kind === "image")) {
+      setError(zh ? "请先写一句目标说明；Builder 不会分析图片内容。" : "Add a text goal first; Builder cannot analyze image content.");
+      return;
+    }
+    if (!retryOf && text.length > 10_000) {
+      setError(zh ? "目标文字和附件内容合计超过 10,000 个字符，请缩短目标或移除一些附件。" : "The goal and extracted files exceed 10,000 characters. Shorten the goal or remove some files.");
+      return;
+    }
     if ((!text.trim() && !retryOf) || inFlight.current || (!api.submitBuilderTurn && !api.resolveBuilderIntent)) return;
     const userContent = text.trim();
     inFlight.current = true;
     setBusy(true);
+    setDraftReply("");
     setError("");
     setContent("");
     setAttachments([]);
@@ -275,7 +326,7 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
   };
   React.useEffect(() => {
     const pending = takePendingFactoryPrompt();
-    if (pending) setContent(pending);
+    if (pending) void send(pending);
   }, []);
   React.useEffect(() => {
     if (!conversationId || !api.getBuilderConversation) return;
@@ -287,31 +338,64 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     });
     return () => { active = false; };
   }, [api, applySnapshot, conversationId, project.project_id]);
+  const operationLive = operations.some((item) => item.status === "in_progress" || (item.kind === "test_agent" && item.status === "waiting"));
+  const shouldFollow = busy || followLive || operationLive;
   React.useEffect(() => {
-    const conversation = conversationRef.current;
-    if (!conversation || !api.getBuilderConversation) return;
-    const pending = operations.some((item) => item.kind === "test_agent" && (item.status === "in_progress" || item.status === "waiting"));
-    if (!pending) return;
-    const timer = window.setInterval(() => {
-      void api.getBuilderConversation!(project.project_id, conversation).then(applySnapshot).catch(() => undefined);
-    }, 400);
-    return () => window.clearInterval(timer);
-  }, [api, applySnapshot, operations, project.project_id]);
+    if (!shouldFollow || !api.getBuilderConversation) return undefined;
+    let active = true;
+    const pull = () => {
+      const conversation = conversationRef.current;
+      if (!conversation) return;
+      const token = followToken.current;
+      const seq = ++pullSeq.current;
+      const pending = api.getBuilderConversation!(project.project_id, conversation);
+      if (!pending || typeof pending.then !== "function") return;
+      void pending.then((snapshot) => {
+        if (!active || token !== followToken.current || seq !== pullSeq.current) return;
+        applySnapshot(snapshot, "follow");
+      }).catch(() => undefined);
+    };
+    pull();
+    const timer = window.setInterval(pull, 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [api, applySnapshot, project.project_id, shouldFollow]);
   const applyCreation = async () => {
     if (!session || inFlight.current) return;
     inFlight.current = true; setBusy(true); setError("");
     try {
-      await persistRecord("confirm", zh ? "已确认创建 Draft。" : "Confirmed Draft creation.");
-      const result = await api.applyFactoryDraft!(project.project_id, session.session_id, {
-        confirm: true,
-        name: session.candidate?.name,
-      });
-      setSession(result.session); setCreatedAgentId(result.agent.agent_id);
-      await persistRecord("apply_summary", zh ? `Draft 已创建。Studio 可打开 Agent。` : "Draft created. Studio can open the Agent.", { details: { agent_id: result.agent.agent_id, agent_name: result.agent.name } });
-      await api.getDraft(project.project_id, result.agent.agent_id);
-      const checked = await api.validate!(project.project_id, result.agent.agent_id);
-      await persistRecord("validation_summary", checked.valid ? (zh ? "已验证。" : "Validated.") : (zh ? "验证失败。" : "Validation failed."), { details: { valid: String(checked.valid), agent_id: result.agent.agent_id, agent_name: result.agent.name } });
-      await refreshProject();
+      const current = [...operationsRef.current].reverse().find((item) =>
+        item.factory_session_id === session.session_id,
+      );
+      const hasCanonicalProposal = Boolean(
+        current?.proposal_id
+        && current.events.some((event) => event.facts.proposal_kind === "create_agent" || event.facts.proposal_kind === "create_workflow"),
+      );
+      if (current?.proposal_id && hasCanonicalProposal && api.commandBuilderAgentCreationProposal) {
+        const snapshot = await api.commandBuilderAgentCreationProposal(
+          project.project_id,
+          conversationRef.current,
+          current.operation_id,
+          current.proposal_id,
+          { command: "apply", confirm: true, locale },
+        );
+        applySnapshot(snapshot);
+        await refreshProject();
+      } else {
+        await persistRecord("confirm", zh ? "已确认创建 Draft。" : "Confirmed Draft creation.");
+        const result = await api.applyFactoryDraft!(project.project_id, session.session_id, {
+          confirm: true,
+          name: session.candidate?.name,
+        });
+        setSession(result.session); setCreatedAgentId(result.agent.agent_id);
+        await persistRecord("apply_summary", zh ? `Draft 已创建。Studio 可打开 Agent。` : "Draft created. Studio can open the Agent.", { details: { agent_id: result.agent.agent_id, agent_name: result.agent.name } });
+        await api.getDraft(project.project_id, result.agent.agent_id);
+        const checked = await api.validate!(project.project_id, result.agent.agent_id);
+        await persistRecord("validation_summary", checked.valid ? (zh ? "已验证。" : "Validated.") : (zh ? "验证失败。" : "Validation failed."), { details: { valid: String(checked.valid), agent_id: result.agent.agent_id, agent_name: result.agent.name } });
+        await refreshProject();
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { inFlight.current = false; setBusy(false); }
   };
@@ -319,15 +403,51 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     if (!session || inFlight.current) return;
     inFlight.current = true; setBusy(true); setError("");
     try {
-      await persistRecord("reject", zh ? "已拒绝 Blueprint，未创建 Agent。" : "Rejected the Blueprint. No Agent was created.");
-      const current = operationsRef.current[operationsRef.current.length - 1];
+      const current = [...operationsRef.current].reverse().find((item) =>
+        item.factory_session_id === session.session_id,
+      );
+      const hasCanonicalProposal = Boolean(
+        current?.proposal_id
+        && current.events.some((event) => event.facts.proposal_kind === "create_agent" || event.facts.proposal_kind === "create_workflow"),
+      );
+      if (current?.proposal_id && hasCanonicalProposal && api.commandBuilderAgentCreationProposal) {
+        applySnapshot(await api.commandBuilderAgentCreationProposal(
+          project.project_id,
+          conversationRef.current,
+          current.operation_id,
+          current.proposal_id,
+          { command: "reject", confirm: true, locale },
+        ));
+      } else {
+        await persistRecord("reject", zh ? "已拒绝 Blueprint，未创建 Agent。" : "Rejected the Blueprint. No Agent was created.");
+      }
       if (current) setCollapsedWorkspaces((items) => ({ ...items, [current.operation_id]: true }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { inFlight.current = false; setBusy(false); }
   };
+  const reviseCreation = async () => {
+    if (!session || inFlight.current) return;
+    inFlight.current = true; setBusy(true); setError("");
+    try {
+      if (api.reviseFactoryPlan) {
+        const next = await api.reviseFactoryPlan(project.project_id, session.session_id);
+        setSession(next);
+      }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { inFlight.current = false; setBusy(false); }
+  };
   const attach = async (files: File[]) => {
-    const accepted = files.filter((file) => isConversationFile(file.name));
-    setAttachHint(accepted.length !== files.length ? (zh ? "只能添加文本、PDF 或 Word 文档。" : "Attach text, PDF, or Word documents only.") : "");
+    const withinLimit = files.filter((file) => file.size <= MAX_CONVERSATION_FILE_BYTES);
+    const accepted = withinLimit.filter((file) => isConversationFile(file.name, file.type)).map(ensureClipboardFileName);
+    const metadataHint = zh
+      ? "可添加文本、PDF、Word 和常见图片；Builder 只记录图片信息，不会分析像素。"
+      : "Attach text, PDF, Word, and common images. Builder records image metadata only; it does not analyze pixels.";
+    const acceptedImage = accepted.some((file) => file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+    setAttachHint(withinLimit.length !== files.length
+      ? (zh ? "单个附件不能超过 25 MB。" : "A single attachment cannot exceed 25 MB.")
+      : accepted.length !== files.length || acceptedImage
+        ? metadataHint
+        : "");
     const next = await Promise.all(accepted.map((file) => readConversationFile(file, `att-${++attachmentSeq.current}`)));
     setAttachments((items) => [...items, ...next]);
   };
@@ -356,6 +476,12 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       })} />;
     }
     const agentId = operation ? operationAgentId(operation, messages) : selected?.id ?? createdAgentId;
+    const workflowId = operation ? operationWorkflowId(operation, messages) : null;
+    const studioHref = workflowId
+      ? projectRoutePaths.workflow(project.project_id, workflowId)
+      : agentId
+        ? projectRoutePaths.agentDesign(project.project_id, agentId)
+        : null;
     const ownsSession = Boolean(session && operation && (operation.factory_session_id === session.session_id || (!operation.factory_session_id && operation.operation_id === latestOperation?.operation_id)));
     const phase = workbenchPhase(operation ?? latestOperation, ownsSession ? session : null, agentId ?? null);
     const componentProposalPending = Boolean(
@@ -364,16 +490,22 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
         && event.facts.proposal_kind === "create_custom_component")
       && !(ownsSession && session?.state === "review"),
     );
+    const stageEvents = (operation ?? latestOperation)?.events ?? [];
     const live = busy || operation?.status === "in_progress" || operation?.status === "waiting";
     const tab = workspaceTabs[workspaceId] ?? "workbench";
     const workspaceTest = agentId ? latestWorkspaceTestOperation(operations, workspaceId) : undefined;
+    const runtimeBindingPending = operation?.kind === "create_agent"
+      && (operation.diagnostic.waiting_for === "waiting_for_runtime_credential"
+        || operation.diagnostic.waiting_for === "waiting_for_runtime_binding");
     const workbench = componentProposalPending && operation
       ? <BuilderComponentProposal api={api} projectId={project.project_id} conversationId={activeConversationId} operation={operation} locale={locale} onSnapshot={applySnapshot} />
+      : runtimeBindingPending && operation
+        ? <BuilderRuntimeBindingCard api={api} projectId={project.project_id} conversationId={activeConversationId} operation={operation} locale={locale} onSnapshot={applySnapshot} onFollowChange={setFollowLive} />
       : workspaceTest?.run_observation?.run_id && agentId
         ? <RunExecutionCanvas api={api} projectId={project.project_id} agentId={agentId} runId={workspaceTest.run_observation.run_id} locale={locale} />
       : operation?.kind === "edit" || (!operation && selected)
       ? <BuilderTarget key={agentId ?? workspaceId} projectId={project.project_id} kind={(operation?.target_kind ?? selected?.kind ?? "agent") as EditTargetKind} targetId={agentId ?? selected?.id ?? ""} targetName={selected?.name ?? agentId ?? ""} locale={locale} incoming={incoming && (!operation?.proposal_id || incoming.proposal_id === operation.proposal_id) ? incoming : undefined} resolving={busy} resolutionBlocked={blocked} onReload={() => setBlocked(false)} onPersisted={(kind, text, extra) => void persistRecord(kind, text, extra)} />
-      : <FactoryAssemblyCanvas embedded locale={locale} session={ownsSession ? session : null} busy={busy ? "generate" : null} phase={phase} planSummary={planFacts((operation ?? latestOperation)?.events ?? [])} canGenerate={false} canApply={Boolean(ownsSession && session?.state === "review")} studioHref={agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} createdAgentId={agentId ?? null} drafted={false} focusChild={false} onClose={() => setCollapsedWorkspaces((current) => ({ ...current, [workspaceId]: true }))} onApply={() => void applyCreation()} onReject={ownsSession && session?.state === "review" ? () => void rejectCreation() : undefined} />;
+      : <FactoryAssemblyCanvas embedded locale={locale} session={ownsSession ? session : null} busy={busy ? "generate" : null} phase={phase} planSummary={planFacts(stageEvents)} live={live} stageStartedAt={openStageStartedAt(stageEvents)} canGenerate={false} canApply={Boolean(ownsSession && session?.state === "review")} studioHref={studioHref} createdAgentId={agentId ?? workflowId ?? null} drafted={false} focusChild={false} onClose={() => setCollapsedWorkspaces((current) => ({ ...current, [workspaceId]: true }))} onApply={() => void applyCreation()} onRevise={ownsSession && session?.state === "review" ? () => void reviseCreation() : undefined} onReject={ownsSession && session?.state === "review" ? () => void rejectCreation() : undefined} />;
     return <BuilderWorkspaceDock
       key={`dock-${workspaceId}`}
       idPrefix={workspaceId}
@@ -413,7 +545,7 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       return scope.onSelect(next);
     }} onCreateProject={scope.onCreateProject} />}
     data-project-id={project.project_id} data-factory="veyra-agent"
-    composer={<ConversationComposer locale={locale} value={content} onChange={(value) => setContent(value.slice(0, 10000))} onSubmit={() => void send(composeFactoryPrompt(content, attachments, locale))} disabled={busy || blocked || (!content.trim() && !attachments.length) || (!api.resolveBuilderIntent && !api.submitBuilderTurn)} sending={busy} textboxLabel={zh ? "消息" : "Message"} placeholder={zh ? "随心输入" : "Type freely"} sendLabel={zh ? "发送" : "Send"} attachLabel={zh ? "添加文件" : "Attach files"} onAttachFiles={(files) => void attach(files)} extraFields={<>{attachHint ? <p className="agent-convo-hint" role="status">{attachHint}</p> : null}<ConversationAttachmentList items={attachments} locale={locale} onRemove={(id) => setAttachments((items) => items.filter((item) => item.id !== id))} /></>} />}
+    composer={<ConversationComposer locale={locale} value={content} onChange={(value) => setContent(value.slice(0, 10000))} onSubmit={() => void send(composeFactoryPrompt(content, attachments, locale))} disabled={busy || blocked || (!content.trim() && !attachments.length) || (!api.resolveBuilderIntent && !api.submitBuilderTurn) || (!content.trim() && attachments.length > 0 && attachments.every((item) => item.kind === "image"))} sending={busy} textboxLabel={zh ? "消息" : "Message"} placeholder={zh ? "描述你想完成的事" : "Describe what you want to accomplish"} sendLabel={zh ? "发送" : "Send"} attachLabel={zh ? "添加文件" : "Attach files"} fileAccept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.html,.xml,.log,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp,image/gif" onAttachFiles={(files) => void attach(files)} onPasteFiles={(files) => void attach(files)} onPasteNotice={() => setAttachHint(zh ? "剪贴板里的本机文件路径不会发送；请另写说明。" : "Local file paths from the clipboard are not sent; add a separate caption if needed.")} extraFields={<>{attachHint ? <p className="agent-convo-hint" role="status">{attachHint}</p> : null}{!content.trim() && attachments.length > 0 && attachments.every((item) => item.kind === "image") ? <p className="agent-convo-hint" role="status">{zh ? "请先描述目标；Builder 不会分析图片内容。" : "Describe your goal first; Builder cannot analyze image content."}</p> : null}<ConversationAttachmentList items={attachments} locale={locale} onRemove={(id) => setAttachments((items) => items.filter((item) => item.id !== id))} /></>} />}
   >
     {transcript.map((item, index) => {
       const operationId = transcriptOperationId(item);
@@ -430,7 +562,8 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
           && typeof item.message.payload.component_id === "string"
           ? projectRoutePaths.projectResources(project.project_id)
           : null;
-        row = <BuilderTranscriptMessage key={item.message.message_id} item={item.message} locale={locale} studioHref={item.message.kind === "result" && agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null} resourceHref={resourceHref} onRetry={messageRetry ? () => void send("", messageRetry.operation_id) : undefined} />;
+        const workflowId = related ? operationWorkflowId(related, messages) : null;
+        row = <BuilderTranscriptMessage key={item.message.message_id} item={item.message} locale={locale} studioHref={item.message.kind === "result" ? (workflowId ? projectRoutePaths.workflow(project.project_id, workflowId) : agentId ? projectRoutePaths.agentDesign(project.project_id, agentId) : null) : null} resourceHref={resourceHref} onRetry={messageRetry ? () => void send("", messageRetry.operation_id) : undefined} />;
       }
       if (!embed || !operationId) return row;
       return <React.Fragment key={`turn-${operationId}-${index}`}>
@@ -442,7 +575,8 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     {persistedInProgress ? <p className="agent-convo-hint">{zh ? "上次操作仍在进行中。" : "The previous operation is still in progress."}</p> : null}
     {error ? <Alert type="error">{error}</Alert> : null}
     {!api.resolveBuilderIntent && !api.submitBuilderTurn ? <Alert type="warning">{zh ? "请更新 Local sidecar 以使用自然语言 Builder。" : "Update the Local sidecar to use natural-language Builder."}</Alert> : null}
-    {busy ? <ConversationTyping label={zh ? "正在思考…" : "Thinking…"} /> : null}
+    {draftReply ? <article className="agent-chat-bubble assistant" aria-live="polite"><span>Veyra Agent</span><p>{draftReply}</p></article> : null}
+    {busy && !draftReply ? <ConversationTyping label={zh ? "正在思考…" : "Thinking…"} /> : null}
   </ConversationStage>;
 }
 
@@ -454,8 +588,15 @@ function isActivityOperation(operation: BuilderConversationOperation): boolean {
 
 function isWorkspaceOperation(operation: BuilderConversationOperation): boolean {
   if (operation.kind === "test_agent") return false;
-  if (operation.kind === "create_agent" || operation.kind === "create_component" || operation.kind === "edit") return true;
-  return operation.target_kind === "agent";
+  if (operation.kind === "create_agent" || operation.kind === "create_workflow" || operation.kind === "create_component" || operation.kind === "edit") return true;
+  return operation.target_kind === "agent" || operation.target_kind === "workflow";
+}
+
+function operationWorkflowId(operation: BuilderConversationOperation, messages: BuilderConversationMessage[]): string | null {
+  const fromDiagnostic = operation.diagnostic.workflow_id;
+  if (typeof fromDiagnostic === "string" && fromDiagnostic) return fromDiagnostic;
+  const fromMessage = [...messages].reverse().find((item) => item.operation_id === operation.operation_id && typeof item.payload.workflow_id === "string")?.payload.workflow_id;
+  return typeof fromMessage === "string" ? fromMessage : null;
 }
 
 function operationAgentId(operation: BuilderConversationOperation, messages: BuilderConversationMessage[]): string | null {

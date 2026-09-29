@@ -81,6 +81,7 @@ function CommunityWorkspace() {
         displayName: account.display_name || account.handle,
         detail: account.email,
         initials: accountInitials(account.display_name, account.handle),
+        avatarUrl: account.avatar_url,
         authenticated: true,
         accountHref: communityAuthRoutePaths.account,
         onSignOut: () => {

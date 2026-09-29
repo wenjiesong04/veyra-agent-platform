@@ -19,6 +19,7 @@ from veyra_agent_platform.contracts.artifact import ArtifactRecord, ArtifactSour
 from veyra_agent_platform.contracts.common import new_uuid7
 
 from .bootstrap import require_schema_head
+from .project_sync import PENDING_OPERATIONS, SYNC_STATES, ProjectSyncState
 
 
 class IdempotencyConflict(ValueError):
@@ -78,6 +79,244 @@ class LocalRepository:
             """,
             (project_id, root_path, name, description, manifest_hash, indexed_at),
         )
+
+    def record_project_metadata(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        metadata_hash: str,
+    ) -> None:
+        """Track local metadata changes without touching the Project source."""
+        row = connection.execute(
+            "SELECT * FROM project_sync_states WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO project_sync_states(
+                  project_id, sync_enabled, state, local_metadata_hash
+                ) VALUES (?, 1, 'local_only', ?)
+                """,
+                (project_id, metadata_hash),
+            )
+            return
+
+        next_state = row["state"]
+        pending_operation = row["pending_operation"]
+        if metadata_hash != row["local_metadata_hash"]:
+            if next_state == "synced" and metadata_hash != row["last_synced_hash"]:
+                next_state = "pending_push"
+                pending_operation = "push"
+            elif next_state == "error":
+                next_state = (
+                    "pending_push"
+                    if row["cloud_revision"] is not None
+                    else "pending_upload"
+                )
+                pending_operation = (
+                    "push" if row["cloud_revision"] is not None else "ensure"
+                )
+        connection.execute(
+            """
+            UPDATE project_sync_states
+               SET local_metadata_hash = ?, state = ?, pending_operation = ?
+             WHERE project_id = ?
+            """,
+            (metadata_hash, next_state, pending_operation, project_id),
+        )
+
+    def ensure_project_sync_state(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        local_metadata_hash: str | None = None,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO project_sync_states(
+              project_id, sync_enabled, state, local_metadata_hash
+            ) VALUES (?, 1, 'local_only', ?)
+            """,
+            (project_id, local_metadata_hash),
+        )
+
+    def project_sync_state(self, project_id: str) -> ProjectSyncState | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM project_sync_states WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProjectSyncState(
+            project_id=row["project_id"],
+            sync_enabled=bool(row["sync_enabled"]),
+            state=row["state"],
+            cloud_revision=row["cloud_revision"],
+            local_metadata_hash=row["local_metadata_hash"],
+            last_synced_hash=row["last_synced_hash"],
+            last_synced_at=row["last_synced_at"],
+            pending_operation=row["pending_operation"],
+            remote_name=row["remote_name"],
+            remote_description=row["remote_description"],
+            error_code=row["error_code"],
+        )
+
+    def update_project_sync_state(
+        self,
+        *,
+        project_id: str,
+        state: str,
+        cloud_revision: int | None = None,
+        last_synced_hash: str | None = None,
+        last_synced_at: str | None = None,
+        pending_operation: str | None = None,
+        remote_name: str | None = None,
+        remote_description: str | None = None,
+        error_code: str | None = None,
+    ) -> ProjectSyncState | None:
+        if state not in SYNC_STATES:
+            raise ValueError("invalid Project sync state")
+        if (
+            pending_operation is not None
+            and pending_operation not in PENDING_OPERATIONS
+        ):
+            raise ValueError("invalid Project sync operation")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE project_sync_states
+                   SET state = ?, cloud_revision = ?, last_synced_hash = ?,
+                       last_synced_at = ?, pending_operation = ?, remote_name = ?,
+                       remote_description = ?, error_code = ?
+                 WHERE project_id = ?
+                """,
+                (
+                    state,
+                    cloud_revision,
+                    last_synced_hash,
+                    last_synced_at,
+                    pending_operation,
+                    remote_name,
+                    remote_description,
+                    error_code,
+                    project_id,
+                ),
+            )
+        return self.project_sync_state(project_id)
+
+    def artifact_sync_state(
+        self, project_id: str, artifact_kind: str, artifact_id: str
+    ) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT * FROM project_artifact_sync_states
+                     WHERE project_id = ? AND artifact_kind = ? AND artifact_id = ?
+                    """,
+                    (project_id, artifact_kind, artifact_id),
+                ).fetchone(),
+            )
+
+    def artifact_sync_states(self, project_id: str) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                """
+                SELECT * FROM project_artifact_sync_states
+                 WHERE project_id = ?
+                 ORDER BY artifact_kind, artifact_id
+                """,
+                (project_id,),
+            ).fetchall()
+
+    def update_artifact_sync_state(
+        self,
+        *,
+        project_id: str,
+        artifact_kind: str,
+        artifact_id: str,
+        local_content_hash: str | None,
+        deleted: bool,
+        state: str,
+        cloud_revision: int | None = None,
+        last_synced_hash: str | None = None,
+        last_synced_at: str | None = None,
+        error_code: str | None = None,
+        increment_local_revision: bool = False,
+    ) -> sqlite3.Row:
+        if state not in SYNC_STATES:
+            raise ValueError("invalid Artifact sync state")
+        with self.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM project_artifact_sync_states
+                 WHERE project_id = ? AND artifact_kind = ? AND artifact_id = ?
+                """,
+                (project_id, artifact_kind, artifact_id),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO project_artifact_sync_states(
+                      project_id, artifact_kind, artifact_id, local_revision,
+                      cloud_revision, local_content_hash, last_synced_hash, state,
+                      deleted, last_synced_at, error_code
+                    ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        artifact_kind,
+                        artifact_id,
+                        cloud_revision,
+                        local_content_hash,
+                        last_synced_hash,
+                        state,
+                        deleted,
+                        last_synced_at,
+                        error_code,
+                    ),
+                )
+            else:
+                next_revision = row["local_revision"] + (
+                    1 if increment_local_revision else 0
+                )
+                connection.execute(
+                    """
+                    UPDATE project_artifact_sync_states
+                       SET local_revision = ?, cloud_revision = ?,
+                           local_content_hash = ?, last_synced_hash = ?, state = ?,
+                           deleted = ?, last_synced_at = ?, error_code = ?
+                     WHERE project_id = ? AND artifact_kind = ? AND artifact_id = ?
+                    """,
+                    (
+                        next_revision,
+                        cloud_revision,
+                        local_content_hash,
+                        last_synced_hash,
+                        state,
+                        deleted,
+                        last_synced_at,
+                        error_code,
+                        project_id,
+                        artifact_kind,
+                        artifact_id,
+                    ),
+                )
+            result = connection.execute(
+                """
+                SELECT * FROM project_artifact_sync_states
+                 WHERE project_id = ? AND artifact_kind = ? AND artifact_id = ?
+                """,
+                (project_id, artifact_kind, artifact_id),
+            ).fetchone()
+            if result is None:
+                raise RuntimeError("Artifact sync state could not be saved")
+            return cast(sqlite3.Row, result)
 
     def project(self, project_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:
@@ -439,8 +678,8 @@ class LocalRepository:
             """
             INSERT INTO agent_versions(
               version_id, agent_id, source_hash, behavior_hash, lock_hash, file_hash,
-              source_json, source_text, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              source_json, source_text, created_at, committed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 values["version_id"],
@@ -452,8 +691,29 @@ class LocalRepository:
                 json.dumps(values["source"], sort_keys=True, separators=(",", ":")),
                 values["source_text"],
                 values["created_at"],
+                1 if values.get("committed") else 0,
             ),
         )
+
+    def mark_version_committed(
+        self, connection: sqlite3.Connection, version_id: str
+    ) -> None:
+        connection.execute(
+            "UPDATE agent_versions SET committed = 1 WHERE version_id = ?",
+            (version_id,),
+        )
+
+    def latest_committed_version(self, agent_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """SELECT * FROM agent_versions
+                       WHERE agent_id = ? AND committed = 1
+                       ORDER BY created_at DESC, version_id DESC""",
+                    (agent_id,),
+                ).fetchone(),
+            )
 
     def add_blob_and_file(
         self,
@@ -1218,7 +1478,10 @@ class LocalRepository:
     def agent_conversations(self, project_id: str, agent_id: str) -> list[sqlite3.Row]:
         with self._connect() as connection:
             return connection.execute(
-                "SELECT c.*, COUNT(m.message_id) AS message_count "
+                "SELECT c.*, COUNT(m.message_id) AS message_count, "
+                "(SELECT content FROM agent_conversation_messages "
+                " WHERE conversation_id = c.conversation_id AND role = 'user' "
+                " ORDER BY sequence LIMIT 1) AS first_user_content "
                 "FROM agent_conversations c "
                 "LEFT JOIN agent_conversation_messages m "
                 "ON m.conversation_id = c.conversation_id "
@@ -1245,12 +1508,40 @@ class LocalRepository:
         agent_id: str,
         title: str,
         created_at: str,
+        agent_version_id: str | None = None,
+        metadata_json: str | None = None,
     ) -> None:
         connection.execute(
             "INSERT INTO agent_conversations("
-            "conversation_id, project_id, agent_id, title, created_at, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?)",
-            (conversation_id, project_id, agent_id, title, created_at, created_at),
+            "conversation_id, project_id, agent_id, title, created_at, updated_at, "
+            "agent_version_id, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                conversation_id,
+                project_id,
+                agent_id,
+                title,
+                created_at,
+                created_at,
+                agent_version_id,
+                metadata_json,
+            ),
+        )
+
+    def pin_agent_conversation(
+        self,
+        connection: sqlite3.Connection,
+        conversation_id: str,
+        *,
+        agent_version_id: str,
+        metadata_json: str | None = None,
+        updated_at: str,
+    ) -> None:
+        connection.execute(
+            "UPDATE agent_conversations SET agent_version_id = ?, "
+            "metadata_json = COALESCE(?, metadata_json), updated_at = ? "
+            "WHERE conversation_id = ?",
+            (agent_version_id, metadata_json, updated_at, conversation_id),
         )
 
     def append_agent_conversation_message(
@@ -1281,8 +1572,19 @@ class LocalRepository:
         )
 
     def touch_agent_conversation(
-        self, connection: sqlite3.Connection, conversation_id: str, updated_at: str
+        self,
+        connection: sqlite3.Connection,
+        conversation_id: str,
+        updated_at: str,
+        title: str | None = None,
     ) -> None:
+        if title:
+            connection.execute(
+                "UPDATE agent_conversations SET title = ?, updated_at = ? "
+                "WHERE conversation_id = ?",
+                (title, updated_at, conversation_id),
+            )
+            return
         connection.execute(
             "UPDATE agent_conversations SET updated_at = ? WHERE conversation_id = ?",
             (updated_at, conversation_id),

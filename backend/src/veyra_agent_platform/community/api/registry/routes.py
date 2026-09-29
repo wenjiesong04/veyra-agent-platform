@@ -66,6 +66,30 @@ def build_router() -> APIRouter:
             lambda: _registry(request).list_entries(query=query, limit=limit)
         )
 
+    @router.get("/mine/agents")
+    def my_agents(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=100),
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        return _translate(
+            lambda: _registry(request).owned_entries(
+                user_id=authenticated.user_id, limit=limit
+            )
+        )
+
+    @router.get("/starred")
+    def starred_agents(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=100),
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        return _translate(
+            lambda: _registry(request).starred_entries(
+                user_id=authenticated.user_id, limit=limit
+            )
+        )
+
     @router.get("/moderation/queue")
     def moderation_queue(
         request: Request,

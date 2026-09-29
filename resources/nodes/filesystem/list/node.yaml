@@ -2,6 +2,8 @@
 availability: ready
 description: List a bounded Project directory without reading file contents.
 factory_selectable: true
+capabilities:
+- workspace_list
 kind: tool
 name: Filesystem List
 required_permissions:

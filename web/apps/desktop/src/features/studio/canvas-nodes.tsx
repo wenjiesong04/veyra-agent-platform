@@ -28,7 +28,7 @@ export function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "ag
       <strong>{title}</strong>
       <small>{data.flow.id}</small>
       {component.ports.map((port, index) => (
-        <Handle key={port} id={port} type="source" position={Position.Right} isConnectable={!data.readOnly} style={{ top: `${portHandleTop(index, component.ports.length)}%` }} title={port} />
+        <Handle key={port} id={port} type="source" position={Position.Right} isConnectable={!data.readOnly} style={{ top: portHandleTop(index, component.ports.length) }} title={port} />
       ))}
     </div>
   );
@@ -37,8 +37,12 @@ export function AgentNode({ data, selected }: NodeProps<Node<CanvasNodeData, "ag
 export function BindingNode({ data, selected }: NodeProps<Node<CanvasNodeData, "bindingNode">>) {
   const binding = data.binding;
   if (!binding) return null;
+  const state = data.runState ?? "idle";
+  const mark = STATE_MARKS[state];
   return (
-    <div className={`agent-flow-node catalog-binding ${selected ? "selected" : ""}`}>
+    <div className={`agent-flow-node catalog-binding ${selected ? "selected" : ""}`} data-state={state}>
+      <Handle type="target" position={Position.Left} isConnectable={false} style={{ top: "50%" }} />
+      {mark ? <span className="agent-flow-node__state" title={data.runStateLabel} aria-label={data.runStateLabel}>{mark}</span> : null}
       <strong>{binding.kind}</strong>
       <small>{binding.reference}</small>
     </div>

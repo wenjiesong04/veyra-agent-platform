@@ -134,6 +134,36 @@ describe("StudioPage source and conflict safety", () => {
     expect(screen.queryByText("Draft saved with the current revision.")).not.toBeInTheDocument();
   }, 8000);
 
+  it("keeps Open App disabled until a committed version exists and edits Agent interaction mode", async () => {
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft()),
+      listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [] }),
+    } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByRole("button", { name: "Open App" })).toBeDisabled();
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    const interaction = await screen.findByLabelText("Interaction");
+    expect(interaction).toHaveValue("auto");
+    await user.selectOptions(interaction, "hybrid");
+    expect(interaction).toHaveValue("hybrid");
+  });
+
+  it("enables Open App after a committed version is listed", async () => {
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft()),
+      listAgentVersions: vi.fn().mockResolvedValue({
+        schema_version: "1.0",
+        versions: [{ version_id: "version-1", agent_id: "agent-1", source_hash: "a".repeat(64), behavior_hash: "b".repeat(64), created_at: "2026-08-28T00:00:00Z", source, committed: true }],
+      }),
+    } as unknown as LocalProjectApi;
+    renderPage(api);
+    const openApp = await screen.findByRole("link", { name: "Open App" });
+    expect(openApp).toHaveAttribute("href", "#/projects/project-1/agents/agent-1");
+  });
+
   it("renders stable graph diagnostic codes as localized Studio copy", async () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft({ source: { ...source, nodes: [{ id: "out", component_type: "Output", output_name: "result" }], transitions: [] } })) } as unknown as LocalProjectApi;
     renderPage(api, "zh");
@@ -275,13 +305,23 @@ describe("StudioPage source and conflict safety", () => {
   });
 
   it("inserts an Agent palette component between Start and Output", async () => {
-    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft()),
+      listRuntimeCredentials: vi.fn().mockResolvedValue({ schema_version: "1.0", credentials: [] }),
+      getRuntimeBinding: vi.fn().mockResolvedValue({
+        schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", slot: "primary_model",
+        binding: null, credential: null, explicit: null,
+      }),
+    } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     renderPage(api);
     expect(await screen.findByRole("button", { name: /Start Entry point/ })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Model Model instruction/ }));
     expect(screen.queryByText(/is not wired into the flow/)).not.toBeInTheDocument();
-    expect(await screen.findByDisplayValue("model.primary")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Call slot")).toHaveValue("model.primary");
+    expect(screen.getByText(/This is a call mapping/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Provider" })).toBeInTheDocument();
   });
 
   it("keeps compact viewports to one studio overlay so the canvas stays usable", async () => {
@@ -319,6 +359,9 @@ describe("StudioPage source and conflict safety", () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     renderPage(api);
+    expect(await screen.findByRole("button", { name: "Expand test panel" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Test run" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     expect(await screen.findByRole("button", { name: "Test run" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Collapse test panel" }));
     expect(screen.queryByRole("button", { name: "Test run" })).not.toBeInTheDocument();
@@ -331,6 +374,7 @@ describe("StudioPage source and conflict safety", () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()) } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     const { unmount } = renderPage(api);
+    await user.click(await screen.findByRole("button", { name: "Expand test panel" }));
     const catalog = await screen.findByRole("separator", { name: "Resize catalog" });
     expect(catalog).toHaveAttribute("aria-valuenow", "228");
     fireEvent.keyDown(catalog, { key: "ArrowRight" });
@@ -369,6 +413,7 @@ describe("StudioPage source and conflict safety", () => {
   });
 
   it("keeps Agent internals off the Workflow palette and orchestration nodes off the Agent palette", async () => {
+    const user = userEvent.setup();
     const workflow: WorkflowSource = {
       schema_version: "1.0",
       component_type: "Workflow",
@@ -405,6 +450,7 @@ describe("StudioPage source and conflict safety", () => {
       listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [workflowProject] }),
     } as unknown as LocalProjectApi;
     render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={workflowApi}><StudioPage projectId="project-1" workflowId="wf-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    await user.click(await screen.findByRole("button", { name: "Expand test panel" }));
     const agentCall = await screen.findByRole("button", { name: /AgentCall Call a Project Agent/ });
     expect(agentCall).toBeEnabled();
     expect(screen.getByRole("button", { name: /translation Call a committed version/ })).toBeEnabled();
@@ -515,5 +561,42 @@ describe("StudioPage source and conflict safety", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Paste" })).toBeEnabled());
     fireEvent.keyDown(window, { key: "v", code: "KeyV", metaKey: true });
     await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled());
+  });
+
+  it("opens a loop Agent as a capability studio, not a Start-Output DAG", async () => {
+    const loop: AgentSource = {
+      ...source,
+      name: "Translation Agent",
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "model", component_type: "Model", model_ref: "model.primary", system_prompt: "Translate Chinese into natural English." },
+        { id: "out", component_type: "Output", output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next", to: "model" },
+        { from: "model", port: "next", to: "out" },
+      ],
+      extensions: {
+        veyra: {
+          ...source.extensions.veyra,
+          execution_kind: "loop",
+          instructions: "Translate Chinese into natural English.",
+          max_turns: 8,
+        },
+      },
+      ui: { positions: { start: { x: 0, y: 0 }, model: { x: 120, y: 0 }, out: { x: 240, y: 0 } } },
+    };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft({ source: loop })),
+    } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    expect(await screen.findByText(/This is a capability map, not an execution DAG/)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Capabilities" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Form" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Capabilities" }));
+    expect(await screen.findByText("Agent capabilities")).toBeInTheDocument();
+    expect(screen.getByText(/The Agent loop decides what to call/)).toBeInTheDocument();
   });
 });

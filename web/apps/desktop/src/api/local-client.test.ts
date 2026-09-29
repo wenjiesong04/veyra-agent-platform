@@ -815,6 +815,48 @@ describe("LocalApiClient Project requests", () => {
     });
   });
 
+  it("keeps the canonical Builder snapshot when the auxiliary Factory session has a schema mismatch", async () => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: {
+        conversation_id: "conv-1",
+        project_id: "project-1",
+        title: "Request Review Agent",
+        status: "active",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        last_activity_at: "2026-09-18T00:00:01Z",
+        last_operation_status: "waiting",
+      },
+      messages: [],
+      operations: [{
+        operation_id: "op-1",
+        conversation_id: "conv-1",
+        kind: "create_agent",
+        status: "waiting",
+        retry_of: null,
+        error_code: null,
+        proposal_id: "proposal-1",
+        run_id: null,
+        factory_session_id: "session-1",
+        created_at: "2026-09-18T00:00:00Z",
+        updated_at: "2026-09-18T00:00:01Z",
+        diagnostic: {},
+        has_request: true,
+        receipts: [],
+        events: [],
+      }],
+      resolution: null,
+      factory_session: { schema_version: "0.9" },
+    };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(snapshot)) });
+
+    await expect(client.getBuilderConversation("project-1", "conv-1")).resolves.toMatchObject({
+      operations: [{ proposal_id: "proposal-1", status: "waiting" }],
+      factory_session: null,
+    });
+  });
+
   it("parses Builder run observations and posts explicit test-run commands", async () => {
     const snapshot = {
       schema_version: "1.0",
@@ -1122,7 +1164,9 @@ describe("LocalApiClient Project requests", () => {
           provider: "moonshot",
           model_id: "kimi-k3",
           text_input: "supported",
-          image_input: "unsupported",
+          image_input: "supported",
+          video_input: "unsupported",
+          audio_input: "unsupported",
           structured_json_output: "supported",
           source: "static_profile",
         },
@@ -1141,7 +1185,7 @@ describe("LocalApiClient Project requests", () => {
       }, 201));
     const client = new LocalApiClient({ fetcher });
     await expect(client.runtimeStatus()).resolves.toMatchObject({
-      modalities: { image_input: "unsupported", source: "static_profile" },
+      modalities: { image_input: "supported", video_input: "unsupported", source: "static_profile" },
     });
     const file = new File(["png"], "product.png", { type: "image/png" });
     await expect(client.uploadArtifact("project-1", file)).resolves.toMatchObject({
@@ -1150,6 +1194,48 @@ describe("LocalApiClient Project requests", () => {
       kind: "artifact",
     });
     expect(String(fetcher.mock.calls[1]?.[0])).toContain("/api/v1/projects/project-1/artifacts");
+  });
+
+  it("accepts account-default Runtime readiness without video_input fields", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({
+      schema_version: "1.0",
+      project_id: "project-1",
+      agent_id: "agent-1",
+      ready: true,
+      profile_source: "user_default",
+      model: {
+        required: true,
+        configured: true,
+        model_id: "kimi-k3",
+        model_base_url: "https://api.moonshot.cn/v1",
+        model_api_key_env: "MOONSHOT_API_KEY",
+        modalities: {
+          provider: "moonshot",
+          model_id: "kimi-k3",
+          text_input: "supported",
+          image_input: "supported",
+          structured_json_output: "supported",
+          source: "static_profile",
+        },
+      },
+      dependency_summary: { total: 0, ready: 0, attention: 0 },
+      dependencies: [],
+      tool_checks: [],
+      checks: [
+        { id: "dependencies", ready: true, code: "ready", detail: "ok" },
+        { id: "model", ready: true, code: "ready", detail: "ok" },
+        { id: "modalities", ready: true, code: "ready", detail: "ok" },
+        { id: "tools", ready: true, code: "ready", detail: "ok" },
+      ],
+    }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.runtimeReadiness("project-1", "agent-1")).resolves.toMatchObject({
+      profile_source: "default",
+      model: {
+        configured: true,
+        modalities: { image_input: "supported", video_input: "unsupported", audio_input: "unsupported" },
+      },
+    });
   });
 
   it("sends commit compare-and-swap headers and revision body", async () => {

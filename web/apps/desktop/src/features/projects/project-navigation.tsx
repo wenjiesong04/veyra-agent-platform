@@ -1,4 +1,4 @@
-import { BookOpen, Bot, Box, ChevronDown, FileArchive, FileUp, FolderKanban, FolderOpen, MoreHorizontal, Pencil, Pin, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, Box, ChevronDown, FileArchive, FileText, FileUp, FolderKanban, FolderOpen, History, MoreHorizontal, Pencil, Pin, Play, Plus, Trash2, Workflow, type LucideIcon } from "lucide-react";
 import { desktopRoutePaths, projectRoutePaths, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import type { ProjectAgentRecord, ProjectKnowledgeRecord, ProjectWorkflowRecord } from "@veyra/api-contracts";
 import type { NavigationGroup, NavigationItem } from "@veyra/ui";
@@ -157,7 +157,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
         tone: "instance",
         resourceKind: "agent",
         active: isCurrentAgent,
-        trailingAction: <span className="agent-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={15} aria-hidden="true" /></button></span>,
+        trailingAction: <span className="agent-row-actions"><a href={projectRoutePaths.agent(project.project_id, agent.agent_id)} aria-label={`${t("openApp")}: ${agent.name || agent.slug}`} title={t("openApp")} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}><Play size={15} aria-hidden="true" /></a><button type="button" className="sidebar-more-chip" aria-label={`${t("agentActions")}: ${agent.name || agent.slug}`} title={t("agentActions")} aria-haspopup="menu" aria-expanded={isAgentPopoverOpen(agent.agent_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleAgentPopover(agent, event)}><MoreHorizontal size={15} aria-hidden="true" /></button><button type="button" aria-label={`${t("addChildAgent")}: ${agent.name || agent.slug}`} title={t("addChildAgent")} onClick={(event) => { event.preventDefault(); event.stopPropagation(); chooseAgentMode(project, "blank", agent.agent_id); }}><Plus size={15} aria-hidden="true" /></button></span>,
       };
     };
     const toNavItem = (node: AgentTreeNode<ProjectAgentRecord>): NavigationItem => ({
@@ -219,6 +219,22 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       trailingAction: <span className="kind-row-actions"><button type="button" aria-label={`${t("addKnowledge")}: ${project.name}`} title={`${t("addKnowledge")}: ${project.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); createKnowledge(project); }}><Plus size={15} aria-hidden="true" /></button></span>,
       children: knowledge.length ? knowledge.map(knowledgeItem) : undefined,
     };
+    const filesKind: NavigationItem = {
+      href: projectRoutePaths.files(project.project_id),
+      label: "Files",
+      icon: FileText,
+      tone: "kind",
+      resourceKind: "files",
+      ...kindState("files", false),
+    };
+    const runsKind: NavigationItem = {
+      href: projectRoutePaths.runs(project.project_id),
+      label: "Runs",
+      icon: History,
+      tone: "kind",
+      resourceKind: "runs",
+      ...kindState("runs", false),
+    };
     return {
       href: projectRoutePaths.project(project.project_id),
       label: project.name,
@@ -229,7 +245,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       expanded,
       leadingAction: <button type="button" className={`sidebar-fold-control${expanded ? " is-open" : ""}`} aria-label={`${expanded ? t("collapseProject") : t("expandProject")}: ${project.name}`} aria-expanded={expanded} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setExpandedProjectIds((current) => { const next = new Set(current); if (next.has(project.project_id)) next.delete(project.project_id); else next.add(project.project_id); return next; }); }}><ChevronDown className="sidebar-fold-icon" size={16} aria-hidden="true" /></button>,
       trailingAction: <span className="project-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("projectActions")}: ${project.name}`} title={t("projectActions")} aria-haspopup="menu" aria-expanded={isProjectPopoverOpen("project-actions")} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleProjectPopover("project-actions", event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
-      children: [agentsKind, workflowsKind, knowledgeKind],
+      children: [agentsKind, workflowsKind, knowledgeKind, filesKind, runsKind],
     };
   };
 

@@ -21,3 +21,5 @@ docker compose --env-file "$deployment_dir/.env" \
   --username "${POSTGRES_USER:-veyra}" \
   --dbname "${POSTGRES_DB:-veyra_community}" < "$backup_path"
 printf 'postgres_restore=ok\n'
+printf '%s\n' 'blob_restore=run_the_corresponding_blob-store_tar_restore_before_starting_the_app'
+printf '%s\n' 'credential_master_key_restore=provision_the_original_VEYRA_CLOUD_CREDENTIAL_MASTER_KEY_before_starting_the_app'

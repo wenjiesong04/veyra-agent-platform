@@ -42,7 +42,7 @@ function setup() {
   const api = {
     listProjects: vi.fn().mockResolvedValue({ projects: [project] }),
     listAgentRuns: vi.fn().mockResolvedValue({ runs: [{ ...run, events: undefined }] }),
-    listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [{ version_id: "version-original", agent_id: "agent-1", source_hash: "source-hash", behavior_hash: "behavior-hash", created_at: run.created_at, source: executionSource }] }),
+    listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [{ version_id: "version-original", agent_id: "agent-1", source_hash: "source-hash", behavior_hash: "behavior-hash", created_at: run.created_at, source: executionSource, committed: true }] }),
     getAgentRun: vi.fn(client.getAgentRun.bind(client)),
     runAgent: vi.fn(), getDraft: vi.fn(),
     orchestratorStatus: vi.fn().mockResolvedValue({ active: [], counts: {}, limits: {}, stale_count: 0 }),
@@ -129,7 +129,8 @@ describe("historical run navigation", () => {
   it("links Agent history and every Monitor attempt to the explicit original run", async () => {
     const { api } = setup();
     const view = mount(api, <AgentRunPage projectId="project-1" agentId="agent-1" />);
-    expect(await screen.findByRole("link", { name: identity.runId })).toHaveAttribute("href", runDetailHref(identity));
+    await waitFor(() => expect(document.querySelector(`a[href="${runDetailHref(identity)}"]`)).not.toBeNull());
+    expect(screen.queryByText(identity.runId)).not.toBeInTheDocument();
     expect(api.getAgentRun).not.toHaveBeenCalled();
     view.unmount();
     mount(api, <MonitorPage />);

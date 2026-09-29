@@ -16,6 +16,10 @@ from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.builder.component_planning import (
     matching_existing_component,
 )
+from veyra_agent_platform.local.builder.composite_apply import (
+    CompositeApplyError,
+    apply_composite,
+)
 from veyra_agent_platform.local.builder.harness import BuilderHarness
 from veyra_agent_platform.local.builder.knowledge_binding import (
     bind_knowledge,
@@ -38,6 +42,7 @@ from veyra_agent_platform.local.builder.validation_repair import (
     select_issue,
 )
 from veyra_agent_platform.local.library.dependencies import inspect_agent_dependencies
+from veyra_agent_platform.local.library.resource_truth import pin_catalog_locks
 from veyra_agent_platform.local.library.service import DraftConflict, LibraryService
 from veyra_agent_platform.local.library.workflow_dependencies import (
     resolve_workflow_calls,
@@ -48,7 +53,10 @@ from veyra_agent_platform.local.projects.custom_components import (
 )
 from veyra_agent_platform.local.projects.service import ProjectError
 from veyra_agent_platform.local.resources import ResourceCatalog
-from veyra_agent_platform.local.resources.project import ProjectResourceService
+from veyra_agent_platform.local.resources.project import (
+    ProjectResourceError,
+    ProjectResourceService,
+)
 from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 
 from .client import KimiClient
@@ -58,6 +66,8 @@ from .service import FactoryError
 TargetKind = Literal["agent", "workflow"]
 ProposalTargetKind = Literal["agent", "workflow", "custom_component"]
 COMPONENT_PROPOSAL_KIND = "create_custom_component"
+AGENT_CREATION_PROPOSAL_KIND = "create_agent"
+WORKFLOW_CREATION_PROPOSAL_KIND = "create_workflow"
 EditCommand = Literal["apply", "reject", "undo"]
 MAX_SOURCE_BYTES = 200_000
 
@@ -104,6 +114,7 @@ class EditProposalService:
         project_resources: ProjectResourceService,
         resource_readiness: ResourceReadiness,
         custom_components: CustomComponentService,
+        entity_store: Any | None = None,
     ) -> None:
         self.store = store
         self.library = library
@@ -112,7 +123,280 @@ class EditProposalService:
         self.project_resources = project_resources
         self.resource_readiness = resource_readiness
         self.custom_components = custom_components
+        self.entity_store = entity_store
         self.harness = BuilderHarness(library.projects, catalog)
+
+    def create_agent_proposal(
+        self,
+        project_id: str,
+        *,
+        candidate: dict[str, Any],
+        conversation_id: str,
+        operation_id: str,
+        factory_session_id: str,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """Persist one immutable review snapshot for a Factory Agent candidate."""
+        existing = self.store.builder_operation(project_id, operation_id)
+        if existing is not None and persist:
+            return self.get(project_id, existing["proposal_id"])
+        raw_source = candidate.get("source")
+        if not isinstance(raw_source, dict):
+            raise FactoryError(
+                "agent_proposal_invalid", "The Factory candidate source is missing"
+            )
+        source_model = AgentSource.from_dict(raw_source)
+        source = source_model.to_dict()
+        proposal_id = new_uuid7()
+        proposal: dict[str, Any] = {
+            "schema_version": "1.0",
+            "proposal_id": proposal_id,
+            "proposal_kind": AGENT_CREATION_PROPOSAL_KIND,
+            "project_id": project_id,
+            "target_kind": "agent",
+            "target_id": source["agent_id"],
+            "instruction": "Create the reviewed Agent Draft",
+            "created_at": datetime.now(UTC).isoformat(),
+            "candidate_source": source,
+            "candidate_hashes": {
+                "source_hash": source_model.source_hash,
+                "behavior_hash": source_model.behavior_hash,
+                "lock_hash": source_model.lock_hash,
+            },
+            "candidate_blueprint": deepcopy(candidate.get("blueprint") or {}),
+            "resource_plan": deepcopy(candidate.get("resource_plan") or []),
+            "required_project_resources": deepcopy(
+                candidate.get("required_project_resources") or []
+            ),
+            "semantic_plan": deepcopy(candidate.get("semantic_plan")),
+            "identity": deepcopy(candidate.get("identity") or {}),
+            "conversation_id": conversation_id,
+            "operation_id": operation_id,
+            "builder_creation_operation_id": operation_id,
+            "factory_session_id": factory_session_id,
+            "changes": [],
+            "permission_changes": [],
+            "impact": {
+                "target_kind": "agent",
+                "target_id": source["agent_id"],
+                "scope": "agent_creation",
+                "immutable_versions_changed": False,
+                "runs_started": False,
+                "creates_agent": True,
+            },
+            "validation": {
+                "valid": True,
+                "run_availability": candidate.get("run_availability", "unknown"),
+            },
+            "state": "review",
+        }
+        if persist:
+            self.store.create(proposal)
+            return self.get(project_id, proposal_id)
+        return proposal
+
+    def apply_agent_creation_proposal(
+        self,
+        project_id: str,
+        proposal_id: str,
+        *,
+        confirm: bool,
+    ) -> dict[str, Any]:
+        """Install exactly the persisted create-agent Proposal snapshot."""
+        if not confirm:
+            raise FactoryError(
+                "edit_confirmation_required", "Explicit confirmation is required"
+            )
+        proposal = self.store.get(project_id, proposal_id)
+        if proposal is None:
+            raise FactoryError("edit_proposal_not_found", "Edit proposal was not found")
+        if proposal.get("proposal_kind") != AGENT_CREATION_PROPOSAL_KIND:
+            raise FactoryError(
+                "agent_proposal_kind_invalid",
+                "The supplied Proposal is not an Agent creation Proposal",
+            )
+        if proposal.get("state") == "applied":
+            return self.get(project_id, proposal_id)
+        if proposal.get("state") != "review":
+            raise FactoryError(
+                "edit_proposal_closed", "This Proposal cannot be applied"
+            )
+        try:
+            source = AgentSource.from_dict(proposal["candidate_source"])
+        except (ContractValidationError, TypeError, ValueError) as exc:
+            raise FactoryError(
+                "agent_proposal_snapshot_invalid",
+                "The persisted Agent Proposal snapshot is invalid",
+            ) from exc
+        hashes = proposal.get("candidate_hashes")
+        if not isinstance(hashes, dict) or any(
+            hashes.get(key) != value
+            for key, value in {
+                "source_hash": source.source_hash,
+                "behavior_hash": source.behavior_hash,
+                "lock_hash": source.lock_hash,
+            }.items()
+        ):
+            raise FactoryError(
+                "agent_proposal_snapshot_invalid",
+                "The persisted Agent Proposal snapshot hash does not match",
+            )
+        try:
+            pin_catalog_locks(self.project_resources, self.catalog, project_id, source)
+        except ProjectResourceError as exc:
+            raise FactoryError(exc.code, str(exc)) from exc
+        dependencies = inspect_agent_dependencies(
+            self.library.projects,
+            self.catalog,
+            project_id,
+            source,
+            resource_projection=self.resource_readiness.project,
+        )
+        blocking = [
+            item
+            for item in dependencies["dependencies"]
+            if item.get("status") not in {"ready", "configuration_required"}
+        ]
+        if blocking:
+            raise FactoryError(
+                "agent_proposal_stale",
+                "Project dependencies changed since this Proposal was reviewed",
+            )
+        try:
+            existing = self.library.projects.agent_summary(project_id, source.agent_id)
+        except ProjectError:
+            existing = None
+        if existing is not None:
+            try:
+                current = self.library.draft(project_id, source.agent_id)
+            except (DraftConflict, ProjectError):
+                current = None
+            if current is None or current.get("source") != source.to_dict():
+                raise FactoryError(
+                    "agent_proposal_identity_conflict",
+                    "The Proposal Agent identity is already used by another source",
+                )
+            self.store.mark_applied(proposal_id, source.agent_id, existing)
+            return self.get(project_id, proposal_id)
+        try:
+            installed = self.library.projects.create_agent_from_source(
+                project_id=project_id,
+                source=source,
+                preserve_identity=True,
+            )
+        except ProjectError as exc:
+            raise FactoryError("agent_proposal_apply_failed", str(exc)) from exc
+        self.store.mark_applied(proposal_id, source.agent_id, installed)
+        return self.get(project_id, proposal_id)
+
+    def create_workflow_proposal(
+        self,
+        project_id: str,
+        *,
+        candidate: dict[str, Any],
+        conversation_id: str,
+        operation_id: str,
+        factory_session_id: str,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        existing = self.store.builder_operation(project_id, operation_id)
+        if existing is not None and persist:
+            return self.get(project_id, existing["proposal_id"])
+        workflow = candidate.get("workflow")
+        companions = candidate.get("companions")
+        if not isinstance(workflow, dict) or not isinstance(companions, list):
+            raise FactoryError(
+                "workflow_proposal_invalid",
+                "The Factory Workflow candidate is missing",
+            )
+        parsed_companions = [AgentSource.from_dict(item) for item in companions]
+        proposal_id = new_uuid7()
+        proposal: dict[str, Any] = {
+            "schema_version": "1.0",
+            "proposal_id": proposal_id,
+            "proposal_kind": WORKFLOW_CREATION_PROPOSAL_KIND,
+            "project_id": project_id,
+            "target_kind": "workflow",
+            "target_id": str(workflow.get("workflow_id") or proposal_id),
+            "instruction": "Create the reviewed Workflow Draft",
+            "created_at": datetime.now(UTC).isoformat(),
+            "candidate_workflow": deepcopy(workflow),
+            "candidate_companions": [item.to_dict() for item in parsed_companions],
+            "flow": list(candidate.get("flow") or []),
+            "identity": deepcopy(candidate.get("identity") or {}),
+            "entity_schema": deepcopy(candidate.get("entity_schema") or {}),
+            "execution_plan": deepcopy(candidate.get("execution_plan") or {}),
+            "conversation_id": conversation_id,
+            "operation_id": operation_id,
+            "builder_creation_operation_id": operation_id,
+            "factory_session_id": factory_session_id,
+            "changes": [],
+            "permission_changes": [],
+            "impact": {
+                "target_kind": "workflow",
+                "target_id": str(workflow.get("workflow_id") or proposal_id),
+                "scope": "workflow_creation",
+                "immutable_versions_changed": True,
+                "runs_started": False,
+                "creates_workflow": True,
+            },
+            "validation": {"valid": True, "run_availability": "requires_configuration"},
+            "state": "review",
+        }
+        if persist:
+            self.store.create(proposal)
+            return self.get(project_id, proposal_id)
+        return proposal
+
+    def apply_workflow_creation_proposal(
+        self,
+        project_id: str,
+        proposal_id: str,
+        *,
+        confirm: bool,
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise FactoryError(
+                "edit_confirmation_required", "Explicit confirmation is required"
+            )
+        proposal = self.store.get(project_id, proposal_id)
+        if proposal is None:
+            raise FactoryError("edit_proposal_not_found", "Edit proposal was not found")
+        if proposal.get("proposal_kind") != WORKFLOW_CREATION_PROPOSAL_KIND:
+            raise FactoryError(
+                "workflow_proposal_kind_invalid",
+                "The supplied Proposal is not a Workflow creation Proposal",
+            )
+        if proposal.get("state") == "applied":
+            return self.get(project_id, proposal_id)
+        if proposal.get("state") != "review":
+            raise FactoryError(
+                "edit_proposal_closed", "This Proposal cannot be applied"
+            )
+        companions = tuple(
+            AgentSource.from_dict(item)
+            for item in proposal.get("candidate_companions") or []
+        )
+        entity_schema = proposal.get("entity_schema")
+        if not isinstance(entity_schema, dict) or not entity_schema:
+            entity_schema = None
+        try:
+            result = apply_composite(
+                projects=self.library.projects,
+                library=self.library,
+                project_id=project_id,
+                companions=companions,
+                workflow=deepcopy(proposal["candidate_workflow"]),
+                flow=tuple(proposal.get("flow") or []),
+                entity_schema=entity_schema,
+                entity_store=self.entity_store,
+            )
+        except CompositeApplyError as exc:
+            raise FactoryError(exc.code, str(exc)) from exc
+        self.store.mark_applied(
+            proposal_id, str(result.get("workflow_id") or ""), result
+        )
+        return self.get(project_id, proposal_id)
 
     def create_component_proposal(
         self,
@@ -124,6 +408,12 @@ class EditProposalService:
         factory_session_id: str | None,
         continuation: Literal["agent", "direct_component"],
     ) -> dict[str, Any]:
+        existing = self.store.builder_operation(project_id, operation_id)
+        if (
+            existing is not None
+            and existing.get("proposal_kind") == COMPONENT_PROPOSAL_KIND
+        ):
+            return self.get(project_id, existing["proposal_id"])
         plan = deepcopy(component_plan)
         implementation = plan.get("implementation")
         if not isinstance(implementation, dict):
@@ -830,6 +1120,16 @@ class EditProposalService:
         proposal = self.store.get(project_id, proposal_id)
         if proposal is None:
             raise FactoryError("edit_proposal_not_found", "Edit proposal was not found")
+        if proposal.get("proposal_kind") == AGENT_CREATION_PROPOSAL_KIND:
+            proposal["stale"] = False
+            proposal["applied_agent"] = proposal.get("applied_result")
+            proposal["applied_revision"] = None
+            return proposal
+        if proposal.get("proposal_kind") == WORKFLOW_CREATION_PROPOSAL_KIND:
+            proposal["stale"] = False
+            proposal["applied_workflow"] = proposal.get("applied_result")
+            proposal["applied_revision"] = None
+            return proposal
         if proposal.get("proposal_kind") == COMPONENT_PROPOSAL_KIND:
             created = self.custom_components.find_builder_proposal(
                 project_id, proposal_id
@@ -912,6 +1212,32 @@ class EditProposalService:
             view = self.get(project_id, proposal_id)
             proposal = self.store.get(project_id, proposal_id)
             assert proposal is not None
+            if proposal.get("proposal_kind") == AGENT_CREATION_PROPOSAL_KIND:
+                if command == "reject":
+                    if view["state"] != "rejected":
+                        self.store.reject(proposal_id)
+                    return self.get(project_id, proposal_id)
+                if command == "apply":
+                    return self.apply_agent_creation_proposal(
+                        project_id, proposal_id, confirm=True
+                    )
+                raise FactoryError(
+                    "agent_creation_undo_unsupported",
+                    "An Agent creation Proposal cannot be undone before creation.",
+                )
+            if proposal.get("proposal_kind") == WORKFLOW_CREATION_PROPOSAL_KIND:
+                if command == "reject":
+                    if view["state"] != "rejected":
+                        self.store.reject(proposal_id)
+                    return self.get(project_id, proposal_id)
+                if command == "apply":
+                    return self.apply_workflow_creation_proposal(
+                        project_id, proposal_id, confirm=True
+                    )
+                raise FactoryError(
+                    "workflow_creation_undo_unsupported",
+                    "A Workflow creation Proposal cannot be undone before creation.",
+                )
             if proposal.get("proposal_kind") == COMPONENT_PROPOSAL_KIND:
                 if command == "undo":
                     raise FactoryError(

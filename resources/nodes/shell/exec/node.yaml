@@ -2,6 +2,8 @@
 availability: ready
 description: Run a workspace command after explicit HumanApproval.
 factory_selectable: true
+capabilities:
+- shell_exec
 kind: tool
 name: Workspace Shell
 required_permissions:

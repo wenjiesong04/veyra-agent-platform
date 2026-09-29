@@ -751,9 +751,40 @@ html.is-pane-resizing .studio-canvas {
   right: 12px;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--ink) 12%, transparent);
 }
-.agent-flow-node { position: relative; min-width: 145px; display: grid; gap: 3px; border: 1px solid var(--line-strong); border-radius: 12px; padding: 10px 15px; background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 6%, transparent); }
+.agent-flow-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 6%, transparent);
+  text-align: center;
+}
 .agent-flow-node.selected { border-color: var(--accent-strong); box-shadow: 0 0 0 2px var(--accent-strong), 0 0 0 6px color-mix(in srgb, var(--accent-strong) 24%, transparent); }
-.agent-flow-node small { color: var(--subtle); font: 10px ui-monospace, monospace; }
+.agent-flow-node strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.agent-flow-node small {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--subtle);
+  font: 10px/1.3 ui-monospace, monospace;
+}
 .agent-flow-node[data-state="running"] {
   border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--line));
   animation: veyra-node-pulse 1.2s ease-in-out infinite;
@@ -1039,7 +1070,7 @@ html.is-pane-resizing .studio-canvas {
 .studio-canvas .react-flow__controls,
 .studio-canvas .react-flow__minimap { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--soft-shadow); }
 .studio-canvas .react-flow__controls-button { border-color: var(--line); color: var(--ink); background: var(--surface); }
-.studio-canvas .react-flow__edge-path { stroke: color-mix(in srgb, var(--accent-strong) 70%, var(--line-strong)); stroke-width: 2; }
+.studio-canvas .react-flow__edge-path { stroke: color-mix(in srgb, var(--accent-strong) 70%, var(--line-strong)); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .studio-canvas .react-flow__edge.selected .react-flow__edge-path,
 .studio-canvas .react-flow__edge:hover .react-flow__edge-path { stroke: var(--accent-strong); stroke-width: 2.8; }
 .studio-canvas .react-flow__handle { width: 9px; height: 9px; border: 2px solid var(--surface); background: var(--accent-strong); }
@@ -1047,6 +1078,7 @@ html.is-pane-resizing .studio-canvas {
 .studio-canvas .react-flow__edgeupdater { width: 10px; height: 10px; }
 .studio-canvas .react-flow__edge.execution-active .react-flow__edge-path,
 .run-execution-canvas__flow .react-flow__edge.execution-active .react-flow__edge-path { stroke: var(--accent-strong); stroke-width: 2.7; stroke-dasharray: 7 6; animation: veyra-edge-flow 0.9s linear infinite; }
+.run-execution-canvas__flow .react-flow__edge-path { stroke: color-mix(in srgb, var(--accent-strong) 72%, var(--line-strong)); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .studio-canvas .react-flow__edge.execution-traversed .react-flow__edge-path,
 .run-execution-canvas__flow .react-flow__edge.execution-traversed .react-flow__edge-path { stroke: var(--good); stroke-width: 2.5; }
 .studio-canvas .react-flow__edge.execution-failed .react-flow__edge-path,
@@ -1069,7 +1101,12 @@ html.is-pane-resizing .studio-canvas {
 .run-execution-canvas__content { display: grid; min-height: 420px; flex: 1; grid-template-columns: minmax(0, 1fr) minmax(220px, 270px); gap: 12px; }
 .run-execution-canvas__flow { min-height: 420px; height: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--canvas, var(--surface-soft)); }
 .run-execution-canvas__flow .react-flow { min-height: 420px; }
-.run-execution-canvas__inspector-empty { display: grid; align-content: start; border: 1px solid var(--line); border-radius: 12px; padding: 14px; color: var(--subtle); background: var(--surface); font-size: 11px; line-height: 1.5; }
+.run-execution-canvas__inspector { display: grid; align-content: start; gap: 8px; border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--surface); }
+.run-execution-canvas__inspector h2 { margin: 0; font-size: 13px; }
+.run-loop-timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.run-loop-timeline li { border-left: 2px solid var(--line); padding: 6px 0 6px 10px; display: grid; gap: 2px; }
+.run-loop-timeline small { color: var(--subtle); font-size: 11px; }
+.factory-capability-proposal { display: grid; gap: 10px; }
 .run-execution-canvas__approval { display: grid; gap: 8px; border: 1px solid color-mix(in srgb, var(--warn) 44%, var(--line)); border-radius: 12px; padding: 12px 14px; color: var(--ink); background: color-mix(in srgb, var(--warn-soft) 36%, var(--surface)); }
 .run-execution-canvas__approval p { margin: 0; color: var(--muted); font-size: 11px; }
 .run-execution-canvas__approval > div,
@@ -1078,7 +1115,80 @@ html.is-pane-resizing .studio-canvas {
 .run-execution-canvas__stream-error { margin: 0; color: var(--warn); font-size: 11px; }
 .run-execution-canvas__error { display: grid; gap: 8px; }
 .run-execution-canvas__error h2, .run-execution-canvas__error p { margin: 0; }
-.canvas-note__text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.react-flow__node-noteNode {
+  overflow: hidden;
+}
+.canvas-note.is-bounded,
+.canvas-note.is-resizable {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.canvas-note.is-collapsed {
+  height: auto;
+  max-height: 148px;
+}
+.canvas-note.is-expanded {
+  height: 100%;
+}
+.canvas-note-preview {
+  display: -webkit-box;
+  max-height: 7.25em;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+.canvas-note-hint,
+.canvas-note-expand {
+  color: var(--subtle);
+  font-size: 10px;
+}
+.canvas-note-expand {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+.canvas-note__text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.canvas-note__scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+}
+.canvas-note__scroll.is-collapsed {
+  max-height: 7.25em;
+  overflow: hidden;
+}
+.canvas-note__scroll.is-expanded {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.canvas-note.is-resizable textarea {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 @media (max-width: 900px) {
   .run-execution-canvas__header { align-items: flex-start; flex-direction: column; }
   .run-execution-canvas__header-actions { justify-content: flex-start; }
@@ -1089,16 +1199,26 @@ html.is-pane-resizing .studio-canvas {
 .canvas-edge-label {
   position: absolute;
   z-index: 4;
-  display: flex;
-  min-height: 40px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  overflow: visible;
   pointer-events: all;
 }
 
+.canvas-edge-label.is-active,
+.canvas-edge-label.is-selected {
+  width: 26px;
+  height: 26px;
+}
+
 .canvas-edge-port {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
   border-radius: 999px;
   padding: 1px 7px;
   color: var(--accent-strong);
@@ -1106,21 +1226,16 @@ html.is-pane-resizing .studio-canvas {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, var(--line));
   font-size: 10px;
   font-weight: 750;
+  white-space: nowrap;
+}
+
+.canvas-edge-label.has-port:not(.is-active):not(.is-selected) .canvas-edge-hub {
+  opacity: 0;
 }
 
 .canvas-edge-chrome {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.canvas-edge-label.is-active .canvas-edge-chrome,
-.canvas-edge-label.is-selected .canvas-edge-chrome {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 4px;
-  background: var(--surface);
-  box-shadow: var(--soft-shadow);
+  display: grid;
+  place-items: center;
 }
 
 .canvas-edge-hub {
@@ -1158,6 +1273,9 @@ html.is-pane-resizing .studio-canvas {
 }
 
 .canvas-edge-delete {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
   display: inline-flex;
   height: 28px;
   align-items: center;
@@ -1165,6 +1283,7 @@ html.is-pane-resizing .studio-canvas {
   border: 0;
   border-radius: 8px;
   padding: 0 10px;
+  transform: translateY(-50%);
   color: #fff;
   background: #f04438;
   cursor: pointer;
@@ -1238,8 +1357,12 @@ html.is-pane-resizing .studio-canvas {
 }
 
 .canvas-note {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
   border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line));
   border-radius: 12px;
   padding: 10px;
@@ -1264,6 +1387,7 @@ html.is-pane-resizing .studio-canvas {
   color: var(--subtle);
   font-size: 10px;
   font-weight: 750;
+  cursor: grab;
 }
 
 .canvas-note-swatches { display: flex; gap: 4px; }
@@ -1285,13 +1409,25 @@ html.is-pane-resizing .studio-canvas {
 
 .canvas-note textarea {
   width: 100%;
-  min-height: 92px;
+  min-height: 0;
   border: 0;
   padding: 0;
   color: var(--ink);
   background: transparent;
-  resize: vertical;
-  font: 12px/1.45 inherit;
+  resize: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.canvas-note-resize-handle {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--surface);
+  border-radius: 2px;
+  background: var(--accent-strong);
+}
+.canvas-note-resize-line {
+  border-color: color-mix(in srgb, var(--accent-strong) 55%, transparent);
 }
 
 .canvas-grid {

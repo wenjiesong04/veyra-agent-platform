@@ -15,18 +15,36 @@ class EditProposalStore:
 
     def create(self, proposal: dict[str, Any]) -> None:
         with self.repository.transaction() as connection:
-            connection.execute(
-                """INSERT INTO edit_proposals(
-                   proposal_id, project_id, target_kind, target_id, payload_json
-                   ) VALUES (?, ?, ?, ?, ?)""",
-                (
-                    proposal["proposal_id"],
-                    proposal["project_id"],
-                    proposal["target_kind"],
-                    proposal["target_id"],
-                    json.dumps(proposal, ensure_ascii=False, sort_keys=True),
-                ),
-            )
+            self.create_in_connection(connection, proposal)
+
+    @staticmethod
+    def create_in_connection(connection: Any, proposal: dict[str, Any]) -> None:
+        connection.execute(
+            """INSERT INTO edit_proposals(
+               proposal_id, project_id, target_kind, target_id, payload_json,
+               builder_creation_operation_id, factory_session_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                proposal["proposal_id"],
+                proposal["project_id"],
+                proposal["target_kind"],
+                proposal["target_id"],
+                json.dumps(proposal, ensure_ascii=False, sort_keys=True),
+                proposal.get("builder_creation_operation_id"),
+                proposal.get("factory_session_id"),
+            ),
+        )
+
+    def builder_operation(
+        self, project_id: str, operation_id: str
+    ) -> dict[str, Any] | None:
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                """SELECT * FROM edit_proposals
+                   WHERE project_id = ? AND builder_creation_operation_id = ?""",
+                (project_id, operation_id),
+            ).fetchone()
+            return self._payload(dict(row)) if row else None
 
     def list(
         self, project_id: str, target_kind: str, target_id: str
@@ -51,7 +69,14 @@ class EditProposalStore:
     @staticmethod
     def _payload(row: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = json.loads(row["payload_json"])
-        payload["state"] = "rejected" if row["rejected"] else "review"
+        applied_agent_id = row.get("applied_agent_id")
+        if applied_agent_id:
+            payload["state"] = "applied"
+            payload["applied_agent_id"] = applied_agent_id
+            if row.get("applied_json"):
+                payload["applied_result"] = json.loads(row["applied_json"])
+        else:
+            payload["state"] = "rejected" if row["rejected"] else "review"
         return payload
 
     def reject(self, proposal_id: str) -> None:
@@ -59,6 +84,21 @@ class EditProposalStore:
             connection.execute(
                 "UPDATE edit_proposals SET rejected = 1 WHERE proposal_id = ?",
                 (proposal_id,),
+            )
+
+    def mark_applied(
+        self, proposal_id: str, agent_id: str, result: dict[str, Any]
+    ) -> None:
+        with self.repository.transaction() as connection:
+            connection.execute(
+                """UPDATE edit_proposals
+                   SET applied_agent_id = ?, applied_json = ?
+                   WHERE proposal_id = ? AND rejected = 0""",
+                (
+                    agent_id,
+                    json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    proposal_id,
+                ),
             )
 
     def receipt(self, proposal: dict[str, Any], *, undo: bool = False) -> Any:

@@ -30,7 +30,7 @@ const copy = {
     send: "发送",
     sending: "正在思考…",
     message: "消息",
-    unconfigured: "尚未配置 Veyra Agent。仍可收集需求；可在设置中保存模型 API Key，或在无界面运行时设置 MOONSHOT_API_KEY。",
+    unconfigured: "尚未配置 Veyra Platform Provider。仍可收集需求；平台凭据由部署配置管理。",
     configured: "Veyra Agent 已配置，只组装 Draft。",
     canvas: "组装画布",
     you: "你",
@@ -43,7 +43,7 @@ const copy = {
     send: "Send",
     sending: "Thinking…",
     message: "Message",
-    unconfigured: "Veyra Agent is not configured. You can still collect requirements; save a model API key in Settings or set MOONSHOT_API_KEY for headless runs.",
+    unconfigured: "The Veyra Platform Provider is not configured. You can still collect requirements; platform credentials are deployment-managed.",
     configured: "Veyra Agent is configured for Draft generation only.",
     canvas: "Assembly canvas",
     you: "You",
@@ -229,6 +229,26 @@ export function FactoryConversation({
     }
   };
 
+  const approveFactory = async (capability: string) => {
+    if (!session || !api.approveFactoryResource || busy) return;
+    const planned = (session.resource_factory_plans ?? []).find((item) => item.capability === capability);
+    setBusy("draft");
+    setError("");
+    try {
+      const next = await api.approveFactoryResource(projectId, session.session_id, {
+        confirm: true,
+        capability,
+        ...(planned?.snapshot_hash ? { content_hash: planned.snapshot_hash } : {}),
+        bind_to_project: true,
+      });
+      setSession(next);
+    } catch (cause) {
+      setError(errorText(cause, locale));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const canGenerate = Boolean(api.generateFactoryBlueprint && session?.ready && status?.configured && session.state !== "completed" && session.state !== "generating");
   const canApply = Boolean(api.applyFactoryDraft && session?.state === "review" && session.blueprint);
   const empty = !session && !error && !pendingUser;
@@ -316,6 +336,7 @@ export function FactoryConversation({
           onGenerate={() => void generate()}
           onApply={() => void apply()}
           onQuarantine={() => void quarantine()}
+          onApproveFactory={(capability) => void approveFactory(capability)}
           testRun={createdAgentId ? (
             <FactoryTestRun api={api} projectId={projectId} agentId={createdAgentId} locale={locale} />
           ) : null}

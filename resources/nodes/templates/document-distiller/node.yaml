@@ -3,6 +3,7 @@ availability: ready
 description: 把长文档或粘贴文本，提炼成你真正需要的结论、证据和待确认项。不编造原文没有的事实。
 factory_selectable: true
 kind: template
+loop_compatible: false
 name: 文档提炼
 required_permissions:
   filesystem_read_roots: []

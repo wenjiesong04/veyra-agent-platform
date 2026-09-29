@@ -89,6 +89,10 @@ def test_plugin_registry_publishes_browses_and_downloads_immutable_pack(
     assert downloaded.status_code == 200
     assert downloaded.headers["etag"] == f'"{hashlib.sha256(content).hexdigest()}"'
     assert downloaded.content == content
+    registry_root = community.app.state.settings.registry_storage_root
+    assert registry_root.is_dir()
+    assert "Application Support" not in str(registry_root)
+    assert any(path.is_file() for path in registry_root.iterdir())
 
     duplicate = community.client.post(
         "/api/v1/registry/plugins",

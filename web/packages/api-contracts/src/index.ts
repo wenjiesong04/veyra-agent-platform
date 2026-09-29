@@ -41,6 +41,10 @@ export const projectRoutePaths = {
 
 export const communityRoutePaths = {
   catalog: "#/community",
+  published: "#/community/published",
+  starred: "#/community/starred",
+  mine: "#/community/mine",
+  following: "#/community/following",
   entry: (owner: string, slug: string) => `#/community/${encodeRouteSegment(owner)}/${encodeRouteSegment(slug)}`,
   version: (owner: string, slug: string, versionId: string) => `#/community/${encodeRouteSegment(owner)}/${encodeRouteSegment(slug)}/versions/${encodeRouteSegment(versionId)}`,
 } as const;
@@ -51,7 +55,8 @@ export const libraryRoutePaths = {
 } as const;
 
 export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
-export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version";
+export type CommunitySubrouteKind = "community-published" | "community-starred" | "community-mine";
+export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version" | CommunitySubrouteKind;
 export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
 
 export type DesktopRouteLocation =
@@ -129,6 +134,14 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
     const owner = decodeRouteSegment(parts[1]);
     const slug = decodeRouteSegment(parts[2]);
     return owner && slug ? { kind: "community-entry", path, owner, slug } : { kind: "not-found", path };
+  }
+  if (parts[0] === "community" && parts.length === 2 && (parts[1] === "published" || parts[1] === "starred" || parts[1] === "mine" || parts[1] === "following")) {
+    const kind: CommunitySubrouteKind = parts[1] === "published"
+      ? "community-published"
+      : parts[1] === "starred"
+        ? "community-starred"
+        : "community-mine";
+    return { kind, path };
   }
   if (parts[0] === "community" && parts.length === 5 && parts[3] === "versions") {
     const owner = decodeRouteSegment(parts[1]);
@@ -256,28 +269,6 @@ export type MonitorSignal = {
   time: string;
 };
 
-export type CommunityEntry = {
-  id: string;
-  owner: string;
-  slug: string;
-  name: string;
-  author: string;
-  summary: string;
-  version: string;
-  versionId: string;
-  versions: Array<{ id: string; label: string; behaviorHash: string }>;
-  category: string;
-  installs: string;
-  verified: boolean;
-};
-
-export const communityEntries: CommunityEntry[] = [
-  { id: "research-brief", owner: "north-star", slug: "research-brief", name: "Research Brief", author: "north-star", summary: "Turn a bounded question into a sourced, reviewable brief.", version: "v1.3", versionId: "v1.3", versions: [{ id: "v1.3", label: "v1.3", behaviorHash: "8f2a…c91d" }, { id: "v1.2", label: "v1.2", behaviorHash: "6ab1…440e" }], category: "Research", installs: "2.4k", verified: true },
-  { id: "issue-triage", owner: "signal-lab", slug: "issue-triage", name: "Issue Triage", author: "signal-lab", summary: "Sort incoming issues, request approval, and record a checked response.", version: "v0.9", versionId: "v0.9", versions: [{ id: "v0.9", label: "v0.9", behaviorHash: "2e11…79a0" }], category: "Operations", installs: "1.8k", verified: true },
-  { id: "release-notes", owner: "paper-plane", slug: "release-notes", name: "Release Notes", author: "paper-plane", summary: "Collect changes and prepare a release note with explicit review points.", version: "v0.6", versionId: "v0.6", versions: [{ id: "v0.6", label: "v0.6", behaviorHash: "f4c2…19d1" }], category: "Writing", installs: "940", verified: false },
-  { id: "meeting-synthesis", owner: "clear-room", slug: "meeting-synthesis", name: "Meeting Synthesis", author: "clear-room", summary: "Turn notes into decisions, open questions, and follow-up work.", version: "v0.4", versionId: "v0.4", versions: [{ id: "v0.4", label: "v0.4", behaviorHash: "b621…90af" }], category: "Communication", installs: "730", verified: true },
-];
-
 export type AccountSummary = {
   displayName: string;
   mode: "local" | "connected";
@@ -286,5 +277,6 @@ export type AccountSummary = {
 };
 
 export * from "./local";
+export * from "./cloud";
 export * from "./community-auth";
 export * from "./community-registry";

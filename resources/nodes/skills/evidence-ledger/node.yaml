@@ -2,6 +2,8 @@
 availability: ready
 description: Keep claims tied to supplied evidence and mark gaps explicitly.
 factory_selectable: true
+capabilities:
+- evidence_synthesis
 kind: skill
 name: Evidence Ledger
 required_permissions:

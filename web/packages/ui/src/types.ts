@@ -59,6 +59,7 @@ export type AccountMenuConfig = {
   displayName: string;
   detail?: string;
   initials?: string;
+  avatarUrl?: string | null;
   authenticated?: boolean;
   accountHref: string;
   settingsHref?: string;

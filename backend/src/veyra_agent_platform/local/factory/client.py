@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -26,6 +27,60 @@ from .config import FactorySettings
 logger = logging.getLogger(__name__)
 _REDACT = re.compile(r"(?i)(bearer\s+\S+|sk-[A-Za-z0-9._-]+|moonshot-[A-Za-z0-9._-]+)")
 _ERROR_PATH = re.compile(r"At path '([^']{1,200})'")
+_DEFAULT_READ_TIMEOUT = object()
+_CONNECT_TIMEOUT_SECONDS = 20.0
+
+
+def visible_json_field(payload: str, key: str) -> str:
+    """Return the current text of a JSON string field, including a partial value."""
+
+    marker = f'"{key}"'
+    start = payload.find(marker)
+    if start < 0:
+        return ""
+    colon = payload.find(":", start + len(marker))
+    if colon < 0:
+        return ""
+    index = colon + 1
+    while index < len(payload) and payload[index] in " \n\r\t":
+        index += 1
+    if index >= len(payload) or payload[index] != '"':
+        return ""
+    index += 1
+    chars: list[str] = []
+    while index < len(payload):
+        char = payload[index]
+        if char == "\\":
+            if index + 1 >= len(payload):
+                break
+            escaped = payload[index + 1]
+            chars.append(
+                {
+                    "n": "\n",
+                    "t": "\t",
+                    "r": "\r",
+                    '"': '"',
+                    "\\": "\\",
+                    "/": "/",
+                }.get(escaped, escaped)
+            )
+            index += 2
+            continue
+        if char == '"':
+            break
+        chars.append(char)
+        index += 1
+    return "".join(chars)
+
+
+def completion_timeout(read_seconds: float | None) -> httpx.Timeout:
+    """Bound connection setup. A missing read limit waits for the model reply."""
+
+    connect = _CONNECT_TIMEOUT_SECONDS
+    if read_seconds is None:
+        return httpx.Timeout(connect=connect, read=None, write=None, pool=connect)
+    bounded = max(read_seconds, connect)
+    return httpx.Timeout(bounded)
 
 
 class FactoryProviderError(RuntimeError):
@@ -126,6 +181,8 @@ class HttpKimiTransport:
         messages: Sequence[Mapping[str, Any]],
         *,
         response_format: Mapping[str, Any] | None = None,
+        read_timeout: float | None | object = _DEFAULT_READ_TIMEOUT,
+        on_visible: Callable[[str], None] | None = None,
     ) -> KimiCompletion:
         body: dict[str, Any] = {
             "model": self.settings.model_id,
@@ -137,8 +194,20 @@ class HttpKimiTransport:
             body["reasoning_effort"] = self.settings.reasoning_effort
         if response_format is not None:
             body["response_format"] = dict(response_format)
+        if read_timeout is _DEFAULT_READ_TIMEOUT:
+            timeout = completion_timeout(self.settings.timeout_seconds)
+        elif read_timeout is None:
+            timeout = completion_timeout(None)
+        elif isinstance(read_timeout, int | float):
+            timeout = completion_timeout(float(read_timeout))
+        else:
+            timeout = completion_timeout(self.settings.timeout_seconds)
+        if on_visible is not None:
+            return self._stream_completion(body, timeout, on_visible)
         try:
-            response = self._client.post("/chat/completions", json=body)
+            response = self._client.post(
+                "/chat/completions", json=body, timeout=timeout
+            )
         except httpx.TimeoutException as exc:
             raise FactoryProviderError(
                 "factory_timeout", "Factory model request timed out"
@@ -178,6 +247,87 @@ class HttpKimiTransport:
                 "factory_invalid_response",
                 "Factory model service returned an invalid completion",
             ) from exc
+
+    def _stream_completion(
+        self,
+        body: dict[str, Any],
+        timeout: httpx.Timeout,
+        on_visible: Callable[[str], None],
+    ) -> KimiCompletion:
+        streamed = dict(body)
+        streamed["stream"] = True
+        content_parts: list[str] = []
+        finish_reason: str | None = None
+        request_id: str | None = None
+        shown = ""
+        last_emit = 0.0
+        try:
+            with self._client.stream(
+                "POST", "/chat/completions", json=streamed, timeout=timeout
+            ) as response:
+                _raise_for_provider(response)
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        break
+                    payload = json.loads(data)
+                    request_id = request_id or _safe_completion_id(payload.get("id"))
+                    choice = payload["choices"][0]
+                    if isinstance(choice, dict) and choice.get("finish_reason"):
+                        finish_reason = str(choice["finish_reason"])
+                    delta = choice.get("delta") if isinstance(choice, dict) else None
+                    piece = delta.get("content") if isinstance(delta, dict) else None
+                    if isinstance(piece, str) and piece:
+                        content_parts.append(piece)
+                        visible = visible_json_field("".join(content_parts), "message")
+                        now = time.monotonic()
+                        if (
+                            visible
+                            and visible != shown
+                            and (
+                                len(visible) - len(shown) >= 12
+                                or now - last_emit >= 0.12
+                            )
+                        ):
+                            shown = visible
+                            last_emit = now
+                            on_visible(visible)
+        except httpx.TimeoutException as exc:
+            raise FactoryProviderError(
+                "factory_timeout", "Factory model request timed out"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FactoryProviderError(
+                "factory_unavailable", "Factory model service is unavailable"
+            ) from exc
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise FactoryProviderError(
+                "factory_invalid_response",
+                "Factory model service returned an invalid completion",
+            ) from exc
+        content = "".join(content_parts)
+        visible = visible_json_field(content, "message")
+        if visible and visible != shown:
+            on_visible(visible)
+        if not content.strip():
+            raise FactoryProviderError(
+                "factory_invalid_response",
+                "Factory model service returned an invalid completion",
+            )
+        return KimiCompletion(
+            content=content,
+            assistant_message={"role": "assistant", "content": content},
+            finish_reason=finish_reason,
+            request_id=request_id,
+        )
 
 
 class KimiClient:
@@ -234,8 +384,27 @@ class KimiClient:
         messages: Sequence[Mapping[str, Any]],
         *,
         response_format: Mapping[str, Any] | None = None,
+        read_timeout: float | None | object = _DEFAULT_READ_TIMEOUT,
+        on_visible: Callable[[str], None] | None = None,
     ) -> KimiCompletion:
-        return self._transport().complete(messages, response_format=response_format)
+        transport = self._transport()
+        if isinstance(transport, HttpKimiTransport) and on_visible is not None:
+            return transport.complete(
+                messages,
+                response_format=response_format,
+                read_timeout=read_timeout,
+                on_visible=on_visible,
+            )
+        if (
+            isinstance(transport, HttpKimiTransport)
+            and read_timeout is not _DEFAULT_READ_TIMEOUT
+        ):
+            return transport.complete(
+                messages,
+                response_format=response_format,
+                read_timeout=read_timeout,
+            )
+        return transport.complete(messages, response_format=response_format)
 
 
 def _raise_for_provider(response: httpx.Response) -> None:

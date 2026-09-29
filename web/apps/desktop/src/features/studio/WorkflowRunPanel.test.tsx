@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowRunResponse, WorkflowSource } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { WorkflowRunPanel } from "./WorkflowRunPanel";
+import { STUDIO_CHROME_STORAGE_KEY } from "./studio-chrome";
 
 const source: WorkflowSource = {
   schema_version: "1.0",
@@ -44,7 +45,10 @@ const run: WorkflowRunResponse = {
   children: [{ node_id: "call", agent_id: "agent-1", version_id: "version-1", child_run_id: "child-1", status: "unverified" }],
 };
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.localStorage.removeItem(STUDIO_CHROME_STORAGE_KEY);
+});
 
 describe("WorkflowRunPanel", () => {
   it("uses named fields and the test-run chrome instead of a JSON editor", async () => {
@@ -66,6 +70,8 @@ describe("WorkflowRunPanel", () => {
     const user = userEvent.setup();
 
     render(<WorkflowRunPanel api={api} projectId="project-1" workflowId="wf-1" source={source} disabled={false} locale="en" />);
+    expect(screen.getByRole("button", { name: "Expand test panel" })).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     expect(screen.getByRole("button", { name: "Test run" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /Workflow run inputs/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run Workflow" })).not.toBeInTheDocument();
@@ -96,6 +102,7 @@ describe("WorkflowRunPanel", () => {
     const api = { runWorkflow: vi.fn().mockResolvedValue(waiting), getWorkflowRun, commandWorkflowRun } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     render(<WorkflowRunPanel api={api} projectId="project-1" workflowId="wf-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     await user.click(screen.getByRole("button", { name: "Test run" }));
     expect(await screen.findByText("Write notes.txt?")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
@@ -106,6 +113,7 @@ describe("WorkflowRunPanel", () => {
     const api = { runWorkflow: vi.fn() } as unknown as LocalProjectApi;
     const user = userEvent.setup();
     render(<WorkflowRunPanel api={api} projectId="project-1" workflowId="wf-1" source={source} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
     expect(screen.getByRole("button", { name: "Test run" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Collapse test panel" }));
     expect(screen.queryByRole("button", { name: "Test run" })).not.toBeInTheDocument();

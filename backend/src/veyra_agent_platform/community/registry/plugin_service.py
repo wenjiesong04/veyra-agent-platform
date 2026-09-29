@@ -19,11 +19,28 @@ from ..storage.database import CommunityDatabase
 from ..storage.identifiers import utc_now
 from ..storage.package_storage import PackageStorage
 from ..storage.plugin_repository import CommunityPluginRepository
-from ..storage.schema import CommunityPlugin, CommunityPluginVersion, CommunityUser
+from ..storage.schema import (
+    CommunityAvatar,
+    CommunityPlugin,
+    CommunityPluginVersion,
+    CommunityUser,
+)
 from .license_scan import scan_license
 
 MAX_PLUGIN_PACKAGE_BYTES = 5_000_000
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+
+
+def _plugin_owner_avatar_url(session: Any | None, user: Any) -> str | None:
+    if session is None:
+        return getattr(user, "avatar_url", None)
+    user_id = getattr(user, "id", None)
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    avatar = session.get(CommunityAvatar, user_id)
+    if avatar is None:
+        return None
+    return f"/api/v1/avatars/{user_id}?v={avatar.etag}"
 
 
 class CommunityPluginRegistryError(ValueError):
@@ -60,7 +77,7 @@ class CommunityPluginRegistryService:
             rows = self.repository.list_public(
                 session, query_text=clean_query, limit=clean_limit
             )
-            entries = [self._entry_payload(*row) for row in rows]
+            entries = [self._entry_payload(*row, session) for row in rows]
         return {"schema_version": "community.plugin.registry.v1", "entries": entries}
 
     def entry(
@@ -81,7 +98,7 @@ class CommunityPluginRegistryService:
             rows = self.repository.list_public_versions(
                 session, owner_handle=owner_handle, slug=slug
             )
-            entries = [self._entry_payload(*row) for row in rows]
+            entries = [self._entry_payload(*row, session) for row in rows]
         if not entries:
             raise CommunityPluginRegistryError(
                 "plugin_entry_not_found", "Published Plugin Pack was not found"
@@ -202,7 +219,7 @@ class CommunityPluginRegistryService:
         clean_limit = min(max(limit, 1), 100)
         with self.database.transaction() as session:
             rows = self.repository.list_moderation_queue(session, limit=clean_limit)
-            entries = [self._entry_payload(*row) for row in rows]
+            entries = [self._entry_payload(*row, session) for row in rows]
         return {"schema_version": "community.plugin.moderation.v1", "entries": entries}
 
     def moderate(
@@ -265,6 +282,7 @@ class CommunityPluginRegistryService:
         plugin: CommunityPlugin,
         record: CommunityPluginVersion,
         user: AccountProfile | CommunityUser,
+        session: Any | None = None,
     ) -> dict[str, Any]:
         try:
             manifest = json.loads(record.manifest_json)
@@ -274,6 +292,7 @@ class CommunityPluginRegistryService:
             "schema_version": "community.plugin.registry.v1",
             "owner_handle": user.handle,
             "owner_display_name": user.display_name,
+            "owner_avatar_url": _plugin_owner_avatar_url(session, user),
             "plugin_id": manifest.get("plugin_id", f"veyra.plugin.{plugin.slug}"),
             "slug": plugin.slug,
             "name": plugin.name,

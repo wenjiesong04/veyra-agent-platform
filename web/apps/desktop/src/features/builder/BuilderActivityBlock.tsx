@@ -9,10 +9,11 @@ import type {
 import { ChevronsDown, ChevronsRight, Circle, CircleAlert, CircleCheck } from "lucide-react";
 import { Button, StatusBadge } from "@veyra/ui";
 import { observationStatusLabel } from "./BuilderTestRun";
+import { openStageStartedAt, runningClock } from "./workbench-phase";
 
 const STEP_ORDER = [
   "builder.intent.resolved",
-  "builder.semantic_plan.completed",
+  "builder.specification.completed",
   "builder.capabilities.resolved",
   "builder.compile.completed",
   "builder.validation.completed",
@@ -26,7 +27,7 @@ type StepKind = (typeof STEP_ORDER)[number];
 
 const STEP_COPY: Record<StepKind, { zh: string; en: string }> = {
   "builder.intent.resolved": { zh: "理解需求", en: "Understanding request" },
-  "builder.semantic_plan.completed": { zh: "生成方案", en: "Planning Agent" },
+  "builder.specification.completed": { zh: "整理规格", en: "Specifying Agent" },
   "builder.capabilities.resolved": { zh: "解析资源", en: "Resolving capabilities" },
   "builder.compile.completed": { zh: "编译", en: "Compiling Agent" },
   "builder.validation.completed": { zh: "验证结构", en: "Validating" },
@@ -38,12 +39,18 @@ const STEP_COPY: Record<StepKind, { zh: string; en: string }> = {
 
 const STARTED: Partial<Record<StepKind, BuilderOperationEventKind>> = {
   "builder.intent.resolved": "builder.intent.started",
-  "builder.semantic_plan.completed": "builder.semantic_plan.started",
+  "builder.specification.completed": "builder.specification.started",
   "builder.capabilities.resolved": "builder.capabilities.started",
   "builder.compile.completed": "builder.compile.started",
   "builder.validation.completed": "builder.validation.started",
   "builder.apply.completed": "builder.apply.started",
 };
+
+function canonicalEventKind(kind: BuilderOperationEventKind): BuilderOperationEventKind {
+  if (kind === "builder.semantic_plan.started") return "builder.specification.started";
+  if (kind === "builder.semantic_plan.completed") return "builder.specification.completed";
+  return kind;
+}
 
 const RATE_LIMIT_CODES = new Set([
   "factory_rate_limited",
@@ -79,13 +86,13 @@ function durationLabel(operation: BuilderConversationOperation): string {
 }
 
 function currentKind(events: BuilderOperationEvent[]): BuilderOperationEventKind {
-  return events[events.length - 1]?.kind ?? "builder.operation.started";
+  return canonicalEventKind(events[events.length - 1]?.kind ?? "builder.operation.started");
 }
 
 function failedStepKind(operation: BuilderConversationOperation): StepKind | null {
   if (operation.status !== "failed") return null;
   const code = operation.error_code ?? operation.diagnostic.error_code ?? "";
-  if (RATE_LIMIT_CODES.has(code) || PLAN_FAILURE_CODES.has(code)) return "builder.semantic_plan.completed";
+  if (RATE_LIMIT_CODES.has(code) || PLAN_FAILURE_CODES.has(code)) return "builder.specification.completed";
   if (code === "factory_missing_capability") return "builder.capabilities.resolved";
   if (code === "builder_resolution_invalid") return "builder.intent.resolved";
   const current = currentKind(operation.events);
@@ -108,10 +115,10 @@ function visibleSteps(operation: BuilderConversationOperation): Array<{
   summary: string;
 }> {
   const byKind = new Map<BuilderOperationEventKind, BuilderOperationEvent>(
-    operation.events.map((item) => [item.kind, item]),
+    operation.events.map((item) => [canonicalEventKind(item.kind), item]),
   );
   const failed = operation.status === "failed";
-  const current = currentKind(operation.events);
+  const current = canonicalEventKind(currentKind(operation.events));
   const failedKind = failedStepKind(operation);
   const createLike = operation.kind === "create_agent" || operation.kind === "create_workflow";
   return STEP_ORDER.filter((kind) => {
@@ -123,7 +130,7 @@ function visibleSteps(operation: BuilderConversationOperation): Array<{
       return byKind.has(kind) || (operation.status === "succeeded" && byKind.has("builder.apply.completed"));
     }
     if (
-      kind === "builder.semantic_plan.completed"
+      kind === "builder.specification.completed"
       || kind === "builder.capabilities.resolved"
       || kind === "builder.compile.completed"
       || kind === "builder.validation.completed"
@@ -512,6 +519,13 @@ export function BuilderActivityBlock({
 }) {
   const zh = locale === "zh";
   const running = operation.status === "in_progress" || operation.status === "waiting";
+  const [now, setNow] = React.useState(() => Date.now());
+  const stageStartedAt = openStageStartedAt(operation.events);
+  React.useEffect(() => {
+    if (!running || !stageStartedAt) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running, stageStartedAt]);
   const [open, setOpen] = React.useState(running);
   React.useEffect(() => {
     setOpen(running);
@@ -526,7 +540,7 @@ export function BuilderActivityBlock({
     : operation.status === "failed" && operation.kind !== "test_agent"
       ? failureSummary(operation)
       : operation.status === "in_progress" && currentStep
-        ? (zh ? currentStep.label.zh : currentStep.label.en)
+        ? [zh ? currentStep.label.zh : currentStep.label.en, stageStartedAt ? runningClock(stageStartedAt, now, locale) : ""].filter(Boolean).join(" · ")
         : "";
   return (
     <section className="builder-activity" data-status={operation.status} data-kind={operation.kind}>

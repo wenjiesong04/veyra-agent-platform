@@ -7,6 +7,8 @@ from typing import Final
 OPERATION_STARTED = "builder.operation.started"
 INTENT_STARTED = "builder.intent.started"
 INTENT_RESOLVED = "builder.intent.resolved"
+SPECIFICATION_STARTED = "builder.specification.started"
+SPECIFICATION_COMPLETED = "builder.specification.completed"
 SEMANTIC_PLAN_STARTED = "builder.semantic_plan.started"
 SEMANTIC_PLAN_COMPLETED = "builder.semantic_plan.completed"
 CAPABILITIES_STARTED = "builder.capabilities.started"
@@ -36,6 +38,8 @@ EVENT_KINDS: Final[frozenset[str]] = frozenset(
         OPERATION_STARTED,
         INTENT_STARTED,
         INTENT_RESOLVED,
+        SPECIFICATION_STARTED,
+        SPECIFICATION_COMPLETED,
         SEMANTIC_PLAN_STARTED,
         SEMANTIC_PLAN_COMPLETED,
         CAPABILITIES_STARTED,
@@ -70,6 +74,8 @@ _LABELS: Final[dict[str, tuple[str, str]]] = {
     OPERATION_STARTED: ("开始构建", "Started"),
     INTENT_STARTED: ("理解需求", "Understanding request"),
     INTENT_RESOLVED: ("理解需求", "Understanding request"),
+    SPECIFICATION_STARTED: ("整理规格", "Specifying Agent"),
+    SPECIFICATION_COMPLETED: ("整理规格", "Specifying Agent"),
     SEMANTIC_PLAN_STARTED: ("生成方案", "Planning Agent"),
     SEMANTIC_PLAN_COMPLETED: ("生成方案", "Planning Agent"),
     CAPABILITIES_STARTED: ("解析资源", "Resolving capabilities"),

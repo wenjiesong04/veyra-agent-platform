@@ -57,6 +57,19 @@ describe("RuntimeInputForm", () => {
     expect(screen.getByLabelText("metadata")).toHaveValue(JSON.stringify({ sku: "a" }, null, 2));
   });
 
+  it("separates field names from type and requirement badges and shows the schema help", () => {
+    renderForm({
+      product_name: { type: "string", description: "Name this item in the catalog.", required: true },
+      photos: { type: "image", description: "Add views of the item.", required: false, multiple: true },
+    });
+    expect(screen.getByText("product_name")).toBeInTheDocument();
+    expect(screen.getByText("Name this item in the catalog.")).toBeInTheDocument();
+    expect(screen.getByText("Required")).toBeInTheDocument();
+    expect(screen.getByText("Optional")).toBeInTheDocument();
+    expect(screen.getByText("Multiple files allowed")).toBeInTheDocument();
+    expect(screen.getByLabelText("photos")).toHaveAttribute("multiple");
+  });
+
   it("uploads an image and stores an ArtifactRef", async () => {
     const uploadArtifact = vi.fn().mockResolvedValue({
       ...png,
@@ -192,5 +205,7 @@ describe("RuntimeOutputView", () => {
     expect(screen.getByText("side.png")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Open" }).length).toBeGreaterThan(0);
     await waitFor(() => expect(artifactContent).toHaveBeenCalled());
+    expect((await screen.findAllByAltText("product.png")).length).toBeGreaterThan(0);
+    expect(await screen.findByAltText("side.png")).toBeInTheDocument();
   });
 });

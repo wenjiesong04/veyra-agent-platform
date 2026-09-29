@@ -3,6 +3,14 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { useLocale } from "./i18n";
 import { PaneResizeHandle } from "./pane-resize";
 import { IconButton } from "./primitives";
+import {
+  emptyNavScrollFolds,
+  isCollapsibleNavSection,
+  stickyOffsetsForSections,
+  useNavScrollAccordion,
+  type CollapsibleNavSection,
+  type NavScrollFoldState,
+} from "./scroll-driven-sections";
 import { useTheme } from "./theme";
 import type { AccountMenuConfig, Brand, NavigationGroup, NavigationItem } from "./types";
 
@@ -11,28 +19,15 @@ const SIDEBAR_WIDTH_MAX = 420;
 const SIDEBAR_WIDTH_DEFAULT = 248;
 const SHELL_OVERLAY_LEFT_VAR = "--shell-overlay-left";
 const NAV_SECTION_STORAGE = "veyra.nav-section-collapsed.v1";
-const NAV_STICKY_HEADING = 22;
-const NAV_STICKY_PAD = 8;
-const NAV_STICKY_FIRST = NAV_STICKY_PAD * 2 + NAV_STICKY_HEADING;
-const NAV_STICKY_REST = NAV_STICKY_FIRST + 1;
 
-type CollapsibleNavSection = "pinned" | "projects" | "recent";
-type CollapsedNavSections = Record<CollapsibleNavSection, boolean>;
-
-function isCollapsibleNavSection(section?: string): section is CollapsibleNavSection {
-  return section === "pinned" || section === "projects" || section === "recent";
-}
+type CollapsedNavSections = NavScrollFoldState;
 
 function isFixedNavGroup(group: NavigationGroup): boolean {
   return group.section === "fixed" || group.section === undefined;
 }
 
-function emptyCollapsedNavSections(): CollapsedNavSections {
-  return { pinned: false, projects: false, recent: false };
-}
-
 function readCollapsedNavSections(): CollapsedNavSections {
-  const empty = emptyCollapsedNavSections();
+  const empty = emptyNavScrollFolds();
   try {
     const raw = window.localStorage.getItem(NAV_SECTION_STORAGE);
     if (!raw) return empty;
@@ -315,6 +310,7 @@ function SidebarNavGroup({
   const groupLabel = shellText(group.label, t);
   const sectionBodyId = section ? `nav-section-${section}` : undefined;
   const folded = sectionCollapsed || scrollFolded;
+  const bodyOpen = !folded;
   const groupBody = (
     <>
       {group.items.map((item) => {
@@ -351,7 +347,7 @@ function SidebarNavGroup({
       )}
       {group.backLink ? <a className="sidebar-context-back" href={group.backLink.href} aria-label={group.backLink.label} title={group.backLink.label} onClick={() => closeMobile()}><ArrowLeft size={16} aria-hidden="true" /><span>{group.backLink.label}</span></a> : null}
       {section ? (
-        <div className={`nav-group-body${sectionCollapsed ? "" : " is-open"}`} id={sectionBodyId} aria-hidden={sectionCollapsed} inert={sectionCollapsed || undefined}>
+        <div className={`nav-group-body${bodyOpen ? " is-open" : ""}`} id={sectionBodyId} aria-hidden={!bodyOpen} inert={bodyOpen ? undefined : true}>
           <div className="nav-group-body-inner">{groupBody}</div>
         </div>
       ) : groupBody}
@@ -407,6 +403,10 @@ function AccountMenuLink({
   );
 }
 
+function AccountAvatar({ initials, avatarUrl }: { initials: string; avatarUrl?: string | null }) {
+  return <span className={`shell-account-avatar${avatarUrl ? " has-photo" : ""}`} aria-hidden="true">{avatarUrl ? <img src={avatarUrl} alt="" /> : initials}</span>;
+}
+
 function SidebarAccountMenu({ account, collapsed, onNavigate, activeHref }: { account: AccountMenuConfig; collapsed: boolean; onNavigate: () => void; activeHref: string }) {
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
@@ -452,7 +452,7 @@ function SidebarAccountMenu({ account, collapsed, onNavigate, activeHref }: { ac
       {open ? (
         <div className="shell-account-menu" id={menuId} role="menu" aria-label={t("openAccountMenu")}>
           <div className="shell-account-menu-header">
-            <span className="shell-account-avatar" aria-hidden="true">{initials}</span>
+            <AccountAvatar initials={initials} avatarUrl={account.avatarUrl} />
             <span className="shell-account-menu-copy">
               <strong>{account.displayName}</strong>
               <small>{detail}</small>
@@ -516,7 +516,7 @@ function SidebarAccountMenu({ account, collapsed, onNavigate, activeHref }: { ac
         title={account.displayName}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="shell-account-avatar" aria-hidden="true">{initials}</span>
+        <AccountAvatar initials={initials} avatarUrl={account.avatarUrl} />
         <span className="shell-account-trigger-copy">
           <strong>{account.displayName}</strong>
           <small>{detail}</small>
@@ -531,7 +531,6 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   const { effectiveDark, setTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(storageKey));
   const [collapsedSections, setCollapsedSections] = useState(readCollapsedNavSections);
-  const [scrollFolded, setScrollFolded] = useState(emptyCollapsedNavSections);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileViewport, setMobileViewport] = useState(readMobileViewport);
@@ -543,6 +542,9 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
   const pendingToggleFocus = useRef<"header" | "sidebar" | null>(null);
   const fixedNavigation = navigation.filter(isFixedNavGroup);
   const listNavigation = navigation.filter((group) => !isFixedNavGroup(group));
+  const listSections = listNavigation.flatMap((group) => isCollapsibleNavSection(group.section) ? [group.section] : []);
+  const stickyOffsets = stickyOffsetsForSections(listSections);
+  const { autoCollapsed: scrollFolded, lockManualInteraction, scrollSectionIntoSlot } = useNavScrollAccordion(sidebarScrollRef, collapsedSections, listNavigation.length);
 
   useEffect(() => {
     try {
@@ -559,33 +561,6 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
       // Section fold preference is optional and never carries account identity.
     }
   }, [collapsedSections]);
-
-  useEffect(() => {
-    const scroller = sidebarScrollRef.current;
-    if (!scroller || typeof IntersectionObserver !== "function") return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        setScrollFolded((current) => {
-          if (scroller.clientHeight <= 0) return current;
-          let changed = false;
-          const next = { ...current };
-          for (const entry of entries) {
-            const key = (entry.target.parentElement as HTMLElement | null)?.dataset.navSection;
-            if (!isCollapsibleNavSection(key)) continue;
-            const folded = entry.intersectionRatio <= 0;
-            if (next[key] !== folded) {
-              next[key] = folded;
-              changed = true;
-            }
-          }
-          return changed ? next : current;
-        });
-      },
-      { root: scroller, threshold: 0 },
-    );
-    for (const body of scroller.querySelectorAll("[data-nav-section] > .nav-group-body")) observer.observe(body);
-    return () => observer.disconnect();
-  }, [listNavigation.length, collapsedSections]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -668,10 +643,9 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
     trashHref: "#/trash",
   };
   const toggleNavSection = (section: CollapsibleNavSection) => {
+    lockManualInteraction(section);
     if (scrollFolded[section] && !collapsedSections[section]) {
-      const scroller = sidebarScrollRef.current;
-      const target = scroller?.querySelector<HTMLElement>(`[data-nav-section="${section}"]`);
-      if (scroller && target) scroller.scrollTop = target.offsetTop;
+      window.requestAnimationFrame(() => scrollSectionIntoSlot(section));
       return;
     }
     setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
@@ -722,7 +696,10 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
             <div
               className="sidebar-nav-scroll"
               ref={sidebarScrollRef}
-              style={{ "--nav-sticky-first": `${NAV_STICKY_FIRST}px`, "--nav-sticky-rest": `${NAV_STICKY_REST}px` } as CSSProperties}
+              style={{
+                "--nav-sticky-first": `${stickyOffsets.projects}px`,
+                "--nav-sticky-rest": `${Math.max(0, stickyOffsets.recent - stickyOffsets.projects)}px`,
+              } as CSSProperties}
             >
               {listNavigation.map((group) => {
                 const section = isCollapsibleNavSection(group.section) ? group.section : undefined;

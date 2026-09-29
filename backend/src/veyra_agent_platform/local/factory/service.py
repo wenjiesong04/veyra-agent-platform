@@ -8,22 +8,54 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from veyra_agent_platform.contracts.agent import AgentBlueprint, ComponentType
-from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
+from veyra_agent_platform.contracts.agent import (
+    AgentBlueprint,
+    AgentSource,
+    ComponentType,
+)
+from veyra_agent_platform.contracts.agent_spec import AgentSpecification
+from veyra_agent_platform.contracts.common import (
+    ContractValidationError,
+    new_uuid7,
+    thaw_json,
+)
+from veyra_agent_platform.contracts.execution_plan import ExecutionPlan
+from veyra_agent_platform.contracts.resource_factory import ResourceFactoryPlan
+from veyra_agent_platform.contracts.resource_plan import ResourcePlan
 from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
+from veyra_agent_platform.local.builder.agent_composer import compose_loop_agent
+from veyra_agent_platform.local.builder.agent_loop_compiler import (
+    loop_agent_blueprint_payload,
+)
+from veyra_agent_platform.local.builder.capability_from_plan import (
+    derive_plan_capabilities,
+)
+from veyra_agent_platform.local.builder.capability_requirements import (
+    derive_capability_requirements,
+)
+from veyra_agent_platform.local.builder.composite_apply import (
+    CompositeApplyError,
+    apply_composite,
+)
+from veyra_agent_platform.local.builder.generate_product import (
+    generate_builder_product,
+    proposal_preview,
+)
 from veyra_agent_platform.local.builder.harness import BuilderHarness, BuilderMode
 from veyra_agent_platform.local.builder.operation_events import (
     CAPABILITIES_RESOLVED,
     CAPABILITIES_STARTED,
     COMPILE_COMPLETED,
     COMPILE_STARTED,
-    SEMANTIC_PLAN_COMPLETED,
-    SEMANTIC_PLAN_STARTED,
+    SPECIFICATION_COMPLETED,
+    SPECIFICATION_STARTED,
     VALIDATION_COMPLETED,
     VALIDATION_STARTED,
 )
+from veyra_agent_platform.local.builder.prompt import RUNNABLE_AGENT_PRIMITIVES
+from veyra_agent_platform.local.builder.quality import validate_agent_quality
 from veyra_agent_platform.local.builder.receipts import (
     HarnessReceiptRecorder,
     InvocationKind,
@@ -38,16 +70,41 @@ from veyra_agent_platform.local.builder.semantic_compiler import (
     compile_semantic_plan,
     finalize_compiled_source,
 )
+from veyra_agent_platform.local.builder.simulation import simulate_agent
+from veyra_agent_platform.local.builder.specification import (
+    infer_agent_specification,
+    resolve_agent_specification,
+)
+from veyra_agent_platform.local.builder.target_kind import BuilderTargetClassification
+from veyra_agent_platform.local.builder.workflow_orchestration import (
+    compile_workflow_orchestration,
+)
+from veyra_agent_platform.local.library.resource_truth import (
+    annotate_resource_plan,
+    pin_catalog_locks,
+)
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
-from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
-from veyra_agent_platform.local.resources.project import ProjectResourceService
+from veyra_agent_platform.local.resources import (
+    ResourceCatalog,
+    ResourceCatalogError,
+    ResourceFactory,
+    ResourceFactoryError,
+    ResourceWorkshop,
+)
+from veyra_agent_platform.local.resources.project import (
+    ProjectResourceError,
+    ProjectResourceService,
+)
+from veyra_agent_platform.local.resources.resolver import (
+    ResourceResolver,
+    plan_factory_items,
+)
+from veyra_agent_platform.local.secrets import resolve_secret
 
 from .capability_probe import probe_provider_capabilities
 from .capability_profile import (
     ProviderCapabilityProfile,
-    allows_json_object_generate_fallback,
     derive_provider_capability_profile,
-    generate_structured_output,
     structured_response_format,
 )
 from .capability_store import ProviderCapabilityStore
@@ -66,14 +123,16 @@ from .compiler import (
     run_availability,
 )
 from .semantic_plan_repair import (
-    bounded_repair_semantic_plan,
     classify_plan_error,
-    graph_obligations,
-    reject_silent_v1_degradation,
     semantic_plan_shape,
     validation_error_path,
 )
-from .store import FactorySessionRepository
+from .store import FactorySessionRepository, _specification_record
+
+
+class _StageEmitter(Protocol):
+    def __call__(self, kind: str, facts: dict[str, str] | None = None) -> None: ...
+
 
 _STATES = {
     "collecting",
@@ -117,17 +176,26 @@ class FactoryService:
         profiles: ProviderCapabilityStore | None = None,
         *,
         project_resources: ProjectResourceService | None = None,
+        workshop: ResourceWorkshop | None = None,
+        library: Any | None = None,
+        entity_store: Any | None = None,
     ) -> None:
         self.store = store
         self.projects = projects
         self.catalog = catalog
         self.client = client
+        self.workshop = workshop
+        self.library = library
+        self.entity_store = entity_store
         self.project_resources = project_resources or ProjectResourceService(
             projects, catalog
         )
         self.profiles = profiles or ProviderCapabilityStore(store.database_path)
         self.harness = BuilderHarness(projects, catalog)
         self._writer_lock = threading.RLock()
+        self.resource_factory = (
+            ResourceFactory(workshop, catalog) if workshop is not None else None
+        )
 
     def status(self) -> dict[str, Any]:
         settings = self.client.settings
@@ -211,9 +279,158 @@ class FactoryService:
                 "factory_session_invalid", "Factory session has an invalid state"
             )
         payload = self.store.payload(row, self.store.messages(session_id))
+        record = _generation_record(row)
+        if record.get("target_kind"):
+            payload["target_kind"] = record["target_kind"]
+        if record.get("execution_kind"):
+            payload["execution_kind"] = record["execution_kind"]
+        plans = record.get("resource_factory_plans")
+        if isinstance(plans, list):
+            payload["resource_factory_plans"] = plans
         payload["run_availability"] = self._run_availability(payload)
         payload["executes_drafts"] = False
+        if record.get("product_shape"):
+            payload["product_shape"] = record["product_shape"]
+        if isinstance(record.get("task_structure"), dict):
+            payload["task_structure"] = record["task_structure"]
+        if isinstance(record.get("execution_plan"), dict):
+            payload["execution_plan"] = record["execution_plan"]
+        if isinstance(record.get("proposal_preview"), dict):
+            payload["proposal_preview"] = record["proposal_preview"]
+        if record.get("blocked_reason"):
+            payload["blocked_reason"] = record["blocked_reason"]
         return payload
+
+    def compile_review_source(self, project_id: str, session_id: str) -> dict[str, Any]:
+        """Compile the reviewed candidate without creating a Project Agent.
+
+        Builder Proposal materialization stores this result as a review snapshot.
+        It must not read a mutable Factory session again during review.
+        """
+        session = self._row(project_id, session_id)
+        if session["state"] != "review" or not session["blueprint_json"]:
+            raise FactoryError(
+                "factory_blueprint_missing",
+                "A reviewable Factory Blueprint is required before materialization",
+            )
+        record = _generation_record(session)
+        identity = _session_identity(session)
+        display, slug = agent_candidate_identity(str(identity.get("name") or "Agent"))
+        if record.get("target_kind") == "workflow":
+            return {
+                "target_kind": "workflow",
+                "workflow": record.get("workflow") or {},
+                "companions": record.get("companions") or [],
+                "flow": record.get("flow") or [],
+                "blueprint": json.loads(session["blueprint_json"]),
+                "resource_plan": json.loads(session["resource_plan_json"]),
+                "identity": {"name": display, "slug": slug},
+                "specification": record.get("specification"),
+                "execution_plan": record.get("execution_plan"),
+                "entity_schema": record.get("entity_schema"),
+                "proposal_preview": record.get("proposal_preview"),
+                "product_shape": record.get("product_shape"),
+            }
+        compiled = record.get("compiled_source")
+        if isinstance(compiled, dict):
+            source = AgentSource.from_dict(compiled)
+            blueprint_payload = json.loads(session["blueprint_json"])
+            return {
+                "target_kind": "agent",
+                "source": source.to_dict(),
+                "blueprint": blueprint_payload,
+                "resource_plan": json.loads(session["resource_plan_json"]),
+                "required_project_resources": (
+                    record.get("required_project_resources")
+                    if isinstance(record.get("required_project_resources"), list)
+                    else []
+                ),
+                "run_availability": self._run_availability(
+                    {
+                        "blueprint": blueprint_payload,
+                        "resource_plan": json.loads(session["resource_plan_json"]),
+                    }
+                ),
+                "identity": {"name": source.name, "slug": source.slug},
+                "semantic_plan": json.loads(session["semantic_plan_json"])
+                if session["semantic_plan_json"]
+                else None,
+                "specification": record.get("specification"),
+            }
+        try:
+            blueprint = AgentBlueprint.from_dict(json.loads(session["blueprint_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise FactoryError(
+                "factory_blueprint_invalid",
+                "The stored Blueprint is no longer valid",
+            ) from exc
+        if self._missing_capabilities(blueprint, project_id):
+            raise FactoryError(
+                "factory_missing_capability",
+                "The Blueprint references resources that are not available",
+            )
+        try:
+            source, plan, availability = compile_blueprint(
+                blueprint,
+                self.catalog,
+                project_resources=self._project_resource_list(project_id),
+                name=display,
+                slug=slug,
+            )
+            source = finalize_compiled_source(source, self._project_context(project_id))
+        except BlueprintCompileError as exc:
+            raise FactoryError(
+                "factory_generation_invalid", "; ".join(exc.diagnostics)
+            ) from exc
+        return {
+            "target_kind": "agent",
+            "source": source.to_dict(),
+            "blueprint": blueprint.to_dict(),
+            "resource_plan": plan,
+            "run_availability": availability,
+            "identity": {"name": display, "slug": slug},
+            "semantic_plan": json.loads(session["semantic_plan_json"])
+            if session["semantic_plan_json"]
+            else None,
+            "specification": record.get("specification"),
+        }
+
+    def mark_agent_applied(
+        self, project_id: str, session_id: str, agent_id: str
+    ) -> dict[str, Any]:
+        """Close a Factory session after a canonical Proposal Apply."""
+        session = self._row(project_id, session_id)
+        if session["state"] == "completed":
+            return self.get_session(project_id, session_id)
+        self._set_state(
+            session_id,
+            "completed",
+            ready=True,
+            next_prompt=(
+                "Agent Draft created from the confirmed Proposal. Open Studio "
+                "to review it, then test-run it with the local Runtime."
+            ),
+            identity={**_session_identity(session), "agent_id": agent_id},
+        )
+        return self.get_session(project_id, session_id)
+
+    def mark_workflow_applied(
+        self, project_id: str, session_id: str, workflow_id: str
+    ) -> dict[str, Any]:
+        session = self._row(project_id, session_id)
+        if session["state"] == "completed":
+            return self.get_session(project_id, session_id)
+        self._set_state(
+            session_id,
+            "completed",
+            ready=True,
+            next_prompt=(
+                "Workflow Draft created from the confirmed Proposal. Open Studio "
+                "to review the graph, then run a committed version."
+            ),
+            identity={**_session_identity(session), "workflow_id": workflow_id},
+        )
+        return self.get_session(project_id, session_id)
 
     def add_message(
         self, project_id: str, session_id: str, content: str
@@ -271,284 +488,485 @@ class FactoryService:
                     "factory_not_ready",
                     "Add enough requirement detail before generating a Blueprint",
                 )
-            if not self.client.configured:
-                raise FactoryProviderError(
-                    "factory_provider_not_configured",
-                    "Factory model provider is not configured",
-                )
-            try:
-                self.client.ensure_model()
-            except FactoryProviderError:
-                self._recover_generation(session_id)
-                raise
-            messages: list[dict[str, Any]] = [
-                *self.harness.messages(project_id, "create_agent"),
-                *[
-                    {"role": row["role"], "content": row["content"]}
-                    for row in self.store.messages(session_id)
-                ],
-                {
-                    "role": "user",
-                    "content": _planning_user_content(
-                        self._project_capability_catalog(project_id)
-                    ),
-                },
-            ]
-            profile = self._capability_profile()
-            if generate_structured_output(profile) is None:
-                raise FactoryProviderError(
-                    "factory_structured_output_unsupported",
-                    "Factory model does not support structured output",
-                    details={"error_class": "structured_output_unsupported"},
-                )
-            response_format: dict[str, Any] = _plan_response_format(profile)
-            plan_schema = _plan_schema()
-            history_count = len(self.store.messages(session_id))
-            used_object_fallback = False
-            diagnostics: list[str] = []
-            observed_kinds: set[str] = set()
-            attempts = self.client.settings.repair_attempts
-            attempt = 1
-            stage(SEMANTIC_PLAN_STARTED)
-            while attempt <= attempts:
-                self._set_state(session_id, "generating", diagnostics=diagnostics)
-                mode = structured_mode_of(response_format)
-                kind: InvocationKind = (
-                    "semantic_plan" if attempt == 1 else "semantic_plan_repair"
-                )
-                fallback_from = (
-                    "strict_json_schema"
-                    if used_object_fallback and mode == "json_object"
-                    else None
-                )
-                fallback_to = "json_object" if fallback_from else None
-                try:
-                    completion = self._complete_with_receipt(
-                        messages,
-                        response_format=response_format,
-                        receipts=receipts,
-                        kind=kind,
-                        harness_mode="create_agent",
-                        output_contract="AgentSemanticPlanV1",
-                        schema=plan_schema,
-                        history_message_count=history_count,
-                        fallback_from=fallback_from,
-                        fallback_to=fallback_to,
-                        profile=profile,
-                    )
-                except FactoryProviderError as exc:
-                    if (
-                        not used_object_fallback
-                        and allows_json_object_generate_fallback(
-                            profile,
-                            code=exc.code,
-                            message=str(exc),
-                            details=exc.details,
-                        )
-                    ):
-                        used_object_fallback = True
-                        response_format = {"type": "json_object"}
-                        diagnostics.append(
-                            f"attempt {attempt}: semantic plan schema rejected; "
-                            "retrying as json_object"
-                        )
-                        continue
-                    self._recover_generation(session_id)
-                    raise
-                parsed: dict[str, Any] | None = None
-                repair_notes: tuple[str, ...] = ()
-                try:
-                    loaded = json.loads(completion.content)
-                    if not isinstance(loaded, dict):
-                        raise ContractValidationError("semantic plan must be an object")
-                    parsed = loaded
-                    observed_kinds |= graph_obligations(parsed)
-                    repaired, repair_notes = bounded_repair_semantic_plan(parsed)
-                    plan = AgentSemanticPlanV1.from_dict(repaired)
-                    reject_silent_v1_degradation(
-                        obligations=frozenset(observed_kinds),
-                        operation_kinds=tuple(
-                            step.operation_kind for step in plan.step_intents
-                        ),
-                        approval_points=plan.approval_points,
-                        reusable_capability=any(
-                            step.reusable_capability for step in plan.step_intents
-                        ),
-                        branch_intent=any(
-                            step.branches or step.branch_condition
-                            for step in plan.step_intents
-                        ),
-                    )
-                    self._set_state(
-                        session_id,
-                        "generating",
-                        semantic_plan=plan.to_dict(),
-                        diagnostics=diagnostics,
-                    )
-                except (
-                    json.JSONDecodeError,
-                    TypeError,
-                    ValueError,
-                    ContractValidationError,
-                ) as exc:
-                    diagnostics.append(
-                        _generation_failure(
-                            attempt,
-                            exc,
-                            payload=parsed,
-                            repair_notes=repair_notes,
-                        )
-                    )
-                    messages.append(completion.assistant_message)
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": _repair_prompt(diagnostics, schema=plan_schema),
-                        }
-                    )
-                    attempt += 1
-                    continue
-                display, slug = agent_candidate_identity(plan.suggested_name)
-                self._set_state(
-                    session_id,
-                    "generating",
-                    identity={"name": display, "slug": slug},
-                    diagnostics=diagnostics,
-                )
-                stage(
-                    SEMANTIC_PLAN_COMPLETED,
-                    {
-                        "suggested_name": display,
-                        "suggested_slug": slug,
-                        "input_count": str(len(plan.inputs)),
-                        "output_count": str(len(plan.outputs)),
-                    },
-                )
-                stage(CAPABILITIES_STARTED)
-                compiled = compile_semantic_plan(
-                    plan, self._project_context(project_id)
-                )
-                if compiled.status == "compile_error":
-                    diagnostic = "semantic_compile_failed: " + (
-                        compiled.error or "canonical graph could not be represented"
-                    )
-                    diagnostics.append(f"attempt {attempt}: {diagnostic}")
-                    messages.append(completion.assistant_message)
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": _repair_prompt(diagnostics, schema=plan_schema),
-                        }
-                    )
-                    attempt += 1
-                    continue
-                if compiled.status == "clarification":
-                    self._set_state(
-                        session_id,
-                        "ready",
-                        ready=True,
-                        next_prompt=compiled.question or _READY_PROMPT,
-                        diagnostics=[],
-                        missing_capabilities=[],
-                        identity={"name": display, "slug": slug},
-                    )
-                    return self.get_session(project_id, session_id)
-                stage(
-                    CAPABILITIES_RESOLVED,
-                    {
-                        "tool_count": str(len(compiled.tools)),
-                        "knowledge_count": str(len(compiled.documents)),
-                        "missing_count": str(len(compiled.missing)),
-                        "extra_permission_count": str(
-                            len(compiled.blueprint.requested_permissions.tools)
-                            if compiled.blueprint is not None
-                            else 0
-                        ),
-                    },
-                )
-                if compiled.status == "missing_capability":
-                    self._set_state(
-                        session_id,
-                        "missing_capability",
-                        diagnostics=[],
-                        missing_capabilities=list(compiled.missing),
-                        resource_plan=[],
-                        identity={"name": display, "slug": slug},
-                    )
-                    return self.get_session(project_id, session_id)
-                blueprint = compiled.blueprint
-                assert blueprint is not None
-                missing = self._missing_capabilities(blueprint, project_id)
-                if missing:
-                    self._set_state(
-                        session_id,
-                        "missing_capability",
-                        blueprint=blueprint.to_dict(),
-                        diagnostics=[],
-                        missing_capabilities=missing,
-                        resource_plan=resource_plan(
-                            blueprint,
-                            self.catalog,
-                            project_resources=self._project_resource_list(project_id),
-                        ),
-                        identity={"name": display, "slug": slug},
-                    )
-                    return self.get_session(project_id, session_id)
-                stage(COMPILE_STARTED)
-                stage(COMPILE_COMPLETED)
-                stage(VALIDATION_STARTED)
-                try:
-                    compile_blueprint(
-                        blueprint,
-                        self.catalog,
-                        project_resources=self._project_resource_list(project_id),
-                        name=display,
-                        slug=slug,
-                    )
-                except BlueprintCompileError as exc:
-                    diagnostics.extend(
-                        f"attempt {attempt}: {item}" for item in exc.diagnostics
-                    )
-                    messages.append(completion.assistant_message)
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": _repair_prompt(diagnostics, schema=plan_schema),
-                        }
-                    )
-                    attempt += 1
-                    continue
-                stage(VALIDATION_COMPLETED)
-                self._set_state(
-                    session_id,
-                    "review",
-                    ready=True,
-                    next_prompt=(
-                        "Review the compiled Blueprint and Resource Plan. Apply "
-                        "it only when you explicitly confirm. Factory will not run it."
-                    ),
-                    blueprint=blueprint.to_dict(),
-                    diagnostics=[],
-                    missing_capabilities=[],
-                    resource_plan=resource_plan(
-                        blueprint,
-                        self.catalog,
-                        project_resources=self._project_resource_list(project_id),
-                    ),
-                    identity={"name": display, "slug": slug},
-                )
-                return self.get_session(project_id, session_id)
+            _ = receipts
+            # The V2 compile is deterministic and must not require the Platform
+            # Builder Provider; Runtime Agent Provider checks happen at run time.
+            requirement = self._session_requirement(session_id)
+            return self._generate_v2_product(project_id, session_id, requirement, stage)
+
+    def _generate_v2_product(
+        self,
+        project_id: str,
+        session_id: str,
+        requirement: str,
+        stage: _StageEmitter,
+    ) -> dict[str, Any]:
+        stage(SPECIFICATION_STARTED)
+        knowledge = list(
+            self.projects.project_summary(project_id).get("knowledge") or []
+        )
+        product = generate_builder_product(
+            requirement,
+            self.catalog,
+            project_resources=self._project_resource_list(project_id),
+            knowledge_inventory=knowledge,
+            secret_configured=self._secret_configured,
+        )
+        preview = proposal_preview(product)
+        if product.status != "review" or product.plan is None:
+            stage(
+                SPECIFICATION_COMPLETED,
+                {"target_kind": "blocked", "blocked_reason": product.blocked_reason},
+            )
             self._set_state(
                 session_id,
                 "ready",
                 ready=True,
-                diagnostics=diagnostics,
-                next_prompt=_READY_PROMPT,
+                next_prompt=f"BLOCKED — {product.blocked_reason}",
+                diagnostics=list(product.diagnostics),
+                missing_capabilities=[],
+                resource_plan=[],
+                specification={
+                    "status": "blocked",
+                    "missing": [product.blocked_reason],
+                    "blocked_reason": product.blocked_reason,
+                    "task_structure": (
+                        product.structure.to_dict() if product.structure else None
+                    ),
+                    "execution_plan": (
+                        product.plan.to_dict() if product.plan else None
+                    ),
+                    "proposal_preview": preview,
+                },
             )
+            return self.get_session(project_id, session_id)
+        plan = product.plan
+        shape = plan.product_shape
+        display = (
+            product.specification.suggested_name
+            if product.specification is not None
+            else "Agent"
+        )
+        from veyra_agent_platform.local.factory.compiler import agent_candidate_identity
+
+        display, slug = agent_candidate_identity(display)
+        stage(
+            SPECIFICATION_COMPLETED,
+            {
+                "suggested_name": display,
+                "suggested_slug": slug,
+                "target_kind": "workflow" if shape != "PURE_AGENT" else "agent",
+                "product_shape": shape,
+            },
+        )
+        resolved = product.resolved
+        assert resolved is not None
+        record = _generation_record(self._row(project_id, session_id))
+        factory_plans = self._build_factory_plans(
+            session_id, resolved, record, requirement=requirement
+        )
+        stage(CAPABILITIES_STARTED)
+        if product.orchestration is not None:
+            return self._store_composite_review(
+                project_id,
+                session_id,
+                requirement,
+                product,
+                display,
+                slug,
+                factory_plans,
+                preview,
+                stage,
+            )
+        assert product.source is not None
+        assert product.specification is not None
+        source = product.source
+        blueprint_payload = loop_agent_blueprint_payload(source)
+        blueprint = AgentBlueprint.from_dict(blueprint_payload)
+        resolver_items = plan_factory_items(resolved)
+        component_plan = annotate_resource_plan(
+            resource_plan(
+                blueprint,
+                self.catalog,
+                project_resources=self._project_resource_list(project_id),
+            ),
+            catalog=self.catalog,
+            project_resources=self._project_resource_list(project_id),
+        )
+        plan_items = _merge_resolver_plan(resolver_items, component_plan)
+        plan_items = _annotate_factory_missing(plan_items, factory_plans)
+        stage(
+            CAPABILITIES_RESOLVED,
+            {
+                "tool_count": str(
+                    len(
+                        [
+                            item
+                            for item in (source.ui.get("bindings") or {}).values()
+                            if isinstance(item, dict) and item.get("kind") == "tool"
+                        ]
+                    )
+                ),
+                "missing_count": str(len(resolved.missing_required)),
+            },
+        )
+        stage(COMPILE_STARTED)
+        stage(COMPILE_COMPLETED)
+        stage(VALIDATION_STARTED)
+        AgentSource.from_dict(source.to_dict())
+        stage(VALIDATION_COMPLETED)
+        self._set_state(
+            session_id,
+            "review",
+            ready=True,
+            next_prompt=(
+                "Review the Agent capabilities, then apply only when you confirm."
+            ),
+            blueprint=blueprint_payload,
+            diagnostics=list(resolved.diagnostics),
+            missing_capabilities=[],
+            resource_plan=plan_items,
+            identity={
+                "name": source.name,
+                "slug": source.slug,
+                "target_kind": "agent",
+                "execution_kind": source.execution_kind,
+            },
+            specification={
+                "status": "complete",
+                "missing": [],
+                "specification": product.specification.to_dict(),
+                "compiled_source": thaw_json(source.to_dict()),
+                "target_kind": "agent",
+                "execution_kind": source.execution_kind,
+                "product_shape": shape,
+                "task_structure": product.structure.to_dict()
+                if product.structure
+                else None,
+                "execution_plan": plan.to_dict(),
+                "proposal_preview": preview,
+                "resource_plan_snapshot": resolved.to_dict(),
+                "resource_factory_plans": [item.to_dict() for item in factory_plans],
+                "factory_wrappers": record.get("factory_wrappers") or {},
+                "blocked_reason": product.blocked_reason,
+            },
+        )
+        return self.get_session(project_id, session_id)
+
+    def _store_composite_review(
+        self,
+        project_id: str,
+        session_id: str,
+        requirement: str,
+        product: Any,
+        display: str,
+        slug: str,
+        factory_plans: list[Any],
+        preview: dict[str, Any],
+        stage: _StageEmitter,
+    ) -> dict[str, Any]:
+        orchestration = product.orchestration
+        resolved = product.resolved
+        stage(
+            CAPABILITIES_RESOLVED,
+            {
+                "companion_count": str(len(orchestration.companions)),
+                "missing_count": str(len(resolved.missing_required)),
+            },
+        )
+        stage(COMPILE_STARTED)
+        preview_blueprint = orchestration.workflow_preview()
+        preview_blueprint["proposal"] = preview
+        preview_blueprint["product_shape"] = product.plan.product_shape
+        stage(COMPILE_COMPLETED)
+        stage(VALIDATION_STARTED)
+        if product.plan.product_shape != "WORKFLOW" and not orchestration.companions:
             raise FactoryError(
                 "factory_generation_invalid",
-                "Factory could not produce a valid Semantic Plan after three attempts",
+                "Workflow compilation produced no companion Agents",
             )
+        stage(VALIDATION_COMPLETED)
+        resolver_items = plan_factory_items(resolved)
+        plan_items = _annotate_factory_missing(resolver_items, factory_plans)
+        self._set_state(
+            session_id,
+            "review",
+            ready=True,
+            next_prompt=(
+                "Review the composite plan, then apply only when you confirm."
+            ),
+            blueprint=preview_blueprint,
+            diagnostics=list(resolved.diagnostics),
+            missing_capabilities=[],
+            resource_plan=plan_items,
+            identity={
+                "name": display,
+                "slug": slug,
+                "target_kind": "workflow",
+                "execution_kind": "workflow",
+            },
+            specification={
+                "status": "complete",
+                "missing": [],
+                "specification": (
+                    product.specification.to_dict()
+                    if product.specification is not None
+                    else {"goal": requirement[:400]}
+                ),
+                "target_kind": "workflow",
+                "execution_kind": "workflow",
+                "product_shape": product.plan.product_shape,
+                "task_structure": (
+                    product.structure.to_dict() if product.structure else None
+                ),
+                "execution_plan": product.plan.to_dict(),
+                "proposal_preview": preview,
+                "workflow": orchestration.workflow,
+                "companions": [
+                    thaw_json(item.to_dict()) for item in orchestration.companions
+                ],
+                "flow": list(orchestration.flow),
+                "resource_plan_snapshot": resolved.to_dict(),
+                "resource_factory_plans": [item.to_dict() for item in factory_plans],
+                "entity_schema": (
+                    product.plan.state.to_dict()
+                    if product.plan is not None and product.plan.state is not None
+                    else None
+                ),
+                "blocked_reason": product.blocked_reason,
+            },
+        )
+        return self.get_session(project_id, session_id)
+
+    def _session_requirement(self, session_id: str) -> str:
+        parts = [
+            str(row["content"] or "").strip()
+            for row in self.store.messages(session_id)
+            if row["role"] == "user"
+        ]
+        return "\n".join(item for item in parts if item)
+
+    def _generate_loop_agent_product(
+        self,
+        project_id: str,
+        session_id: str,
+        requirement: str,
+        classified: BuilderTargetClassification,
+        stage: _StageEmitter,
+    ) -> dict[str, Any]:
+        stage(SPECIFICATION_STARTED)
+        completeness = resolve_agent_specification(requirement)
+        spec = completeness.specification or infer_agent_specification(requirement)
+        missing = [
+            item
+            for item in completeness.missing
+            if item not in {"approval_requirement"}
+        ]
+        if missing and "unsupported_capability" in missing:
+            self._set_state(
+                session_id,
+                "ready",
+                ready=True,
+                next_prompt=(
+                    "This request needs a capability Veyra cannot express yet. "
+                    "Describe a text, image, document, or tool-using Agent."
+                ),
+                diagnostics=list(missing),
+            )
+            return self.get_session(project_id, session_id)
+        display, slug = agent_candidate_identity(spec.suggested_name or "Agent")
+        stage(
+            SPECIFICATION_COMPLETED,
+            {
+                "suggested_name": display,
+                "suggested_slug": slug,
+                "target_kind": "agent",
+            },
+        )
+        stage(CAPABILITIES_STARTED)
+        project_resources = self._project_resource_list(project_id)
+        knowledge = list(
+            self.projects.project_summary(project_id).get("knowledge") or []
+        )
+        requirements = derive_capability_requirements(spec, requirement)
+        resolved = ResourceResolver(
+            self.catalog,
+            secret_configured=self._secret_configured,
+        ).resolve(
+            spec,
+            requirements,
+            project_resources=project_resources,
+            knowledge_inventory=knowledge,
+            requirement_text=requirement,
+        )
+        source = compose_loop_agent(spec, resolved, requirement=requirement)
+        blueprint_payload = loop_agent_blueprint_payload(source)
+        blueprint = AgentBlueprint.from_dict(blueprint_payload)
+        resolver_items = plan_factory_items(resolved)
+        component_plan = annotate_resource_plan(
+            resource_plan(
+                blueprint,
+                self.catalog,
+                project_resources=project_resources,
+            ),
+            catalog=self.catalog,
+            project_resources=project_resources,
+        )
+        plan = _merge_resolver_plan(resolver_items, component_plan)
+        record = _generation_record(self._row(project_id, session_id))
+        factory_plans = self._build_factory_plans(
+            session_id, resolved, record, requirement=requirement
+        )
+        plan = _annotate_factory_missing(plan, factory_plans)
+        tool_count = str(
+            len(
+                [
+                    item
+                    for item in (source.ui.get("bindings") or {}).values()
+                    if isinstance(item, dict) and item.get("kind") == "tool"
+                ]
+            )
+        )
+        missing_count = str(len(resolved.missing_required))
+        stage(
+            CAPABILITIES_RESOLVED,
+            {
+                "tool_count": tool_count,
+                "knowledge_count": str(len(source.knowledge_refs)),
+                "missing_count": missing_count,
+                "extra_permission_count": str(len(source.permissions.tools)),
+            },
+        )
+        stage(COMPILE_STARTED)
+        stage(COMPILE_COMPLETED)
+        stage(VALIDATION_STARTED)
+        AgentSource.from_dict(source.to_dict())
+        stage(VALIDATION_COMPLETED)
+        self._set_state(
+            session_id,
+            "review",
+            ready=True,
+            next_prompt=(
+                classified.message_en
+                + " Review the Agent capabilities, then apply only when you confirm."
+            ),
+            blueprint=blueprint_payload,
+            diagnostics=list(resolved.diagnostics),
+            missing_capabilities=[],
+            resource_plan=plan,
+            identity={
+                "name": source.name,
+                "slug": source.slug,
+                "target_kind": "agent",
+                "execution_kind": source.execution_kind,
+            },
+            specification={
+                "status": "complete",
+                "missing": [],
+                "specification": spec.to_dict(),
+                "compiled_source": thaw_json(source.to_dict()),
+                "target_kind": "agent",
+                "execution_kind": source.execution_kind,
+                "recommendation": classified.recommendation,
+                "classification_reason": classified.reason,
+                "resource_plan_snapshot": resolved.to_dict(),
+                "resource_factory_plans": [item.to_dict() for item in factory_plans],
+                "factory_wrappers": record.get("factory_wrappers") or {},
+                "required_project_resources": [
+                    {
+                        "reference": item["reference"],
+                        "kind": item.get("kind"),
+                        "bind_status": item.get("bind_status"),
+                        "name": item.get("name"),
+                        "capability": item.get("capability"),
+                        "reason": item.get("reason"),
+                    }
+                    for item in plan
+                    if item.get("bind_status")
+                ],
+            },
+        )
+        return self.get_session(project_id, session_id)
+
+    def _generate_workflow_product(
+        self,
+        project_id: str,
+        session_id: str,
+        requirement: str,
+        classified: BuilderTargetClassification,
+        stage: _StageEmitter,
+    ) -> dict[str, Any]:
+        stage(SPECIFICATION_STARTED)
+        orchestration = compile_workflow_orchestration(requirement, self.catalog)
+        display, slug = agent_candidate_identity(
+            orchestration.workflow.get("name") or "Workflow"
+        )
+        stage(
+            SPECIFICATION_COMPLETED,
+            {
+                "suggested_name": display,
+                "suggested_slug": slug,
+                "target_kind": "workflow",
+            },
+        )
+        stage(CAPABILITIES_STARTED)
+        stage(
+            CAPABILITIES_RESOLVED,
+            {
+                "tool_count": "0",
+                "knowledge_count": "0",
+                "missing_count": "0",
+                "companion_count": str(len(orchestration.companions)),
+            },
+        )
+        stage(COMPILE_STARTED)
+        preview = orchestration.workflow_preview()
+        stage(COMPILE_COMPLETED)
+        stage(VALIDATION_STARTED)
+        if not orchestration.companions:
+            raise FactoryError(
+                "factory_generation_invalid",
+                "Workflow compilation produced no companion Agents",
+            )
+        stage(VALIDATION_COMPLETED)
+        self._set_state(
+            session_id,
+            "review",
+            ready=True,
+            next_prompt=(
+                classified.message_en
+                + " Review the Workflow stages, then apply only when you confirm."
+            ),
+            blueprint=preview,
+            diagnostics=[],
+            missing_capabilities=[],
+            resource_plan=[],
+            identity={
+                "name": display,
+                "slug": slug,
+                "target_kind": "workflow",
+                "execution_kind": "workflow",
+            },
+            specification={
+                "status": "complete",
+                "missing": [],
+                "specification": {
+                    "goal": requirement[:400],
+                    "suggested_name": display,
+                    "flow": list(orchestration.flow),
+                },
+                "target_kind": "workflow",
+                "execution_kind": "workflow",
+                "workflow": orchestration.workflow,
+                "companions": [
+                    thaw_json(item.to_dict()) for item in orchestration.companions
+                ],
+                "flow": list(orchestration.flow),
+                "recommendation": classified.recommendation,
+                "classification_reason": classified.reason,
+            },
+        )
+        return self.get_session(project_id, session_id)
 
     def resume_after_component(
         self,
@@ -664,6 +1082,14 @@ class FactoryService:
                 "The Agent candidate failed validation after Component creation: "
                 + "; ".join(exc.diagnostics),
             ) from exc
+        quality = validate_agent_quality(blueprint)
+        simulation = simulate_agent(blueprint)
+        if quality.verdict != "PASS" or not simulation.passed:
+            raise FactoryError(
+                "factory_continuation_invalid",
+                "The Agent candidate failed typed dataflow validation: "
+                + "; ".join((*quality.diagnostics, *simulation.diagnostics)),
+            )
         stage(VALIDATION_COMPLETED)
         self._set_state(
             session_id,
@@ -711,40 +1137,74 @@ class FactoryService:
                     "factory_blueprint_missing",
                     "A valid Blueprint must be reviewed before applying a Draft",
                 )
-            try:
-                blueprint = AgentBlueprint.from_dict(
-                    json.loads(session["blueprint_json"])
-                )
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise FactoryError(
-                    "factory_blueprint_invalid",
-                    "The stored Blueprint is no longer valid",
-                ) from exc
-            if self._missing_capabilities(blueprint, project_id):
-                raise FactoryError(
-                    "factory_missing_capability",
-                    "The Blueprint references resources that are not available",
-                )
             identity = _session_identity(session)
+            record = _generation_record(session)
+            if record.get("blocked_reason"):
+                raise FactoryError(
+                    "factory_generation_blocked",
+                    str(record["blocked_reason"]),
+                )
+            if record.get("target_kind") == "workflow":
+                if record.get("blocked_reason"):
+                    raise FactoryError(
+                        "factory_generation_blocked",
+                        str(record["blocked_reason"]),
+                    )
+                return self._apply_composite_draft(
+                    project_id, session_id, record, name=name, description=description
+                )
+            compiled = record.get("compiled_source")
             applied_name = (name or "").strip() or identity.get("name")
             applied_slug = identity.get("slug")
+            if isinstance(compiled, dict):
+                source = AgentSource.from_dict(compiled)
+                if applied_name:
+                    payload = source.to_dict()
+                    payload["name"] = applied_name
+                    if description:
+                        payload["description"] = description
+                    source = AgentSource.from_dict(payload)
+                snapshot = record.get("resource_plan_snapshot")
+                if isinstance(snapshot, dict):
+                    _assert_snapshot_locks(source, ResourcePlan.from_dict(snapshot))
+            else:
+                try:
+                    blueprint = AgentBlueprint.from_dict(
+                        json.loads(session["blueprint_json"])
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise FactoryError(
+                        "factory_blueprint_invalid",
+                        "The stored Blueprint is no longer valid",
+                    ) from exc
+                if self._missing_capabilities(blueprint, project_id):
+                    raise FactoryError(
+                        "factory_missing_capability",
+                        "The Blueprint references resources that are not available",
+                    )
+                try:
+                    source, _, _ = compile_blueprint(
+                        blueprint,
+                        self.catalog,
+                        project_resources=self._project_resource_list(project_id),
+                        name=applied_name,
+                        slug=applied_slug,
+                        description=description,
+                    )
+                    source = finalize_compiled_source(
+                        source, self._project_context(project_id)
+                    )
+                except BlueprintCompileError as exc:
+                    raise FactoryError(
+                        "factory_generation_invalid",
+                        "; ".join(exc.diagnostics),
+                    ) from exc
             try:
-                source, _, _ = compile_blueprint(
-                    blueprint,
-                    self.catalog,
-                    project_resources=self._project_resource_list(project_id),
-                    name=applied_name,
-                    slug=applied_slug,
-                    description=description,
+                pin_catalog_locks(
+                    self.project_resources, self.catalog, project_id, source
                 )
-                source = finalize_compiled_source(
-                    source, self._project_context(project_id)
-                )
-            except BlueprintCompileError as exc:
-                raise FactoryError(
-                    "factory_generation_invalid",
-                    "; ".join(exc.diagnostics),
-                ) from exc
+            except ProjectResourceError as exc:
+                raise FactoryError(exc.code, str(exc)) from exc
             try:
                 agent = self.projects.create_agent_from_source(
                     project_id=project_id,
@@ -767,6 +1227,410 @@ class FactoryService:
                 "session": self.get_session(project_id, session_id),
                 "agent": agent,
             }
+
+    def _apply_composite_draft(
+        self,
+        project_id: str,
+        session_id: str,
+        record: dict[str, Any],
+        *,
+        name: str | None,
+        description: str | None,
+    ) -> dict[str, Any]:
+        if self.library is None:
+            raise FactoryError(
+                "factory_library_unavailable",
+                "Composite apply requires the Library commit service",
+            )
+        workflow = record.get("workflow")
+        companions_raw = record.get("companions")
+        if not isinstance(workflow, dict) or not isinstance(companions_raw, list):
+            raise FactoryError(
+                "factory_workflow_candidate_missing",
+                "The composite proposal is missing Workflow or companion Agents",
+            )
+        if name:
+            workflow = {**workflow, "name": name}
+        if description:
+            workflow = {**workflow, "description": description}
+        companions = tuple(AgentSource.from_dict(item) for item in companions_raw)
+        for companion in companions:
+            try:
+                pin_catalog_locks(
+                    self.project_resources, self.catalog, project_id, companion
+                )
+            except ProjectResourceError as exc:
+                raise FactoryError(exc.code, str(exc)) from exc
+        plan = record.get("execution_plan")
+        entity_schema = None
+        if isinstance(plan, dict) and isinstance(plan.get("state"), dict):
+            entity_schema = plan["state"]
+        try:
+            installed = apply_composite(
+                projects=self.projects,
+                library=self.library,
+                project_id=project_id,
+                companions=companions,
+                workflow=workflow,
+                flow=tuple(str(item) for item in (record.get("flow") or [])),
+                entity_schema=entity_schema,
+                entity_store=self.entity_store,
+            )
+        except CompositeApplyError as exc:
+            raise FactoryError(exc.code, str(exc)) from exc
+        self._set_state(
+            session_id,
+            "completed",
+            ready=True,
+            next_prompt=(
+                "Composite Draft created. Companion Agents are committed and "
+                "Workflow AgentCalls pin those immutable versions."
+            ),
+        )
+        return {
+            "schema_version": "1.0",
+            "session": self.get_session(project_id, session_id),
+            "workflow": installed,
+            "agent": (installed.get("companion_agents") or [None])[0],
+        }
+
+    def revise_plan(self, project_id: str, session_id: str) -> dict[str, Any]:
+        """Return a reviewable plan to ready so the user can change it."""
+
+        with self._writer_lock:
+            session = self._row(project_id, session_id)
+            if session["state"] != "review":
+                raise FactoryError(
+                    "factory_revise_not_review",
+                    "Only a reviewed proposal can be sent back for changes",
+                )
+            self._set_state(
+                session_id,
+                "ready",
+                ready=True,
+                next_prompt=(
+                    "Describe what to change in the plan. Generation will not "
+                    "silently keep the previous structure."
+                ),
+            )
+            return self.get_session(project_id, session_id)
+
+    def generate_factory_draft(
+        self,
+        project_id: str,
+        session_id: str,
+        *,
+        confirm: bool,
+        capability: str,
+        wrapper: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise FactoryError(
+                "factory_confirmation_required",
+                "Explicit confirmation is required to create a Factory draft",
+            )
+        with self._writer_lock:
+            session = self._row(project_id, session_id)
+            record = _generation_record(session)
+            factory = self._require_resource_factory()
+            plans = [
+                ResourceFactoryPlan.from_dict(item)
+                for item in (record.get("resource_factory_plans") or [])
+            ]
+            planned = next(
+                (item for item in plans if item.capability == capability), None
+            )
+            if planned is None:
+                raise FactoryError(
+                    "factory_capability_missing",
+                    "This Factory session has no plan for that capability",
+                )
+            wrappers = dict(record.get("factory_wrappers") or {})
+            if wrapper:
+                wrappers[capability] = dict(wrapper)
+            snapshot = record.get("resource_plan_snapshot") or {}
+            resolved = ResourcePlan.from_dict(snapshot) if snapshot else None
+            if resolved is None:
+                raise FactoryError(
+                    "factory_blueprint_missing",
+                    "A ResourcePlan snapshot is required before Factory drafts",
+                )
+            requirement = next(
+                (
+                    item
+                    for item in resolved.requirements
+                    if item.capability == capability
+                ),
+                None,
+            )
+            if requirement is None:
+                from veyra_agent_platform.contracts.capability import (
+                    CapabilityRequirement,
+                )
+
+                requirement = CapabilityRequirement(
+                    capability=capability, required=True
+                )
+            try:
+                classified = factory.plan_missing(
+                    resolved,
+                    wrappers=wrappers,
+                    existing=[item.to_dict() for item in plans],
+                    proposal_id=session_id,
+                )
+                planned = next(
+                    (item for item in classified if item.capability == capability),
+                    None,
+                )
+                if planned is None:
+                    raise FactoryError(
+                        "factory_capability_missing",
+                        "This Factory session has no plan for that capability",
+                    )
+                if planned.strategy == "skill_instruction":
+                    planned = factory.ensure_skill_draft(planned, requirement)
+                elif planned.strategy in {
+                    "http_tool_wrapper",
+                    "filesystem_tool_wrapper",
+                }:
+                    planned = factory.ensure_wrapper_draft(
+                        planned, requirement, wrappers.get(capability) or {}
+                    )
+                else:
+                    raise ResourceFactoryError(
+                        "factory_unsupported"
+                        if planned.status == "unsupported"
+                        else "factory_requires_configuration"
+                        if planned.status == "requires_user_configuration"
+                        else "factory_requires_external_integration",
+                        planned.reason,
+                    )
+            except ResourceFactoryError as exc:
+                raise FactoryError(exc.code, str(exc)) from exc
+            merged = [
+                planned if item.capability == capability else item
+                for item in classified
+            ]
+            specification = dict(record.get("specification") or {})
+            specification_payload = {
+                "status": record.get("status") or "complete",
+                "missing": record.get("missing") or [],
+                "specification": specification,
+                "compiled_source": record.get("compiled_source"),
+                "target_kind": record.get("target_kind"),
+                "execution_kind": record.get("execution_kind"),
+                "resource_plan_snapshot": snapshot,
+                "resource_factory_plans": [item.to_dict() for item in merged],
+                "factory_wrappers": wrappers,
+                "required_project_resources": record.get("required_project_resources")
+                or [],
+            }
+            self._set_state(
+                session_id,
+                str(session["state"]),
+                specification=specification_payload,
+                resource_plan=_annotate_factory_missing(
+                    json.loads(session["resource_plan_json"]), merged
+                ),
+            )
+            return self.get_session(project_id, session_id)
+
+    def approve_factory_resource(
+        self,
+        project_id: str,
+        session_id: str,
+        *,
+        confirm: bool,
+        capability: str,
+        content_hash: str | None = None,
+        bind_to_project: bool = False,
+    ) -> dict[str, Any]:
+        with self._writer_lock:
+            session = self._row(project_id, session_id)
+            record = _generation_record(session)
+            factory = self._require_resource_factory()
+            plans = [
+                ResourceFactoryPlan.from_dict(item)
+                for item in (record.get("resource_factory_plans") or [])
+            ]
+            planned = next(
+                (item for item in plans if item.capability == capability), None
+            )
+            if planned is None or planned.draft is None:
+                raise FactoryError(
+                    "factory_draft_missing",
+                    "Review a Factory draft before publishing it",
+                )
+            try:
+                published = factory.publish(
+                    planned, confirm=confirm, snapshot_hash=content_hash
+                )
+            except ResourceFactoryError as exc:
+                raise FactoryError(exc.code, str(exc)) from exc
+            if bind_to_project and published.published:
+                try:
+                    self.project_resources.add(
+                        project_id,
+                        str(published.published["reference"]),
+                        source="factory",
+                        content_hash=str(published.published["content_hash"]),
+                    )
+                except ProjectResourceError as exc:
+                    raise FactoryError(exc.code, str(exc)) from exc
+            merged = [
+                published if item.capability == capability else item for item in plans
+            ]
+            specification = record.get("specification")
+            if not isinstance(specification, dict):
+                raise FactoryError(
+                    "factory_blueprint_missing",
+                    "A specification snapshot is required to retry Resolver",
+                )
+            spec = AgentSpecification.from_dict(specification)
+            requirement = self._session_requirement(session_id)
+            project_resources = self._project_resource_list(project_id)
+            knowledge = list(
+                self.projects.project_summary(project_id).get("knowledge") or []
+            )
+            plan_payload = record.get("execution_plan")
+            if isinstance(plan_payload, dict):
+                requirements = derive_plan_capabilities(
+                    ExecutionPlan.from_dict(plan_payload)
+                )
+            else:
+                requirements = derive_capability_requirements(spec, requirement)
+            resolved = ResourceResolver(
+                self.catalog,
+                secret_configured=self._secret_configured,
+            ).resolve(
+                spec,
+                requirements,
+                project_resources=project_resources,
+                knowledge_inventory=knowledge,
+                requirement_text=requirement,
+            )
+            source = compose_loop_agent(spec, resolved, requirement=requirement)
+            blueprint_payload = loop_agent_blueprint_payload(source)
+            resolver_items = plan_factory_items(resolved)
+            component_plan = annotate_resource_plan(
+                resource_plan(
+                    AgentBlueprint.from_dict(blueprint_payload),
+                    self.catalog,
+                    project_resources=project_resources,
+                ),
+                catalog=self.catalog,
+                project_resources=project_resources,
+            )
+            plan = _annotate_factory_missing(
+                _merge_resolver_plan(resolver_items, component_plan), merged
+            )
+            self._set_state(
+                session_id,
+                "review",
+                ready=True,
+                blueprint=blueprint_payload,
+                diagnostics=list(resolved.diagnostics),
+                resource_plan=plan,
+                identity={
+                    "name": source.name,
+                    "slug": source.slug,
+                    "target_kind": "agent",
+                    "execution_kind": source.execution_kind,
+                },
+                specification={
+                    "status": "complete",
+                    "missing": [],
+                    "specification": spec.to_dict(),
+                    "compiled_source": thaw_json(source.to_dict()),
+                    "target_kind": "agent",
+                    "execution_kind": source.execution_kind,
+                    "resource_plan_snapshot": resolved.to_dict(),
+                    "resource_factory_plans": [item.to_dict() for item in merged],
+                    "factory_wrappers": record.get("factory_wrappers") or {},
+                    "required_project_resources": [
+                        {
+                            "reference": item["reference"],
+                            "kind": item.get("kind"),
+                            "bind_status": item.get("bind_status"),
+                            "name": item.get("name"),
+                            "capability": item.get("capability"),
+                            "reason": item.get("reason"),
+                        }
+                        for item in plan
+                        if item.get("bind_status")
+                    ],
+                },
+            )
+            return self.get_session(project_id, session_id)
+
+    def _build_factory_plans(
+        self,
+        session_id: str,
+        resolved: ResourcePlan,
+        record: Mapping[str, Any],
+        *,
+        requirement: str,
+    ) -> list[ResourceFactoryPlan]:
+        del requirement
+        factory = self.resource_factory
+        if factory is None:
+            return []
+        wrappers = dict(record.get("factory_wrappers") or {})
+        existing = record.get("resource_factory_plans") or []
+        plans = factory.plan_missing(
+            resolved,
+            wrappers=wrappers,
+            existing=existing if isinstance(existing, list) else [],
+            proposal_id=session_id,
+        )
+        built: list[ResourceFactoryPlan] = []
+        for planned in plans:
+            requirement_item = next(
+                (
+                    item
+                    for item in resolved.requirements
+                    if item.capability == planned.capability
+                ),
+                None,
+            )
+            if requirement_item is None:
+                from veyra_agent_platform.contracts.capability import (
+                    CapabilityRequirement,
+                )
+
+                requirement_item = CapabilityRequirement(
+                    capability=planned.capability, required=True
+                )
+            if (
+                planned.can_generate
+                and planned.strategy == "skill_instruction"
+                and planned.draft is None
+            ):
+                try:
+                    planned = factory.ensure_skill_draft(planned, requirement_item)
+                except ResourceFactoryError as exc:
+                    raise FactoryError(exc.code, str(exc)) from exc
+            if (
+                planned.can_generate
+                and planned.strategy in {"http_tool_wrapper", "filesystem_tool_wrapper"}
+                and planned.draft is None
+                and wrappers.get(planned.capability)
+            ):
+                try:
+                    planned = factory.ensure_wrapper_draft(
+                        planned,
+                        requirement_item,
+                        wrappers[planned.capability],
+                    )
+                except ResourceFactoryError as exc:
+                    raise FactoryError(exc.code, str(exc)) from exc
+            built.append(planned)
+        return built
+
+    def _require_resource_factory(self) -> ResourceFactory:
+        if self.resource_factory is None:
+            raise FactoryError("workshop_unavailable", "Resource Workshop is starting")
+        return self.resource_factory
 
     def _append_interview(
         self,
@@ -818,6 +1682,8 @@ class FactoryService:
             )
             return completion.content.strip() or _CANNED_FOLLOW_UP
         except FactoryProviderError:
+            if receipts is not None:
+                raise
             return _CANNED_FOLLOW_UP
 
     def _complete_with_receipt(
@@ -850,7 +1716,12 @@ class FactoryService:
                 profile=profile,
             )
         try:
-            completion = self.client.complete(messages, response_format=response_format)
+            plan_call = kind in {"semantic_plan", "semantic_plan_repair"}
+            completion = self.client.complete(
+                messages,
+                response_format=response_format,
+                **({"read_timeout": None} if plan_call else {}),
+            )
         except FactoryProviderError as exc:
             if receipt_id is not None and receipts is not None:
                 receipts.fail(receipt_id, exc)
@@ -957,6 +1828,10 @@ class FactoryService:
             return _missing_item(kind, reference, "resource is not selectable")
         return None
 
+    def _secret_configured(self, secret_ref: str) -> bool:
+        store = getattr(self.client, "_secret_store", None)
+        return bool(resolve_secret(store, secret_ref, ""))
+
     def _project_context(self, project_id: str) -> BuilderProjectContext:
         project_resources = self._project_resource_list(project_id)
         summary = self.projects.project_summary(project_id)
@@ -975,6 +1850,8 @@ class FactoryService:
         return project_capability_catalog(self._project_resource_list(project_id))
 
     def _run_availability(self, payload: dict[str, Any]) -> str:
+        if payload.get("target_kind") == "workflow":
+            return "requires_configuration"
         plan = payload.get("resource_plan")
         if isinstance(plan, list) and plan:
             return run_availability(plan)
@@ -1004,15 +1881,6 @@ class FactoryService:
                 connection, session_id, state=state, updated_at=_now(), **values
             )
 
-    def _recover_generation(self, session_id: str) -> None:
-        self._set_state(
-            session_id,
-            "ready",
-            ready=True,
-            next_prompt=_READY_PROMPT,
-            diagnostics=[],
-        )
-
     def _require_project(self, project_id: str) -> None:
         if self.projects.repository.project(project_id) is None:
             raise FactoryError(
@@ -1038,6 +1906,100 @@ def _session_identity(row: Any) -> dict[str, str]:
         for key, value in parsed.items()
         if isinstance(key, str) and value is not None and str(value).strip()
     }
+
+
+def _generation_record(row: Any) -> dict[str, Any]:
+    record = _specification_record(row)
+    raw_extras = record.get("extras")
+    extras: dict[str, Any] = raw_extras if isinstance(raw_extras, dict) else {}
+    compiled = extras.get("compiled_source") or record.get("compiled_source")
+    workflow = extras.get("workflow") or record.get("workflow")
+    companions = extras.get("companions") or record.get("companions")
+    flow = extras.get("flow") or record.get("flow")
+    required = extras.get("required_project_resources") or record.get(
+        "required_project_resources"
+    )
+    snapshot = extras.get("resource_plan_snapshot") or record.get(
+        "resource_plan_snapshot"
+    )
+    factory_plans = extras.get("resource_factory_plans") or record.get(
+        "resource_factory_plans"
+    )
+    wrappers = extras.get("factory_wrappers") or record.get("factory_wrappers")
+    return {
+        "specification": record.get("specification"),
+        "status": record.get("status"),
+        "missing": record.get("missing") or [],
+        "compiled_source": compiled if isinstance(compiled, dict) else None,
+        "target_kind": extras.get("target_kind") or record.get("target_kind"),
+        "execution_kind": extras.get("execution_kind") or record.get("execution_kind"),
+        "workflow": workflow if isinstance(workflow, dict) else None,
+        "companions": companions if isinstance(companions, list) else None,
+        "flow": flow if isinstance(flow, list) else None,
+        "required_project_resources": required if isinstance(required, list) else [],
+        "resource_plan_snapshot": snapshot if isinstance(snapshot, dict) else None,
+        "resource_factory_plans": (
+            factory_plans if isinstance(factory_plans, list) else []
+        ),
+        "factory_wrappers": wrappers if isinstance(wrappers, dict) else {},
+        "product_shape": extras.get("product_shape") or record.get("product_shape"),
+        "task_structure": extras.get("task_structure") or record.get("task_structure"),
+        "execution_plan": extras.get("execution_plan") or record.get("execution_plan"),
+        "proposal_preview": extras.get("proposal_preview")
+        or record.get("proposal_preview"),
+        "blocked_reason": extras.get("blocked_reason") or record.get("blocked_reason"),
+        "entity_schema": extras.get("entity_schema") or record.get("entity_schema"),
+    }
+
+
+def _stored_specification(row: Any) -> dict[str, Any] | None:
+    specification = _generation_record(row).get("specification")
+    return specification if isinstance(specification, dict) else None
+
+
+def _merge_resolver_plan(
+    resolver_items: list[dict[str, Any]],
+    component_plan: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = list(resolver_items)
+    seen = {str(item.get("reference")) for item in merged if item.get("reference")}
+    for item in component_plan:
+        reference = str(item.get("reference") or "")
+        if not reference or reference in seen:
+            continue
+        merged.append(item)
+        seen.add(reference)
+    return merged
+
+
+def _annotate_factory_missing(
+    plan_items: list[dict[str, Any]],
+    factory_plans: list[ResourceFactoryPlan],
+) -> list[dict[str, Any]]:
+    by_cap = {item.capability: item for item in factory_plans}
+    annotated: list[dict[str, Any]] = []
+    for raw in plan_items:
+        item = dict(raw)
+        capability = str(item.get("capability") or "")
+        planned = by_cap.get(capability)
+        if item.get("bind_status") == "missing" and planned is not None:
+            item["factory_status"] = planned.status
+            item["factory_strategy"] = planned.strategy
+            item["reason"] = planned.reason
+            if planned.draft and isinstance(planned.draft, dict):
+                item["name"] = str(planned.draft.get("name") or item.get("name") or "")
+        annotated.append(item)
+    return annotated
+
+
+def _assert_snapshot_locks(source: AgentSource, plan: ResourcePlan) -> None:
+    for item in (*plan.already_bound, *plan.will_bind, *plan.needs_configuration):
+        digest = source.lock.get(item.reference)
+        if digest != item.content_hash:
+            raise FactoryError(
+                "resource_identity_conflict",
+                "Proposal resource snapshot no longer matches the compiled Agent lock",
+            )
 
 
 def _missing_item(kind: str, reference: str, reason: str) -> dict[str, Any]:
@@ -1103,18 +2065,26 @@ def _generation_failure(
     return " ".join(parts)
 
 
+def _semantic_field_specs(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        f"{item['name']}:{item['type']}"
+        for item in value
+        if isinstance(item, Mapping)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("type"), str)
+    ][:16]
+
+
 def _repair_prompt(
-    diagnostics: list[str], *, schema: Mapping[str, Any] | None = None
+    diagnostics: list[str],
+    *,
+    input_fields: list[str],
+    output_fields: list[str],
 ) -> str:
-    excerpt = ""
-    if isinstance(schema, Mapping):
-        properties = schema.get("properties")
-        if isinstance(properties, dict) and "step_intents" in properties:
-            excerpt = json.dumps(
-                {"step_intents": properties["step_intents"]},
-                ensure_ascii=True,
-                sort_keys=True,
-            )[:1_200]
+    input_contract = ", ".join(input_fields) if input_fields else "none"
+    output_contract = ", ".join(output_fields) if output_fields else "none"
     return (
         "Repair only the invalid AgentSemanticPlanV1 fields. Keep the original "
         "user requirement. operation_kind must be exactly model, capability, "
@@ -1122,16 +2092,32 @@ def _repair_prompt(
         "approval. A later check is verification. A branch is condition. "
         "capability_requirement is only for capability steps and copies a "
         "Project-bound tool name or resource_id. For every condition, emit exactly "
-        "two branches with semantic key and label. Every branch-local step must "
+        "two branches with semantic key and label. Put the executable predicate in "
+        "condition_expression using a supported comparison over a declared Agent "
+        "input; keep human intent in purpose. Never replace natural-language "
+        "classification with a non-empty/default check. Every "
+        "branch-local step must "
         "carry branch_condition and branch_key and depend only on its own branch. "
-        "For deterministic transforms, output_mapping may map declared output "
-        "field names to literals or {{input_field}} references. Do not emit node IDs, "
+        "Declared Agent inputs: "
+        + input_contract
+        + ". Declared Agent outputs: "
+        + output_contract
+        + ". Step-level inputs and outputs declare typed data ports for model, "
+        "transform, capability, and approval steps. depends_on is execution "
+        "order; the server compiles data_edges from those ports. Transform "
+        "output_mapping may reference declared Agent inputs or this step's "
+        "input ports with {{port}} tokens. Only the last Model on each path to "
+        "Output produces the declared Agent outputs. Earlier Models emit their "
+        "own node output contract. Human confirmation uses approval ports "
+        "approved and rejected; do not invent a decision input to re-test "
+        "the same confirmation with a Condition. Preserve a genuine "
+        "deterministic Transform. Do not emit node IDs, "
         "resource hashes, Knowledge UUIDs, canvas positions, source.lock, or "
-        "permissions. Do not omit approval, condition, verification, transform, "
-        "capability, or multiple model step_intents once they were required. Do "
+        "permissions. Do not omit a user-required approval, condition, verification, "
+        "capability, genuine deterministic transform, or distinct model duty. Do "
         "not copy policy sentences into capability_intents. "
-        + (f"step_intents schema: {excerpt}. " if excerpt else "")
-        + "Diagnostics: "
+        + RUNNABLE_AGENT_PRIMITIVES
+        + " Diagnostics: "
         + "; ".join(diagnostics)
     )
 
@@ -1160,12 +2146,23 @@ def _planning_user_content(catalog: list[dict[str, str]]) -> str:
         + library
         + "capability_requirement copies a bound tool name or resource_id when "
         "operation_kind is capability. For every condition, emit exactly two "
-        "semantic branches. Mark every branch-local duty with branch_condition "
-        "and branch_key; never linearize sibling branches through depends_on. "
-        "Use output_mapping on deterministic transforms when multiple declared "
-        "output fields must be assembled. Do not emit node IDs, hashes, or "
-        "versions. A simple one-duty Agent may use a single model step. Distinct "
-        "duties must remain distinct step_intents."
+        "semantic branches. Put the executable predicate in condition_expression "
+        "using a supported explicit comparison over a declared Agent input; keep "
+        "human intent in purpose. Do not invent a non-empty/default test to stand "
+        "in for semantic classification. Mark every branch-local "
+        "duty with branch_condition and branch_key; never linearize sibling "
+        "branches through depends_on. "
+        "Use step-level inputs and outputs to declare typed data ports. "
+        "depends_on orders steps; the server compiles data edges. Set "
+        "branch_key to approved or rejected on duties after HumanApproval. "
+        "Only the last "
+        "Model on each path to Output produces the Agent's declared top-level "
+        "outputs. Earlier Models emit their own node output contract. A "
+        "deterministic Transform can map literals, declared Agent inputs, or this "
+        "step's input ports to declared outputs. Use output_mapping when a real "
+        "transform is needed. Do not emit node IDs, hashes, or versions. A simple "
+        "one-duty Agent may use a single model step. Distinct duties must remain "
+        "distinct step_intents." + RUNNABLE_AGENT_PRIMITIVES
     )
 
 

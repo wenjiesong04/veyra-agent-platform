@@ -137,10 +137,12 @@ class AgentContractTests(unittest.TestCase):
                 "y": -220,
                 "text": "Canvas-only note",
                 "width": 420,
+                "height": 180,
                 "manual_position": False,
             }
         }
         original = AgentSource.from_dict(data)
+        self.assertEqual(original.ui["notes"]["note_intro"]["height"], 180)
         data["ui"]["notes"]["note_intro"]["x"] = 640  # type: ignore[index]
         data["ui"]["notes"]["note_intro"]["manual_position"] = True  # type: ignore[index]
         moved = AgentSource.from_dict(data)

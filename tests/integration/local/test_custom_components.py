@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.runtime.config import RuntimeSettings
@@ -89,6 +90,84 @@ def test_custom_component_lifecycle_is_immutable_and_project_scoped(
             f"/api/v1/projects/{other_project['project_id']}/custom-components/{component_id}"
         )
         assert isolated.status_code == 404
+
+
+def test_published_custom_component_can_be_saved_and_resolved_in_agent_draft(
+    tmp_path: Path,
+) -> None:
+    with client_for(tmp_path) as client:
+        project = client.post("/api/v1/projects", json={}).json()
+        project_id = project["project_id"]
+        component_base = f"/api/v1/projects/{project_id}/custom-components"
+
+        created_component = client.post(component_base, json=_transform_payload())
+        assert created_component.status_code == 201
+        component_id = created_component.json()["component_id"]
+        assert (
+            client.post(f"{component_base}/{component_id}/validate").status_code == 200
+        )
+        published = client.post(f"{component_base}/{component_id}/versions", json={})
+        assert published.status_code == 200
+        component = published.json()
+        reference = component["reference"]
+
+        created_agent = client.post(
+            f"/api/v1/projects/{project_id}/agents",
+            json={"mode": "blank", "name": "Component Consumer"},
+        )
+        assert created_agent.status_code == 201
+        agent_id = created_agent.json()["agent_id"]
+        draft_response = client.get(
+            f"/api/v1/projects/{project_id}/agents/{agent_id}/draft"
+        )
+        assert draft_response.status_code == 200
+        source = draft_response.json()["source"]
+        model = next(
+            node for node in source["nodes"] if node["component_type"] == "Model"
+        )
+        model.update(
+            {
+                "component_type": "CustomComponent",
+                "uses": reference,
+                "input_mapping": {
+                    "text": next(iter(source["inputs"])),
+                },
+                "output_mapping": {
+                    "result": next(iter(source["outputs"])),
+                },
+            }
+        )
+        model.pop("model_ref", None)
+        model.pop("system_prompt", None)
+        source["lock"][reference] = component["content_hash"]
+
+        saved = client.patch(
+            f"/api/v1/projects/{project_id}/agents/{agent_id}/draft",
+            json={
+                "source": source,
+                "expected_revision": draft_response.json()["revision"],
+            },
+            headers={
+                "If-Match": draft_response.headers["etag"],
+                "Idempotency-Key": new_uuid7(),
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["source"]["lock"][reference] == component["content_hash"]
+
+        validation = client.post(
+            f"/api/v1/projects/{project_id}/agents/{agent_id}/validate"
+        )
+        assert validation.status_code == 200
+        dependency = next(
+            item
+            for item in validation.json()["dependencies"]
+            if item["reference"] == reference
+        )
+        assert dependency["kind"] == "component"
+        assert dependency["status"] == "ready"
+        assert dependency["content_hash"] == component["content_hash"]
+        assert dependency["required_permissions"]["tools"] == []
 
 
 def test_tool_wrapper_requires_a_project_pin_and_derives_permissions(

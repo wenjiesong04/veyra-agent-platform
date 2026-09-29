@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from veyra_agent_platform.local.builder.receipts import HarnessReceiptRecorder
+from veyra_agent_platform.local.builder.target_kind import classify_builder_target
 from veyra_agent_platform.local.factory.client import FactoryProviderError
 from veyra_agent_platform.local.factory.edit_service import EditProposalService
 from veyra_agent_platform.local.factory.service import FactoryError
@@ -91,6 +93,7 @@ class BuilderResolutionService:
         request: ResolveRequest,
         *,
         receipts: HarnessReceiptRecorder | None = None,
+        on_visible: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         messages = self.edits.harness.messages(
             project_id,
@@ -127,7 +130,9 @@ class BuilderResolutionService:
             )
         try:
             completion = self.edits.client.complete(
-                messages, response_format={"type": "json_object"}
+                messages,
+                response_format={"type": "json_object"},
+                **({"on_visible": on_visible} if on_visible is not None else {}),
             )
         except Exception as exc:
             if (
@@ -309,16 +314,42 @@ class BuilderResolutionService:
             else:
                 result.update(status="resolved", create_kind="custom_component")
                 result["intent"] = "create_component"
+        elif (
+            intent.intent == "create"
+            and intent.create_kind
+            in {
+                "agent",
+                "workflow",
+            }
+            and not intent.multi_object
+            and not intent.targets
+        ):
+            classified = classify_builder_target(request.content)
+            result["create_kind"] = classified.create_kind
+            result["user_requested_surface"] = classified.user_requested_surface
+            result["status"] = "resolved"
+            result["instruction"] = request.content.strip()
+            result["message"] = (
+                classified.message_zh
+                if request.locale == "zh"
+                else classified.message_en
+            )
+            result["plan"] = [
+                classified.reason,
+                *list(intent.plan or []),
+            ][:12]
         elif intent.intent == "create" and (
-            intent.create_kind != "agent" or intent.multi_object or intent.targets
+            intent.create_kind not in {"agent", "workflow"}
+            or intent.multi_object
+            or intent.targets
         ):
             result["status"] = "unsupported"
             result["message"] = (
-                "已识别创建需求；当前创建适配器仅支持单个 Agent，"
+                "已识别创建需求；当前创建适配器仅支持单个 Agent 或 Workflow，"
                 "不会改为创建错误类型或部分对象。"
                 if request.locale == "zh"
                 else "Creation recognized. The current creation adapter supports "
-                "one Agent only; it will not substitute another type "
+                "one Agent or one Workflow; it will not substitute another type "
                 "or create only part of the request."
             )
         return result

@@ -3,6 +3,7 @@ availability: ready
 description: A safe local-first starting point for a new Agent.
 factory_selectable: true
 kind: template
+loop_compatible: false
 name: Starter Agent
 required_permissions:
   filesystem_read_roots: []

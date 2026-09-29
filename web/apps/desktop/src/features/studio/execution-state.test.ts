@@ -170,4 +170,45 @@ describe("canonical run execution projection", () => {
     expect(projection.orderedEvents).toEqual([]);
     expect(projection.nodeStates.get("branch_a")).toBe("idle");
   });
+
+  it("highlights loop Agent tool bindings from public tool events", () => {
+    const loop: AgentSource = {
+      ...graph,
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "model", component_type: "Model", model_ref: "runtime:model" },
+        { id: "out", component_type: "Output", output_name: "result" },
+      ],
+      transitions: [
+        { from: "start", port: "next", to: "model" },
+        { from: "model", port: "next", to: "out" },
+      ],
+      extensions: {
+        veyra: {
+          ...graph.extensions.veyra,
+          execution_kind: "loop",
+          instructions: "Research.",
+          max_turns: 8,
+        },
+      },
+      ui: {
+        positions: {},
+        bindings: {
+          bind_tool1: { kind: "tool", reference: "veyra.tool.web.search@1.0.0", x: 480, y: 130 },
+        },
+      },
+    };
+    const projection = projectRunToExecutionState(loop, {
+      run_id: "run-1",
+      status: "running",
+      events: [
+        event("node.started", 1, "model", { phase: "model", turn: 0 }),
+        event("tool.started", 2, "tool", { tool_reference: "veyra.tool.web.search@1.0.0" }),
+      ],
+    });
+    expect(projection.nodeStates.get("model")).toBe("running");
+    expect(projection.nodeStates.get("bind_tool1")).toBe("running");
+    expect(projection.nodeStates.get("start")).toBe("idle");
+    expect(projection.activeNodeId).toBe("bind_tool1");
+  });
 });

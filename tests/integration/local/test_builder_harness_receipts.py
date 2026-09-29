@@ -14,7 +14,6 @@ from tests.integration.local.test_builder_conversations import (
 from tests.integration.local.test_builder_resolution import intent
 from tests.integration.local.test_edit_proposal_routes import _target
 from tests.integration.local.test_factory_routes import (
-    VALID_SEMANTIC_PLAN,
     ScriptedKimiTransport,
     _client,
     _completion,
@@ -83,44 +82,7 @@ class ResolveThenGenerateError:
         if not self.intent_sent:
             self.intent_sent = True
             return _completion(json.dumps(intent(intent="create", create_kind="agent")))
-        return _completion("Ready for a proposal.")
-
-
-class FallbackThenSuccess:
-    def __init__(self) -> None:
-        self.intent_sent = False
-        self.rejected_schema = False
-
-    def models(self) -> tuple[str, ...]:
-        return ("kimi-k3",)
-
-    def complete(
-        self, messages: object, *, response_format: object = None
-    ) -> KimiCompletion:
-        del messages
-        schema = (
-            isinstance(response_format, dict)
-            and response_format.get("type") == "json_schema"
-        )
-        if schema:
-            self.rejected_schema = True
-            raise FactoryProviderError(
-                "factory_request_invalid",
-                "Factory model request was rejected",
-                details={
-                    "http_status": "400",
-                    "provider_error_type": "invalid_request_error",
-                    "rejected_field": "response_format.json_schema",
-                    "bounded_message": "response_format.json_schema is not a valid "
-                    "moonshot flavored json schema",
-                },
-            )
-        if not self.intent_sent:
-            self.intent_sent = True
-            return _completion(json.dumps(intent(intent="create", create_kind="agent")))
-        if self.rejected_schema:
-            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
-        return _completion("Ready for a proposal.")
+        raise FactoryProviderError(self.code, self.message, details=self.details)
 
 
 def _receipts(payload: dict[str, Any], index: int = -1) -> list[dict[str, Any]]:
@@ -146,27 +108,24 @@ def test_receipt_is_prepared_before_provider_request(tmp_path: Path) -> None:
         _assert_no_secrets(payload)
 
 
-def test_success_finalizes_resolve_interview_and_semantic_plan(tmp_path: Path) -> None:
+def test_success_finalizes_resolve_and_interview(tmp_path: Path) -> None:
     transport = ScriptedKimiTransport(
         [
             _completion(json.dumps(intent(intent="create", create_kind="agent"))),
             _completion("Ready for a proposal."),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
         ]
     )
     with _client(tmp_path, transport) as client:
         project, _, _ = _target(client, "agent")
         payload = _turn(client, project, content="帮我生成礼物包装 Agent").json()
         receipts = _receipts(payload)
-        assert _kinds(payload) == ["resolve_intent", "interview", "semantic_plan"]
-        assert [item["sequence"] for item in receipts] == [0, 1, 2]
+        assert _kinds(payload) == ["resolve_intent", "interview"]
+        assert [item["sequence"] for item in receipts] == [0, 1]
         assert {item["status"] for item in receipts} == {"success"}
-        plan = receipts[2]
-        assert plan["output_contract"] == "AgentSemanticPlanV1"
-        assert plan["structured_mode"] in {"strict_json_schema", "json_object"}
-        assert plan["provider_id"] == "moonshot"
-        assert plan["model"] == "kimi-k3"
-        assert "knowledge_contents" in plan["excluded_categories"]
+        assert receipts[1]["output_contract"] != "AgentSemanticPlanV1"
+        assert receipts[0]["provider_id"] == "moonshot"
+        assert receipts[0]["model"] == "kimi-k3"
+        assert "knowledge_contents" in receipts[0]["excluded_categories"]
         assert BUILDER_SYSTEM_PROMPT not in json.dumps(receipts)
         assert "帮我生成礼物包装 Agent" not in json.dumps(receipts)
         _assert_no_secrets(payload)
@@ -208,7 +167,6 @@ def test_provider_failure_preserves_safe_receipt(
         assert [item["invocation_kind"] for item in receipts] == [
             "resolve_intent",
             "interview",
-            "semantic_plan",
         ]
         failed = receipts[-1]
         assert failed["status"] == "failed"
@@ -233,24 +191,24 @@ def test_provider_failure_preserves_safe_receipt(
         assert nested["receipts"] == receipts
 
 
-def test_typed_fallback_keeps_both_attempts(tmp_path: Path) -> None:
-    transport = FallbackThenSuccess()
+def test_generate_does_not_record_semantic_plan_receipts(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for a proposal."),
+        ]
+    )
     with _client(tmp_path, transport) as client:
         project, _, _ = _target(client, "agent")
         payload = _turn(client, project, content="帮我生成礼物包装 Agent").json()
         receipts = _receipts(payload)
-        plans = [
-            item for item in receipts if item["invocation_kind"] == "semantic_plan"
+        assert [item["invocation_kind"] for item in receipts] == [
+            "resolve_intent",
+            "interview",
         ]
-        assert len(plans) == 2
-        assert plans[0]["structured_mode"] == "strict_json_schema"
-        assert plans[0]["status"] == "failed"
-        assert plans[0]["error_code"] == "factory_request_invalid"
-        assert plans[1]["structured_mode"] == "json_object"
-        assert plans[1]["status"] == "success"
-        assert plans[1]["fallback_from"] == "strict_json_schema"
-        assert plans[1]["fallback_to"] == "json_object"
+        assert all(item["status"] == "success" for item in receipts)
         assert payload["operations"][0]["status"] == "waiting"
+        assert not any(item["invocation_kind"] == "semantic_plan" for item in receipts)
 
 
 def test_snapshot_hash_is_stable_until_project_metadata_changes(tmp_path: Path) -> None:
@@ -296,7 +254,6 @@ def test_completed_receipt_is_immutable_and_recheck_does_not_rewrite(
         [
             _completion(json.dumps(intent(intent="create", create_kind="agent"))),
             _completion("Ready for a proposal."),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
         ]
     )
     with _client(tmp_path, transport) as client:
@@ -368,7 +325,6 @@ def test_retry_creates_new_receipts_and_preserves_failed_history(
             [
                 _completion(json.dumps(intent(intent="create", create_kind="agent"))),
                 _completion("Ready for a proposal."),
-                _completion(json.dumps(VALID_SEMANTIC_PLAN)),
             ]
         )
         retried = _turn(

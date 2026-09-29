@@ -14,12 +14,23 @@ from veyra_agent_platform.local.resources import (
 )
 
 
+def test_platform_tools_and_skills_declare_resolver_capabilities() -> None:
+    packages = load_node_packages()
+    by_id = {
+        package.definition["resource_id"]: package.definition for package in packages
+    }
+    assert by_id["veyra.tool.web.search"]["capabilities"] == ["web_search"]
+    assert by_id["veyra.tool.filesystem.read"]["capabilities"] == ["workspace_read"]
+    assert by_id["veyra.skill.research-brief"]["capabilities"] == ["research_planning"]
+    assert by_id["veyra.template.starter-agent"]["loop_compatible"] is False
+
+
 def test_platform_node_packages_are_the_only_catalog_source() -> None:
     root = default_nodes_root()
     packages = load_node_packages()
 
     assert not (root / "catalog.v1.json").exists()
-    assert len(packages) == 35
+    assert len(packages) == 37
     assert {package.path.name for package in packages} == {"node.yaml"}
     assert node_definition("veyra.tool.filesystem.read", "1.0.0")["kind"] == "tool"
     with pytest.raises(NodePackageError, match="unknown node package"):

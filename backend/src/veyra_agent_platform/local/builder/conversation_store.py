@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.builder.operation_events import (
     EVENT_KINDS,
     TERMINAL_EVENT_KINDS,
+    event_label,
 )
+from veyra_agent_platform.local.factory.edit_store import EditProposalStore
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 _EMPTY_OBJECT = "{}"
@@ -537,6 +540,96 @@ class BuilderConversationStore:
                 "summary": summary,
                 "facts_json": payload,
                 "created_at": created_at,
+            }
+
+    def materialize_builder_proposal(
+        self,
+        *,
+        proposal_store: EditProposalStore,
+        proposal: dict[str, Any],
+        locale: str,
+        summary: str,
+        facts: dict[str, str],
+        created_at: str,
+    ) -> dict[str, Any]:
+        """Atomically persist a creation proposal, operation link, and ready event."""
+        operation_id = str(proposal["operation_id"])
+        with self.repository.transaction() as connection:
+            operation = connection.execute(
+                "SELECT status FROM builder_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if operation is None:
+                raise ValueError("unknown Builder operation")
+            existing = connection.execute(
+                """SELECT * FROM edit_proposals
+                   WHERE project_id = ? AND builder_creation_operation_id = ?""",
+                (proposal["project_id"], operation_id),
+            ).fetchone()
+            if existing is None:
+                proposal_store.create_in_connection(connection, proposal)
+                proposal_id = str(proposal["proposal_id"])
+                proposal_payload = proposal
+            else:
+                proposal_payload = proposal_store._payload(dict(existing))
+                proposal_id = str(proposal_payload["proposal_id"])
+            connection.execute(
+                """UPDATE builder_operations
+                   SET status = 'waiting', proposal_id = ?,
+                       factory_session_id = ?, updated_at = ?
+                   WHERE operation_id = ?""",
+                (
+                    proposal_id,
+                    proposal.get("factory_session_id"),
+                    created_at,
+                    operation_id,
+                ),
+            )
+            event = connection.execute(
+                """SELECT * FROM builder_operation_events
+                   WHERE operation_id = ? AND kind = ?
+                   ORDER BY sequence DESC LIMIT 1""",
+                (operation_id, "builder.proposal.ready"),
+            ).fetchone()
+            if event is None:
+                last = connection.execute(
+                    """SELECT COALESCE(MAX(sequence), -1) AS last
+                       FROM builder_operation_events WHERE operation_id = ?""",
+                    (operation_id,),
+                ).fetchone()
+                sequence = int(last["last"]) + 1 if last is not None else 0
+                event_id = new_uuid7()
+                event_facts = {
+                    **facts,
+                    "proposal_id": proposal_id,
+                    "proposal_kind": str(
+                        proposal.get("proposal_kind") or "create_agent"
+                    ),
+                    "state": "review",
+                }
+                connection.execute(
+                    """INSERT INTO builder_operation_events(
+                       event_id, operation_id, sequence, kind, label, summary,
+                       facts_json, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        event_id,
+                        operation_id,
+                        sequence,
+                        "builder.proposal.ready",
+                        event_label("builder.proposal.ready", locale=locale),
+                        summary[:240],
+                        json.dumps(event_facts, ensure_ascii=False, sort_keys=True),
+                        created_at,
+                    ),
+                )
+                event = connection.execute(
+                    "SELECT * FROM builder_operation_events WHERE event_id = ?",
+                    (event_id,),
+                ).fetchone()
+            return {
+                "proposal": proposal_payload,
+                "event": dict(event) if event is not None else None,
             }
 
     def next_receipt_sequence(self, operation_id: str) -> int:

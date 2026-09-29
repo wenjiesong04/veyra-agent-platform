@@ -82,20 +82,58 @@ export function canvasEdgeId(transition: Pick<FlowTransition, "from" | "port" | 
   return `${transition.from}:${transition.port}:${transition.to}`;
 }
 
+type ExecutionGraph = Pick<StudioSource, "nodes" | "transitions"> & {
+  ui?: {
+    positions?: Record<string, { x: number; y: number }>;
+    bindings?: Record<string, { kind: string; reference: string }>;
+  };
+};
+
+function catalogBindings(graph: ExecutionGraph): Record<string, { kind: string; reference: string }> {
+  return graph.ui?.bindings ?? {};
+}
+
+function toolBindingId(graph: ExecutionGraph, reference: unknown): string | null {
+  if (typeof reference !== "string" || !reference.trim()) return null;
+  const requested = reference.split("@")[0];
+  for (const [id, binding] of Object.entries(catalogBindings(graph))) {
+    if (binding.kind !== "tool" && binding.kind !== "mcp_tool") continue;
+    const bound = binding.reference.split("@")[0];
+    if (binding.reference === reference || bound === requested) return id;
+  }
+  return null;
+}
+
+function capabilityStateFromEvent(event: RuntimeEvent): NodeExecutionState | null {
+  if (event.kind === "tool.requested" || event.kind === "tool.started") return "running";
+  if (event.kind === "tool.completed") return "completed";
+  if (event.kind === "tool.failed") return "failed";
+  if (event.kind === "approval.requested") return "waiting_approval";
+  return stateFromEvent(event);
+}
+
 export function projectRunToExecutionState(
-  graph: Pick<StudioSource, "nodes" | "transitions">,
+  graph: ExecutionGraph,
   run: ExecutionRunInput | null | undefined,
 ): ExecutionProjection {
   const nodeStates = new Map<string, NodeExecutionState>(graph.nodes.map((node) => [node.id, "idle"]));
   const edgeStates = new Map<string, EdgeExecutionState>(graph.transitions.map((edge) => [canvasEdgeId(edge), "idle"]));
   const nodeEvents = new Map<string, RuntimeEvent[]>(graph.nodes.map((node) => [node.id, []]));
+  for (const id of Object.keys(catalogBindings(graph))) {
+    if (!nodeStates.has(id)) {
+      nodeStates.set(id, "idle");
+      nodeEvents.set(id, []);
+    }
+  }
   const orderedEvents = run ? orderEvents(run) : [];
 
   for (const event of orderedEvents) {
-    if (!event.node_id || !nodeStates.has(event.node_id)) continue;
-    nodeEvents.get(event.node_id)?.push(event);
-    const next = stateFromEvent(event);
-    if (next) nodeStates.set(event.node_id, next);
+    const bindingId = toolBindingId(graph, event.payload.tool_reference);
+    const targetId = (event.node_id && nodeStates.has(event.node_id) ? event.node_id : null) ?? bindingId;
+    if (!targetId) continue;
+    nodeEvents.get(targetId)?.push(event);
+    const next = capabilityStateFromEvent(event);
+    if (next) nodeStates.set(targetId, next);
   }
 
   const selectedEdges = new Set<string>();
@@ -112,10 +150,9 @@ export function projectRunToExecutionState(
 
   let activeNodeId: string | null = null;
   let waitingNodeId: string | null = null;
-  for (const node of graph.nodes) {
-    const state = nodeStates.get(node.id);
-    if (state === "running") activeNodeId = node.id;
-    if (state === "waiting_approval") waitingNodeId = node.id;
+  for (const [nodeId, state] of nodeStates) {
+    if (state === "running") activeNodeId = nodeId;
+    if (state === "waiting_approval") waitingNodeId = nodeId;
   }
 
   if (run?.status === "cancelled" || run?.status === "interrupted") {

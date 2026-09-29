@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentRunResponse, JsonValue, RuntimeReadiness, TypedFields, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonObject, JsonValue, RuntimeReadiness, TypedFields, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
 import { compactFieldType, fieldIsMultiple, isArtifactCompactType } from "@veyra/api-contracts";
 import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
@@ -37,6 +37,21 @@ export function runStatusLabel(status: AgentRunResponse["status"], locale: "zh" 
     ? { running: "运行中", waiting: "等待审批", verified: "已验证", unverified: "未验证", failed: "失败", interrupted: "已中断", cancelled: "已取消" }
     : { running: "Running", waiting: "Waiting", verified: "Verified", unverified: "Unverified", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled" };
   return labels[status];
+}
+
+export function loopTimelineLabel(kind: string, payload: JsonObject, locale: "zh" | "en"): string {
+  const zh = locale === "zh";
+  if (kind === "node.started" && payload.phase === "model") return zh ? `模型调用 · 第 ${String(payload.turn ?? "")} 轮` : `Model call · turn ${String(payload.turn ?? "")}`;
+  if (kind === "node.completed" && payload.phase === "model") return zh ? "模型完成" : "Model completed";
+  if (kind === "tool.requested") return zh ? `请求工具 ${String(payload.tool_reference ?? "")}` : `Tool request ${String(payload.tool_reference ?? "")}`;
+  if (kind === "tool.started") return zh ? `执行工具 ${String(payload.tool_reference ?? "")}` : `Tool ${String(payload.tool_reference ?? "")}`;
+  if (kind === "tool.completed") return zh ? "工具结果" : "Tool result";
+  if (kind === "node.completed") return zh ? "最终输出" : "Final output";
+  if (kind === "approval.requested") return zh ? "需要审批" : "Approval required";
+  if (kind === "run.failed") return zh ? "失败" : "Failed";
+  if (kind === "run.cancelled" || kind === "run.interrupted") return zh ? "已停止" : "Stopped";
+  if (kind.startsWith("run.")) return kind;
+  return kind;
 }
 
 export function eventLabel(kind: NonNullable<AgentRunResponse["events"]>[number]["kind"], locale: "zh" | "en"): string {
@@ -98,13 +113,26 @@ export function RuntimeKeyNote({ api, locale, projectId, agentId }: { api: Local
     if (projectId && agentId && api.runtimeReadiness) {
       void api.runtimeReadiness(projectId, agentId)
         .then((result) => {
-          if (current) setReadiness(result);
+          if (current) {
+            setReadiness(result);
+            setConfigured(result.model.configured);
+          }
         })
         .catch(() => {
-          if (current) {
-            setReadiness(null);
+          if (!current) return;
+          if (!api.runtimeStatus) {
             setConfigured(false);
+            return;
           }
+          void api.runtimeStatus()
+            .then((status) => {
+              if (!current) return;
+              setConfigured(status.configured);
+              setUserProvidedOnly(status.user_provided_only);
+            })
+            .catch(() => {
+              if (current) setConfigured(false);
+            });
         });
       return () => { current = false; };
     }
@@ -134,7 +162,7 @@ export function RuntimeKeyNote({ api, locale, projectId, agentId }: { api: Local
     return <Alert type="info" title={zh ? "上线模式正使用你在设置中绑定的 Runtime API Key。" : "Release mode is using the Runtime API key configured in Settings."} closable duration={8000} />;
   }
   if (!configured) {
-    return <Alert type="warning" title={zh ? "尚未配置 Runtime 模型。可在设置中保存模型 API Key，或在无界面运行时设置 MOONSHOT_API_KEY。" : "The Runtime model is not configured. Save a model API key in Settings, or set MOONSHOT_API_KEY for headless runs."} />;
+    return <Alert type="warning" title={zh ? "尚未绑定 User Runtime Provider。请在 Provider Credentials 中添加并绑定自己的 API。" : "No User Runtime Provider is bound. Add and bind your own API in Provider Credentials."} />;
   }
   return <Alert type="info" title={zh ? "Runtime 正使用本机凭据试跑；上线后请在设置中绑定你自己的 API Key。" : "Runtime is using a host credential for this run. Bind your own API key in Settings before release."} closable duration={8000} />;
 }

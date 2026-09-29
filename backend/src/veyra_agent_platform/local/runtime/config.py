@@ -19,6 +19,7 @@ class RuntimeSettings(BaseSettings):
         extra="ignore",
     )
 
+    provider_type: str = "openai_compatible"
     model_base_url: str = "https://api.moonshot.cn/v1"
     model_id: str = "kimi-k3"
     model_api_key_env: str = "MOONSHOT_API_KEY"
@@ -38,7 +39,7 @@ class RuntimeSettings(BaseSettings):
             raise ValueError("Runtime model base URL must stop at the API version")
         return normalized
 
-    @field_validator("model_id", "model_api_key_env")
+    @field_validator("provider_type", "model_id", "model_api_key_env")
     @classmethod
     def _require_non_empty(cls, value: str) -> str:
         normalized = value.strip()

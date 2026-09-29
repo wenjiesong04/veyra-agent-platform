@@ -1,11 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
+import type { CommunityApi } from "@veyra/connected-account";
 import { LocalApiClientError, type LocalProjectApi } from "./local-client";
 
 export type ProjectLoadState = "loading" | "ready" | "error";
 
 type ProjectWorkspaceValue = {
   api: LocalProjectApi;
+  cloudApi?: CommunityApi;
   projects: ProjectSummaryResponse[];
   status: ProjectLoadState;
   error: string | null;
@@ -13,6 +15,9 @@ type ProjectWorkspaceValue = {
   upsertProject: (project: ProjectSummaryResponse) => void;
   removeProject: (projectId: string) => void;
   setProjectPinned: (projectId: string, pinned: boolean) => Promise<ProjectSummaryResponse>;
+  createProject: (input: Parameters<LocalProjectApi["createProject"]>[0]) => Promise<ProjectSummaryResponse>;
+  updateProject: (projectId: string, input: Parameters<LocalProjectApi["updateProject"]>[1]) => Promise<ProjectSummaryResponse>;
+  syncProjectArtifacts: (projectId: string) => Promise<void>;
 };
 
 const ProjectWorkspaceContext = createContext<ProjectWorkspaceValue | null>(null);
@@ -31,11 +36,10 @@ function uniqueProjects(projects: readonly ProjectSummaryResponse[]): ProjectSum
   });
 }
 
-export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ api: LocalProjectApi }>) {
+export function ProjectWorkspaceProvider({ api, cloudApi, children }: PropsWithChildren<{ api: LocalProjectApi; cloudApi?: CommunityApi }>) {
   const [projects, setProjects] = useState<ProjectSummaryResponse[]>([]);
   const [status, setStatus] = useState<ProjectLoadState>("loading");
   const [error, setError] = useState<string | null>(null);
-
   const refresh = useCallback(async () => {
     setStatus("loading");
     setError(null);
@@ -74,8 +78,25 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     return project;
   }, [api, upsertProject]);
 
+  const createProject = useCallback(async (input: Parameters<LocalProjectApi["createProject"]>[0]) => {
+    const project = await api.createProject(input);
+    upsertProject(project);
+    return project;
+  }, [api, upsertProject]);
+
+  const updateProject = useCallback(async (projectId: string, input: Parameters<LocalProjectApi["updateProject"]>[1]) => {
+    const project = await api.updateProject(projectId, input);
+    upsertProject(project);
+    return project;
+  }, [api, upsertProject]);
+
+  const syncProjectArtifacts = useCallback(async (_projectId: string) => {
+    return;
+  }, []);
+
   const value = useMemo<ProjectWorkspaceValue>(() => ({
     api,
+    cloudApi,
     projects,
     status,
     error,
@@ -83,7 +104,10 @@ export function ProjectWorkspaceProvider({ api, children }: PropsWithChildren<{ 
     upsertProject,
     removeProject,
     setProjectPinned,
-  }), [api, projects, status, error, refresh, upsertProject, removeProject, setProjectPinned]);
+    createProject,
+    updateProject,
+    syncProjectArtifacts,
+  }), [api, cloudApi, projects, status, error, refresh, upsertProject, removeProject, setProjectPinned, createProject, updateProject, syncProjectArtifacts]);
 
   return <ProjectWorkspaceContext.Provider value={value}>{children}</ProjectWorkspaceContext.Provider>;
 }

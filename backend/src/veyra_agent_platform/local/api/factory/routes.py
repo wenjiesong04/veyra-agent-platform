@@ -45,6 +45,19 @@ class ApplyFactoryDraftRequest(_ClosedModel):
     parent_agent_id: str | None = Field(default=None, max_length=64)
 
 
+class GenerateFactoryResourceDraftRequest(_ClosedModel):
+    confirm: StrictBool
+    capability: str = Field(min_length=1, max_length=80)
+    wrapper: dict[str, Any] | None = None
+
+
+class ApproveFactoryResourceRequest(_ClosedModel):
+    confirm: StrictBool
+    capability: str = Field(min_length=1, max_length=80)
+    content_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    bind_to_project: StrictBool = False
+
+
 def build_router() -> APIRouter:
     router = APIRouter(tags=["factory"])
 
@@ -89,6 +102,12 @@ def build_router() -> APIRouter:
     def generate(project_id: str, session_id: str, request: Request) -> dict[str, Any]:
         return _translate(lambda: _factory(request).generate(project_id, session_id))
 
+    @sessions.post("/sessions/{session_id}/revise")
+    def revise_plan(
+        project_id: str, session_id: str, request: Request
+    ) -> dict[str, Any]:
+        return _translate(lambda: _factory(request).revise_plan(project_id, session_id))
+
     @sessions.post("/sessions/{session_id}/apply-draft")
     def apply_draft(
         project_id: str,
@@ -104,6 +123,41 @@ def build_router() -> APIRouter:
                 name=payload.name,
                 description=payload.description,
                 parent_agent_id=payload.parent_agent_id,
+            )
+        )
+
+    @sessions.post("/sessions/{session_id}/factory-resources/drafts")
+    def generate_factory_resource_draft(
+        project_id: str,
+        session_id: str,
+        payload: GenerateFactoryResourceDraftRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _factory(request).generate_factory_draft(
+                project_id,
+                session_id,
+                confirm=payload.confirm,
+                capability=payload.capability,
+                wrapper=payload.wrapper,
+            )
+        )
+
+    @sessions.post("/sessions/{session_id}/factory-resources/approve")
+    def approve_factory_resource(
+        project_id: str,
+        session_id: str,
+        payload: ApproveFactoryResourceRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _factory(request).approve_factory_resource(
+                project_id,
+                session_id,
+                confirm=payload.confirm,
+                capability=payload.capability,
+                content_hash=payload.content_hash,
+                bind_to_project=bool(payload.bind_to_project),
             )
         )
 

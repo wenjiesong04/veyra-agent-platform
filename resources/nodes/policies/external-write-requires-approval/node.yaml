@@ -2,6 +2,8 @@
 availability: ready
 description: Require approval for external writes.
 factory_selectable: true
+capabilities:
+- external_write_approval
 kind: policy
 name: External Write Requires Approval
 required_permissions:

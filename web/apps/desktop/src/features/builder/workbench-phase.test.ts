@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BuilderConversationOperation, FactorySession } from "@veyra/api-contracts";
-import { workbenchPhase } from "./workbench-phase";
+import { openStageStartedAt, runningClock, workbenchPhase } from "./workbench-phase";
 
 function operation(kinds: string[], status: BuilderConversationOperation["status"] = "in_progress"): BuilderConversationOperation {
   return {
@@ -37,7 +37,7 @@ const session = { state: "generating" } as FactorySession;
 describe("workbenchPhase", () => {
   it("follows server events instead of a timer script", () => {
     expect(workbenchPhase(operation(["builder.operation.started", "builder.intent.started"]), session, null)).toBe("understanding");
-    expect(workbenchPhase(operation(["builder.semantic_plan.started"]), session, null)).toBe("planning");
+    expect(workbenchPhase(operation(["builder.specification.started"]), session, null)).toBe("planning");
     expect(workbenchPhase(operation(["builder.compile.started"]), session, null)).toBe("compiling");
     expect(workbenchPhase(operation(["builder.validation.started"]), session, null)).toBe("validating");
     expect(workbenchPhase(operation(["builder.proposal.ready"], "waiting"), { ...session, state: "review" }, null)).toBe("review");
@@ -47,5 +47,12 @@ describe("workbenchPhase", () => {
       error_code: "factory_missing_capability",
     }, null, null)).toBe("missing");
     expect(workbenchPhase(operation(["builder.operation.completed"], "succeeded"), { ...session, state: "completed" }, "agent-1")).toBe("completed");
+  });
+
+  it("keeps the clock on the open plan stage", () => {
+    const events = operation(["builder.intent.started", "builder.intent.resolved", "builder.specification.started"]).events;
+    events[2] = { ...events[2], created_at: "2026-09-18T00:01:30Z" };
+    expect(openStageStartedAt(events)).toBe("2026-09-18T00:01:30Z");
+    expect(runningClock("2026-09-18T00:01:30Z", Date.parse("2026-09-18T00:03:05Z"), "zh")).toBe("已进行 1:35");
   });
 });

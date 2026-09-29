@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentRunResponse, AgentSource } from "@veyra/api-contracts";
-import { assistantPreview, conversationCanvas, isDocumentResult, isStructuredResult, scalarResultText, tableRows, workingCaption } from "./canvas-artifact";
+import { assistantPreview, conversationCanvas, isDocumentResult, isMediaResult, isStructuredResult, scalarResultText, tableRows, workingCaption } from "./canvas-artifact";
 
 const source: AgentSource = {
   schema_version: "1.0",
@@ -60,6 +60,14 @@ describe("conversation canvas policy", () => {
     expect(conversationCanvas({ locale: "zh", source, run: { ...run, result: { rows: [{ name: "A" }, { name: "B" }] } } })).toEqual({ kind: "table", title: "数据表" });
     expect(conversationCanvas({ locale: "en", source, run: { ...run, result: { title: "Brief", score: 4 } } })).toEqual({ kind: "result", title: "Result canvas" });
     expect(assistantPreview({ title: "Brief", score: 4 }, { kind: "result", title: "Result canvas" }, "en").openedInCanvas).toBe(true);
+  });
+
+  it("keeps image and file artifacts in the transcript instead of a JSON canvas", () => {
+    const picture = { kind: "artifact" as const, artifact_id: "art_out", media_type: "image/png", filename: "pack.png" };
+    expect(isMediaResult({ picture })).toBe(true);
+    expect(isStructuredResult({ picture })).toBe(false);
+    expect(conversationCanvas({ locale: "en", source, run: { ...run, result: { picture } } })).toBeNull();
+    expect(assistantPreview({ picture }, null, "en")).toEqual({ text: null, openedInCanvas: false });
   });
 
   it("treats long markdown as a document canvas", () => {

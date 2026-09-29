@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
@@ -47,8 +47,6 @@ describe("ChatLanding", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Message" }), "Write a brief");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(onStart).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     expect(onStart).toHaveBeenCalledWith({ kind: "new" }, "Write a brief");
   });
 
@@ -83,8 +81,6 @@ describe("ChatLanding", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Message" }), "Hello");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(onStart).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     expect(onStart).toHaveBeenCalledWith({ kind: "new" }, "Hello");
   });
 
@@ -105,8 +101,46 @@ describe("ChatLanding", () => {
     await user.upload(input, new File(["Quarterly notes"], "notes.txt", { type: "text/plain" }));
     expect(await screen.findByText("notes.txt")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(onStart).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     expect(onStart).toHaveBeenCalledWith({ kind: "new" }, expect.stringContaining("Quarterly notes"));
+  });
+
+  it("stages a pasted image preview, preserves its text caption, and labels the Builder image limit", async () => {
+    const onStart = vi.fn();
+    renderLanding({ onStart });
+    const file = new File(["pixel-bytes"], "front.png", { type: "image/png" });
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.paste(composer, {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => file }],
+        files: [file],
+        getData: (type: string) => type === "text/plain" ? "Review the image and suggest fields" : "",
+      },
+    });
+    expect(composer).toHaveValue("Review the image and suggest fields");
+    expect(await screen.findByAltText("front.png")).toBeInTheDocument();
+    expect(screen.getByText(/Builder records metadata only/)).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onStart).toHaveBeenCalledWith({ kind: "new" }, expect.stringContaining("does not analyze image pixels"));
+    const prompt = onStart.mock.calls[0]?.[1] as string;
+    expect(prompt).not.toContain("pixel-bytes");
+    expect(prompt).not.toContain("data:image");
+  });
+
+  it("requires a text goal when the only staged attachments are images", async () => {
+    const onStart = vi.fn();
+    renderLanding({ onStart });
+    const file = new File(["pixel-bytes"], "front.png", { type: "image/png" });
+    fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => file }],
+        files: [file],
+        getData: () => "",
+      },
+    });
+    expect(await screen.findByAltText("front.png")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Add a text goal first");
+    expect(onStart).not.toHaveBeenCalled();
   });
 });

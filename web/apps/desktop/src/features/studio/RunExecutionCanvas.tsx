@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node } from "@xyflow/react";
+import { Background, ConnectionLineType, Controls, MiniMap, ReactFlow, type Edge, type Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { AgentRunResponse, AgentSource, RuntimeEvent, RuntimeRunStatus } from "@veyra/api-contracts";
 import { Button, Panel } from "@veyra/ui";
@@ -10,9 +10,11 @@ import { studioNodeTypes } from "./canvas-nodes";
 import { FlowEdge, type FlowEdgeData } from "./canvas-edge";
 import { projectRunToExecutionState, type NodeExecutionState } from "./execution-state";
 import { RuntimeNodeInspector } from "./RuntimeNodeInspector";
-import { toCanvas, type CanvasNodeData } from "./graph";
+import { isLoopAgent, toCanvas, type CanvasNodeData } from "./graph";
+import { loopTimelineLabel } from "./studio-run-ui";
 
 const edgeTypes = { flowEdge: FlowEdge };
+const PUBLIC_LOOP_EVENTS = new Set(["node.started", "node.completed", "tool.requested", "tool.started", "tool.completed", "run.completed", "run.failed", "run.cancelled", "run.interrupted", "approval.requested"]);
 
 function stateLabel(state: NodeExecutionState, locale: "zh" | "en"): string {
   const labels: Record<NodeExecutionState, { zh: string; en: string }> = {
@@ -174,7 +176,7 @@ export function RunExecutionCanvas({
         data: {
           ...node.data,
           readOnly: true,
-          ...(node.data.flow ? {
+          ...((node.data.flow || node.data.binding) ? {
             runState: state ?? "idle",
             runStateLabel: stateLabel(state ?? "idle", locale),
           } : {}),
@@ -236,16 +238,18 @@ export function RunExecutionCanvas({
             edges={edges}
             nodeTypes={studioNodeTypes}
             edgeTypes={edgeTypes}
+            connectionLineType={ConnectionLineType.SmoothStep}
             nodesDraggable={false}
             nodesConnectable={false}
             edgesReconnectable={false}
             elementsSelectable
             deleteKeyCode={null}
-            fitView
-            fitViewOptions={{ padding: 0.38, minZoom: 0.22, maxZoom: 0.7 }}
             minZoom={0.15}
             maxZoom={1.6}
-            onNodeClick={(_, node) => setSelectedNodeId(node.data.flow?.id ?? null)}
+            onInit={(instance) => {
+              void instance.fitView({ padding: 0.38, minZoom: 0.22, maxZoom: 0.7 });
+            }}
+            onNodeClick={(_, node) => setSelectedNodeId(node.data.flow?.id ?? node.id)}
             proOptions={{ hideAttribution: true }}
           >
             <Background />
@@ -253,7 +257,19 @@ export function RunExecutionCanvas({
             <MiniMap pannable zoomable style={{ width: 148, height: 98 }} />
           </ReactFlow>
         </div>
-        {selectedNode && projection ? <RuntimeNodeInspector
+        {isLoopAgent(source) ? (
+          <aside className="run-execution-canvas__inspector" aria-label={zh ? "运行时间线" : "Run timeline"}>
+            <h2>{zh ? "运行时间线" : "Run timeline"}</h2>
+            <ol className="run-loop-timeline">
+              {(run.events ?? []).filter((event) => PUBLIC_LOOP_EVENTS.has(event.kind)).map((event) => (
+                <li key={event.sequence}>
+                  <strong>{loopTimelineLabel(event.kind, event.payload, locale)}</strong>
+                  <small>{event.timestamp}</small>
+                </li>
+              ))}
+            </ol>
+          </aside>
+        ) : selectedNode && projection ? <RuntimeNodeInspector
           nodeId={selectedNode.id}
           events={selectedNodeEvents}
           state={projection.nodeStates.get(selectedNode.id) ?? "idle"}

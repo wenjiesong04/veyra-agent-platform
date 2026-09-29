@@ -1,4 +1,5 @@
 import { Boxes, Gauge, MessageCircle, MessageCirclePlus, Wrench } from "lucide-react";
+import { displayConversationTitle } from "./conversation-title";
 import { desktopRoutePaths, projectRoutePaths, type BuilderActivityItem, type DesktopRouteLocation } from "@veyra/api-contracts";
 import type { NavigationGroup } from "@veyra/ui";
 
@@ -62,8 +63,9 @@ export function projectTreeSelection(route: DesktopRouteLocation): ProjectTreeSe
   if (route.kind === "project-workflow") return { projectId, workflowId: route.workflowId, resourceKind: "workflows" };
   if (route.kind === "project-knowledge") return { projectId, resourceKind: "knowledge" };
   if (route.kind === "project-knowledge-item") return { projectId, knowledgeId: route.knowledgeId, resourceKind: "knowledge" };
+  if (route.kind === "project-files") return { projectId, resourceKind: "files" };
   if (route.kind === "project-runs") return { projectId, resourceKind: "runs" };
-  if (route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "factory" || route.kind === "project-files") return { projectId };
+  if (route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "factory") return { projectId };
   return { projectId };
 }
 
@@ -126,7 +128,7 @@ export function agentRecentNavigation(
     const detail = [projectName, when].filter(Boolean).join(" · ");
     return [{
       href: projectRoutePaths.projectChat(projectId, item.conversation_id),
-      label: item.title,
+      label: displayConversationTitle(item.title, locale),
       icon: MessageCircle,
       active: context.conversationId === item.conversation_id,
       detail,

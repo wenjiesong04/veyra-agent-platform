@@ -210,6 +210,67 @@
   min-width: 0;
 }
 
+.runtime-input-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.runtime-input-field-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.runtime-input-field-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.runtime-input-field-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.runtime-input-field-meta small {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--subtle);
+  background: var(--surface-soft);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.runtime-input-field-meta .runtime-input-requirement.is-required {
+  border-color: color-mix(in srgb, var(--accent-strong) 26%, var(--line));
+  color: var(--accent-strong);
+}
+
+.runtime-input-description,
+.runtime-input-multiple {
+  display: block;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.runtime-input-description { overflow-wrap: anywhere; }
+
 .runtime-artifact-list,
 .runtime-artifact-grid {
   margin: 0;
@@ -258,4 +319,29 @@
 .runtime-output-text,
 .runtime-output-scalar {
   margin: 0;
+  white-space: pre-wrap;
+}
+
+.runtime-output-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.runtime-output-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.runtime-output-table th,
+.runtime-output-table td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.runtime-output-table th {
+  background: var(--surface-soft);
+  font-weight: 650;
 }

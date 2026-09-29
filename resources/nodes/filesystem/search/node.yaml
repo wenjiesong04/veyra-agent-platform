@@ -2,6 +2,8 @@
 availability: ready
 description: Search UTF-8 text files inside a Project and return bounded matches.
 factory_selectable: true
+capabilities:
+- workspace_search
 kind: tool
 name: Filesystem Search
 required_permissions:

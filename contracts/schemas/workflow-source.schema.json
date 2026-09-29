@@ -93,6 +93,17 @@
         },
         "json_schema": {
           "type": "object"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
         }
       },
       "allOf": [
@@ -296,6 +307,15 @@
         "prompt": {
           "type": "string",
           "minLength": 1
+        },
+        "review": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*(?:\\.(?:[a-z][a-z0-9_-]*|[0-9]+))*$"
+        },
+        "max_revisions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
         }
       }
     },
@@ -501,6 +521,11 @@
               "width": {
                 "type": "integer",
                 "minimum": 160,
+                "maximum": 640
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 96,
                 "maximum": 640
               },
               "manual_position": {

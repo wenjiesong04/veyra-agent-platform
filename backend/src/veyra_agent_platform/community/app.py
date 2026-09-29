@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -38,7 +40,8 @@ from .storage.s3_storage import (
     S3StorageConfig,
 )
 
-COMMUNITY_DATABASE_HEAD = "community_0008_plugin_registry"
+COMMUNITY_DATABASE_HEAD = "community_0015_cloud_runs"
+COMMUNITY_DATABASE_COMPATIBLE_HEADS = frozenset({COMMUNITY_DATABASE_HEAD})
 
 
 def _database_revision(database: CommunityDatabase) -> str | None:
@@ -98,6 +101,7 @@ def create_app(
     *,
     database: CommunityDatabase | None = None,
     mail_provider: MailProvider | None = None,
+    host_type: Literal["community", "cloud"] | None = None,
 ) -> FastAPI:
     """Create the Community application without starting a server."""
 
@@ -117,7 +121,9 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         revision = _database_revision(resolved_database)
         application.state.database_revision = revision
-        application.state.database_ready = revision == COMMUNITY_DATABASE_HEAD
+        application.state.database_ready = (
+            revision in COMMUNITY_DATABASE_COMPATIBLE_HEADS
+        )
         try:
             yield
         finally:
@@ -128,6 +134,15 @@ def create_app(
         version=resolved_settings.app_version,
         lifespan=lifespan,
     )
+    allowed_origins = resolved_settings.allowed_origin_set
+    if allowed_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=sorted(allowed_origins),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     application.state.settings = resolved_settings
     application.state.community_database = resolved_database
     application.state.auth_workflows = auth_workflows
@@ -160,6 +175,7 @@ def create_app(
             service_name=resolved_settings.service_name,
             app_version=resolved_settings.app_version,
             build_sha=resolved_settings.build_sha,
+            host_type=host_type,
         )
     )
     application.include_router(build_auth_router())

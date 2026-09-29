@@ -139,6 +139,11 @@ describe("Studio catalog palette", () => {
     expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Model")).toBe(false);
     expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Tool")).toBe(false);
     expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Agent")).toBe(false);
+    expect(paletteForMode(items, "loop").some((item) => item.componentType === "Condition")).toBe(false);
+    expect(paletteForMode(items, "loop").some((item) => item.componentType === "HumanApproval")).toBe(false);
+    expect(paletteForMode(items, "loop").some((item) => item.componentType === "Model")).toBe(false);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Start")).toBe(true);
+    expect(paletteForMode(items, "workflow").some((item) => item.componentType === "Output")).toBe(true);
   });
 
   it("keeps Workflow AgentCall draggable even when Factory cannot select it", () => {

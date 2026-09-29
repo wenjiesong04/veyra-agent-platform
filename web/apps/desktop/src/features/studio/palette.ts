@@ -165,9 +165,16 @@ export function paletteFromCatalog(resources: ResourceDescriptor[]): PaletteItem
   return [...components, ...rest];
 }
 
-export function paletteForMode(items: PaletteItem[], mode: "agent" | "workflow" = "agent"): PaletteItem[] {
+export function paletteForMode(items: PaletteItem[], mode: "agent" | "workflow" | "loop" = "agent"): PaletteItem[] {
   if (mode === "workflow") {
-    return items.filter((item) => item.group === "component" && WORKFLOW_COMPONENT_TYPES.has(item.componentType));
+    return items.filter((item) =>
+      (item.group === "component" && WORKFLOW_COMPONENT_TYPES.has(item.componentType))
+      || item.group === "tool"
+      || item.group === "mcp"
+    );
+  }
+  if (mode === "loop") {
+    return items.filter((item) => item.group !== "component");
   }
   return items.filter((item) => {
     if (item.componentType === "AgentCall" || item.componentType === "Agent") return false;
@@ -335,7 +342,10 @@ export function attachCatalogBinding(
   bindingId: string,
   position: { x: number; y: number },
 ): AgentSource {
-  const veyra = source.extensions.veyra;
+  const granted = resource.kind === "tool" || resource.kind === "mcp_tool"
+    ? grantCatalogResource(source, resource)
+    : source;
+  const veyra = granted.extensions.veyra;
   const point = { x: Math.round(position.x), y: Math.round(position.y) };
   const skillRefs = unique([
     ...(veyra.skill_refs ?? []),
@@ -346,9 +356,9 @@ export function attachCatalogBinding(
     ...(resource.kind === "policy" ? [resource.reference] : []),
   ]);
   return {
-    ...source,
+    ...granted,
     extensions: {
-      ...source.extensions,
+      ...granted.extensions,
       veyra: {
         ...veyra,
         skill_refs: skillRefs,
@@ -359,13 +369,13 @@ export function attachCatalogBinding(
         ]),
       },
     },
-    lock: { ...source.lock, [resource.reference]: resource.content_hash },
+    lock: { ...granted.lock, [resource.reference]: resource.content_hash },
     ui: {
-      ...source.ui,
+      ...granted.ui,
       bindings: {
-        ...(source.ui.bindings ?? {}),
+        ...(granted.ui.bindings ?? {}),
         [bindingId]: {
-          kind: resource.kind === "mcp_tool" ? "mcp_tool" : resource.kind as "skill" | "policy" | "template",
+          kind: resource.kind === "mcp_tool" ? "mcp_tool" : resource.kind === "tool" ? "tool" : resource.kind as "skill" | "policy" | "template" | "knowledge",
           reference: resource.reference,
           ...point,
         },

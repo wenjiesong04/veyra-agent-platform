@@ -41,6 +41,7 @@ _OPERATION_KINDS = {
     "approval",
     "verification",
 }
+_REUSABLE_OPERATION_KINDS = {"model", "capability", "transform"}
 _STEP_INTENT_FIELDS = {
     "semantic_key",
     "name",
@@ -53,10 +54,12 @@ _STEP_INTENT_FIELDS = {
     "inputs",
     "outputs",
     "branches",
+    "condition_expression",
     "branch_condition",
     "branch_key",
     "output_mapping",
 }
+_STEP_IO_KINDS = {"model", "capability", "transform", "approval"}
 _BRANCH_FIELDS = {"key", "label"}
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _UUID7 = re.compile(
@@ -78,6 +81,8 @@ class SemanticField:
     type: FieldType
     description: str
     multiple: bool = False
+    required: bool = True
+    source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"name": self.name, "type": self.type}
@@ -85,6 +90,10 @@ class SemanticField:
             payload["description"] = self.description
         if self.multiple:
             payload["multiple"] = True
+        if not self.required:
+            payload["required"] = False
+        if self.source:
+            payload["source"] = self.source
         return payload
 
 
@@ -112,6 +121,7 @@ class SemanticStepIntent:
     inputs: tuple[SemanticField, ...] = ()
     outputs: tuple[SemanticField, ...] = ()
     branches: tuple[SemanticBranch, ...] = ()
+    condition_expression: str = ""
     branch_condition: str = ""
     branch_key: str = ""
     output_mapping: tuple[tuple[str, str], ...] = ()
@@ -137,6 +147,8 @@ class SemanticStepIntent:
             payload["outputs"] = [item.to_dict() for item in self.outputs]
         if self.branches:
             payload["branches"] = [item.to_dict() for item in self.branches]
+        if self.condition_expression:
+            payload["condition_expression"] = self.condition_expression
         if self.branch_condition:
             payload["branch_condition"] = self.branch_condition
         if self.branch_key:
@@ -272,6 +284,18 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
             f"step_intents[{index}].dependency_requirement",
             240,
         )
+        if reusable and kind not in _REUSABLE_OPERATION_KINDS:
+            raise ContractValidationError(
+                "code=invalid_reusable_capability "
+                f"path=step_intents[{key}].reusable_capability "
+                "expected=operation_kind_model_transform_or_capability"
+            )
+        if ("inputs" in record or "outputs" in record) and kind not in _STEP_IO_KINDS:
+            raise ContractValidationError(
+                "code=unsupported_step_io "
+                f"path=step_intents[{key}].inputs/outputs "
+                "expected=operation_kind_model_transform_capability_or_approval"
+            )
         inputs = _fields(record.get("inputs", []), f"step_intents[{index}].inputs", 16)
         outputs = _fields(
             record.get("outputs", []), f"step_intents[{index}].outputs", 8
@@ -280,6 +304,16 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
         if branches and kind != "condition":
             raise ContractValidationError(
                 f"step_intents[{index}].branches is only valid for condition steps"
+            )
+        condition_expression = _optional_text(
+            record.get("condition_expression"),
+            f"step_intents[{index}].condition_expression",
+            240,
+        )
+        if condition_expression and kind != "condition":
+            raise ContractValidationError(
+                f"step_intents[{index}].condition_expression is only valid for "
+                "condition steps"
             )
         branch_condition = _optional_text(
             record.get("branch_condition"),
@@ -330,6 +364,7 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
                 inputs=inputs,
                 outputs=outputs,
                 branches=branches,
+                condition_expression=condition_expression,
                 branch_condition=branch_condition,
                 branch_key=branch_key,
                 output_mapping=output_mapping,
@@ -364,12 +399,15 @@ def _step_intents(value: Any) -> tuple[SemanticStepIntent, ...]:
                     f"unknown key {item.branch_condition}"
                 )
             parent = next(step for step in parsed if step.semantic_key == condition)
-            if parent.operation_kind != "condition":
+            if parent.operation_kind == "condition":
+                branch_keys = {branch.key.casefold() for branch in parent.branches}
+            elif parent.operation_kind == "approval":
+                branch_keys = {"approved", "rejected"}
+            else:
                 raise ContractValidationError(
                     f"step_intents[{item.semantic_key}].branch_condition must "
-                    "reference a condition"
+                    "reference a condition or approval"
                 )
-            branch_keys = {branch.key.casefold() for branch in parent.branches}
             if item.branch_key.casefold() not in branch_keys:
                 raise ContractValidationError(
                     f"step_intents[{item.semantic_key}].branch_key is not declared by "
@@ -476,7 +514,7 @@ def _fields(value: Any, field: str, limit: int) -> tuple[SemanticField, ...]:
         record = require_mapping(item, f"{field}[{index}]")
         require_keys(
             record,
-            allowed={"name", "type", "description", "multiple"},
+            allowed={"name", "type", "description", "multiple", "required", "source"},
             required={"name", "type"},
         )
         name = _text(record["name"], f"{field}[{index}].name", 80)
@@ -504,9 +542,21 @@ def _fields(value: Any, field: str, limit: int) -> tuple[SemanticField, ...]:
                     record.get("description"), f"{field}[{index}].description", 240
                 ),
                 multiple=many,
+                required=_optional_required(record.get("required"), field, index),
+                source=_optional_text(
+                    record.get("source"), f"{field}[{index}].source", 160
+                ),
             )
         )
     return tuple(parsed)
+
+
+def _optional_required(value: Any, field: str, index: int) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, bool):
+        raise ContractValidationError(f"{field}[{index}].required must be a boolean")
+    return value
 
 
 def _phrases(

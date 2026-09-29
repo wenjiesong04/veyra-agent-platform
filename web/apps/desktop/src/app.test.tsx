@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderKanban } from "lucide-react";
-import { desktopLoginHash, parseDesktopRoute, projectRoutePaths, type CommunityAccount, type ProjectSummaryResponse, type SaveDraftRequest, type SaveDraftResponse } from "@veyra/api-contracts";
+import { communityRoutePaths, desktopLoginHash, parseDesktopRoute, projectRoutePaths, type CommunityAccount, type ProjectSummaryResponse, type SaveDraftRequest, type SaveDraftResponse } from "@veyra/api-contracts";
 import { createCommunityApi, errorCopy, normalizeCommunityAvatarUrl } from "@veyra/connected-account";
 import { ApplicationShell, ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "./api/local-client";
@@ -102,8 +102,8 @@ const connectedAccount = {
 
 const connectedSession = {
   id: "session-desktop",
-  device_name: "Alice Mac",
-  user_agent: "Test browser",
+  device_name: null,
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
   created_at: "2026-08-25T08:00:00Z",
   last_seen_at: "2026-08-26T08:00:00Z",
   expires_at: "2026-09-25T08:00:00Z",
@@ -425,14 +425,17 @@ describe("desktop Project workspace", () => {
     await user.click(await screen.findByRole("button", { name: "Expand Project: Tree Project" }));
     const agentLink = screen.getByRole("link", { name: "Tree Agent" });
     expect(agentLink).toHaveAttribute("href", projectRoutePaths.agentDesign("tree", "agent-tree"));
+    expect(screen.getByRole("link", { name: "Open App: Tree Agent" })).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
     expect(agentLink).toHaveClass("tone-instance", "kind-agent");
     expect(screen.getByRole("link", { name: "Agents" })).toHaveAttribute("href", projectRoutePaths.agents("tree"));
     expect(screen.getByRole("link", { name: "Agents" })).toHaveClass("tone-kind", "kind-agent");
     expect(screen.getByRole("link", { name: "Workflows" })).toHaveAttribute("href", projectRoutePaths.workflows("tree"));
     expect(screen.getByRole("link", { name: "Workflows" })).toHaveClass("tone-kind", "kind-workflow");
     expect(screen.getByRole("link", { name: "Knowledge" })).toHaveAttribute("href", projectRoutePaths.knowledge("tree"));
-    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).queryByRole("link", { name: "Files" })).not.toBeInTheDocument();
-    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Files" })).toHaveAttribute("href", projectRoutePaths.files("tree"));
+    expect(screen.getByRole("link", { name: "Files" })).toHaveClass("tone-kind", "kind-files");
+    expect(screen.getByRole("link", { name: "Runs" })).toHaveAttribute("href", projectRoutePaths.runs("tree"));
+    expect(screen.getByRole("link", { name: "Runs" })).toHaveClass("tone-kind", "kind-runs");
     expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", "#/runs");
     const projectRow = document.querySelector(`.nav-group-projects .sidebar-nav-item-row`);
     const projectLink = projectRow?.querySelector(`a[href="${projectRoutePaths.project("tree")}"]`);
@@ -671,8 +674,8 @@ describe("desktop Project workspace", () => {
     expect(within(tree as HTMLElement).getByRole("link", { name: "Agents" })).toHaveClass("tone-kind");
     expect(within(tree as HTMLElement).getByRole("link", { name: "Workflows" })).toHaveClass("tone-kind");
     expect(within(tree as HTMLElement).getByRole("link", { name: "Knowledge" })).toHaveClass("tone-kind");
-    expect(within(tree as HTMLElement).queryByRole("link", { name: "Files" })).not.toBeInTheDocument();
-    expect(within(tree as HTMLElement).queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+    expect(within(tree as HTMLElement).getByRole("link", { name: "Files" })).toHaveClass("tone-kind", "kind-files");
+    expect(within(tree as HTMLElement).getByRole("link", { name: "Runs" })).toHaveClass("tone-kind", "kind-runs");
   });
 
   it("renders grandchild Agent links in the sidebar and reveals a Project folder", async () => {
@@ -696,7 +699,7 @@ describe("desktop Project workspace", () => {
     await waitFor(() => expect(api.revealProject).toHaveBeenCalledWith("nested"));
   });
 
-  it("renders title-only root headers and linked nested breadcrumbs at 320px", async () => {
+  it("renders root and nested headers as the same breadcrumb path", async () => {
     setViewport(true);
     const nested = project({ project_id: "crumb", name: "Breadcrumb Project", agents: [{ agent_id: "crumb-agent", slug: "breadcrumb-agent", name: "Breadcrumb Agent", description: "", pinned: false, source_path: "agents/breadcrumb/agent.vagent.yaml", source_file_hash: "crumb-hash" }], agent_count: 1 });
     const api = apiFor([nested]);
@@ -714,8 +717,9 @@ describe("desktop Project workspace", () => {
     cleanup();
     window.location.hash = "#/projects";
     await renderApp(apiFor());
-    expect(await screen.findByRole("heading", { name: "New chat", level: 1 })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Breadcrumb")).not.toBeInTheDocument();
+    const rootCrumbs = await screen.findByLabelText("Breadcrumb");
+    expect(within(rootCrumbs).getByText("New chat", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "New chat", level: 1 })).not.toBeInTheDocument();
     const menu = screen.getByRole("button", { name: "Open navigation" });
     await userEvent.click(menu);
     expect(screen.getAllByRole("button", { name: "Close navigation" })).toHaveLength(2);
@@ -759,7 +763,7 @@ describe("desktop Project workspace", () => {
     expect(await screen.findByRole("heading", { name: "Opened Project", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Collaboration" })).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: /README.md/ })).toHaveAttribute("href", expect.stringContaining("#/files/"));
-    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).queryByRole("link", { name: "Files" })).not.toBeInTheDocument();
+    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).getByRole("link", { name: "Files" })).toHaveAttribute("href", projectRoutePaths.files("project-open"));
     expect(screen.queryByRole("tab", { name: "All" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Components" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Tools / MCP" })).not.toBeInTheDocument();
@@ -826,10 +830,13 @@ describe("desktop Project workspace", () => {
     expect(screen.getByRole("tab", { name: "Components" })).toBeInTheDocument();
   });
 
-  it("does not invent a Community catalog or featured packages", async () => {
+  it("uses the real Discover surface without inventing featured releases", async () => {
     window.location.hash = "#/community";
     await renderApp(apiFor());
-    expect(await screen.findByRole("heading", { name: "The Community catalog is not connected." })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Discover" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("heading", { name: "Community" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Veyra Community")).not.toBeInTheDocument();
+    expect(screen.queryByText("Discover useful Agents, Workflows, Skills, and Tools from the community.")).not.toBeInTheDocument();
     expect(screen.queryByText("Research Brief")).not.toBeInTheDocument();
     expect(screen.queryByText("4.8")).not.toBeInTheDocument();
   });
@@ -925,7 +932,7 @@ describe("desktop Project workspace", () => {
     expect(projectTreeLink).not.toHaveClass("contextual");
     expect(within(tree).getByRole("link", { name: "Agents" })).not.toHaveClass("active");
     expect(within(tree).getByRole("link", { name: "Agents" })).not.toHaveClass("contextual");
-    expect(within(tree).queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+    expect(within(tree).getByRole("link", { name: "Runs" })).toHaveAttribute("href", projectRoutePaths.runs("agent-project"));
     expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("agent-project"));
     expect(document.querySelector(".nav-group-recent")).toBeInTheDocument();
     expect(screen.getByText("No recent chats yet.")).toBeInTheDocument();
@@ -950,8 +957,8 @@ describe("desktop Project workspace", () => {
     expect(within(tree).getByRole("link", { name: "Agent" })).toHaveClass("tone-kind", "kind-agent");
     expect(within(tree).getByRole("link", { name: "工作流" })).toHaveClass("tone-kind", "kind-workflow");
     expect(within(tree).getByRole("link", { name: "知识" })).toHaveClass("tone-kind", "kind-knowledge");
-    expect(within(tree).queryByRole("link", { name: "文件" })).not.toBeInTheDocument();
-    expect(within(tree).queryByRole("link", { name: "运行记录" })).not.toBeInTheDocument();
+    expect(within(tree).getByRole("link", { name: "文件" })).toHaveClass("tone-kind", "kind-files");
+    expect(within(tree).getByRole("link", { name: "运行记录" })).toHaveClass("tone-kind", "kind-runs");
     expect(screen.getByRole("link", { name: "历史" })).toHaveAttribute("href", projectRoutePaths.runs("agent-project-zh"));
     const agentTreeLink = tree.querySelector(`a[href="${projectRoutePaths.agentDesign("agent-project-zh", "agent-zh")}"]`);
     const projectTreeLink = tree.querySelector(`a[href="${projectRoutePaths.project("agent-project-zh")}"]`);
@@ -1015,7 +1022,7 @@ describe("desktop Project workspace", () => {
     expect(window.location.hash).toBe("#/runs");
     await waitFor(() => expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("aria-current", "page"));
     expect(screen.getByRole("link", { name: "History" })).toHaveClass("is-current");
-    expect(screen.getByRole("heading", { name: "History" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Breadcrumb")).getByText("History", { selector: "[aria-current=page]" })).toBeInTheDocument();
 
     window.location.hash = projectRoutePaths.project("history-project");
     await waitFor(() => expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("history-project")));
@@ -1023,7 +1030,8 @@ describe("desktop Project workspace", () => {
     await user.click(screen.getByRole("link", { name: "History" }));
     expect(window.location.hash).toBe(projectRoutePaths.runs("history-project"));
     await waitFor(() => expect(document.querySelector("a.history-control")).toHaveAttribute("aria-current", "page"));
-    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).getByRole("link", { name: "Runs" })).toHaveAttribute("href", projectRoutePaths.runs("history-project"));
+    expect(within(document.querySelector(".nav-group-projects") as HTMLElement).getByRole("link", { name: "Runs" })).toHaveClass("active");
   });
 
   it("projects persisted Builder conversations into Recent without changing Runtime History", async () => {
@@ -1155,15 +1163,22 @@ describe("desktop Project workspace", () => {
     api.getProject.mockImplementation(async (projectId: string) => (
       projectId === created.project_id ? created : project({ project_id: projectId, name: projectId })
     ));
+    const submitBuilderTurn = vi.fn(() => new Promise<never>(() => undefined));
+    Object.assign(api, { submitBuilderTurn });
     const user = userEvent.setup();
     await renderApp(api);
     await user.type(await screen.findByRole("textbox", { name: "Message" }), "Write a brief");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(api.createProject).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Confirm Project and continue" }));
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith({ description: "" }));
     expect(window.location.hash).toBe("#/projects/created-project/chat");
-    expect(await screen.findByRole("heading", { name: "What do you want to achieve in Created Project?", level: 2 })).toBeInTheDocument();
+    await waitFor(() => expect(submitBuilderTurn).toHaveBeenCalledTimes(1));
+    expect(submitBuilderTurn).toHaveBeenCalledWith(
+      "created-project",
+      expect.objectContaining({ content: "Write a brief" }),
+      expect.anything(),
+    );
+    expect(await screen.findByText("Write a brief")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
   });
 
   it("opens the selected Project chat immediately and switches the sidebar", async () => {
@@ -1328,6 +1343,17 @@ describe("desktop Project workspace", () => {
     render(<DesktopApp api={apiFor()} communityApi={accountApi(fetcher)} />);
 
     expect(await screen.findByDisplayValue("alice@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Alice", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Public profile" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Device records" })).toBeInTheDocument();
+    expect(screen.getByText("Mac · Chrome")).toBeInTheDocument();
+    expect(screen.getByText("1 active session")).toBeInTheDocument();
+    expect(screen.getByText("Account access")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Creator workspace/ })).toHaveAttribute("href", communityRoutePaths.mine);
+    expect(screen.getByRole("link", { name: /Published releases/ })).toHaveAttribute("href", communityRoutePaths.published);
+    expect(screen.getByRole("link", { name: /Saved resources/ })).toHaveAttribute("href", communityRoutePaths.starred);
+    expect(screen.getByText("What stays on this device")).toBeInTheDocument();
+    expect(screen.getByText("Project, Agent, and Workflow source files")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open account menu" }));
     expect(screen.getByRole("menuitem", { name: "Account" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
@@ -1336,9 +1362,10 @@ describe("desktop Project workspace", () => {
     expect(avatarInput).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
     const file = new File(["png bytes"], "avatar.png", { type: "image/png" });
     await user.upload(avatarInput, file);
-    await user.click(screen.getAllByRole("button", { name: "Save changes" })[0]!);
+    await user.click(screen.getAllByRole("button", { name: "Save profile" })[0]!);
     expect(await screen.findByText("Avatar updated.")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Avatar preview" })).toHaveAttribute("src", "/community-api/api/v1/avatars/account-desktop");
+    expect(document.querySelector(".shell-account-trigger .shell-account-avatar img")).toHaveAttribute("src", "/community-api/api/v1/avatars/account-desktop");
     expect(requests.some((request) => request.url.endsWith("/account/avatar") && request.method === "POST")).toBe(true);
 
     await user.click(screen.getByRole("button", { name: "Remove avatar" }));
@@ -1519,7 +1546,31 @@ describe("shared ApplicationShell account behavior", () => {
     });
   });
 
-  it("sticks original section headers and folds chevrons when content leaves view", async () => {
+  it("does not reserve a pinned slot when the pinned group is absent", () => {
+    render(
+      <ThemeProvider>
+        <ApplicationShell
+          brand={{ name: "Veyra", subtitle: "Agent Platform" }}
+          navigation={[
+            { label: "Build", section: "fixed", items: [{ href: "#/projects", label: "Workspace Home", icon: FolderKanban }] },
+            { label: "Projects", section: "projects", action: <span className="nav-group-action-slot">+</span>, items: [] },
+            { label: "Recent", section: "recent", items: [{ href: "#/projects/listed/chat", label: "Recent chat", icon: FolderKanban }] },
+          ]}
+          activeHref="#/projects"
+          eyebrow="Workspace"
+          title="Projects"
+        >
+          <div>Workspace content</div>
+        </ApplicationShell>
+      </ThemeProvider>,
+    );
+    const scrollNav = document.querySelector(".sidebar-nav-scroll") as HTMLElement;
+    expect(scrollNav.querySelector(".nav-group-pinned")).toBeNull();
+    expect(scrollNav.style.getPropertyValue("--nav-sticky-first")).toBe("0px");
+    expect(scrollNav.style.getPropertyValue("--nav-sticky-rest")).toBe("39px");
+  });
+
+  it("sticks original section headers and auto-folds upper section bodies while scrolling", async () => {
     const { readFileSync } = await import("node:fs");
     const { dirname, join } = await import("node:path");
     const { fileURLToPath } = await import("node:url");
@@ -1532,79 +1583,97 @@ describe("shared ApplicationShell account behavior", () => {
     expect(shellCss).toMatch(/\.nav-group-pinned\s*>\s*\.nav-group-chrome\s*\{[\s\S]*?top:\s*0;/);
     expect(shellCss).toMatch(/\.nav-group-projects\s*>\s*\.nav-group-chrome\s*\{[\s\S]*?top:\s*var\(--nav-sticky-first/);
     expect(shellCss).toMatch(/\.nav-group-recent\s*>\s*\.nav-group-chrome\s*\{[\s\S]*?top:\s*calc\(var\(--nav-sticky-first/);
+    expect(shellCss).toMatch(/\.nav-group-body\s*\{[\s\S]*?transition:\s*grid-template-rows\s+180ms/);
     expect(shellCss).not.toMatch(/nav-sticky-stack/);
     expect(shellCss).not.toMatch(/is-auto-sticky/);
 
-    let notify: IntersectionObserverCallback | undefined;
-    class TestIntersectionObserver {
-      constructor(callback: IntersectionObserverCallback) {
-        notify = callback;
-      }
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-      takeRecords(): IntersectionObserverEntry[] {
-        return [];
-      }
-      root = null;
-      rootMargin = "0px";
-      thresholds = [0];
-    }
-    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
-
-    try {
-      render(
-        <ThemeProvider>
-          <ApplicationShell
-            brand={{ name: "Veyra", subtitle: "Agent Platform" }}
-            navigation={[
-              { label: "Build", section: "fixed", items: [{ href: "#/projects", label: "Workspace Home", icon: FolderKanban }] },
-              { label: "Pinned", section: "pinned", items: [{ href: "#/projects/pin", label: "Pinned One", icon: FolderKanban }] },
-              { label: "Projects", section: "projects", action: <span className="nav-group-action-slot">+</span>, items: [{ href: "#/projects/listed", label: "Listed Project", icon: FolderKanban }] },
-              { label: "Recent", section: "recent", items: [{ href: "#/projects/listed/chat", label: "Recent chat", icon: FolderKanban }] },
-            ]}
-            activeHref="#/projects"
-            eyebrow="Workspace"
-            title="Projects"
-          >
-            <div>Workspace content</div>
-          </ApplicationShell>
-        </ThemeProvider>,
-      );
-      const scrollNav = document.querySelector(".sidebar-nav-scroll") as HTMLElement;
-      const pinned = document.querySelector(".nav-group-pinned") as HTMLElement;
-      const projects = document.querySelector(".nav-group-projects") as HTMLElement;
-      const recent = document.querySelector(".nav-group-recent") as HTMLElement;
-      Object.defineProperty(scrollNav, "clientHeight", { configurable: true, value: 400 });
-      expect(document.querySelector(".nav-sticky-stack")).not.toBeInTheDocument();
-      expect(pinned.querySelector(".nav-group-heading")).not.toBeNull();
-      expect(projects.querySelector(".nav-group-heading")).not.toBeNull();
-      expect(recent.querySelector(".nav-group-heading")).not.toBeNull();
-      await waitFor(() => expect(notify).toEqual(expect.any(Function)));
-
-      notify?.(
-        [
-          { target: pinned.querySelector(".nav-group-body") as Element, intersectionRatio: 0, isIntersecting: false },
-          { target: projects.querySelector(".nav-group-body") as Element, intersectionRatio: 0, isIntersecting: false },
-          { target: recent.querySelector(".nav-group-body") as Element, intersectionRatio: 1, isIntersecting: true },
-        ] as IntersectionObserverEntry[],
-        {} as IntersectionObserver,
-      );
-      await waitFor(() => expect(screen.getByRole("button", { name: "Expand Pinned" })).toHaveAttribute("aria-expanded", "false"));
-      expect(within(pinned).getByRole("button", { name: "Expand Pinned" })).toBeInTheDocument();
-      expect(within(projects).getByRole("button", { name: "Expand Projects" })).toHaveAttribute("aria-expanded", "false");
-      expect(within(recent).getByRole("button", { name: "Collapse Recent" })).toHaveAttribute("aria-expanded", "true");
-      expect(screen.getByRole("link", { name: "Pinned One" })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "Listed Project" })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "Recent chat" })).toBeInTheDocument();
-      expect(JSON.parse(window.localStorage.getItem("veyra.nav-section-collapsed.v1") ?? "{}")).toEqual({
-        pinned: false,
-        projects: false,
-        recent: false,
+    function mockBox(node: Element, top: number, height: number) {
+      (node as HTMLElement).getBoundingClientRect = () => ({
+        x: 0,
+        y: top,
+        width: 240,
+        height,
+        top,
+        right: 240,
+        bottom: top + height,
+        left: 0,
+        toJSON() {
+          return {};
+        },
       });
-    } finally {
-      vi.unstubAllGlobals();
     }
+
+    render(
+      <ThemeProvider>
+        <ApplicationShell
+          brand={{ name: "Veyra", subtitle: "Agent Platform" }}
+          navigation={[
+            { label: "Build", section: "fixed", items: [{ href: "#/projects", label: "Workspace Home", icon: FolderKanban }] },
+            { label: "Pinned", section: "pinned", items: [{ href: "#/projects/pin", label: "Pinned One", icon: FolderKanban }] },
+            { label: "Projects", section: "projects", action: <span className="nav-group-action-slot">+</span>, items: [{ href: "#/projects/listed", label: "Listed Project", icon: FolderKanban }] },
+            { label: "Recent", section: "recent", items: [{ href: "#/projects/listed/chat", label: "Recent chat", icon: FolderKanban }] },
+          ]}
+          activeHref="#/projects"
+          eyebrow="Workspace"
+          title="Projects"
+        >
+          <div>Workspace content</div>
+        </ApplicationShell>
+      </ThemeProvider>,
+    );
+    const scrollNav = document.querySelector(".sidebar-nav-scroll") as HTMLElement;
+    const pinned = document.querySelector(".nav-group-pinned") as HTMLElement;
+    const projects = document.querySelector(".nav-group-projects") as HTMLElement;
+    const recent = document.querySelector(".nav-group-recent") as HTMLElement;
+    expect(document.querySelector(".nav-sticky-stack")).not.toBeInTheDocument();
+    expect(pinned.querySelector(".nav-group-heading")).not.toBeNull();
+    expect(projects.querySelector(".nav-group-heading")).not.toBeNull();
+    expect(recent.querySelector(".nav-group-heading")).not.toBeNull();
+
+    Object.defineProperty(scrollNav, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(scrollNav, "scrollTop", { configurable: true, writable: true, value: 0 });
+    mockBox(scrollNav, 0, 400);
+    mockBox(pinned.querySelector(".nav-group-chrome") as HTMLElement, 0, 38);
+    mockBox(pinned.querySelector(".nav-group-body") as HTMLElement, -160, 200);
+    Object.defineProperty(pinned.querySelector(".nav-group-body-inner") as HTMLElement, "scrollHeight", { configurable: true, value: 200 });
+    mockBox(projects.querySelector(".nav-group-chrome") as HTMLElement, 38, 39);
+    mockBox(projects.querySelector(".nav-group-body") as HTMLElement, 77, 200);
+    Object.defineProperty(projects.querySelector(".nav-group-body-inner") as HTMLElement, "scrollHeight", { configurable: true, value: 200 });
+    mockBox(recent.querySelector(".nav-group-chrome") as HTMLElement, 277, 39);
+    mockBox(recent.querySelector(".nav-group-body") as HTMLElement, 316, 400);
+    Object.defineProperty(recent.querySelector(".nav-group-body-inner") as HTMLElement, "scrollHeight", { configurable: true, value: 400 });
+
+    scrollNav.scrollTop = 180;
+    fireEvent.scroll(scrollNav);
+    await waitFor(() => expect(pinned).toHaveClass("is-scroll-folded"));
+    expect(within(pinned).getByRole("button", { name: "Expand Pinned" })).toHaveAttribute("aria-expanded", "false");
+    expect(within(projects).getByRole("button", { name: "Collapse Projects" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(recent).getByRole("button", { name: "Collapse Recent" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByRole("link", { name: "Pinned One" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Listed Project" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Recent chat" })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("veyra.nav-section-collapsed.v1") ?? "{}")).toEqual({
+      pinned: false,
+      projects: false,
+      recent: false,
+    });
+
+    const user = userEvent.setup();
+    await user.click(within(pinned).getByRole("button", { name: "Expand Pinned" }));
+    await waitFor(() => expect(pinned).not.toHaveClass("is-scroll-folded"));
+    expect(screen.getByRole("link", { name: "Pinned One" })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("veyra.nav-section-collapsed.v1") ?? "{}")).toEqual({
+      pinned: false,
+      projects: false,
+      recent: false,
+    });
+    await user.click(within(pinned).getByRole("button", { name: "Collapse Pinned" }));
+    expect(pinned).toHaveClass("is-folded");
+    expect(JSON.parse(window.localStorage.getItem("veyra.nav-section-collapsed.v1") ?? "{}")).toEqual({
+      pinned: true,
+      projects: false,
+      recent: false,
+    });
   });
 });
 

@@ -30,7 +30,8 @@
         "document",
         "file",
         "audio",
-        "video"
+        "video",
+        "collection"
       ]
     },
     "typed_field_descriptor": {
@@ -56,7 +57,8 @@
             "document",
             "file",
             "audio",
-            "video"
+            "video",
+            "collection"
           ]
         },
         "artifact_kind": {
@@ -67,7 +69,8 @@
             "document",
             "file",
             "audio",
-            "video"
+            "video",
+            "collection"
           ]
         },
         "required": {
@@ -93,6 +96,17 @@
         },
         "json_schema": {
           "type": "object"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
         }
       },
       "allOf": [
@@ -255,6 +269,9 @@
         "system_prompt": {
           "type": "string",
           "minLength": 1
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
         }
       },
       "description": "Historical model node spelling, preserved during roundtrip."
@@ -306,6 +323,9 @@
         "expression": {
           "type": "string",
           "minLength": 1
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
         }
       }
     },
@@ -331,6 +351,12 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
         }
       }
     },
@@ -352,6 +378,18 @@
         "prompt": {
           "type": "string",
           "minLength": 1
+        },
+        "review": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*(?:\\.(?:[a-z][a-z0-9_-]*|[0-9]+))*$"
+        },
+        "max_revisions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
         }
       }
     },
@@ -434,6 +472,12 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
         }
       }
     },
@@ -550,7 +594,8 @@
                   "policy",
                   "template",
                   "mcp_tool",
-                  "knowledge"
+                  "knowledge",
+                  "tool"
                 ]
               },
               "reference": {
@@ -603,6 +648,11 @@
                 "minimum": 160,
                 "maximum": 640
               },
+              "height": {
+                "type": "integer",
+                "minimum": 96,
+                "maximum": 640
+              },
               "manual_position": {
                 "type": "boolean"
               }
@@ -628,10 +678,21 @@
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["true", "false"],
+            "required": [
+              "true",
+              "false"
+            ],
             "properties": {
-              "true": { "type": "string", "minLength": 1, "maxLength": 80 },
-              "false": { "type": "string", "minLength": 1, "maxLength": 80 }
+              "true": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "false": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
             }
           }
         }
@@ -672,6 +733,55 @@
         "system_prompt": {
           "type": "string",
           "minLength": 1
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        }
+      }
+    },
+    "port_kind": {
+      "type": "string",
+      "enum": [
+        "run_input",
+        "node",
+        "run_output"
+      ]
+    },
+    "port_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "port"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/port_kind"
+        },
+        "port": {
+          "$ref": "#/$defs/slug"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node_id"
+        }
+      }
+    },
+    "data_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "target"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/port_ref"
+        },
+        "target": {
+          "$ref": "#/$defs/port_ref"
         }
       }
     }
@@ -797,6 +907,36 @@
                 "type": "string",
                 "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@[0-9]+\\.[0-9]+\\.[0-9]+$"
               }
+            },
+            "execution_kind": {
+              "enum": [
+                "loop",
+                "graph"
+              ]
+            },
+            "interaction_mode": {
+              "enum": [
+                "auto",
+                "chat",
+                "form",
+                "hybrid"
+              ]
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "max_turns": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "handoff_agent_refs": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           }
         }
@@ -811,6 +951,13 @@
     "version": {
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "data_edges": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/data_edge"
+      }
     }
   }
 }

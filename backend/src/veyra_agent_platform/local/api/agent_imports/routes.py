@@ -13,6 +13,7 @@ from veyra_agent_platform.local.agent_imports import (
     AgentImportService,
 )
 from veyra_agent_platform.local.api.projects import TypedApiError
+from veyra_agent_platform.local.projects.origins import CommunityAgentOrigin
 
 _Result = TypeVar("_Result")
 
@@ -37,15 +38,44 @@ def build_router() -> APIRouter:
         request: Request,
         file: Annotated[UploadFile | None, File()] = None,
         path: Annotated[str | None, Form()] = None,
+        community_owner_handle: Annotated[str | None, Form()] = None,
+        community_slug: Annotated[str | None, Form()] = None,
+        community_version: Annotated[str | None, Form()] = None,
+        community_source_hash: Annotated[str | None, Form()] = None,
+        target_project_id: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         service = _imports(request)
+        community_origin = _community_origin(
+            owner_handle=community_owner_handle,
+            slug=community_slug,
+            version=community_version,
+            source_hash=community_source_hash,
+        )
+        if file is not None and path is not None:
+            raise TypedApiError(
+                422,
+                "agent_import_source_ambiguous",
+                "Provide either an uploaded file or an Agent folder path",
+            )
         if file is not None:
             contents = await file.read(12_000_001)
             await file.close()
             return _translate(
-                lambda: service.analyze_file(filename=file.filename, contents=contents)
+                lambda: service.analyze_file(
+                    filename=file.filename,
+                    contents=contents,
+                    community_origin=community_origin,
+                    target_project_id=target_project_id,
+                )
             )
         if path is not None:
+            if community_origin is not None or target_project_id is not None:
+                raise TypedApiError(
+                    422,
+                    "community_review_requires_uploaded_agent",
+                    "Project-scoped Community review is accepted only with "
+                    "a downloaded Agent file",
+                )
             return _translate(lambda: service.analyze_folder(path))
         raise TypedApiError(
             422,
@@ -86,6 +116,24 @@ def _imports(request: Request) -> AgentImportService:
     return cast(AgentImportService, service)
 
 
+def _community_origin(
+    *,
+    owner_handle: str | None,
+    slug: str | None,
+    version: str | None,
+    source_hash: str | None,
+) -> CommunityAgentOrigin | None:
+    try:
+        return CommunityAgentOrigin.from_optional_fields(
+            owner_handle=owner_handle,
+            slug=slug,
+            version=version,
+            source_hash=source_hash,
+        )
+    except ValueError as exc:
+        raise TypedApiError(422, "community_origin_invalid", str(exc)) from exc
+
+
 def _translate(operation: Callable[[], _Result]) -> _Result:
     try:
         return operation()
@@ -94,7 +142,12 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
             404
             if exc.code == "agent_import_not_found"
             else 409
-            if exc.code == "agent_import_already_applied"
+            if exc.code
+            in {
+                "agent_import_already_applied",
+                "agent_import_project_mismatch",
+                "agent_import_dependencies_changed",
+            }
             else 422
         )
         raise TypedApiError(status_code, exc.code, str(exc)) from exc

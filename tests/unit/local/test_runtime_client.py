@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -45,6 +47,41 @@ def test_http_transport_omits_fixed_sampling() -> None:
     assert b"top_p" not in body
     assert b"kimi-k3" in body
     assert b"reasoning_effort" in body
+
+
+def test_http_transport_sends_json_object_response_format() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "kimi-k3"}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "{}"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    transport = HttpRuntimeTransport(
+        RuntimeSettings(model_base_url="https://api.moonshot.cn/v1"),
+        http_client=httpx.Client(
+            base_url="https://api.moonshot.cn/v1",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    transport.complete(
+        [{"role": "user", "content": "hello"}],
+        response_format={"type": "json_object"},
+    )
+    assert captured
+    body = json.loads(captured[-1].read())
+    assert body["response_format"] == {"type": "json_object"}
 
 
 def test_process_key_is_ignored_when_host_key_is_disallowed(

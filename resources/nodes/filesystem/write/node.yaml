@@ -2,6 +2,8 @@
 availability: ready
 description: Write inside a Project workspace. Approval is required by default.
 factory_selectable: true
+capabilities:
+- workspace_write
 kind: tool
 name: Filesystem Write
 required_permissions:

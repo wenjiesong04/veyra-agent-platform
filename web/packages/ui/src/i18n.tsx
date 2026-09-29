@@ -56,6 +56,7 @@ export const dictionary: Dictionary = {
   workflowActions: { zh: "工作流操作", en: "Workflow actions" },
   knowledgeActions: { zh: "知识操作", en: "Knowledge actions" },
   openAgent: { zh: "打开 Agent", en: "Open Agent" },
+  openApp: { zh: "打开应用", en: "Open App" },
   orchestration: { zh: "编排", en: "Orchestration" },
   dataAnalysis: { zh: "数据分析", en: "Data analysis" },
   pinned: { zh: "置顶", en: "Pinned" },

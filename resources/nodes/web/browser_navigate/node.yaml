@@ -2,6 +2,8 @@
 availability: ready
 description: Fetch an allowlisted web page and extract its title, text, and links.
 factory_selectable: true
+capabilities:
+- browser_navigate
 kind: tool
 name: Browser Navigate
 required_permissions:

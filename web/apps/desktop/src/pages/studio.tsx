@@ -1,8 +1,9 @@
 import * as React from "react";
-import { Code2, LayoutPanelTop, Save, SlidersHorizontal } from "lucide-react";
+import { Code2, LayoutPanelTop, Play, Save, SlidersHorizontal } from "lucide-react";
 import type { ResourceDescriptor, StudioSource, TypedFields, ValidateResponse } from "@veyra/api-contracts";
-import { isTypedFieldSpec } from "@veyra/api-contracts";
-import { Button, Alert, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
+import { isTypedFieldSpec, projectRoutePaths } from "@veyra/api-contracts";
+import { Button, Alert, LinkButton, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
+import { committedVersions } from "../features/agents/interaction-mode";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { StudioWorkbench } from "../features/studio/StudioWorkbench";
@@ -25,12 +26,14 @@ const studioCopy = {
   zh: {
     saved: "已保存", dirty: "草稿变更", committed: "已提交", saving: "正在保存",
     save: "保存草稿", commit: "校验并提交版本", loading: "正在加载草稿…", unavailable: "本地草稿不可用", retry: "重试", loadDisk: "加载磁盘版本",
-    canvas: "Canvas", form: "表单", source: "源码", view: "Studio 视图", revision: "修订",
+    canvas: "Canvas", form: "表单", source: "源码", capabilities: "能力", view: "Studio 视图", revision: "修订",
+    openApp: "打开应用", commitFirst: "请先提交一个可运行版本",
   },
   en: {
     saved: "Saved", dirty: "Draft changes", committed: "Committed", saving: "Saving",
     save: "Save draft", commit: "Validate & commit", loading: "Loading draft…", unavailable: "Draft unavailable", retry: "Retry", loadDisk: "Load disk version",
-    canvas: "Canvas", form: "Form", source: "Source", view: "Studio view", revision: "revision",
+    canvas: "Canvas", form: "Form", source: "Source", capabilities: "Capabilities", view: "Studio view", revision: "revision",
+    openApp: "Open App", commitFirst: "Commit a version before opening the App",
   },
 } as const;
 
@@ -74,6 +77,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   const [revision, setRevision] = React.useState(0); const [etag, setEtag] = React.useState(""); const [status, setStatus] = React.useState<"loading" | "ready" | "offline" | "conflict" | "saving" | "saved" | "committed">("loading"); const [message, setMessage] = React.useState(""); const [behaviorHash, setBehaviorHash] = React.useState<string | null>(null); const [validation, setValidation] = React.useState<ValidateResponse | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
   const [resourceMessage, setResourceMessage] = React.useState("");
+  const [hasCommittedVersion, setHasCommittedVersion] = React.useState(false);
   const writing = React.useRef(false);
   const [writeBusy, setWriteBusy] = React.useState(false);
   const [invalidBuffers, setInvalidBuffers] = React.useState<Set<string>>(new Set());
@@ -97,6 +101,17 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
     catch (error) { setStatus(isDraftConflict(error) ? "conflict" : "offline"); setMessage(error instanceof Error ? error.message : (locale === "zh" ? "加载磁盘版本失败。" : "Could not load the disk version.")); }
   }, [api, projectId, agentId, workflowId, isWorkflow, locale, adoptDraft]);
   React.useEffect(() => { void load(); }, [load]);
+  React.useEffect(() => {
+    if (!agentId || !api.listAgentVersions) {
+      setHasCommittedVersion(false);
+      return;
+    }
+    let active = true;
+    void api.listAgentVersions(projectId, agentId).then((response) => {
+      if (active) setHasCommittedVersion(committedVersions(response.versions).length > 0);
+    }).catch(() => { if (active) setHasCommittedVersion(false); });
+    return () => { active = false; };
+  }, [api, projectId, agentId]);
   React.useEffect(() => {
     let active = true;
     if (api.listProjectResources) {
@@ -180,6 +195,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
           : null;
       if (!committed) return;
       setStatus("committed");
+      setHasCommittedVersion(true);
       setMessage(locale === "zh" ? `已提交不可变版本 ${committed.version_id}。` : `Immutable version ${committed.version_id} committed.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : (locale === "zh" ? "校验或提交失败。" : "Validation or commit failed."));
@@ -190,6 +206,8 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   if (!source) return <Panel><SectionHeading eyebrow="Studio" title={copy.unavailable} detail={message} action={status === "conflict" && canReloadDraft ? <Button onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : <Button onClick={() => void load()}>{copy.retry}</Button>} /></Panel>;
   const statusLabel = status === "committed" ? copy.committed : status === "saving" ? copy.saving : dirty ? copy.dirty : copy.saved;
   const statusTone = status === "offline" || status === "conflict" ? "bad" : dirty || status === "saving" ? "warn" : "good";
+  const loopAgent = source.component_type === "Flow" && source.extensions.veyra.execution_kind === "loop";
+  const viewLabel = (item: StudioView) => (item === "form" && loopAgent ? copy.capabilities : copy[item]);
   return <div className="page-stack studio-page">
     <StudioChromeProvider>
       <LiveRunProvider api={api} projectId={projectId} agentId={agentId ?? ""} locale={locale} inactive={isWorkflow}>
@@ -207,7 +225,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
               onLoadDisk={() => void loadDiskVersion()}
             />
           ) : null}
-          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{copy[item]}</span></button>)}</div>{view === "canvas" ? <div className="studio-toolbar-end"><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</div> : null}</div>
+          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{viewLabel(item)}</span></button>)}</div><div className="studio-toolbar-end">{!isWorkflow && agentId ? (hasCommittedVersion ? <LinkButton href={projectRoutePaths.agent(projectId, agentId)} icon={Play} variant="secondary">{copy.openApp}</LinkButton> : <Button icon={Play} disabled title={copy.commitFirst}>{copy.openApp}</Button>) : null}{view === "canvas" ? <><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</> : null}</div></div>
           <StudioStage view={view}>
             {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} onBufferValidity={bufferValidity} /> : <SourceView source={source} onChange={updateSource} onBufferValidity={bufferValidity} />}
             {isWorkflow && workflowId && source.component_type === "Workflow" ? <StudioRunDock locale={locale}><WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
@@ -279,9 +297,18 @@ type EditorProps = { source: StudioSource; onChange: (source: StudioSource) => v
 
 function FormView({ source, onChange, onBufferValidity }: EditorProps) {
   const { locale } = useLocale(); const zh = locale === "zh"; const workflow = source.component_type === "Workflow";
+  const loop = source.component_type === "Flow" && source.extensions.veyra.execution_kind === "loop";
   const update = (key: "name" | "description", value: string) => onChange({ ...source, [key]: value });
-  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label><JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} typedFields onValid={(inputs) => onChange({ ...source, inputs: inputs as TypedFields })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} typedFields onValid={(outputs) => onChange({ ...source, outputs: outputs as TypedFields })} /></div>
-    {!workflow ? source.nodes.filter((node) => node.component_type === "Tool" || node.component_type === "CustomComponent").map((node) => <fieldset key={node.id}><legend>{node.component_type === "CustomComponent" ? (zh ? "自定义组件" : "Custom Component") : "Tool"} · {node.id}</legend><label>{zh ? "资源引用" : "Resource reference"}<input readOnly value={node.uses ?? ""} /></label><label>{zh ? "固定哈希" : "Pinned hash"}<input readOnly value={source.lock[node.uses ?? ""] ?? ""} /></label>{(["input_mapping", "output_mapping"] as const).map((field) => <JsonField key={field} field={`${node.id}:${field}`} onBufferValidity={onBufferValidity} label={`${node.id} ${field}`} value={node[field] ?? {}} onValid={(mapping) => onChange({ ...source, nodes: source.nodes.map((item) => item.id === node.id ? { ...item, [field]: mapping } : item) })} />)}</fieldset>) : null}
+  return <Panel className="form-view"><SectionHeading eyebrow={zh ? "表单" : "Form"} title={workflow ? (zh ? "Workflow 基本信息" : "Workflow basics") : loop ? (zh ? "Agent 能力" : "Agent capabilities") : (zh ? "Agent 基本信息" : "Agent basics")} detail={zh ? "这些字段与 Canvas 使用同一份源定义。" : "These fields are the same source used by Canvas."} /><div className="form-grid"><label><span>{zh ? "名称" : "Name"}</span><input value={source.name} onChange={(event) => update("name", event.target.value)} /></label><label className="wide"><span>{zh ? "描述" : "Description"}</span><textarea rows={4} value={source.description} onChange={(event) => update("description", event.target.value)} /></label>{source.component_type !== "Workflow" ? <label><span>{zh ? "交互方式" : "Interaction"}</span><select aria-label={zh ? "交互方式" : "Interaction"} value={source.extensions.veyra.interaction_mode ?? "auto"} onChange={(event) => onChange({ ...source, extensions: { ...source.extensions, veyra: { ...source.extensions.veyra, interaction_mode: event.target.value as "auto" | "chat" | "form" | "hybrid" } } })}><option value="auto">Auto</option><option value="chat">Chat</option><option value="form">Form</option><option value="hybrid">Hybrid</option></select></label> : null}{loop ? <><label className="wide"><span>{zh ? "说明" : "Instructions"}</span><textarea rows={8} value={source.extensions.veyra.instructions ?? ""} onChange={(event) => {
+    const instructions = event.target.value;
+    onChange({
+      ...source,
+      extensions: { ...source.extensions, veyra: { ...source.extensions.veyra, instructions } },
+      nodes: source.nodes.map((node) => node.component_type === "Model" || node.component_type === "Agent" ? { ...node, system_prompt: instructions } : node),
+    });
+  }} /></label><label><span>{zh ? "最大轮次" : "Max turns"}</span><input type="number" min={1} max={32} value={source.extensions.veyra.max_turns ?? 8} onChange={(event) => onChange({ ...source, extensions: { ...source.extensions, veyra: { ...source.extensions.veyra, max_turns: Math.min(32, Math.max(1, Number(event.target.value) || 8)) } } })} /></label></> : null}<JsonField field="inputs" onBufferValidity={onBufferValidity} label={zh ? "输入（JSON）" : "Inputs (JSON)"} value={source.inputs} typedFields onValid={(inputs) => onChange({ ...source, inputs: inputs as TypedFields })} /><JsonField field="outputs" onBufferValidity={onBufferValidity} label={zh ? "输出（JSON）" : "Outputs (JSON)"} value={source.outputs} typedFields onValid={(outputs) => onChange({ ...source, outputs: outputs as TypedFields })} /></div>
+    {!workflow && !loop ? source.nodes.filter((node) => node.component_type === "Tool" || node.component_type === "CustomComponent").map((node) => <fieldset key={node.id}><legend>{node.component_type === "CustomComponent" ? (zh ? "自定义组件" : "Custom Component") : "Tool"} · {node.id}</legend><label>{zh ? "资源引用" : "Resource reference"}<input readOnly value={node.uses ?? ""} /></label><label>{zh ? "固定哈希" : "Pinned hash"}<input readOnly value={source.lock[node.uses ?? ""] ?? ""} /></label>{(["input_mapping", "output_mapping"] as const).map((field) => <JsonField key={field} field={`${node.id}:${field}`} onBufferValidity={onBufferValidity} label={`${node.id} ${field}`} value={node[field] ?? {}} onValid={(mapping) => onChange({ ...source, nodes: source.nodes.map((item) => item.id === node.id ? { ...item, [field]: mapping } : item) })} />)}</fieldset>) : null}
+    {loop ? <fieldset><legend>{zh ? "能力绑定" : "Capabilities"}</legend>{Object.values(source.ui.bindings ?? {}).length ? Object.entries(source.ui.bindings ?? {}).map(([id, binding]) => <p key={id}><strong>{binding.kind}</strong> · {binding.reference}</p>) : <p>{zh ? "尚未绑定工具、知识或技能。运行时由 Agent 自主决定调用。" : "No tools, knowledge, or skills bound yet. The Agent loop decides what to call."}</p>}</fieldset> : null}
   </Panel>;
 }
 

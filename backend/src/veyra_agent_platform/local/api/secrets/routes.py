@@ -25,6 +25,9 @@ class SetSecretRequest(_ClosedModel):
     value: str = Field(min_length=1, max_length=16_384)
 
 
+_PLATFORM_SECRET_REFS = {"model.primary"}
+
+
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/secrets", tags=["secrets"])
 
@@ -34,18 +37,34 @@ def build_router() -> APIRouter:
         return {
             "schema_version": "1.0",
             "secrets": [
-                _status(store, secret_ref) for secret_ref in known_secret_refs()
+                _status(store, secret_ref)
+                for secret_ref in known_secret_refs()
+                if secret_ref not in _PLATFORM_SECRET_REFS
             ],
         }
 
     @router.get("/{secret_ref}")
     def secret_status(secret_ref: str, request: Request) -> dict[str, Any]:
+        if secret_ref in _PLATFORM_SECRET_REFS:
+            raise TypedApiError(
+                403,
+                "platform_credential_forbidden",
+                "Platform Provider credentials are not exposed through the local user "
+                "API.",
+            )
         return {"schema_version": "1.0", **_status(_store(request), secret_ref)}
 
     @router.put("/{secret_ref}")
     def set_secret(
         secret_ref: str, payload: SetSecretRequest, request: Request
     ) -> dict[str, Any]:
+        if secret_ref in _PLATFORM_SECRET_REFS:
+            raise TypedApiError(
+                403,
+                "platform_credential_forbidden",
+                "Platform Provider credentials are not editable through the local user "
+                "API.",
+            )
         try:
             _store(request).set(secret_ref, payload.value)
         except SecretStoreError as exc:
@@ -54,6 +73,13 @@ def build_router() -> APIRouter:
 
     @router.delete("/{secret_ref}")
     def delete_secret(secret_ref: str, request: Request) -> dict[str, Any]:
+        if secret_ref in _PLATFORM_SECRET_REFS:
+            raise TypedApiError(
+                403,
+                "platform_credential_forbidden",
+                "Platform Provider credentials are not editable through the local user "
+                "API.",
+            )
         try:
             _store(request).delete(secret_ref)
         except SecretStoreError as exc:

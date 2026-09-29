@@ -7,7 +7,9 @@ import re
 from pathlib import PurePath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from veyra_agent_platform.contracts.common import ContractValidationError, require_uuid7
 
 MAX_KNOWLEDGE_UPLOAD_BYTES = 1_000_000
 
@@ -16,6 +18,21 @@ class KnowledgeIntakeError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class KnowledgeCloudFileReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["cloud_file"] = "cloud_file"
+    file_id: str
+
+    @field_validator("file_id")
+    @classmethod
+    def validate_file_id(cls, value: str) -> str:
+        try:
+            return require_uuid7(value, "file_id")
+        except ContractValidationError as error:
+            raise ValueError("file_id is invalid") from error
 
 
 class KnowledgeOrigin(BaseModel):

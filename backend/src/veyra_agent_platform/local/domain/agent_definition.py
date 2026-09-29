@@ -68,6 +68,11 @@ def compile_agent_definition(
             "transitions": [
                 transition.to_dict() for transition in blueprint.transitions
             ],
+            **(
+                {"data_edges": [edge.to_dict() for edge in blueprint.data_edges]}
+                if blueprint.data_edges
+                else {}
+            ),
             "extensions": {
                 "veyra": {
                     "runtime_profile": runtime_profile,

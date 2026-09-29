@@ -18,7 +18,12 @@ from ..storage.database import CommunityDatabase
 from ..storage.identifiers import utc_now
 from ..storage.package_storage import PackageStorage
 from ..storage.registry_repository import CommunityRegistryRepository
-from ..storage.schema import CommunityAgent, CommunityAgentVersion, CommunityUser
+from ..storage.schema import (
+    CommunityAgent,
+    CommunityAgentVersion,
+    CommunityAvatar,
+    CommunityUser,
+)
 
 MAX_PACKAGE_BYTES = 1_000_000
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -35,7 +40,7 @@ _SEMVER = re.compile(
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_PROFILE_REFERENCE = "veyra.runtime.profile@1.0.0"
 _ABSOLUTE_PATH = re.compile(
-    r"^(?:[A-Za-z]:[\\/]|\\\\|/(?:Users|home|private|tmp|var|etc|opt|root|Volumes|mnt)(?:[\\/]|$))"
+    r"(?:^|[\s\"'=:(])(?:[A-Za-z]:[\\/]|\\\\|/(?:Users|home|private|tmp|var|etc|opt|root|Volumes|mnt)(?:[\\/]|$))"
 )
 _PATH_TRAVERSAL = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
 _SENSITIVE_PATH = re.compile(
@@ -126,17 +131,25 @@ class CommunityRegistryService:
             rows = self.repository.list_public(
                 session, query_text=clean_query, limit=clean_limit
             )
-            entries = [
-                _entry_payload(
-                    *row,
-                    fork_source=self.repository.fork_source(
-                        session, target_version_id=row[1].id
-                    ),
-                    feedback=self.repository.feedback(session, version_id=row[1].id),
-                    capabilities=self._stored_capabilities(row[1]),
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        fork_source=self.repository.fork_source(
+                            session, target_version_id=row[1].id
+                        ),
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        source=source,
+                    )
                 )
-                for row in rows
-            ]
         return {
             "schema_version": "community.registry.v1",
             "entries": entries,
@@ -170,11 +183,13 @@ class CommunityRegistryService:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
             )
+        source = self._stored_source(row[1])
         return _entry_payload(
             *row,
             fork_source=fork_source,
             feedback=feedback,
-            capabilities=self._stored_capabilities(row[1]),
+            capabilities=_capability_payload(source) if source is not None else None,
+            source=source,
         )
 
     def versions(self, *, owner_handle: str, slug: str) -> dict[str, Any]:
@@ -182,17 +197,25 @@ class CommunityRegistryService:
             rows = self.repository.list_public_versions(
                 session, owner_handle=owner_handle, slug=slug
             )
-            entries = [
-                _entry_payload(
-                    *row,
-                    fork_source=self.repository.fork_source(
-                        session, target_version_id=row[1].id
-                    ),
-                    feedback=self.repository.feedback(session, version_id=row[1].id),
-                    capabilities=self._stored_capabilities(row[1]),
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        fork_source=self.repository.fork_source(
+                            session, target_version_id=row[1].id
+                        ),
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        source=source,
+                    )
                 )
-                for row in rows
-            ]
         if not entries:
             raise CommunityRegistryError(
                 "registry_entry_not_found", "Published Agent was not found"
@@ -203,6 +226,58 @@ class CommunityRegistryService:
             "slug": slug,
             "versions": entries,
         }
+
+    def owned_entries(self, *, user_id: str, limit: int = 100) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_owned_versions(
+                session, owner_id=user_id, limit=clean_limit
+            )
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        scan=_stored_scan(row[1]),
+                        source=source,
+                    )
+                )
+        return {"schema_version": "community.registry.v1", "entries": entries}
+
+    def starred_entries(self, *, user_id: str, limit: int = 100) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_starred_versions(
+                session, user_id=user_id, limit=clean_limit
+            )
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        fork_source=self.repository.fork_source(
+                            session, target_version_id=row[1].id
+                        ),
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        source=source,
+                    )
+                )
+        return {"schema_version": "community.registry.v1", "entries": entries}
 
     def download(
         self, *, owner_handle: str, slug: str, version: str | None = None
@@ -234,6 +309,12 @@ class CommunityRegistryService:
             raise CommunityRegistryError(
                 "registry_package_missing", "Published Agent package is unavailable"
             )
+        source = _source_from_content(content, record.source_hash)
+        if source is None:
+            raise CommunityRegistryError(
+                "registry_package_invalid",
+                "Published Agent package failed integrity checks",
+            )
         return (
             _entry_payload(
                 agent,
@@ -241,7 +322,8 @@ class CommunityRegistryService:
                 user,
                 fork_source=fork_source,
                 feedback=feedback,
-                capabilities=_capabilities_from_content(content, record.source_hash),
+                capabilities=_capability_payload(source),
+                source=source,
             ),
             content,
         )
@@ -276,6 +358,7 @@ class CommunityRegistryService:
             raise CommunityRegistryError(
                 "registry_package_invalid", "Agent package is not a valid Agent source"
             ) from exc
+        _assert_publishable_source(source)
         if not _SLUG.fullmatch(source.slug):
             raise CommunityRegistryError(
                 "registry_slug_invalid", "Agent slug is not publishable"
@@ -372,20 +455,27 @@ class CommunityRegistryService:
             feedback=feedback,
             capabilities=_capability_payload(source),
             scan=scan,
+            source=source,
         )
 
     def moderation_queue(self, *, limit: int = 50) -> dict[str, Any]:
         clean_limit = min(max(limit, 1), 100)
         with self.database.transaction() as session:
             rows = self.repository.list_moderation_queue(session, limit=clean_limit)
-            entries = [
-                _entry_payload(
-                    *row,
-                    capabilities=self._stored_capabilities(row[1]),
-                    scan=_stored_scan(row[1]),
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        scan=_stored_scan(row[1]),
+                        source=source,
+                    )
                 )
-                for row in rows
-            ]
         return {
             "schema_version": "community.moderation.v1",
             "entries": entries,
@@ -446,19 +536,19 @@ class CommunityRegistryService:
                 now=now,
             )
             feedback = self.repository.feedback(session, version_id=record.id)
+        source = self._stored_source(record)
         return _entry_payload(
             agent,
             record,
             user,
             feedback=feedback,
-            capabilities=self._stored_capabilities(record),
+            capabilities=_capability_payload(source) if source is not None else None,
             scan=_stored_scan(record),
+            source=source,
         )
 
-    def _stored_capabilities(
-        self, record: CommunityAgentVersion
-    ) -> dict[str, Any] | None:
-        return _capabilities_from_content(
+    def _stored_source(self, record: CommunityAgentVersion) -> AgentSource | None:
+        return _source_from_content(
             self.storage.get(record.source_storage_id), record.source_hash
         )
 
@@ -653,9 +743,24 @@ def _scan_source(source_text: str) -> None:
             )
 
 
-def _capabilities_from_content(
+def _assert_publishable_source(source: AgentSource) -> None:
+    """Fail closed before storage when an Agent carries machine-private data."""
+    if source.secret_refs:
+        raise CommunityRegistryError(
+            "registry_secret_reference_detected",
+            "Remove host Secret references before publishing this Agent",
+        )
+    findings = _path_findings(source)
+    if findings:
+        raise CommunityRegistryError(
+            "registry_nonportable_path_detected",
+            "Remove absolute, sensitive, or traversing paths before publishing",
+        )
+
+
+def _source_from_content(
     content: bytes | None, expected_source_hash: str
-) -> dict[str, Any] | None:
+) -> AgentSource | None:
     if content is None:
         return None
     try:
@@ -664,7 +769,7 @@ def _capabilities_from_content(
         return None
     if source.source_hash != expected_source_hash:
         return None
-    return _capability_payload(source)
+    return source
 
 
 def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
@@ -891,15 +996,27 @@ def _capability_payload(source: AgentSource) -> dict[str, Any]:
     }
 
 
+def _owner_avatar_url(session: Any, user: Any) -> str | None:
+    user_id = getattr(user, "id", None)
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    avatar = session.get(CommunityAvatar, user_id)
+    if avatar is None:
+        return None
+    return f"/api/v1/avatars/{user_id}?v={avatar.etag}"
+
+
 def _entry_payload(
     agent: CommunityAgent,
     record: CommunityAgentVersion,
     user: Any,
     *,
+    session: Any | None = None,
     fork_source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None = None,
     feedback: dict[str, Any] | None = None,
     capabilities: dict[str, Any] | None = None,
     scan: dict[str, Any] | None = None,
+    source: AgentSource | None = None,
 ) -> dict[str, Any]:
     summary = feedback or {
         "star_count": 0,
@@ -911,8 +1028,8 @@ def _entry_payload(
         "owner_handle": user.handle,
         "owner_display_name": user.display_name,
         "slug": agent.slug,
-        "name": agent.name,
-        "description": agent.description,
+        "name": source.name if source is not None else agent.name,
+        "description": source.description if source is not None else agent.description,
         "version": record.version,
         "source_hash": record.source_hash,
         "behavior_hash": record.behavior_hash,
@@ -928,6 +1045,9 @@ def _entry_payload(
         "star_count": int(summary["star_count"]),
         "review_count": int(summary["review_count"]),
         "average_rating": float(summary["average_rating"]),
+        "owner_avatar_url": _owner_avatar_url(session, user)
+        if session is not None
+        else None,
     }
 
 

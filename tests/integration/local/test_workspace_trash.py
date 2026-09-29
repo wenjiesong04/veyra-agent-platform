@@ -77,3 +77,33 @@ def test_managed_project_and_agent_move_through_veyra_trash(tmp_path: Path) -> N
         )
         assert restored_project.status_code == 200, restored_project.text
         assert client.get(f"/api/v1/projects/{project_id}").status_code == 200
+
+
+def test_new_default_project_skips_folders_held_by_trashed_projects(
+    tmp_path: Path,
+) -> None:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "application-data" / "projects",
+    )
+    with TestClient(create_app(settings)) as client:
+        first = client.post("/api/v1/projects", json={"description": ""})
+        second = client.post("/api/v1/projects", json={"description": ""})
+        assert first.status_code == 201, first.text
+        assert second.status_code == 201, second.text
+        trashed_id = second.json()["project_id"]
+        trashed_name = second.json()["name"]
+        removed = client.delete(f"/api/v1/projects/{trashed_id}")
+        assert removed.json()["disposition"] == "trashed"
+
+        replacement = client.post("/api/v1/projects", json={"description": ""})
+        assert replacement.status_code == 201, replacement.text
+        assert replacement.json()["name"] not in {first.json()["name"], trashed_name}
+
+        restored = client.post(
+            f"/api/v1/trash/project/{trashed_id}/restore", json={"confirm": True}
+        )
+        assert restored.status_code == 200, restored.text
+        assert client.get(f"/api/v1/projects/{trashed_id}").json()["name"] == (
+            trashed_name
+        )

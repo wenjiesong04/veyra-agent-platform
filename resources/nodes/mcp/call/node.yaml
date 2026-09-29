@@ -3,6 +3,8 @@ availability: requires_configuration
 description: Call a discovered MCP tool after a server is configured and normalized
   into a Tool descriptor.
 factory_selectable: false
+capabilities:
+- mcp_call
 kind: mcp_tool
 name: MCP Call
 required_permissions:

@@ -93,3 +93,461 @@
     flex-direction: column;
   }
 }
+
+.runtime-provider-panel,
+.platform-provider-panel {
+  overflow: hidden;
+}
+
+.runtime-provider-hero,
+.platform-provider-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.runtime-provider-hero-copy,
+.platform-provider-copy {
+  min-width: 0;
+}
+
+.runtime-provider-hero-copy h2,
+.platform-provider-copy h2 {
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: clamp(20px, 2vw, 26px);
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+}
+
+.runtime-provider-hero-copy p,
+.platform-provider-copy p {
+  max-width: 760px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.runtime-provider-hero-action {
+  display: grid;
+  min-width: 156px;
+  justify-items: end;
+  gap: 12px;
+}
+
+.runtime-provider-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-provider-count strong {
+  color: var(--ink);
+  font-size: 26px;
+  letter-spacing: -0.04em;
+}
+
+.runtime-provider-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.runtime-provider-scope > div,
+.platform-provider-boundary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 9px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 11px;
+}
+
+.runtime-provider-scope svg,
+.platform-provider-boundary svg {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.runtime-provider-scope span {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.runtime-provider-scope strong {
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.runtime-credential-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.runtime-credential-card {
+  display: grid;
+  gap: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 15px;
+  padding: 17px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 62%, var(--surface)), var(--surface));
+}
+
+.runtime-credential-card.is-inactive {
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+
+.runtime-credential-card-header,
+.runtime-credential-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.runtime-credential-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+}
+
+.runtime-credential-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.runtime-credential-identity h3 {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 780;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-credential-identity p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-credential-identity code {
+  color: var(--subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.runtime-credential-badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.runtime-default-badge {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.runtime-credential-facts,
+.platform-provider-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-credential-facts > div,
+.platform-provider-facts > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.runtime-credential-facts span,
+.platform-provider-facts span {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.runtime-credential-facts strong,
+.platform-provider-facts strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-secret-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.runtime-credential-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtime-replace-form {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.runtime-provider-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin-top: 22px;
+  border: 1px dashed var(--line-strong, var(--line));
+  border-radius: 15px;
+  padding: 30px 18px;
+  text-align: center;
+  background: var(--surface-soft);
+}
+
+.runtime-provider-empty-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.runtime-provider-empty h3 {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.runtime-provider-empty p {
+  max-width: 540px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.runtime-provider-modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
+.runtime-provider-modal {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 22px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.runtime-provider-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.runtime-provider-modal-header h2 {
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 21px;
+  letter-spacing: -0.03em;
+}
+
+.runtime-provider-modal-header p {
+  max-width: 500px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.runtime-provider-modal-close {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.runtime-provider-modal-note,
+.platform-provider-boundary {
+  margin-top: 18px;
+}
+
+.runtime-provider-modal-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: var(--accent-soft);
+  font-size: 11px;
+}
+
+.runtime-provider-modal-note svg {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.runtime-provider-form {
+  display: grid;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+.runtime-provider-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+
+.runtime-provider-form-wide {
+  grid-column: 1 / -1;
+}
+
+.runtime-default-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.runtime-default-toggle input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.runtime-default-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.runtime-default-toggle small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-provider-modal-footer,
+.platform-provider-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.platform-provider-header {
+  align-items: center;
+}
+
+.platform-provider-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.platform-provider-header .platform-provider-copy {
+  flex: 1;
+}
+
+.platform-provider-boundary {
+  margin-bottom: 18px;
+}
+
+.platform-provider-footer {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .runtime-provider-hero,
+  .platform-provider-header,
+  .runtime-credential-card-header,
+  .runtime-credential-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .runtime-provider-hero-action {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .runtime-credential-badges {
+    justify-content: flex-start;
+  }
+
+  .runtime-credential-facts,
+  .platform-provider-facts,
+  .runtime-provider-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-provider-form-wide {
+    grid-column: auto;
+  }
+
+  .runtime-provider-modal-footer,
+  .platform-provider-footer {
+    align-items: flex-start;
+    flex-direction: column-reverse;
+  }
+}

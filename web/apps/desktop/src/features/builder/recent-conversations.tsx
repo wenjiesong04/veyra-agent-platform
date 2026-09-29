@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { createPortal } from "react-dom";
 import { useProjectWorkspace } from "../../api/project-workspace";
 import { agentRecentNavigation, type DesktopLocale } from "../agents/agent-navigation";
+import { displayConversationTitle } from "../agents/conversation-title";
 import { readSidebarResourcePins, toggleSidebarResourcePin, writeSidebarResourcePins } from "../projects/sidebar-pins";
 import { notifyBuilderActivity, useBuilderActivity } from "./use-builder-activity";
 
@@ -58,7 +59,7 @@ export function useRecentConversationNavigation({
             <button
               type="button"
               className="sidebar-more-chip"
-              aria-label={`${t("conversationActions")}: ${conversation.title}`}
+              aria-label={`${t("conversationActions")}: ${displayConversationTitle(conversation.title, locale)}`}
               title={t("conversationActions")}
               aria-haspopup="menu"
               aria-expanded={open}

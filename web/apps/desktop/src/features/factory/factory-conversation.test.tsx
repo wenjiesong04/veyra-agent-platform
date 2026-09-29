@@ -221,9 +221,9 @@ describe("FactoryConversation", () => {
     expect(await screen.findByText("veyra.skill.research-brief@1.0.0")).toBeInTheDocument();
     expect(api.runAgent).toBeUndefined();
 
-    await user.click(screen.getByRole("button", { name: "Create Draft" }));
+    await user.click(screen.getByRole("button", { name: "Review and create Draft" }));
     expect(api.applyFactoryDraft).toHaveBeenCalledWith("project-1", "session-1", { confirm: true });
-    expect(await screen.findByRole("link", { name: "Open Studio" })).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/design");
+    expect(await screen.findByRole("link", { name: "Open Studio to review Draft" })).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/design");
     expect(api.runAgent).toBeUndefined();
   });
 
@@ -250,7 +250,7 @@ describe("FactoryConversation", () => {
     await user.type(await screen.findByRole("textbox", { name: "Message" }), "Write a research brief");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await user.click(await screen.findByRole("button", { name: "Generate Blueprint" }));
-    await user.click(await screen.findByRole("button", { name: "Create Draft" }));
+    await user.click(await screen.findByRole("button", { name: "Review and create Draft" }));
     expect(runAgent).not.toHaveBeenCalled();
     await user.type(await screen.findByLabelText("Test-run input"), "What happened?");
     await user.click(screen.getByRole("button", { name: "Start test run" }));
@@ -284,7 +284,7 @@ describe("FactoryConversation", () => {
     expect(goal).toContain("Add an approval step");
     expect(goal).toContain("Reviewer");
 
-    await user.click(await screen.findByRole("button", { name: "Create Draft" }));
+    await user.click(await screen.findByRole("button", { name: "Review and create Draft" }));
     expect(api.applyFactoryDraft).toHaveBeenCalledWith("project-1", "session-1", {
       confirm: true,
       parent_agent_id: "parent-1",
@@ -309,7 +309,8 @@ describe("FactoryConversation", () => {
     render(<ThemeProvider><FactoryConversation api={api} projectId="project-1" locale="en" /></ThemeProvider>);
     await user.type(screen.getByRole("textbox"), "Triage GitHub issues");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(await screen.findByText("veyra.tool.github.read@1.0.0: not selectable")).toBeInTheDocument();
+    expect(await screen.findByText(/not selectable/)).toBeInTheDocument();
+    expect(screen.getByText("veyra.tool.github.read@1.0.0")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create quarantined drafts" }));
     expect(api.createResourceDraft).toHaveBeenCalledWith({
       confirm: true,

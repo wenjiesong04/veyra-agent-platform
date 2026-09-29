@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BuilderConversationSnapshot, BuilderResolveRequest, EditProposal, EditTargetKind, FactorySession } from "@veyra/api-contracts";
+import type { BuilderConversationSnapshot, BuilderOperationEvent, BuilderResolveRequest, EditProposal, EditTargetKind, FactorySession } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClientError, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "../api/project-workspace";
@@ -114,6 +114,52 @@ describe("Project Chat Builder", () => {
     expect(api.resolveBuilderIntent).toHaveBeenCalledWith("project-1", expect.objectContaining({ content: "Give Review a quality check", focus: null }));
     expect(document.querySelector(".agent-convo-column .builder-workspace-dock")).toBeInTheDocument();
     expect(api.commandEditProposal).not.toHaveBeenCalled();
+  });
+
+  it("stages a pasted image for the Builder as metadata only and preserves the caption", async () => {
+    const { api } = setup("agent", [], false);
+    await screen.findByRole("textbox", { name: "Message" });
+    const file = new File(["pixel-bytes"], "reference.png", { type: "image/png" });
+    const message = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.paste(message, {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => file }],
+        files: [file],
+        getData: (type: string) => type === "text/plain" ? "Use this reference while planning" : "",
+      },
+    });
+    expect(message).toHaveValue("Use this reference while planning");
+    expect(await screen.findByAltText("reference.png")).toBeInTheDocument();
+    expect(screen.getByText(/Builder records image metadata only/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.resolveBuilderIntent).toHaveBeenCalledWith("project-1", expect.objectContaining({
+      content: expect.stringContaining("Builder records the file metadata only"),
+    })));
+    const request = api.resolveBuilderIntent!.mock.calls[0]?.[1];
+    expect(request?.content).not.toContain("pixel-bytes");
+    expect(request?.content).not.toContain("data:image");
+  });
+
+  it("requires a text goal for Builder image-only paste and caps combined attachment prompt length", async () => {
+    const { api } = setup("agent", [], false);
+    await screen.findByRole("textbox", { name: "Message" });
+    const image = new File(["pixels"], "reference.png", { type: "image/png" });
+    fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), {
+      clipboardData: { items: [{ kind: "file", getAsFile: () => image }], files: [image], getData: () => "" },
+    });
+    expect(await screen.findByAltText("reference.png")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByText(/Describe your goal first/)).toBeInTheDocument();
+    expect(api.resolveBuilderIntent).not.toHaveBeenCalled();
+
+    const longFile = new File(["notes ".repeat(2_000)], "notes.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Summarize these notes" } });
+    const filePicker = document.querySelector(".agent-convo-file-input") as HTMLInputElement;
+    fireEvent.change(filePicker, { target: { files: [longFile] } });
+    expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/exceed 10,000 characters/);
+    expect(api.resolveBuilderIntent).not.toHaveBeenCalled();
   });
 
   it("uses the deterministic Project Resource proposal and shows pin, readiness, and permissions", async () => {
@@ -759,10 +805,10 @@ describe("Durable Project Chat", () => {
     expect(await screen.findByText("帮我生成礼物包装 Agent")).toBeInTheDocument();
     expect(screen.getByText("Thinking…")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Review proposal" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Create Draft" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and create Draft" })).not.toBeInTheDocument();
     finish(snapshot);
     expect(await screen.findByRole("heading", { name: "Review proposal" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create Draft" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Review and create Draft" })).toBeEnabled();
   });
 
   it("records Reject without creating an Agent", async () => {
@@ -796,8 +842,8 @@ describe("Durable Project Chat", () => {
     await screen.findByRole("textbox", { name: "Message" });
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "帮我生成礼物包装 Agent" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await screen.findByRole("button", { name: "Reject" });
-    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(recordBuilderConversation).toHaveBeenCalledWith("project-1", "conv-1", expect.objectContaining({
       kind: "reject",
       operation_id: "op-1",
@@ -845,13 +891,13 @@ describe("Durable Project Chat", () => {
     await screen.findByRole("textbox", { name: "Message" });
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "创建一个中英文翻译 Agent。" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await screen.findByRole("button", { name: "Create Draft" });
-    fireEvent.click(screen.getByRole("button", { name: "Create Draft" }));
+    await screen.findByRole("button", { name: "Review and create Draft" });
+    fireEvent.click(screen.getByRole("button", { name: "Review and create Draft" }));
     await waitFor(() => expect(applyFactoryDraft).toHaveBeenCalledWith("project-1", "session-1", { confirm: true, name: "礼物包装顾问" }));
     expect(await screen.findByText("礼物包装顾问已经创建并通过结构验证。")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "Open Studio" })[0]).toHaveAttribute("href", "#/projects/project-1/agents/agent-new/design");
     expect(screen.getByRole("link", { name: "View Project resources" })).toHaveAttribute("href", "#/projects/project-1/resources");
-    expect(screen.queryByRole("button", { name: "Create Draft" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and create Draft" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getAllByText("礼物包装顾问已经创建并通过结构验证。")).toHaveLength(1);
   });
@@ -902,7 +948,7 @@ describe("Durable Project Chat", () => {
     expect(screen.getByText(/read GitHub issues/)).toBeInTheDocument();
     expect(screen.queryByText(/invalid missing-capability/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: "Create Draft" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and create Draft" })).not.toBeInTheDocument();
     expect(api.addProjectResource).not.toHaveBeenCalled();
   });
 
@@ -952,7 +998,7 @@ describe("Durable Project Chat", () => {
         events: [
           { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
           { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.intent.resolved", label: "Understanding request", summary: "", facts: { intent: "create", create_kind: "agent" }, created_at: "2026-09-18T00:00:01Z" },
-          { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.semantic_plan.started", label: "Planning Agent", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
+          { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.specification.started", label: "Specifying Agent", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
         ],
       }],
     });
@@ -966,9 +1012,55 @@ describe("Durable Project Chat", () => {
     render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
     const toggle = await screen.findByRole("button", { name: /Building Agent/ });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByText("Planning Agent").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Specifying Agent").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.queryByText("系统")).not.toBeInTheDocument();
+  });
+
+  it("shows the next build stage from the server without a manual refresh", async () => {
+    const started: BuilderOperationEvent[] = [
+      { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+      { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.intent.resolved", label: "Understanding request", summary: "", facts: { intent: "create", create_kind: "agent" }, created_at: "2026-09-18T00:00:01Z" },
+    ];
+    const early = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "in_progress", updated_at: "2026-09-18T00:00:01Z" },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "创建一个中英文翻译 Agent。", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-asst", conversation_id: "conv-1", sequence: 1, role: "assistant", kind: "assistant", content: "我会创建一个中英文翻译 Agent。", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" },
+      ],
+      operations: [{ ...durableSnapshot().operations[0], status: "in_progress", error_code: null, updated_at: "2026-09-18T00:00:01Z", events: started }],
+    });
+    const later = durableSnapshot({
+      ...early,
+      conversation: { ...early.conversation, updated_at: "2026-09-18T00:00:03Z" },
+      messages: [
+        ...early.messages,
+        { message_id: "m-next", conversation_id: "conv-1", sequence: 2, role: "assistant", kind: "clarification", content: "Choose the Runtime Provider before I continue.", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:03Z" },
+      ],
+      operations: [{
+        ...early.operations[0],
+        updated_at: "2026-09-18T00:00:03Z",
+        events: [
+          ...started,
+          { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.specification.started" as const, label: "Specifying Agent", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
+        ],
+      }],
+    });
+    const { api, wrapper } = setup("agent", [], false);
+    const getBuilderConversation = vi.fn().mockResolvedValueOnce(early).mockResolvedValue(later);
+    Object.assign(api, {
+      submitBuilderTurn: vi.fn(),
+      getBuilderConversation,
+    });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    await waitFor(() => {
+      expect(screen.getByText("我会创建一个中英文翻译 Agent。")).toBeInTheDocument();
+      expect(screen.getByText("Choose the Runtime Provider before I continue.")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Specifying Agent").closest("li")).toHaveAttribute("data-state", "current");
+    expect(getBuilderConversation.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("starts an explicit Test Agent run from the completed workbench", async () => {
@@ -1110,7 +1202,7 @@ describe("Durable Project Chat", () => {
     cleanup();
     window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
     render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
-    expect(await screen.findByRole("button", { name: "Create Draft" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Review and create Draft" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Workbench" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("button", { name: "Test Agent" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Test" }));

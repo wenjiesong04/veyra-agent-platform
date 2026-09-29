@@ -288,13 +288,13 @@
 }
 
 .nav-group-projects > .nav-group-chrome {
-  top: var(--nav-sticky-first, 38px);
+  top: var(--nav-sticky-first, 0px);
   z-index: 5;
   border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
 }
 
 .nav-group-recent > .nav-group-chrome {
-  top: calc(var(--nav-sticky-first, 38px) + var(--nav-sticky-rest, 39px));
+  top: calc(var(--nav-sticky-first, 0px) + var(--nav-sticky-rest, 0px));
   z-index: 4;
   border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
 }
@@ -314,11 +314,11 @@
 }
 
 .nav-group-projects {
-  scroll-margin-top: var(--nav-sticky-first, 38px);
+  scroll-margin-top: var(--nav-sticky-first, 0px);
 }
 
 .nav-group-recent {
-  scroll-margin-top: calc(var(--nav-sticky-first, 38px) + var(--nav-sticky-rest, 39px));
+  scroll-margin-top: calc(var(--nav-sticky-first, 0px) + var(--nav-sticky-rest, 0px));
 }
 
 .nav-group-fixed > .nav-group-heading {
@@ -401,7 +401,7 @@
 .nav-group-body {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: grid-template-rows 180ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .nav-group-body.is-open {
@@ -418,8 +418,10 @@
 .sidebar-section-button,
 .sidebar-nav-item-leading-action button,
 .sidebar-nav-item-action button,
+.sidebar-nav-item-action a,
 .project-row-actions > button,
 .agent-row-actions > button,
+.agent-row-actions > a,
 .kind-row-actions > button {
   appearance: none;
   -webkit-appearance: none;
@@ -1093,13 +1095,31 @@
   flex: 0 0 30px;
   place-items: center;
   overflow: hidden;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--nav-active) 72%, var(--line));
+  border-radius: 10px;
+  border: 0;
   color: var(--nav-active-ink);
   background: var(--nav-active);
   font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.02em;
+}
+
+.shell-account-avatar.has-photo {
+  background: var(--surface);
+}
+
+.shell-account-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  object-fit: cover;
+  object-position: center;
+  transform: scale(1.08);
+  transform-origin: center;
+  background: var(--surface);
 }
 
 .shell-account-trigger-copy,

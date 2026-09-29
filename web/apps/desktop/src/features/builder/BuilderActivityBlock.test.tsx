@@ -62,7 +62,7 @@ describe("BuilderActivityBlock", () => {
             events: [
               { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
               { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.intent.resolved", label: "Understanding request", summary: "", facts: { intent: "create", create_kind: "agent" }, created_at: "2026-09-18T00:00:01Z" },
-              { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.semantic_plan.started", label: "Planning Agent", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
+              { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.specification.started", label: "Specifying Agent", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
             ],
           })}
           locale="zh"
@@ -70,7 +70,7 @@ describe("BuilderActivityBlock", () => {
       </ThemeProvider>,
     );
     expect(screen.getByRole("button", { name: /正在构建 Agent/ })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByText("生成方案").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("整理规格").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
   });
 

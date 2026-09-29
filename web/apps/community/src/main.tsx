@@ -7,13 +7,14 @@ import "@veyra/ui/styles/primitives.css";
 import "@veyra/ui/styles/feedback.css";
 import "@veyra/connected-account/styles.css";
 import "./app.css";
-import { CommunityApp } from "./app";
+import "./showcase.css";
+import { CommunitySite } from "./site";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Community root element is missing");
 
 createRoot(root).render(
   <StrictMode>
-    <CommunityApp />
+    <CommunitySite />
   </StrictMode>,
 );

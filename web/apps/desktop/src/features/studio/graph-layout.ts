@@ -1,7 +1,16 @@
-export type LayoutNode = { id: string; component_type: string };
+export type LayoutNode = { id: string; component_type: string; width?: number; height?: number };
 export type LayoutEdge = { from: string; to: string; port?: string };
 export type CanvasPoint = { x: number; y: number };
 export type CanvasSize = { width: number; height: number };
+
+/** Canvas-only notes should not shrink the executable graph during initial fit. */
+export function fitViewCandidates<T extends { id: string; data?: object }>(nodes: T[], includeIntroNote = false): T[] {
+  const hasNote = (node: T) => Boolean((node.data as { note?: unknown } | undefined)?.note);
+  const graphNodes = nodes.filter((node) => !hasNote(node));
+  const introNote = includeIntroNote ? nodes.find((node) => node.id === "note_intro" && hasNote(node)) : undefined;
+  const candidates = introNote ? [...graphNodes, introNote] : graphNodes;
+  return candidates.length ? candidates : nodes;
+}
 
 const NODE_SIZES: Record<string, CanvasSize> = {
   Start: { width: 164, height: 82 },
@@ -20,9 +29,49 @@ const NODE_SIZES: Record<string, CanvasSize> = {
 const HORIZONTAL_GAP = 108;
 const VERTICAL_GAP = 48;
 const COLLISION_GAP = 18;
+const NODE_MIN_WIDTH = 132;
+const NODE_MAX_WIDTH = 200;
+const NODE_PAD_X = 30;
+const NODE_PAD_Y = 22;
+const TITLE_LINE = 17;
+const ID_LINE = 13;
+const TEXT_GAP = 4;
+const PORT_GAP = 18;
+
+function glyphWidth(char: string, cjk: number, latin: number): number {
+  return /[\u3400-\u9fff]/.test(char) ? cjk : latin;
+}
+
+function textWidth(text: string, cjk: number, latin: number): number {
+  return [...text].reduce((sum, char) => sum + glyphWidth(char, cjk, latin), 0);
+}
 
 export function estimatedNodeSize(componentType: string): CanvasSize {
   return NODE_SIZES[componentType] ?? { width: 208, height: 96 };
+}
+
+export function labeledNodeSize(title: string, nodeId: string, portCount = 1): CanvasSize {
+  const heading = title.trim() || nodeId;
+  const titleWidth = textWidth(heading, 13, 7.2);
+  const idWidth = textWidth(nodeId, 8, 6.2);
+  const width = Math.round(Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, Math.max(titleWidth, idWidth) + NODE_PAD_X)));
+  const inner = Math.max(12, width - NODE_PAD_X);
+  const titleLines = Math.max(1, Math.ceil(titleWidth / inner));
+  const idLines = Math.max(1, Math.ceil(idWidth / inner));
+  const ports = Math.max(portCount, 1);
+  const height = Math.round(Math.max(
+    NODE_PAD_Y + titleLines * TITLE_LINE + TEXT_GAP + idLines * ID_LINE,
+    52 + Math.max(0, ports - 1) * PORT_GAP,
+  ));
+  return { width, height };
+}
+
+export function nodeSize(node: LayoutNode): CanvasSize {
+  const base = estimatedNodeSize(node.component_type);
+  return {
+    width: node.width ?? base.width,
+    height: node.height ?? base.height,
+  };
 }
 
 function compareId(left: LayoutNode, right: LayoutNode): number {
@@ -41,8 +90,8 @@ function boxesOverlap(
   second: LayoutNode,
   secondPosition: CanvasPoint,
 ): boolean {
-  const firstSize = estimatedNodeSize(first.component_type);
-  const secondSize = estimatedNodeSize(second.component_type);
+  const firstSize = nodeSize(first);
+  const secondSize = nodeSize(second);
   return firstPosition.x < secondPosition.x + secondSize.width + COLLISION_GAP
     && firstPosition.x + firstSize.width + COLLISION_GAP > secondPosition.x
     && firstPosition.y < secondPosition.y + secondSize.height + COLLISION_GAP
@@ -127,7 +176,7 @@ export function layoutExecutionGraph(
   const columnWidths = new Map<number, number>();
   for (const node of nodes) {
     const rank = ranks.get(node.id) ?? 0;
-    columnWidths.set(rank, Math.max(columnWidths.get(rank) ?? 0, estimatedNodeSize(node.component_type).width));
+    columnWidths.set(rank, Math.max(columnWidths.get(rank) ?? 0, nodeSize(node).width));
   }
   const columnX = new Map<number, number>();
   let nextX = 0;
@@ -139,7 +188,7 @@ export function layoutExecutionGraph(
   const layerHeights = new Map<number, number>();
   let maxLayerHeight = 0;
   for (const rank of orderedLayers) {
-    const height = layers.get(rank)!.reduce((sum, node) => sum + estimatedNodeSize(node.component_type).height, 0)
+    const height = layers.get(rank)!.reduce((sum, node) => sum + nodeSize(node).height, 0)
       + Math.max(0, layers.get(rank)!.length - 1) * VERTICAL_GAP;
     layerHeights.set(rank, height);
     maxLayerHeight = Math.max(maxLayerHeight, height);
@@ -152,7 +201,7 @@ export function layoutExecutionGraph(
     let y = Math.round((maxLayerHeight - height) / 2);
     for (const node of layer) {
       positions[node.id] = { x: columnX.get(rank) ?? 0, y };
-      y += estimatedNodeSize(node.component_type).height + VERTICAL_GAP;
+      y += nodeSize(node).height + VERTICAL_GAP;
     }
   }
 
@@ -167,7 +216,7 @@ export function layoutExecutionGraph(
   for (const node of preferredOrder) {
     if (result[node.id]) continue;
     const preferred = positions[node.id];
-    const step = estimatedNodeSize(node.component_type).height + VERTICAL_GAP;
+    const step = nodeSize(node).height + VERTICAL_GAP;
     const candidates = [preferred, ...Array.from({ length: 60 }, (_, index) => {
       const distance = Math.ceil((index + 1) / 2) * step;
       return { x: preferred.x, y: preferred.y + (index % 2 === 0 ? distance : -distance) };
@@ -189,7 +238,7 @@ export function centerNoteAboveGraph(
   const bounds = nodes.flatMap((node) => {
     const position = positions[node.id];
     if (!position) return [];
-    const size = estimatedNodeSize(node.component_type);
+    const size = nodeSize(node);
     return [{ left: position.x, right: position.x + size.width, top: position.y }];
   });
   if (!bounds.length) return { x: 0, y: -noteHeight - gap };

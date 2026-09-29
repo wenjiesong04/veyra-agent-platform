@@ -9,11 +9,12 @@ import {
   writeConversationCanvasLayout,
   type ConversationCanvasSizes,
 } from "./conversation-canvas-layout";
+import { clipboardCaption, clipboardFiles } from "./conversation-attachment";
 
 type Locale = "zh" | "en";
 
 const SCROLL_PIN_PX = 96;
-const COMPOSER_DOCK_FALLBACK = 128;
+const COMPOSER_DOCK_FALLBACK = 196;
 
 function conversationCanvasCopy(locale: Locale) {
   return locale === "zh"
@@ -252,7 +253,10 @@ export function ConversationComposer({
   textboxLabel,
   hideTextarea = false,
   attachLabel,
+  fileAccept,
   onAttachFiles,
+  onPasteFiles,
+  onPasteNotice,
 }: {
   locale: Locale;
   value: string;
@@ -270,7 +274,10 @@ export function ConversationComposer({
   textboxLabel: string;
   hideTextarea?: boolean;
   attachLabel?: string;
+  fileAccept?: string;
   onAttachFiles?: (files: File[]) => void;
+  onPasteFiles?: (files: File[]) => void;
+  onPasteNotice?: () => void;
 }) {
   const areaRef = React.useRef<HTMLTextAreaElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
@@ -278,13 +285,37 @@ export function ConversationComposer({
     const node = areaRef.current;
     if (!node) return;
     node.style.height = "auto";
-    node.style.height = `${Math.min(Math.max(node.scrollHeight, 24), 200)}px`;
+    const compact = window.innerHeight <= 680;
+    const maxHeight = Math.min(window.innerHeight * (compact ? 0.4 : 0.42), compact ? 192 : 256);
+    node.style.height = `${Math.min(Math.max(node.scrollHeight, 24), maxHeight)}px`;
   }, []);
   React.useEffect(() => { resize(); }, [value, resize]);
   return (
     <form
       className={`agent-convo-composer ${sending ? "is-sending" : ""}`}
       onSubmit={(event) => { event.preventDefault(); if (!disabled) onSubmit(); }}
+      onPaste={(event) => {
+        if (!onPasteFiles) return;
+        const files = clipboardFiles(event.clipboardData);
+        if (!files.length) return;
+        const target = event.target;
+        event.preventDefault();
+        const rawText = event.clipboardData.getData("text/plain");
+        const text = clipboardCaption(rawText, files);
+        const node = areaRef.current;
+        if (text && node) {
+          const onComposer = target === node;
+          const start = onComposer ? node.selectionStart : value.length;
+          const end = onComposer ? node.selectionEnd : start;
+          onChange(`${value.slice(0, start)}${text}${value.slice(end)}`);
+          window.requestAnimationFrame(() => {
+            const caret = start + text.length;
+            node.setSelectionRange(caret, caret);
+          });
+        }
+        onPasteFiles(files);
+        if (rawText.trim() && !text) onPasteNotice?.();
+      }}
     >
       {extraFields}
       {hideTextarea ? null : (
@@ -314,7 +345,7 @@ export function ConversationComposer({
                 className="agent-convo-file-input"
                 type="file"
                 multiple
-                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.html,.xml,.log,.pdf,.docx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                accept={fileAccept}
                 tabIndex={-1}
                 onChange={(event) => {
                   const files = Array.from(event.target.files ?? []);

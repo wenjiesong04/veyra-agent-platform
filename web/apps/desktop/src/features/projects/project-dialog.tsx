@@ -1,11 +1,10 @@
 import { Box, FileArchive, FileUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
-import type { AgentImportRecord, AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, RuntimeApiProfileInput, WorkflowSource } from "@veyra/api-contracts";
+import type { AgentImportRecord, AgentSource, AgentTemplate, ProjectAgentRecord, ProjectKnowledgeRecord, ProjectSummaryResponse, ProjectWorkflowRecord, WorkflowSource } from "@veyra/api-contracts";
 import { Button, StatusBadge, toast, useLocale } from "@veyra/ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LocalApiClientError } from "../../api/local-client";
 import { useProjectWorkspace } from "../../api/project-workspace";
-import { RuntimeProfileFields, profileInput } from "./runtime-profile-fields";
 
 export type ProjectDialogMode = "create" | "open";
 export type AgentCreateMode = "blank" | "template" | "file" | "external";
@@ -31,10 +30,9 @@ function pickerFailure(
 export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onClose: () => void }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
-  const { api, refresh, upsertProject } = useProjectWorkspace();
+  const { api, refresh, upsertProject, createProject } = useProjectWorkspace();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [archivePath, setArchivePath] = useState<string | null>(null);
   const [archiveFile, setArchiveFile] = useState<File | null>(null);
@@ -113,7 +111,7 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
     setSaving(true); setError(null);
     try {
       const project = mode === "create"
-        ? await api.createProject({ ...(name.trim() ? { name: name.trim() } : {}), description: description.trim(), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) })
+        ? await createProject({ ...(name.trim() ? { name: name.trim() } : {}), description: description.trim() })
         : archivePath && api.importProjectFromPath
           ? await api.importProjectFromPath({ path: archivePath })
           : archiveFile && api.importProject
@@ -133,7 +131,7 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
     <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
       <div className="project-modal-header"><h2 id="project-modal-title">{copy.title}</h2><button type="button" className="project-modal-close" onClick={onClose} aria-label={copy.close} disabled={busy}><X size={18} /></button></div>
       <form className="project-form" onSubmit={submit}>
-        {mode === "create" ? <><label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" /></label><label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} /><small>{description.length}/500</small></label><RuntimeProfileFields value={runtimeProfile} onChange={setRuntimeProfile} locale={locale} api={api} /></> : null}
+        {mode === "create" ? <><label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" /></label><label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} /><small>{description.length}/500</small></label><p className="runtime-profile-note">{zh ? "Runtime Provider 将在创建项目后通过 Provider Credentials 和 Builder 绑定。不会在项目创建表单中保存 API Key。" : "Bind a User Runtime Provider from Provider Credentials and Builder after the Project is created. API keys are not saved in this Project form."}</p></> : null}
         {mode === "open" ? <>
           <button className={`folder-selection ${selectedPath ? "is-selected" : ""}`} type="button" onClick={() => void chooseFolder()} disabled={busy} aria-label={selectedPath ? copy.chooseAgain : copy.select} aria-busy={picking}>
             <FolderOpen size={24} aria-hidden="true" /><div><strong>{selectedPath ? `${copy.selected}: ${folderName(selectedPath)}` : copy.select}</strong><p>{selectedPath ? copy.chooseAgain : copy.selectHint}</p></div>
@@ -155,11 +153,9 @@ export function ProjectDialog({ mode, onClose }: { mode: ProjectDialogMode; onCl
 export function ProjectEditDialog({ project, onClose }: { project: ProjectSummaryResponse; onClose: () => void }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
-  const { api, upsertProject } = useProjectWorkspace();
+  const { updateProject, upsertProject } = useProjectWorkspace();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description);
-  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(profileInput(project.runtime_profile));
-  const [runtimeProfileDirty, setRuntimeProfileDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [allocatedName, setAllocatedName] = useState<string | null>(null);
@@ -177,7 +173,7 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
     event.preventDefault();
     setSaving(true); setError(null);
     try {
-      const updated = await api.updateProject(project.project_id, { name: name.trim(), description: description.trim(), ...(runtimeProfileDirty ? { runtime_profile: runtimeProfile } : {}) });
+      const updated = await updateProject(project.project_id, { name: name.trim(), description: description.trim() });
       upsertProject(updated);
       setAllocatedName(updated.name);
       toast.success(zh ? "项目已更新。" : "Project updated.");
@@ -189,7 +185,7 @@ export function ProjectEditDialog({ project, onClose }: { project: ProjectSummar
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={saving}>
     <form className="project-form" onSubmit={submit}>
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" /></label>
-      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} /></label><RuntimeProfileFields value={runtimeProfile} onChange={(value) => { setRuntimeProfile(value); setRuntimeProfileDirty(true); }} locale={locale} api={api} />
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} /></label><p className="runtime-profile-note">{zh ? "Runtime Provider binding 已移至 Provider Credentials 与 Builder，项目表单不保存 API Key。" : "Runtime Provider binding now lives in Provider Credentials and Builder; this Project form never stores an API key."}</p>
       {allocatedName ? <p className="project-form-success" role="status">{copy.allocated}: <strong>{allocatedName}</strong></p> : null}
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
       <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{allocatedName ? copy.done : copy.cancel}</Button>{allocatedName ? null : <Button variant="primary" type="submit" disabled={saving}>{saving ? "…" : copy.save}</Button>}</div>
@@ -227,8 +223,6 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
   const [etag, setEtag] = useState("");
   const [name, setName] = useState(agent.name || agent.slug);
   const [description, setDescription] = useState(agent.description);
-  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
-  const [runtimeProfileDirty, setRuntimeProfileDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -249,15 +243,6 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
   }, [agent.agent_id, api, copy.failed, project.project_id]);
 
   useEffect(() => {
-    if (!api.getAgentRuntimeProfile) return;
-    let current = true;
-    void api.getAgentRuntimeProfile(project.project_id, agent.agent_id).then((response) => {
-      if (current) setRuntimeProfile(profileInput(response.profile));
-    }).catch(() => undefined);
-    return () => { current = false; };
-  }, [agent.agent_id, api, project.project_id]);
-
-  useEffect(() => {
     if (!loading) nameRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
     document.addEventListener("keydown", onKeyDown);
@@ -271,7 +256,6 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
     setSaving(true); setError(null);
     try {
       const saved = await api.saveDraft(project.project_id, agent.agent_id, { source: { ...source, name: nextName, description: description.trim() }, expected_revision: revision }, { etag });
-      if (runtimeProfileDirty && api.setAgentRuntimeProfile) await api.setAgentRuntimeProfile(project.project_id, agent.agent_id, runtimeProfile);
       setRevision(saved.revision);
       setEtag(saved.etag);
       try { upsertProject(await api.getProject(project.project_id)); } catch { upsertProject({ ...project, agents: project.agents.map((item) => item.agent_id === agent.agent_id ? { ...item, name: saved.source.name, description: saved.source.description } : item) }); }
@@ -285,7 +269,7 @@ export function AgentEditDialog({ project, agent, onClose }: { project: ProjectS
   return <Modal title={copy.title} closeLabel={copy.close} onClose={onClose} busy={loading || saving}>
     {loading ? <p className="project-modal-hint">{copy.loading}</p> : source ? <form className="project-form" onSubmit={(event) => void submit(event)}>
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" disabled={saving} /></label>
-      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label><RuntimeProfileFields value={runtimeProfile} onChange={(value) => { setRuntimeProfile(value); setRuntimeProfileDirty(true); }} locale={locale} api={api} />
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} disabled={saving} /></label><p className="runtime-profile-note">{zh ? "Runtime Provider binding 请在 Provider Credentials 或 Builder 中完成。" : "Configure Runtime Provider binding from Provider Credentials or Builder."}</p>
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
       <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button variant="primary" type="submit" disabled={saving || !api.saveDraft}>{saving ? "…" : copy.save}</Button></div>
     </form> : <p className="project-form-error" role="alert">{error ?? copy.failed}</p>}
@@ -461,7 +445,6 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
   const { api, refresh, upsertProject } = useProjectWorkspace();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [runtimeProfile, setRuntimeProfile] = useState<RuntimeApiProfileInput | null>(null);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -537,7 +520,7 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
     if (mode === "file" && !file) return setError(copy.fileRequired);
     if (mode === "external" && !externalImport) return setError(zh ? "请选择并分析一个 YAML、ZIP 或文件夹。" : "Choose and analyze a YAML, ZIP, or folder.");
     setSaving(true); setError(null);
-    const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}), ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}), ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}) };
+    const overrides = { ...(name.trim() ? { name: name.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}), ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}) };
     try {
       let agentId: string;
       if (mode === "file") {
@@ -548,9 +531,6 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
           ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
         });
         agentId = imported.agent_id;
-        if (runtimeProfile && api.setAgentRuntimeProfile) {
-          await api.setAgentRuntimeProfile(project.project_id, imported.agent_id, runtimeProfile);
-        }
       } else if (mode === "external") {
         if (!api.applyAgentImport) throw new Error(zh ? "当前 sidecar 不支持外部 Agent 导入。" : "This sidecar does not support external Agent import.");
         const applied = await api.applyAgentImport(externalImport!.import_id, {
@@ -561,9 +541,6 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
           ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
         });
         agentId = applied.agent.agent_id;
-        if (runtimeProfile && api.setAgentRuntimeProfile) {
-          await api.setAgentRuntimeProfile(project.project_id, agentId, runtimeProfile);
-        }
       } else {
         const created = await api.createAgent(project.project_id, mode === "blank" ? { mode: "blank", ...overrides } : { mode: "template", template_id: templateId, ...overrides });
         agentId = created.agent_id;
@@ -589,7 +566,7 @@ export function AgentCreateDialog({ project, mode, parentAgentId, onClose, onCre
       {mode === "file" ? <label className={`agent-file-drop ${file ? "is-selected" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files.item(0)); }}><input type="file" aria-label={copy.file} accept=".vagent.yaml,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)} /><span className="agent-file-icon"><FileUp size={18} aria-hidden="true" /></span><strong>{file ? `${copy.selected}: ${file.name}` : copy.file}</strong><small>{copy.drop}</small></label> : null}
       {mode === "external" ? <div className="agent-external-import"><label className={`agent-file-drop ${file ? "is-selected" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files.item(0)); }}><input type="file" aria-label={zh ? "选择外部 YAML 或 ZIP" : "Choose external YAML or ZIP"} accept=".yaml,.yml,.zip" onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)} /><span className="agent-file-icon"><FileArchive size={18} aria-hidden="true" /></span><strong>{file ? `${copy.selected}: ${file.name}` : (zh ? "选择 YAML 或 ZIP" : "Choose YAML or ZIP")}</strong><small>{zh ? "只分析并生成 Veyra 草稿，不执行外部代码。" : "Analyze and generate a Veyra draft; external code is never executed."}</small></label><Button type="button" size="sm" variant="secondary" icon={FolderOpen} onClick={() => void chooseExternalFolder()} disabled={saving || analyzingExternal || !api.analyzeAgentImportFolder}>{zh ? "选择 Agent 文件夹" : "Choose Agent folder"}</Button>{analyzingExternal ? <small className="agent-template-detail">{zh ? "正在分析导入内容…" : "Analyzing import…"}</small> : null}{externalImport ? <div className="agent-import-preview"><div><strong>{externalImport.preview.name}</strong><span>{externalImport.detected_format} · {Math.round(externalImport.compatibility * 100)}% {zh ? "可兼容" : "compatible"}</span></div><p>{externalImport.preview.description}</p><details><summary>{zh ? "查看兼容性报告" : "View compatibility report"}</summary><div className="agent-import-capabilities">{externalImport.capabilities.map((capability, index) => <div key={`${capability.kind}-${capability.original}-${index}`}><StatusBadge label={capability.status === "supported" ? (zh ? "支持" : "Supported") : capability.status === "partial" ? (zh ? "部分" : "Partial") : (zh ? "不支持" : "Unsupported")} tone={capability.status === "supported" ? "good" : capability.status === "partial" ? "warn" : "bad"} /><span><strong>{capability.original}</strong><small>{capability.reason}</small></span></div>)}</div>{externalImport.warnings.length ? <div className="agent-import-warnings">{externalImport.warnings.map((warning, index) => <small key={`${warning.code}-${index}`}>⚠ {warning.message}</small>)}</div> : null}</details></div> : null}</div> : null}
       <label><span>{copy.name}</span><input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.namePlaceholder} autoComplete="off" disabled={saving} /></label>
-      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} disabled={saving} /></label><RuntimeProfileFields value={runtimeProfile} onChange={setRuntimeProfile} locale={locale} api={api} />
+      <label><span>{copy.description}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={copy.descriptionPlaceholder} maxLength={500} rows={3} disabled={saving} /></label><p className="runtime-profile-note">{zh ? "导入后如需运行，请在 Provider Credentials 或 Builder 中绑定 User Runtime Provider。" : "Bind a User Runtime Provider from Provider Credentials or Builder before running the imported Agent."}</p>
       {error ? <p className="project-form-error" role="alert">{error}</p> : null}
       <div className="project-modal-actions"><Button type="button" variant="ghost" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button icon={mode === "blank" ? Plus : mode === "template" ? Box : mode === "external" ? FileArchive : FileUp} variant="primary" type="submit" disabled={saving || loadingTemplates || analyzingExternal || (mode === "template" && templates.length === 0) || (mode === "external" && !externalImport)}>{saving ? "…" : mode === "blank" ? copy.create : copy.import}</Button></div>
     </form>

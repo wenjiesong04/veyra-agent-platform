@@ -59,8 +59,61 @@ function optionalCommunityProxy(target = "http://127.0.0.1:8772"): Plugin {
   };
 }
 
+function localApiStreamProxy(target = "http://127.0.0.1:8771"): Plugin {
+  const upstream = new URL(target);
+  return {
+    name: "local-api-stream",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const accept = Array.isArray(req.headers.accept) ? req.headers.accept.join(",") : (req.headers.accept ?? "");
+        if (!req.url?.startsWith("/api/") || !accept.includes("text/event-stream")) {
+          next();
+          return;
+        }
+        const headers = copyHeaders(req.headers, { host: `${upstream.hostname}:${upstream.port}` });
+        let upstreamDone = false;
+        const proxyReq = http.request(
+          {
+            hostname: upstream.hostname,
+            port: upstream.port,
+            path: req.url,
+            method: req.method,
+            headers,
+          },
+          (proxyRes) => {
+            const responseHeaders = copyHeaders(proxyRes.headers, {
+              "cache-control": "no-cache, no-transform",
+              "x-accel-buffering": "no",
+            });
+            delete responseHeaders["content-length"];
+            delete responseHeaders["content-encoding"];
+            res.writeHead(proxyRes.statusCode ?? 502, responseHeaders);
+            proxyRes.on("end", () => {
+              upstreamDone = true;
+            });
+            proxyRes.pipe(res);
+          },
+        );
+        proxyReq.on("error", () => {
+          if (res.writableEnded) return;
+          if (res.headersSent) {
+            res.destroy();
+            return;
+          }
+          res.statusCode = 502;
+          res.end();
+        });
+        res.on("close", () => {
+          if (!upstreamDone) proxyReq.destroy();
+        });
+        req.pipe(proxyReq);
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), optionalCommunityProxy()],
+  plugins: [react(), optionalCommunityProxy(), localApiStreamProxy()],
   publicDir: "../../public",
   server: {
     host: "127.0.0.1",

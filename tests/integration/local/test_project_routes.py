@@ -544,15 +544,31 @@ def test_nested_project_agent_routes_create_draft_validate_commit_and_export(
             headers={"Idempotency-Key": new_uuid7(), "If-Match": draft.headers["etag"]},
         )
         assert committed.status_code == 200
+        agent_source_path = (
+            Path(project["root_path"]) / project["agents"][0]["source_path"]
+        )
+        private_comment = "Project-only comment; do not share this text."
+        agent_source_path.write_text(
+            f"# {private_comment}\n" + agent_source_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
         exported = client.get(
             f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/export"
         )
+        export_payload = exported.json()
         assert exported.json()["source"]["agent_id"] == agent_id
         assert exported.json()["kind"] == "agent"
         assert exported.json()["version"]
         assert exported.json()["dependencies"] == sorted(
             exported.json()["source"]["lock"]
         )
+        assert private_comment in export_payload["source_text"]
+        community_package = export_payload["community_package"]
+        assert private_comment not in community_package["source_text"]
+        assert json.loads(community_package["source_text"]) == export_payload["source"]
+        assert community_package["source_hash"]
+        assert community_package["behavior_hash"]
+        assert community_package["lock_hash"]
 
 
 def test_commit_requires_current_revision_and_etag(tmp_path: Path) -> None:

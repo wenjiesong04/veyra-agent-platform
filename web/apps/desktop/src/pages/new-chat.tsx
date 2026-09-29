@@ -59,13 +59,5 @@ export function NewChatPage({ projectId, conversationId }: { projectId?: string;
     );
   }
 
-  return (
-    <ChatLanding
-      locale={locale}
-      projects={projects}
-      onSelect={select}
-      onCreateProject={createProject}
-      onStart={start}
-    />
-  );
+  return <ChatLanding locale={locale} projects={projects} onSelect={select} onCreateProject={createProject} onStart={start} />;
 }

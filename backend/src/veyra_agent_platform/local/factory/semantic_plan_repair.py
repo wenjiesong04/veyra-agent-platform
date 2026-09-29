@@ -45,6 +45,7 @@ _STEP_FIELDS = {
     "inputs",
     "outputs",
     "branches",
+    "condition_expression",
     "branch_condition",
     "branch_key",
     "output_mapping",
@@ -130,6 +131,9 @@ def bounded_repair_semantic_plan(
                 step.pop("depends_on", None)
         steps.append(step)
     repaired["step_intents"] = steps
+    _sanitize_declared_names(repaired, notes)
+    _align_condition_fields(repaired, notes)
+    _keep_single_branch(repaired["step_intents"], notes)
     return repaired, tuple(notes)
 
 
@@ -138,14 +142,20 @@ def graph_obligations(payload: Mapping[str, Any]) -> frozenset[str]:
 
     kinds: set[str] = set()
     raw_steps = payload.get("step_intents")
+    input_names = _declared_field_names(payload.get("inputs"))
+    output_names = _declared_field_names(payload.get("outputs"))
     model_count = 0
     if isinstance(raw_steps, list):
         for item in raw_steps:
             if not isinstance(item, Mapping):
                 continue
             kind = _normalized_kind(item.get("operation_kind"))
-            if kind in _COMPLEX_KINDS:
+            if kind in _COMPLEX_KINDS - {"transform"}:
                 kinds.add(kind)
+            if kind == "transform" and _transform_is_representable(
+                item, input_names=input_names, output_names=output_names
+            ):
+                kinds.add("transform")
             if item.get("reusable_capability") is True:
                 kinds.add("reusable_capability")
             if kind == "condition" and item.get("branches"):
@@ -158,6 +168,145 @@ def graph_obligations(payload: Mapping[str, Any]) -> frozenset[str]:
     if isinstance(points, list) and any(_non_empty_string(item) for item in points):
         kinds.add("approval")
     return frozenset(kinds)
+
+
+_NAME_NOISE = (
+    "source.lock",
+    "knowledge_refs",
+    "resource hash",
+    "canvas",
+    "etag",
+    "revision",
+)
+
+
+def _sanitize_declared_names(plan: dict[str, Any], notes: list[str]) -> None:
+    """Rename fields that contain internal tokens, then retarget conditions."""
+
+    rename: dict[str, str] = {}
+    for field in ("inputs", "outputs"):
+        items = plan.get(field)
+        if not isinstance(items, list):
+            continue
+        for index, item in enumerate(items):
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                continue
+            name = item["name"]
+            lowered = name.casefold()
+            if not any(token in lowered for token in _NAME_NOISE):
+                continue
+            safe = f"field-{index + 1}"
+            item["name"] = safe
+            rename[name.casefold()] = safe
+            notes.append(f"renamed_internal_field:{field}")
+    if not rename:
+        return
+    steps = plan.get("step_intents")
+    if not isinstance(steps, list):
+        return
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        expression = step.get("condition_expression")
+        if isinstance(expression, str) and expression.strip():
+            parts = expression.split()
+            mapped = rename.get(parts[0].casefold())
+            if mapped:
+                parts[0] = mapped
+                step["condition_expression"] = " ".join(parts)
+
+
+def _align_condition_fields(plan: dict[str, Any], notes: list[str]) -> None:
+    names = [
+        str(item["name"])
+        for item in plan.get("inputs") or []
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
+    steps = plan.get("step_intents")
+    if not isinstance(steps, list) or not names:
+        return
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        expression = step.get("condition_expression")
+        if not isinstance(expression, str) or not expression.strip():
+            continue
+        parts = expression.split()
+        matched = _matching_input(parts[0], names)
+        if matched and matched != parts[0]:
+            parts[0] = matched
+            step["condition_expression"] = " ".join(parts)
+            notes.append("aligned_condition_field")
+
+
+def _matching_input(token: str, names: list[str]) -> str | None:
+    folded = token.casefold().replace("_", "-").replace(" ", "-")
+    for name in names:
+        if name.casefold().replace("_", "-").replace(" ", "-") == folded:
+            return name
+    return None
+
+
+def _keep_single_branch(steps: list[dict[str, Any]], notes: list[str]) -> None:
+    """The graph compiler accepts one branched Condition. Later forks stay linear."""
+
+    branched = [
+        step
+        for step in steps
+        if isinstance(step.get("branches"), list) and step.get("branches")
+    ]
+    if len(branched) <= 1:
+        return
+    kept = str(branched[0].get("semantic_key") or "").casefold()
+    for step in branched[1:]:
+        step.pop("branches", None)
+        step.pop("condition_expression", None)
+        if step.get("operation_kind") == "condition":
+            step["operation_kind"] = "verification"
+        notes.append("linearized_extra_branch")
+    for step in steps:
+        owner = step.get("branch_condition")
+        if isinstance(owner, str) and owner.casefold() != kept:
+            step.pop("branch_condition", None)
+            step.pop("branch_key", None)
+            notes.append("detached_extra_branch_step")
+
+
+def _declared_field_names(value: Any) -> frozenset[str]:
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(
+        str(item["name"]).casefold()
+        for item in value
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+    )
+
+
+def _transform_is_representable(
+    step: Mapping[str, Any],
+    *,
+    input_names: frozenset[str],
+    output_names: frozenset[str],
+) -> bool:
+    """Do not turn an invalid inter-step copy into a required repair obligation."""
+
+    if "inputs" in step or "outputs" in step:
+        return False
+    mapping = step.get("output_mapping")
+    if not isinstance(mapping, Mapping):
+        # A missing mapping can be repaired while preserving a genuine Transform.
+        return True
+    if not mapping:
+        return False
+    for target, template in mapping.items():
+        if not isinstance(target, str) or target.casefold() not in output_names:
+            return False
+        if not isinstance(template, str):
+            return False
+        for token in re.findall(r"\{\{([^{}]+)\}\}", template):
+            if token.casefold() not in input_names:
+                return False
+    return True
 
 
 def reject_silent_v1_degradation(
@@ -188,6 +337,14 @@ def classify_plan_error(exc: BaseException) -> str:
     if isinstance(exc, json.JSONDecodeError):
         return "json_parse"
     message = str(exc).casefold()
+    if "code=unsupported_step_io" in message or (
+        "inputs/outputs are only supported for reusable capability steps" in message
+    ):
+        return "unsupported_step_io"
+    if "code=invalid_reusable_capability" in message or (
+        "reusable_capability is only valid for operation_kind=capability" in message
+    ):
+        return "invalid_reusable_capability"
     if "omitted complex duties" in message:
         return "silent_v1_degradation"
     if "missing field" in message:
@@ -225,7 +382,8 @@ def semantic_plan_shape(payload: Any) -> dict[str, Any]:
         kinds: list[str] = []
         branch_count = 0
         missing_key_count = 0
-        for item in raw_steps:
+        step_io_fields: list[dict[str, Any]] = []
+        for index, item in enumerate(raw_steps):
             if not isinstance(item, Mapping):
                 kinds.append("malformed")
                 continue
@@ -238,10 +396,15 @@ def semantic_plan_shape(payload: Any) -> dict[str, Any]:
                 kinds.append("branch_local")
             if not _non_empty_string(item.get("semantic_key")):
                 missing_key_count += 1
+            declared_io = [name for name in ("inputs", "outputs") if name in item]
+            if declared_io:
+                step_io_fields.append({"index": index, "fields": declared_io})
         shape["step_intent_count"] = len(raw_steps)
         shape["operation_kinds"] = kinds
         shape["branch_object_count"] = branch_count
         shape["missing_semantic_key_count"] = missing_key_count
+        if step_io_fields:
+            shape["step_io_fields"] = step_io_fields
     for field, label in (
         ("capability_intents", "capability_intent_count"),
         ("approval_points", "approval_point_count"),
@@ -255,6 +418,9 @@ def semantic_plan_shape(payload: Any) -> dict[str, Any]:
 
 def validation_error_path(exc: BaseException) -> str:
     message = str(exc)
+    explicit_path = re.search(r"(?:^|\s)path=([^\s]+)", message)
+    if explicit_path is not None:
+        return explicit_path.group(1)
     if "step_intents[" in message:
         return message.split(" ", 1)[0].rstrip(":")
     if "missing field(s):" in message:

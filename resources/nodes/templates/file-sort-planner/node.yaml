@@ -3,6 +3,7 @@ availability: ready
 description: 根据文件清单给出分类、命名和目录方案。当前不会真正移动、重命名或删除文件。
 factory_selectable: true
 kind: template
+loop_compatible: false
 name: 文件整理
 required_permissions:
   filesystem_read_roots: []

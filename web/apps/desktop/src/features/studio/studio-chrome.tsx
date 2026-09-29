@@ -22,7 +22,7 @@ export type StudioChromeState = {
 const defaults: StudioChromeState = {
   paletteCollapsed: false,
   inspectorCollapsed: false,
-  runCollapsed: false,
+  runCollapsed: true,
   paletteWidth: STUDIO_PANE_LIMITS.paletteWidth.default,
   inspectorWidth: STUDIO_PANE_LIMITS.inspectorWidth.default,
   runHeight: STUDIO_PANE_LIMITS.runHeight.default,
@@ -68,7 +68,7 @@ export function readStudioChrome(): StudioChromeState {
       ...defaults,
       paletteCollapsed: parsed.paletteCollapsed === true,
       inspectorCollapsed: parsed.inspectorCollapsed === true,
-      runCollapsed: parsed.runCollapsed === true,
+      runCollapsed: typeof parsed.runCollapsed === "boolean" ? parsed.runCollapsed : defaults.runCollapsed,
     });
   } catch {
     return crowdCompactStudioChrome({ ...defaults });

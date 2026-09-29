@@ -15,6 +15,7 @@ dependencies = [
     "fastapi==0.116.1",
     "greenlet==3.5.5",
     "httpx==0.28.1",
+    "keyring==25.6.0",
     "jsonschema==4.26.0",
     "platformdirs==4.3.8",
     "Pillow==12.3.0",
@@ -22,6 +23,7 @@ dependencies = [
     "pydantic-settings==2.10.1",
     "PyYAML==6.0.2",
     "python-multipart==0.0.20",
+    "secretstorage==3.5.0",
     "psycopg[binary]==3.2.9",
     "SQLAlchemy==2.0.43",
     "uvicorn==0.35.0",
@@ -36,9 +38,6 @@ dev = [
     "pytest-cov==6.2.1",
     "respx==0.22.0",
     "ruff==0.12.9",
-]
-desktop-macos = [
-    "keyring==25.6.0",
 ]
 
 [project.scripts]

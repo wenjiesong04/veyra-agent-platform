@@ -354,6 +354,96 @@ class CustomComponentService:
             self._replace_listing(project_id, frozen)
             return self.get(project_id, component_id, version=next_version)
 
+    def install_synced_definition(
+        self, project_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Install one validated published definition without executing it."""
+        definition = CustomComponentDefinition.from_dict(payload)
+        if definition.project_id != project_id or definition.version == _DRAFT_VERSION:
+            raise CustomComponentError(
+                "component_project_mismatch", "synced Component definition is invalid"
+            )
+        with self.projects._writer_lock:
+            project = self.projects.repository.project(project_id)
+            if project is None:
+                raise CustomComponentError("component_not_found", "Project is missing")
+            root = self.projects._existing_root(project["root_path"])
+            manifest_path = self.projects._safe_file(
+                root, Path("project.vproject.yaml")
+            )
+            package = root / "components" / "composite" / definition.slug
+            if package.exists():
+                record = self._record(project_id, definition.component_id)
+                existing = next(
+                    (
+                        item
+                        for item in record["versions"]
+                        if item.version == definition.version
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    if existing.content_hash() != definition.content_hash():
+                        raise CustomComponentError(
+                            "component_integrity_conflict",
+                            "immutable Component version hash differs",
+                        )
+                    return self.get(
+                        project_id, definition.component_id, version=definition.version
+                    )
+            else:
+                _, _, _, previous, manifest = self.projects._project_manifest_state(
+                    project_id
+                )
+                staging = (
+                    package.parent / f".{definition.slug}.veyra-sync-{new_uuid7()}"
+                )
+                staging.mkdir(mode=0o700, parents=True)
+                try:
+                    self._write_manifest(staging, definition)
+                    (staging / "versions").mkdir(mode=0o700)
+                    self.projects.atomic_write(
+                        staging / "versions" / f"{definition.version}.json",
+                        self.projects._canonical_source(definition.to_dict()),
+                    )
+                    self.projects._fsync_tree(staging)
+                    os.replace(staging, package)
+                    listing = manifest.to_dict()
+                    listing.setdefault("components", []).append(
+                        {
+                            "kind": "component",
+                            "resource_id": definition.component_id,
+                            "slug": definition.slug,
+                            "version": definition.version,
+                            "path": component_storage_path(
+                                ComponentClass.COMPOSITE, definition.slug
+                            ),
+                            "component_class": "composite",
+                        }
+                    )
+                    self.projects.atomic_write(
+                        manifest_path, self.projects._canonical_source(listing)
+                    )
+                    self.projects.index(root)
+                except BaseException:
+                    if staging.exists():
+                        shutil.rmtree(staging, ignore_errors=True)
+                    if package.exists():
+                        shutil.rmtree(package, ignore_errors=True)
+                    self.projects.atomic_write(manifest_path, previous)
+                    raise
+            versions = package / "versions"
+            versions.mkdir(mode=0o700, exist_ok=True)
+            self.projects.atomic_write(
+                versions / f"{definition.version}.json",
+                self.projects._canonical_source(definition.to_dict()),
+            )
+            self._write_manifest(package, definition)
+            self._replace_listing(project_id, definition)
+            return self.get(
+                project_id, definition.component_id, version=definition.version
+            )
+
     def deprecate(
         self, project_id: str, component_id: str, version: str
     ) -> dict[str, Any]:

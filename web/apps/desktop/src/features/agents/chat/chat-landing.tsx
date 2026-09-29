@@ -1,12 +1,11 @@
 import * as React from "react";
-import { Button } from "@veyra/ui";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
 import { ConversationComposer, ConversationStage } from "./conversation-stage";
 import { assembleGreeting, ConversationGreetingTitle, ConversationHeroMark } from "./conversation-greeting";
 import { ConversationScopePicker } from "./conversation-scope";
 import { ConversationGuides } from "./conversation-guides";
 import { ConversationAttachmentList } from "./conversation-attachments";
-import { composeFactoryPrompt, isConversationFile, readConversationFile, type ConversationAttachment } from "./conversation-attachment";
+import { composeFactoryPrompt, ensureClipboardFileName, isConversationFile, MAX_CONVERSATION_FILE_BYTES, readConversationFile, type ConversationAttachment } from "./conversation-attachment";
 import type { ChatTarget } from "./chat-scope";
 
 export type { ChatTarget } from "./chat-scope";
@@ -20,7 +19,11 @@ const landingCopy = {
     message: "消息",
     starting: "正在打开…",
     attach: "添加文件",
-    skipped: "只能添加文本、PDF 或 Word 文档。",
+    skipped: "可添加文本、PDF、Word 和图片；Builder 不会读取图片像素。",
+    imageGoal: "请先写一句目标说明；Builder 不会分析图片内容。",
+    pathIgnored: "剪贴板里的本机文件路径不会发送；请在消息中另写说明。",
+    tooLarge: "单个附件不能超过 25 MB。",
+    tooLong: "目标文字和附件内容合计超过 10,000 个字符，请缩短说明或移除一些附件。",
     createFailed: "无法创建项目。",
   },
   en: {
@@ -29,7 +32,11 @@ const landingCopy = {
     message: "Message",
     starting: "Opening…",
     attach: "Attach files",
-    skipped: "Attach text, PDF, or Word documents only.",
+    skipped: "Attach text, PDF, Word, or images. Builder cannot analyze image pixels.",
+    imageGoal: "Add a text goal first; Builder cannot analyze image content.",
+    pathIgnored: "Local file paths from the clipboard are not sent. Add a separate caption if needed.",
+    tooLarge: "A single attachment cannot exceed 25 MB.",
+    tooLong: "The goal and extracted files exceed 10,000 characters. Shorten the goal or remove some files.",
     createFailed: "The Project could not be created.",
   },
 } as const;
@@ -52,14 +59,20 @@ export function ChatLanding({
   const [draft, setDraft] = React.useState("");
   const [hint, setHint] = React.useState("");
   const [starting, setStarting] = React.useState(false);
-  const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
   const [attachments, setAttachments] = React.useState<ConversationAttachment[]>([]);
   const attachmentSeq = React.useRef(0);
 
-  const send = async (confirmedPrompt?: string) => {
-    const prompt = confirmedPrompt ?? composeFactoryPrompt(draft, attachments, locale);
+  const send = async () => {
+    const prompt = composeFactoryPrompt(draft, attachments, locale);
+    if (!draft.trim() && attachments.length > 0 && attachments.every((item) => item.kind === "image")) {
+      setHint(text.imageGoal);
+      return;
+    }
+    if (prompt.length > 10_000) {
+      setHint(text.tooLong);
+      return;
+    }
     if (!prompt || starting) return;
-    if (target.kind === "new" && !confirmedPrompt) { setPendingPrompt(prompt); return; }
     setStarting(true);
     setHint("");
     try {
@@ -71,8 +84,10 @@ export function ChatLanding({
   };
 
   const attach = async (files: File[]) => {
-    const accepted = files.filter((file) => isConversationFile(file.name));
-    if (accepted.length !== files.length) setHint(text.skipped);
+    const withinLimit = files.filter((file) => file.size <= MAX_CONVERSATION_FILE_BYTES);
+    const accepted = withinLimit.filter((file) => isConversationFile(file.name, file.type)).map(ensureClipboardFileName);
+    if (withinLimit.length !== files.length) setHint(text.tooLarge);
+    else if (accepted.length !== files.length) setHint(text.skipped);
     else setHint("");
     const next = await Promise.all(accepted.map((file) => {
       attachmentSeq.current += 1;
@@ -83,6 +98,7 @@ export function ChatLanding({
 
   const projectName = target.kind === "project" ? target.name : target.kind === "agent" ? target.projectName : undefined;
   const agentName = target.kind === "agent" ? target.name : undefined;
+  const imageOnlyWithoutGoal = !draft.trim() && attachments.length > 0 && attachments.every((item) => item.kind === "image");
 
   return (
     <ConversationStage
@@ -94,12 +110,6 @@ export function ChatLanding({
       suggestions={(
         <>
           <ConversationGuides locale={locale} onPick={setDraft} />
-          {pendingPrompt ? <section aria-label={locale === "zh" ? "确认项目上下文" : "Confirm Project context"}>
-            <p>{locale === "zh" ? "当前未绑定项目。确认后创建空项目并将以下需求交给同一个 Veyra Builder；Agent 仍需另行预览和确认。也可以先选择已有项目。" : "No Project is bound. Confirm to create an empty Project and pass this goal to the same Veyra Builder. Agent creation still needs separate review and confirmation. You can choose an existing Project instead."}</p>
-            <pre>{pendingPrompt}</pre>
-            <Button disabled={starting} onClick={() => void send(pendingPrompt)}>{locale === "zh" ? "确认创建项目并继续" : "Confirm Project and continue"}</Button>
-            <Button disabled={starting} onClick={() => setPendingPrompt(null)}>{locale === "zh" ? "取消" : "Cancel"}</Button>
-          </section> : null}
           {hint ? <p className="agent-convo-hint" role="status">{hint}</p> : null}
         </>
       )}
@@ -121,14 +131,17 @@ export function ChatLanding({
           value={draft}
           onChange={setDraft}
           onSubmit={() => void send()}
-          disabled={(!draft.trim() && attachments.length === 0) || starting}
+          disabled={(!draft.trim() && attachments.length === 0) || imageOnlyWithoutGoal || starting}
           placeholder={text.input}
           sendLabel={starting ? text.starting : text.send}
           sending={starting}
           textboxLabel={text.message}
           attachLabel={text.attach}
+          fileAccept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.html,.xml,.log,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp,image/gif"
           onAttachFiles={(files) => void attach(files)}
-          extraFields={<ConversationAttachmentList items={attachments} locale={locale} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} />}
+          onPasteFiles={(files) => void attach(files)}
+          onPasteNotice={() => setHint(text.pathIgnored)}
+          extraFields={<>{imageOnlyWithoutGoal ? <p className="agent-convo-hint" role="status">{text.imageGoal}</p> : null}<ConversationAttachmentList items={attachments} locale={locale} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} /></>}
         />
       )}
     />

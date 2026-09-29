@@ -1,14 +1,29 @@
-import { BookOpen, Bot, Boxes, FolderKanban, Gauge, History, Home, MessageCircle, Play, Workflow, Wrench } from "lucide-react";
-import { desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation, type ProjectAgentRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
+import { BookOpen, Bookmark, Bot, Boxes, Compass, FileText, FolderKanban, Gauge, Globe2, History, Home, MessageCircle, MessageCirclePlus, PackageCheck, Play, Settings, Trash2, UserRound, Workflow, Wrench } from "lucide-react";
+import { communityRoutePaths, desktopRoutePaths, projectRoutePaths, type DesktopRouteLocation, type ProjectAgentRecord, type ProjectSummaryResponse } from "@veyra/api-contracts";
 import { agentAncestryPath } from "./features/projects/agent-tree";
+import { displayConversationTitle } from "./features/agents/conversation-title";
 
 type Crumb = { label: string; href?: string; icon?: typeof Home };
 type DesktopHeader = { title: string; breadcrumbs?: Crumb[] };
 type DesktopLocale = "zh" | "en";
 
 const rootTitles: Record<"en" | "zh", Partial<Record<DesktopRouteLocation["kind"], string>>> = {
-  en: { chat: "New chat", projects: "New chat", components: "Resource Catalog", resources: "Resource Catalog", files: "Knowledge base", runs: "History", monitor: "Monitor", community: "Community", account: "Account", settings: "Settings", trash: "Trash", "not-found": "Route not found" },
-  zh: { chat: "新聊天", projects: "新聊天", components: "资源目录", resources: "资源目录", files: "知识库", runs: "历史", monitor: "监控", community: "社区", account: "账号", settings: "设置", trash: "回收站", "not-found": "找不到页面" },
+  en: { chat: "New chat", projects: "New chat", components: "Resource Catalog", resources: "Resource Catalog", files: "Knowledge base", runs: "History", monitor: "Monitor", account: "Account", settings: "Settings", trash: "Trash", "not-found": "Route not found" },
+  zh: { chat: "新聊天", projects: "新聊天", components: "资源目录", resources: "资源目录", files: "知识库", runs: "历史", monitor: "监控", account: "账号", settings: "设置", trash: "回收站", "not-found": "找不到页面" },
+};
+
+const rootIcons: Partial<Record<DesktopRouteLocation["kind"], typeof Home>> = {
+  chat: MessageCirclePlus,
+  projects: MessageCirclePlus,
+  components: Boxes,
+  resources: Boxes,
+  files: FileText,
+  runs: History,
+  monitor: Gauge,
+  account: UserRound,
+  settings: Settings,
+  trash: Trash2,
+  "not-found": Compass,
 };
 
 function agentDisplayLabel(agent: ProjectAgentRecord): string {
@@ -27,6 +42,29 @@ function projectTrail(home: Crumb, project: Crumb, ...rest: Crumb[]): Crumb[] {
   return [home, project, ...rest];
 }
 
+function communityHeader(route: DesktopRouteLocation, locale: DesktopLocale): DesktopHeader | null {
+  const labels = locale === "zh"
+    ? { community: "社区", discover: "发现", published: "已发布", starred: "已收藏", mine: "我的", release: "版本详情" }
+    : { community: "Community", discover: "Discover", published: "Published", starred: "Starred", mine: "Mine", release: "Release" };
+  const community = { label: labels.community, href: desktopRoutePaths.community, icon: Globe2 };
+  const discover = { label: labels.discover, href: communityRoutePaths.catalog, icon: Compass };
+  if (route.kind === "community") return { title: labels.discover, breadcrumbs: [community, { label: labels.discover, icon: Compass }] };
+  if (route.kind === "community-published") return { title: labels.published, breadcrumbs: [community, { label: labels.published, icon: PackageCheck }] };
+  if (route.kind === "community-starred") return { title: labels.starred, breadcrumbs: [community, { label: labels.starred, icon: Bookmark }] };
+  if (route.kind === "community-mine") return { title: labels.mine, breadcrumbs: [community, { label: labels.mine, icon: UserRound }] };
+  if (route.kind === "community-entry" || route.kind === "community-version") {
+    const release = route.slug || labels.release;
+    const version = route.kind === "community-version" && route.versionId ? `v${route.versionId}` : "";
+    return {
+      title: version || release,
+      breadcrumbs: version
+        ? [community, discover, { label: release, href: communityRoutePaths.entry(route.owner ?? "", route.slug ?? "") }, { label: version }]
+        : [community, discover, { label: release }],
+    };
+  }
+  return null;
+}
+
 export function desktopHeader(
   route: DesktopRouteLocation,
   projects: ProjectSummaryResponse[],
@@ -34,18 +72,23 @@ export function desktopHeader(
   context: { conversationTitle?: string } = {},
 ): DesktopHeader {
   const contextLabels = locale === "zh"
-    ? { newChat: "新聊天", analysis: "数据分析", run: "运行", version: "版本", resourceLibrary: "项目资源", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", history: "历史" }
-    : { newChat: "New chat", analysis: "Data analysis", run: "Run", version: "Version", resourceLibrary: "Project resources", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", history: "History" };
+    ? { newChat: "新聊天", analysis: "数据分析", run: "运行详情", version: "版本", resourceLibrary: "项目资源", factory: "Factory", agents: "Agent", workflows: "工作流", knowledge: "知识", files: "文件", history: "运行记录", app: "应用", studio: "Studio" }
+    : { newChat: "New chat", analysis: "Data analysis", run: "Run Detail", version: "Version", resourceLibrary: "Project resources", factory: "Factory", agents: "Agents", workflows: "Workflows", knowledge: "Knowledge", files: "Files", history: "Runs", app: "App", studio: "Studio" };
+  const communityTrail = communityHeader(route, locale);
+  if (communityTrail) return communityTrail;
   const title = rootTitles[locale][route.kind];
-  if (title) return { title };
+  if (title) return { title, breadcrumbs: [{ label: title, icon: rootIcons[route.kind] }] };
   const project = "projectId" in route ? projects.find((item) => item.project_id === route.projectId) : undefined;
   const projectLabel = project?.name ?? ("projectId" in route ? route.projectId : "Project");
   const home = { label: "Home", href: desktopRoutePaths.projects, icon: Home };
   const projectCrumb = "projectId" in route ? { label: projectLabel, href: projectRoutePaths.project(route.projectId), icon: FolderKanban } : undefined;
   if (!projectCrumb) return { title: "Route not found" };
 
-  if (route.kind === "project" || route.kind === "project-files") {
+  if (route.kind === "project") {
     return { title: projectLabel, breadcrumbs: projectTrail(home, projectCrumb) };
+  }
+  if (route.kind === "project-files") {
+    return { title: contextLabels.files, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.files, href: projectRoutePaths.files(route.projectId), icon: FileText }) };
   }
   if (route.kind === "project-resources") {
     return { title: contextLabels.resourceLibrary, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.resourceLibrary, href: projectRoutePaths.projectResources(route.projectId), icon: Boxes }) };
@@ -55,7 +98,7 @@ export function desktopHeader(
   }
   if (route.kind === "project-chat") {
     const chatLabel = route.conversationId
-      ? (context.conversationTitle?.trim() || contextLabels.newChat)
+      ? displayConversationTitle(context.conversationTitle, locale)
       : contextLabels.newChat;
     const href = route.conversationId
       ? projectRoutePaths.projectChat(route.projectId, route.conversationId)

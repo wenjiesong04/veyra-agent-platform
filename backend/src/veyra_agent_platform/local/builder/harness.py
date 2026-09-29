@@ -10,7 +10,7 @@ from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.projects.service import ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog
 
-from .prompt import BUILDER_SYSTEM_PROMPT
+from .prompt import BUILDER_SYSTEM_PROMPT, RUNNABLE_AGENT_PRIMITIVES
 
 MAX_CONTEXT_BYTES = 400_000
 BuilderMode = Literal["interview", "create_agent", "edit_source", "resolve_intent"]
@@ -188,22 +188,41 @@ class BuilderHarness:
             "create_agent": (
                 "Return only an AgentSemanticPlanV1 JSON matching the supplied "
                 "response schema. Describe the Agent's goal, inputs, outputs, "
-                "summary steps, and step_intents. step_intents fields are only "
-                "semantic_key, name, purpose, operation_kind, depends_on, "
+                "summary steps, and step_intents. Give every input and output a "
+                "description of what a good value contains. step_intents fields "
+                "are only semantic_key, name, purpose, operation_kind, depends_on, "
                 "capability_requirement, dependency_requirement, "
                 "reusable_capability, inputs, outputs, branches, "
-                "branch_condition, branch_key, and output_mapping. Mark a step "
-                "reusable "
-                "only when the requirement needs a Project-reusable capability; "
-                "then provide typed step I/O and a semantic capability name. "
+                "condition_expression, branch_condition, branch_key, and "
+                "output_mapping. Mark a step reusable only when the requirement "
+                "needs a Project-reusable capability; model, transform, or "
+                "capability steps with reusable_capability=true may declare typed "
+                "step inputs/outputs, which define the reusable component "
+                "contract, not general inter-step dataflow. "
+                "depends_on expresses ordering/control only. Only the last Model "
+                "on each path to Output emits the declared Agent outputs. Earlier "
+                "Models write a working note named by semantic_key. Transforms may "
+                "read only top-level Agent inputs or literals, never prior Model "
+                "or step outputs. Preserve declared Agent output names exactly. "
+                "Keep a Transform when it performs a real user-requested mapping "
+                "from Agent inputs/literals; do not invent a mapping-only Transform "
+                "to rename Model outputs. If such an invalid mapping-only step is "
+                "present, remove only that step and preserve the producing Model's "
+                "duty using the declared output fields. "
                 "operation_kind enum is closed: model, capability, transform, "
                 "condition, approval, verification. Human confirmation is always "
-                "approval, never model, confirm, review, or human_review. A check "
-                "of a prior result is verification; describe what to check, do "
-                "not invent a verifier implementation. A branch is condition; "
-                "for every condition emit exactly two semantic branches with key "
-                "and label. Mark every branch-local step with branch_condition and "
-                "branch_key; the server chooses true/false runtime ports. "
+                "approval, never model, confirm, review, or human_review. Later "
+                "duties after approval set branch_condition to that approval and "
+                "branch_key to approved or rejected. A check of a prior result is "
+                "verification; describe what to check, do not invent a verifier "
+                "implementation. A branch over a user-supplied Run input is "
+                "condition; for every condition emit exactly two semantic branches "
+                "with key and label. Put the executable predicate in "
+                "condition_expression using a supported comparison over a declared "
+                "Agent input; keep human intent in purpose. Do not use a "
+                "non-empty fallback for natural-language classification. Mark every "
+                "branch-local step with branch_condition and branch_key; "
+                "the server chooses runtime ports. "
                 "capability_intents names a Project-bound tool from "
                 "project_bindings or stays empty. capability_requirement names "
                 "a Project-bound capability for operation_kind=capability, or "
@@ -216,11 +235,12 @@ class BuilderHarness:
                 "those belong in user_constraints. "
                 "A simple translation, summary, or one-duty text Agent needs one "
                 "model step. Split model steps when duties are distinct. Do not "
-                "omit step_intents after approval, condition, verification, "
-                "transform, capability, or a second model duty is required. Do "
+                "omit step_intents after approval, condition, verification, a "
+                "genuine transform, capability, or a second model duty is required. Do "
                 "not emit resource hashes, Knowledge UUIDs, node IDs, canvas "
                 "positions, source.lock, permission sets, or filesystem roots. "
-                "The server compiles a canonical AgentBlueprint and reviews it "
+                + RUNNABLE_AGENT_PRIMITIVES
+                + " The server compiles a canonical AgentBlueprint and reviews it "
                 "before creation."
             ),
             "edit_source": (

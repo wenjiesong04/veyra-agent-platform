@@ -480,3 +480,290 @@ def test_create_blank_agent_includes_default_canvas_note(tmp_path: Path) -> None
         "Model",
         "Output",
     ]
+
+
+def _insert_row(
+    connection: sqlite3.Connection, table: str, values: dict[str, object]
+) -> None:
+    info = list(connection.execute(f"PRAGMA table_info({table})"))
+    payload: dict[str, object] = {}
+    for _cid, name, coltype, notnull, default, _pk in info:
+        if name in values:
+            payload[name] = values[name]
+            continue
+        if notnull and default is None:
+            kind = (coltype or "TEXT").upper()
+            payload[name] = 0 if "INT" in kind else ""
+    columns = ", ".join(payload)
+    placeholders = ", ".join("?" for _ in payload)
+    connection.execute(
+        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+        tuple(payload.values()),
+    )
+
+
+def test_fresh_head_creates_project_and_blank_agent(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create_managed(name="Fresh RC")
+    agent = projects.create_agent(project_id=created["project_id"], mode="blank")
+    with sqlite3.connect(tmp_path / "app.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM projects WHERE project_id = ?",
+            (created["project_id"],),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM agents WHERE agent_id = ?",
+            (agent["agent_id"],),
+        ).fetchone() == (1,)
+
+
+def test_upgrade_from_0026_preserves_project_agent_conversation_and_run(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "from-0026.sqlite3"
+    config = Config("backend/migrations/local/alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database}")
+    command.upgrade(config, "local_0026_builder_semantic_plan")
+    now = "2026-09-01T00:00:00Z"
+    with sqlite3.connect(database) as connection:
+        _insert_row(
+            connection,
+            "projects",
+            {
+                "project_id": "proj-keep",
+                "root_path": str(tmp_path / "kept-project"),
+                "name": "Kept Project",
+                "manifest_hash": "m",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agents",
+            {
+                "agent_id": "agent-keep",
+                "project_id": "proj-keep",
+                "slug": "kept",
+                "source_path": "agents/kept/agent.vagent.yaml",
+                "source_file_hash": "s",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_versions",
+            {
+                "version_id": "version-keep",
+                "agent_id": "agent-keep",
+                "source_hash": "a" * 64,
+                "behavior_hash": "b" * 64,
+                "lock_hash": "c" * 64,
+                "file_hash": "d" * 64,
+                "source_json": "{}",
+                "source_text": "{}",
+                "created_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_conversations",
+            {
+                "conversation_id": "conv-keep",
+                "project_id": "proj-keep",
+                "agent_id": "agent-keep",
+                "title": "Kept chat",
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "runtime_runs",
+            {
+                "run_id": "run-keep",
+                "project_id": "proj-keep",
+                "agent_id": "agent-keep",
+                "version_id": "version-keep",
+                "status": "verified",
+                "created_at": now,
+                "conversation_id": "conv-keep",
+            },
+        )
+        connection.commit()
+
+    migrate_local_database(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT name FROM projects WHERE project_id = 'proj-keep'"
+        ).fetchone() == ("Kept Project",)
+        assert connection.execute(
+            "SELECT slug FROM agents WHERE agent_id = 'agent-keep'"
+        ).fetchone() == ("kept",)
+        assert connection.execute(
+            "SELECT title FROM agent_conversations WHERE conversation_id = 'conv-keep'"
+        ).fetchone() == ("Kept chat",)
+        assert connection.execute(
+            "SELECT status FROM runtime_runs WHERE run_id = 'run-keep'"
+        ).fetchone() == ("verified",)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(agent_conversations)")
+        }
+        assert "agent_version_id" in columns
+        assert "committed" in {
+            row[1] for row in connection.execute("PRAGMA table_info(agent_versions)")
+        }
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {"project_entities", "entity_records", "entity_events"} <= tables
+
+
+def test_upgrade_from_0033_preserves_rows_and_adds_entity_tables(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "from-0033.sqlite3"
+    config = Config("backend/migrations/local/alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database}")
+    command.upgrade(config, "local_0033_agent_app_versions")
+    now = "2026-09-29T00:00:00Z"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("local_0033_agent_app_versions",)
+        _insert_row(
+            connection,
+            "projects",
+            {
+                "project_id": "proj-0033",
+                "root_path": str(tmp_path / "kept-0033"),
+                "name": "Kept 0033",
+                "manifest_hash": "m",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agents",
+            {
+                "agent_id": "agent-0033",
+                "project_id": "proj-0033",
+                "slug": "kept-0033",
+                "source_path": "agents/kept/agent.vagent.yaml",
+                "source_file_hash": "s",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_versions",
+            {
+                "version_id": "version-0033",
+                "agent_id": "agent-0033",
+                "source_hash": "a" * 64,
+                "behavior_hash": "b" * 64,
+                "lock_hash": "c" * 64,
+                "file_hash": "d" * 64,
+                "source_json": "{}",
+                "source_text": "{}",
+                "created_at": now,
+                "committed": 1,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_conversations",
+            {
+                "conversation_id": "conv-0033",
+                "project_id": "proj-0033",
+                "agent_id": "agent-0033",
+                "title": "Kept 0033 chat",
+                "created_at": now,
+                "updated_at": now,
+                "agent_version_id": "version-0033",
+            },
+        )
+        _insert_row(
+            connection,
+            "runtime_runs",
+            {
+                "run_id": "run-0033",
+                "project_id": "proj-0033",
+                "agent_id": "agent-0033",
+                "version_id": "version-0033",
+                "status": "verified",
+                "created_at": now,
+                "conversation_id": "conv-0033",
+            },
+        )
+        connection.commit()
+        before = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "project_entities" not in before
+
+    migrate_local_database(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT name FROM projects WHERE project_id = 'proj-0033'"
+        ).fetchone() == ("Kept 0033",)
+        assert connection.execute(
+            "SELECT slug FROM agents WHERE agent_id = 'agent-0033'"
+        ).fetchone() == ("kept-0033",)
+        assert connection.execute(
+            "SELECT committed FROM agent_versions WHERE version_id = 'version-0033'"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT title, agent_version_id FROM agent_conversations "
+            "WHERE conversation_id = 'conv-0033'"
+        ).fetchone() == ("Kept 0033 chat", "version-0033")
+        assert connection.execute(
+            "SELECT status FROM runtime_runs WHERE run_id = 'run-0033'"
+        ).fetchone() == ("verified",)
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {"project_entities", "entity_records", "entity_events"} <= tables
+        assert connection.execute(
+            "SELECT COUNT(*) FROM project_entities"
+        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM entity_records").fetchone() == (
+            0,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM entity_events").fetchone() == (
+            0,
+        )
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert {
+            "ix_entity_records_project_type",
+            "ix_entity_events_entity",
+        } <= indexes
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(entity_events)"
+        ).fetchall()
+        assert [(row[2], row[3], row[4], row[6]) for row in foreign_keys] == [
+            ("entity_records", "entity_id", "entity_id", "CASCADE")
+        ]

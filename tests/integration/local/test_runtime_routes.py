@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -631,16 +633,25 @@ def test_runtime_rejects_wrong_declared_output_type(tmp_path: Path) -> None:
 
 
 class ScriptedRuntimeTransport:
-    def __init__(self, content: str) -> None:
-        self.content = content
-        self.calls: list[object] = []
+    def __init__(self, content: str | Sequence[str]) -> None:
+        self.script = [content] if isinstance(content, str) else list(content)
+        self.content = self.script[0] if self.script else ""
+        self.calls: list[Any] = []
+        self._index = 0
 
     def models(self) -> tuple[str, ...]:
         return ("kimi-k3",)
 
     def complete(self, messages: object) -> RuntimeCompletion:
         self.calls.append(messages)
-        return RuntimeCompletion(content=self.content, finish_reason="stop")
+        if not self.script:
+            text = ""
+        elif len(self.script) == 1:
+            text = self.script[0]
+        else:
+            text = self.script[min(self._index, len(self.script) - 1)]
+            self._index += 1
+        return RuntimeCompletion(content=text, finish_reason="stop")
 
 
 def _agent_source() -> dict[str, object]:
@@ -676,9 +687,11 @@ def test_runtime_status_is_unconfigured_without_host_key(tmp_path: Path) -> None
         payload = status.json()
         assert payload["configured"] is False
         assert payload["model_id"] == "kimi-k3"
-        assert payload["user_provided_only"] is False
-        assert payload["allow_process_environment_key"] is True
-        assert payload["modalities"]["image_input"] == "unsupported"
+        assert payload["user_provided_only"] is True
+        assert payload["allow_process_environment_key"] is False
+        assert payload["modalities"]["image_input"] == "supported"
+        assert payload["modalities"]["video_input"] == "unsupported"
+        assert payload["modalities"]["audio_input"] == "unsupported"
         assert payload["modalities"]["model_id"] == "kimi-k3"
 
 
@@ -811,6 +824,33 @@ def test_agent_node_accepts_declared_object_output(tmp_path: Path) -> None:
         response = _run_until_settled(client, url, {"request": "Summarize"})
         assert response["status"] == "unverified"
         assert response["result"] == {"result": {"summary": "ok"}}
+
+
+def test_agent_model_can_overwrite_an_input_with_declared_output(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedRuntimeTransport(
+        json.dumps({"status": "approved", "summary": "ok"})
+    )
+    source = _agent_source()
+    source["inputs"] = {"request": "string", "status": "string"}
+    source["outputs"] = {"status": "string", "summary": "string"}
+    source["nodes"][-1]["output_name"] = "status"  # type: ignore[index]
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(
+            client,
+            url,
+            {"request": "Review access", "status": "pending"},
+        )
+        assert response["status"] == "unverified"
+        assert response["result"] == {"status": "approved", "summary": "ok"}
 
 
 def test_production_mode_does_not_use_host_process_key(
@@ -1597,3 +1637,171 @@ def test_knowledge_binding_sends_locked_context_and_rejects_changed_document(
         assert failed["status"] == "failed", failed
         assert failed["error"]["code"] == "knowledge_lock_mismatch"
         assert len(transport.calls) == call_count
+
+
+def test_loop_agent_runtime_emits_model_and_final_output(tmp_path: Path) -> None:
+    from veyra_agent_platform.local.builder.agent_loop_compiler import (
+        compile_loop_agent,
+    )
+    from veyra_agent_platform.local.builder.specification import (
+        infer_agent_specification,
+    )
+
+    spec = infer_agent_specification("创建一个翻译助手，把中文翻译成自然英语。")
+    source = compile_loop_agent(
+        spec, ResourceCatalog(), requirement=spec.goal
+    ).to_dict()
+    transport = ScriptedRuntimeTransport(
+        '{"action":"final","outputs":{"translation":"Hello"}}'
+    )
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        base = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}"
+        response = _run_until_settled(client, f"{base}/run", {"text": "你好"})
+        assert response["status"] == "unverified", response
+        assert response["result"] == {"translation": "Hello"}
+        events = client.get(f"{base}/runs/{response['run_id']}").json()["events"]
+        kinds = [event["kind"] for event in events]
+        assert "node.started" in kinds
+        assert "node.completed" in kinds
+        assert not any("chain" in event["kind"] for event in events)
+        assert any(event["payload"].get("phase") == "model" for event in events)
+
+
+def test_loop_agent_runtime_stops_at_max_turns(tmp_path: Path) -> None:
+    from veyra_agent_platform.local.builder.agent_loop_compiler import (
+        compile_loop_agent,
+    )
+    from veyra_agent_platform.local.builder.specification import (
+        infer_agent_specification,
+    )
+
+    spec = infer_agent_specification("创建一个翻译助手，把中文翻译成自然英语。")
+    source = compile_loop_agent(spec, ResourceCatalog(), requirement=spec.goal)
+    payload = source.to_dict()
+    payload["extensions"]["veyra"]["max_turns"] = 2
+    transport = ScriptedRuntimeTransport(
+        '{"action":"tool","tool":"missing","arguments":{}}'
+    )
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [payload]}).json()
+        agent = project["agents"][0]
+        url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
+        response = _run_until_settled(client, url, {"text": "你好"})
+        assert response["status"] == "failed", response
+        assert response["error"]["code"] == "agent_max_turns_exceeded"
+        assert len(transport.calls) == 2
+
+
+def test_workflow_agent_call_runs_committed_loop_agent(tmp_path: Path) -> None:
+    from veyra_agent_platform.local.builder.agent_loop_compiler import (
+        compile_loop_agent,
+    )
+    from veyra_agent_platform.local.builder.specification import (
+        infer_agent_specification,
+    )
+
+    spec = infer_agent_specification("创建一个翻译助手，把中文翻译成自然英语。")
+    source = compile_loop_agent(
+        spec, ResourceCatalog(), requirement=spec.goal
+    ).to_dict()
+    transport = ScriptedRuntimeTransport(
+        '{"action":"final","outputs":{"translation":"Hello"}}'
+    )
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+        project = client.post("/api/v1/projects", json={"agents": [source]}).json()
+        agent = project["agents"][0]
+        agent_url = (
+            f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}"
+        )
+        draft = client.get(f"{agent_url}/draft").json()
+        saved = client.patch(
+            f"{agent_url}/draft",
+            json={
+                "source": draft["source"],
+                "expected_revision": draft["revision"],
+            },
+            headers={"If-Match": draft["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert saved.status_code == 200, saved.text
+        saved = saved.json()
+        committed = client.post(
+            f"{agent_url}/commit",
+            json={"expected_revision": saved["revision"]},
+            headers={"If-Match": saved["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert committed.status_code == 200, committed.text
+        version = committed.json()
+        workflow = client.post(
+            f"/api/v1/projects/{project['project_id']}/workflows",
+            json={"name": "Translate Flow"},
+        ).json()
+        url = (
+            f"/api/v1/projects/{project['project_id']}/workflows/"
+            f"{workflow['workflow_id']}"
+        )
+        workflow_draft = client.get(f"{url}/draft").json()
+        ref = f"{agent['agent_id']}@{version['version_id']}"
+        workflow_source = workflow_draft["source"]
+        workflow_source.update(
+            inputs={"text": "string"},
+            outputs={"translation": "string"},
+            nodes=[
+                {"id": "start", "component_type": "Start"},
+                {
+                    "id": "call",
+                    "component_type": "AgentCall",
+                    "agent_ref": ref,
+                    "input_mapping": {"text": "text"},
+                    "output_mapping": {"translation": "translation"},
+                },
+                {
+                    "id": "output",
+                    "component_type": "Output",
+                    "output_name": "translation",
+                },
+            ],
+            transitions=[
+                {"from": "start", "port": "next", "to": "call"},
+                {"from": "call", "port": "next", "to": "output"},
+            ],
+            lock={ref: version["source_hash"]},
+            ui={"positions": {}},
+        )
+        patched = client.patch(
+            f"{url}/draft",
+            json={
+                "source": workflow_source,
+                "expected_revision": workflow_draft["revision"],
+            },
+            headers={
+                "If-Match": workflow_draft["etag"],
+                "Idempotency-Key": new_uuid7(),
+            },
+        )
+        assert patched.status_code == 200, patched.text
+        run = _run_until_settled(client, f"{url}/run", {"text": "你好"})
+        assert run["status"] == "unverified", run
+        assert run["result"] == {"translation": "Hello"}
+        assert run["run_target_kind"] == "workflow"
+        child = run["children"][0]
+        detail = client.get(f"{agent_url}/runs/{child['child_run_id']}").json()
+        assert detail["version_id"] == version["version_id"]
+        assert detail["run_target_kind"] == "agent"
+        assert detail["result"] == {"translation": "Hello"}
+        assert any(
+            event["payload"].get("phase") == "model" for event in detail["events"]
+        )

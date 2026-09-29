@@ -9,7 +9,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
-from veyra_agent_platform.contracts.agent import AgentSource
+from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import (
     SCHEMA_VERSION,
@@ -18,6 +18,10 @@ from veyra_agent_platform.contracts.common import (
 )
 from veyra_agent_platform.contracts.resource import ResourceRef
 from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.projects.custom_components import (
+    CustomComponentError,
+    CustomComponentService,
+)
 from veyra_agent_platform.local.projects.service import (
     ProjectError,
     ProjectService,
@@ -57,10 +61,12 @@ class LibraryService:
         repository: LocalRepository,
         projects: ProjectService,
         catalog: ResourceCatalog | None = None,
+        custom_components: CustomComponentService | None = None,
     ) -> None:
         self.repository = repository
         self.projects = projects
         self.catalog = catalog
+        self.custom_components = custom_components
         self.recover_pending_writes()
 
     def recover_pending_writes(self) -> None:
@@ -193,7 +199,7 @@ class LibraryService:
                 raise DraftConflict("draft ETag does not match")
             if draft["revision"] != expected_revision:
                 raise DraftConflict("draft revision does not match")
-            self._validate_tool_bindings(project_id, parsed)
+            self._validate_resource_bindings(project_id, parsed)
             self._validate_knowledge_ownership(project_id, parsed)
             intent_id = self.repository.create_write_intent(
                 connection,
@@ -259,15 +265,29 @@ class LibraryService:
                     "knowledge_unbound",
                 )
 
-    def _validate_tool_bindings(self, project_id: str, source: AgentSource) -> None:
-        references = {node.uses for node in source.nodes if node.uses}
-        if not references:
-            return
+    def _validate_resource_bindings(self, project_id: str, source: AgentSource) -> None:
+        tool_references = {
+            node.uses
+            for node in source.nodes
+            if node.component_type is ComponentType.TOOL and node.uses
+        }
+        for binding in (source.ui.get("bindings") or {}).values():
+            if (
+                isinstance(binding, dict)
+                and binding.get("kind") in {"tool", "mcp_tool"}
+                and isinstance(binding.get("reference"), str)
+            ):
+                tool_references.add(binding["reference"])
+        component_references = {
+            node.uses
+            for node in source.nodes
+            if node.component_type is ComponentType.CUSTOM_COMPONENT and node.uses
+        }
         bindings = {
             binding.reference: binding.content_hash
             for binding in self.projects.project_resource_bindings(project_id)
         }
-        for reference in sorted(references):
+        for reference in sorted(tool_references):
             if reference not in bindings:
                 raise ProjectError(
                     f"Tool {reference} is not bound to this Project.",
@@ -276,6 +296,45 @@ class LibraryService:
             if source.lock[reference] != bindings[reference]:
                 raise ProjectError(
                     f"Tool {reference} must lock the Project pinned content hash.",
+                    "resource_lock_mismatch",
+                )
+        if source.is_loop:
+            for reference in source.skill_refs:
+                if reference not in bindings:
+                    raise ProjectError(
+                        f"Skill {reference} is not bound to this Project.",
+                        "resource_unbound",
+                    )
+                if source.lock.get(reference) != bindings[reference]:
+                    raise ProjectError(
+                        f"Skill {reference} must lock the Project pinned content hash.",
+                        "resource_lock_mismatch",
+                    )
+        for reference in sorted(component_references):
+            component_ref = ResourceRef.from_string(reference, "custom_component.uses")
+            if self.custom_components is None:
+                raise ProjectError(
+                    f"Custom Component {reference} is not available in this Project.",
+                    "resource_unbound",
+                )
+            try:
+                component = self.custom_components.get(
+                    project_id, component_ref.resource_id, version=component_ref.version
+                )
+            except CustomComponentError as exc:
+                raise ProjectError(
+                    f"Custom Component {reference} is not available in this Project.",
+                    "resource_unbound",
+                ) from exc
+            if component.get("reference") != reference:
+                raise ProjectError(
+                    f"Custom Component {reference} is not available in this Project.",
+                    "resource_unbound",
+                )
+            if source.lock.get(reference) != component.get("content_hash"):
+                raise ProjectError(
+                    f"Custom Component {reference} must lock its published "
+                    "content hash.",
                     "resource_lock_mismatch",
                 )
 
@@ -304,6 +363,11 @@ class LibraryService:
                     project_id,
                     source,
                     resource_projection=resource_projection,
+                    project_custom_components=(
+                        self.custom_components.descriptors(project_id)
+                        if self.custom_components is not None
+                        else []
+                    ),
                 )
             )
         return result
@@ -349,7 +413,7 @@ class LibraryService:
             source = AgentSource.from_dict(
                 self.projects._parse_yaml(source_text, agent["slug"])
             )
-            self._validate_tool_bindings(project_id, source)
+            self._validate_resource_bindings(project_id, source)
             self._validate_knowledge_ownership(project_id, source)
             existing = self.repository.version_by_fingerprint(
                 connection, agent_id, current_file_hash
@@ -370,10 +434,12 @@ class LibraryService:
                         "created_at": datetime.now(UTC)
                         .isoformat()
                         .replace("+00:00", "Z"),
+                        "committed": True,
                     },
                 )
             else:
                 version_id = existing["version_id"]
+            self.repository.mark_version_committed(connection, version_id)
             self.repository.attach_file_to_version(
                 connection,
                 version_id=version_id,
@@ -684,7 +750,7 @@ class LibraryService:
 
     @staticmethod
     def _version_payload(row: Any, identity_field: str) -> dict[str, Any]:
-        return {
+        payload = {
             "version_id": row["version_id"],
             identity_field: row[identity_field],
             "source_hash": row["source_hash"],
@@ -694,6 +760,12 @@ class LibraryService:
             "created_at": row["created_at"],
             "source": json.loads(row["source_json"]),
         }
+        if identity_field == "agent_id":
+            keys = row.keys() if hasattr(row, "keys") else []
+            payload["committed"] = (
+                bool(row["committed"]) if "committed" in keys else False
+            )
+        return payload
 
     def export(self, project_id: str, agent_id: str) -> dict[str, Any]:
         agent = self._agent_in_project(project_id, agent_id)
@@ -701,6 +773,7 @@ class LibraryService:
         source = AgentSource.from_dict(
             self.projects._parse_yaml(source_text, agent["slug"])
         )
+        share_source_text = self.projects._canonical_source(source.to_dict())
         result = {
             "schema_version": SCHEMA_VERSION,
             "kind": "agent",
@@ -711,6 +784,18 @@ class LibraryService:
             "source": source.to_dict(),
             "source_text": source_text,
             "file_hash": file_hash(source_text),
+            "community_package": {
+                "source_text": share_source_text,
+                "file_hash": file_hash(share_source_text),
+                "source_hash": source.source_hash,
+                "behavior_hash": source.behavior_hash,
+                "lock_hash": source.lock_hash,
+                "dependencies": sorted(source.lock),
+                "version": source.version,
+                "slug": source.slug,
+                "name": source.name,
+                "description": source.description,
+            },
         }
         origin = self.repository.agent_origin(agent_id)
         if origin is not None:

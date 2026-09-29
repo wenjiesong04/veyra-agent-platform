@@ -98,6 +98,7 @@ class WorkflowRunStore:
                     "finished_at",
                 )
             },
+            "run_target_kind": "workflow",
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
             "error": json.loads(row["error_json"]) if row["error_json"] else None,
             "waiting": json.loads(row["context_json"]).get("waiting"),

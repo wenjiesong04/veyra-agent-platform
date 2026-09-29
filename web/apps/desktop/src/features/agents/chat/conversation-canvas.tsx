@@ -1,9 +1,11 @@
 import { LayoutPanelTop, X } from "lucide-react";
 import type { AgentSource, JsonObject, JsonValue, ResourceDescriptor } from "@veyra/api-contracts";
 import { IconButton } from "@veyra/ui";
+import type { LocalProjectApi } from "../../../api/local-client";
+import { RuntimeOutputView } from "../../runtime/RuntimeOutputView";
 import { nodeDisplayTitle } from "../../studio/palette";
 import { nodeRunStates, type LiveRunSession } from "../../studio/live-run";
-import { isJsonObject, scalarResultText, tableRows, type ConversationCanvasSpec } from "./canvas-artifact";
+import { scalarResultText, tableRows, type ConversationCanvasSpec } from "./canvas-artifact";
 
 const NODE_W = 148;
 const NODE_H = 58;
@@ -31,19 +33,6 @@ function CanvasTable({ rows }: { rows: JsonObject[] }) {
         </tbody>
       </table>
     </div>
-  );
-}
-
-function CanvasRecord({ value }: { value: JsonObject }) {
-  return (
-    <dl className="agent-convo-kv">
-      {Object.entries(value).map(([key, item]) => (
-        <div key={key}>
-          <dt>{key}</dt>
-          <dd>{typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? String(item) : <pre><code>{JSON.stringify(item, null, 2)}</code></pre>}</dd>
-        </div>
-      ))}
-    </dl>
   );
 }
 
@@ -109,6 +98,8 @@ export function ConversationCanvasPanel({
   catalog,
   live,
   locale,
+  projectId,
+  api,
   onClose,
 }: {
   spec: ConversationCanvasSpec;
@@ -116,6 +107,8 @@ export function ConversationCanvasPanel({
   catalog: ResourceDescriptor[];
   live: LiveRunSession;
   locale: "zh" | "en";
+  projectId?: string;
+  api?: Pick<LocalProjectApi, "artifactContent">;
   onClose: () => void;
 }) {
   const result = live.run?.result ?? null;
@@ -134,7 +127,7 @@ export function ConversationCanvasPanel({
       <div className="agent-convo-canvas-body">
         {showGraph && source ? <ConversationFlowCanvas source={source} catalog={catalog} live={live} locale={locale} /> : null}
         {rows ? <CanvasTable rows={rows} /> : null}
-        {spec.kind === "result" && isJsonObject(result) ? <CanvasRecord value={result} /> : null}
+        {spec.kind === "result" && result != null ? <RuntimeOutputView result={result} locale={locale} projectId={projectId} api={api} /> : null}
         {document ? <article className="agent-convo-document"><p>{document}</p></article> : null}
       </div>
     </aside>

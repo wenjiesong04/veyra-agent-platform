@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -25,11 +25,18 @@ class ResourceReadiness:
         model: RuntimeModelClient,
         adapters: Collection[str],
         mcp: McpService | None,
+        model_configured: Callable[[], bool] | None = None,
     ) -> None:
         self.catalog = catalog
         self.model = model
         self.adapters = adapters
         self.mcp = mcp
+        self._model_configured = model_configured
+
+    def _runtime_model_configured(self) -> bool:
+        if self._model_configured is not None:
+            return bool(self._model_configured())
+        return bool(self.model.configured)
 
     def project(self, descriptor: dict[str, Any]) -> dict[str, Any]:
         result = deepcopy(descriptor)
@@ -191,7 +198,7 @@ class ResourceReadiness:
             require(
                 "model_configuration",
                 "Configure the Runtime provider, model and host model credential.",
-                self.model.configured,
+                self._runtime_model_configured(),
             )
         elif (
             kind == "component" and spec.get("implementation_kind") == "composite_graph"

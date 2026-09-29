@@ -2,6 +2,8 @@
 availability: ready
 description: Call an allowlisted HTTP host. Hosts are derived, never invented.
 factory_selectable: true
+capabilities:
+- http_request
 kind: tool
 name: HTTP Request
 required_permissions:

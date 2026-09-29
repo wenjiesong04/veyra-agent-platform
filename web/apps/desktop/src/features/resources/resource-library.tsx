@@ -78,6 +78,15 @@ function availabilityLabel(value: ResourceDescriptor["availability"], zh: boolea
     : { ready: "Ready", requires_configuration: "Needs configuration", design_only: "Design only", quarantined: "Quarantined", disabled: "Disabled", unavailable: "Unavailable" }[value];
 }
 
+function lifecycleLabel(item: ResourceDescriptor, zh: boolean): string {
+  const spec = (item.spec ?? {}) as Record<string, unknown>;
+  if (item.availability === "quarantined" && spec.validation_passed === true) {
+    return zh ? "已验证（隔离）" : "Validated";
+  }
+  if (item.availability === "quarantined") return zh ? "草稿 / 隔离中" : "Draft";
+  return availabilityLabel(item.availability, zh);
+}
+
 function runtimeLabel(value: ResourceRuntimeStatus, zh: boolean): string {
   return zh
     ? { supported: "Runtime 支持", runtime_not_configured: "等待配置", runtime_not_supported: "不可直接运行" }[value]
@@ -348,7 +357,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
               <div className="resource-card-meta">
                 <Tag>{resourceKindLabel(selectedResource.kind, zh)}</Tag>
                 <Tag>v{selectedResource.version}</Tag>
-                <StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} />
+                <StatusBadge label={lifecycleLabel(selectedResource, zh)} tone={statusTone(selectedResource.availability)} />
               </div>
               <p className="resource-detail-reference">{selectedResource.reference}</p>
             </div>
@@ -366,12 +375,23 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
             <textarea value={workshopInstruction} onChange={(event) => setWorkshopInstruction(event.target.value)} placeholder={copy.skillInstructionHint} rows={6} />
             <div className="button-row"><Button variant="primary" disabled={!api.approveResourceDraft || workshopState === "approving" || !workshopInstruction.trim()} onClick={() => void approveSkill()}>{workshopState === "approving" ? "…" : workshopState === "approved" ? copy.skillApproved : copy.approveSkill}</Button>{workshopState === "error" ? <span className="resource-detail-error">{copy.skillApprovalFailed}</span> : null}</div>
           </div> : null}
+          {selectedResource.origin === "workshop" && (selectedResource.kind === "skill" || selectedResource.kind === "tool") && selectedResource.availability !== "quarantined" && api.enableResource ? (
+            <div className="button-row">
+              <Button variant="ghost" onClick={() => void api.enableResource!(selectedResource.resource_id, selectedResource.version, selectedResource.availability === "disabled").then((result) => { setSelected(result.resource); void load(); })}>
+                {selectedResource.availability === "disabled" ? (zh ? "启用" : "Enable") : (zh ? "停用" : "Disable")}
+              </Button>
+            </div>
+          ) : null}
           <div className="resource-detail-facts">
             <div><span>{zh ? "来源" : "Source"}</span><strong>{selectedResource.origin}</strong></div>
-            <div><span>{copy.availability}</span><StatusBadge label={availabilityLabel(selectedResource.availability, zh)} tone={statusTone(selectedResource.availability)} /></div>
+            {selectedResource.tags.includes("factory") ? <div><span>{zh ? "生成" : "Generated"}</span><strong>{zh ? "是" : "Yes"}</strong></div> : null}
+            <div><span>{copy.availability}</span><StatusBadge label={lifecycleLabel(selectedResource, zh)} tone={statusTone(selectedResource.availability)} /></div>
             <div><span>{copy.runtime}</span><strong>{runtimeLabel(selectedResource.runtime_status, zh)}</strong></div>
             <div><span>{copy.factorySelectable}</span><strong>{selectedResource.factory_selectable ? copy.selectable : copy.notSelectable}</strong></div>
             <div><span>{copy.hash}</span><strong>{selectedResource.content_hash}</strong></div>
+            {selectedResource.capabilities?.length ? <div><span>{zh ? "能力" : "Capabilities"}</span><strong>{selectedResource.capabilities.join(", ")}</strong></div> : null}
+            {typeof (selectedResource.spec as Record<string, unknown>).base_adapter === "string" ? <div><span>{zh ? "Runtime 基座" : "Runtime base"}</span><strong>{String((selectedResource.spec as Record<string, unknown>).base_adapter)}</strong></div> : null}
+            {typeof (selectedResource.spec as Record<string, unknown>).validation_passed === "boolean" ? <div><span>{zh ? "校验" : "Validation"}</span><strong>{(selectedResource.spec as Record<string, unknown>).validation_passed ? (zh ? "已通过" : "Passed") : (zh ? "未通过" : "Failed")}</strong></div> : null}
             {selectedResource.blocking_reasons?.map((reason) => <div key={reason.code}><span>{reason.code}</span><strong>{reason.message}</strong></div>)}
             {selectedResource.configuration_requirements?.map((item) => <div key={item.code}><span>{zh ? "配置要求" : "Configuration requirement"}</span><strong>{item.message} — {item.satisfied ? "Configured" : "Missing"}</strong></div>)}
             {selectedResource.dependencies ? <div><span>{zh ? "依赖" : "Dependencies"}</span><strong>{JSON.stringify(selectedResource.dependencies)}</strong></div> : null}
@@ -433,7 +453,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
               >
                 <div className="resource-card-top">
                   <span className={`resource-icon kind-${item.kind}`}><Icon size={18} aria-hidden="true" /></span>
-                  <StatusBadge label={availabilityLabel(item.availability, zh)} tone={statusTone(item.availability)} />
+                <StatusBadge label={lifecycleLabel(item, zh)} tone={statusTone(item.availability)} />
                 </div>
                 <h3>{item.name}</h3>
                 <p>{item.description}</p>
@@ -441,7 +461,7 @@ export function ResourceLibraryPage({ resourceId, catalogHref = desktopRoutePath
                 <div className="resource-card-meta">
                   <Tag>{resourceKindLabel(item.kind, zh)}</Tag>
                   <Tag>v{item.version}</Tag>
-                  {item.tags.slice(0, 2).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                  {item.tags.includes("factory") ? <Tag>{zh ? "生成" : "Generated"}</Tag> : null}
                 </div>
               </a>
             );

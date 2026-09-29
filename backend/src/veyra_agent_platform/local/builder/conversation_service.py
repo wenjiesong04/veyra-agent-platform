@@ -61,6 +61,7 @@ from veyra_agent_platform.local.factory.edit_service import EditProposalService
 from veyra_agent_platform.local.factory.service import FactoryError, FactoryService
 from veyra_agent_platform.local.library.service import DraftConflict
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
+from veyra_agent_platform.local.runtime.credentials import ProviderCredentialError
 from veyra_agent_platform.local.runtime.service import (
     RuntimeError as RuntimeFailure,
 )
@@ -218,6 +219,20 @@ class ComponentProposalCommandRequest(ClosedModel):
     locale: Literal["zh", "en"] = "en"
 
 
+class AgentCreationProposalCommandRequest(ClosedModel):
+    command: Literal["apply", "reject"]
+    confirm: StrictBool
+    locale: Literal["zh", "en"] = "en"
+
+
+class RuntimeBindingCommandRequest(ClosedModel):
+    credential_id: str = Field(min_length=1, max_length=64)
+    model_id: str = Field(min_length=1, max_length=128)
+    confirm: StrictBool
+    locale: Literal["zh", "en"] = "en"
+    credential_scope: Literal["device", "cloud"] = "device"
+
+
 class TestRepairRequest(ClosedModel):
     locale: Literal["zh", "en"] = "en"
 
@@ -257,6 +272,7 @@ class BuilderConversationService:
         *,
         runtime: RuntimeService | None = None,
         edits: EditProposalService | None = None,
+        runtime_preflight: bool = True,
     ) -> None:
         self.store = store
         self.projects = projects
@@ -264,6 +280,7 @@ class BuilderConversationService:
         self.factory = factory
         self.runtime = runtime
         self.edits = edits
+        self.runtime_preflight = runtime_preflight
 
     def turn(
         self,
@@ -271,6 +288,7 @@ class BuilderConversationService:
         request: TurnRequest,
         *,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_preview: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         self._require_project(project_id)
         conversation_id, operation_id, content, locale, focus = self._begin(
@@ -303,6 +321,7 @@ class BuilderConversationService:
                     locale=locale,
                 ),
                 receipts=receipts,
+                on_visible=on_preview,
             )
             self._append_resolution(
                 conversation_id, operation_id, resolution, locale, on_event=on_event
@@ -310,9 +329,16 @@ class BuilderConversationService:
             if (
                 resolution.get("status") == "resolved"
                 and resolution.get("intent") == "create"
-                and resolution.get("create_kind") == "agent"
+                and resolution.get("create_kind") in {"agent", "workflow"}
             ):
-                factory_session = self._generate_agent(
+                if self._requires_runtime_binding(project_id):
+                    self._wait_for_runtime_binding(
+                        project_id, conversation_id, operation_id, resolution, locale
+                    )
+                    return self.snapshot(
+                        project_id, conversation_id, resolution=resolution
+                    )
+                factory_session = self._generate_product(
                     project_id,
                     conversation_id,
                     operation_id,
@@ -518,6 +544,42 @@ class BuilderConversationService:
                     "Builder operation was not found",
                     status_code=404,
                 )
+            if request.proposal_id:
+                if self.edits is None:
+                    raise BuilderConversationError(
+                        "builder_proposal_unavailable",
+                        "The canonical proposal service is unavailable.",
+                    )
+                try:
+                    canonical = self.edits.get(project_id, request.proposal_id)
+                except FactoryError as exc:
+                    raise BuilderConversationError(
+                        "builder_proposal_not_found",
+                        "The Builder proposal was not found.",
+                        status_code=404,
+                    ) from exc
+                input_payload = _load_object(operation.get("input_json"))
+                canonical_operation = canonical.get("operation_id")
+                canonical_matches_focus = canonical.get(
+                    "target_kind"
+                ) == input_payload.get("focus_kind") and canonical.get(
+                    "target_id"
+                ) == input_payload.get("focus_id")
+                if (
+                    (
+                        operation.get("proposal_id")
+                        and operation["proposal_id"] != request.proposal_id
+                    )
+                    or (
+                        canonical_operation is not None
+                        and canonical_operation != operation_id
+                    )
+                    or (canonical_operation is None and not canonical_matches_focus)
+                ):
+                    raise BuilderConversationError(
+                        "builder_proposal_mismatch",
+                        "The proposal does not belong to this Builder operation.",
+                    )
             self._apply_record_status(operation, request.kind, request.proposal_id)
         locale: Literal["zh", "en"] = "zh" if _looks_zh(request.content) else "en"
         facts = _facts(
@@ -802,6 +864,20 @@ class BuilderConversationService:
             },
             on_event=on_event,
         )
+        self.store.update_operation(
+            operation_id,
+            status="in_progress",
+            updated_at=_now(),
+            diagnostic=_facts(
+                {
+                    "resolution_json": json.dumps(
+                        resolution, ensure_ascii=False, sort_keys=True
+                    )[:12_000],
+                    "intent": str(resolution.get("intent") or ""),
+                    "create_kind": str(resolution.get("create_kind") or ""),
+                }
+            ),
+        )
         if (
             resolution.get("intent") == "create"
             and resolution.get("create_kind") == "agent"
@@ -812,12 +888,237 @@ class BuilderConversationService:
                 updated_at=_now(),
                 kind="create_agent",
             )
+        elif (
+            resolution.get("intent") == "create"
+            and resolution.get("create_kind") == "workflow"
+        ):
+            self.store.update_operation(
+                operation_id,
+                status="in_progress",
+                updated_at=_now(),
+                kind="create_workflow",
+            )
         elif resolution.get("intent") == "edit":
             self.store.update_operation(
                 operation_id, status="in_progress", updated_at=_now(), kind="edit"
             )
 
-    def _generate_agent(
+    def _requires_runtime_binding(self, project_id: str) -> bool:
+        return bool(
+            self.runtime
+            and self.runtime_preflight
+            and self.runtime.builder_runtime_preflight(project_id)["status"] != "ready"
+        )
+
+    def _wait_for_runtime_binding(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        resolution: dict[str, Any],
+        locale: Literal["zh", "en"],
+    ) -> None:
+        assert self.runtime is not None
+        preflight = self.runtime.builder_runtime_preflight(project_id)
+        waiting_for = str(preflight["status"])
+        kind = (
+            "create_workflow"
+            if resolution.get("create_kind") == "workflow"
+            else "create_agent"
+        )
+        self.store.update_operation(
+            operation_id,
+            status="waiting",
+            updated_at=_now(),
+            kind=kind,
+            diagnostic=_facts(
+                {
+                    "waiting_for": waiting_for,
+                    "binding_slot": str(
+                        preflight.get("binding_slot") or "primary_model"
+                    ),
+                    "runtime_credentials_json": json.dumps(
+                        preflight.get("credentials") or [],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )[:20_000],
+                    "resolution_json": json.dumps(
+                        resolution, ensure_ascii=False, sort_keys=True
+                    )[:12_000],
+                }
+            ),
+        )
+        self.store.append_message(
+            message_id=new_uuid7(),
+            conversation_id=conversation_id,
+            sequence=self.store.next_sequence(conversation_id),
+            role="assistant",
+            kind="clarification",
+            content=(
+                "还没有可用的 Runtime 模型 API，请先添加并选择一个 Provider。"
+                if waiting_for == "waiting_for_runtime_credential" and locale == "zh"
+                else (
+                    "Choose the Runtime Provider and model for this Agent before "
+                    "continuing."
+                )
+                if waiting_for == "waiting_for_runtime_binding"
+                else "还没有可用的 Runtime 模型 API。"
+            ),
+            operation_id=operation_id,
+            payload=_facts(
+                {
+                    "waiting_for": waiting_for,
+                    "binding_slot": str(
+                        preflight.get("binding_slot") or "primary_model"
+                    ),
+                    "credential_count": str(len(preflight.get("credentials") or [])),
+                }
+            ),
+            created_at=_now(),
+        )
+
+    def command_runtime_binding(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        request: RuntimeBindingCommandRequest,
+    ) -> dict[str, Any]:
+        if not request.confirm:
+            raise BuilderConversationError(
+                "runtime_binding_confirmation_required",
+                "Explicit confirmation is required before continuing Builder "
+                "generation.",
+            )
+        if request.credential_scope == "device" and (
+            self.runtime is None or self.runtime.credentials is None
+        ):
+            raise BuilderConversationError(
+                "runtime_binding_unavailable",
+                "Runtime credential binding is unavailable.",
+            )
+        if self.store.conversation(conversation_id, project_id) is None:
+            raise BuilderConversationError(
+                "builder_conversation_not_found",
+                "Builder conversation was not found",
+                status_code=404,
+            )
+        operation = self.store.operation(operation_id, conversation_id)
+        if operation is None:
+            raise BuilderConversationError(
+                "builder_operation_not_found",
+                "Builder operation was not found",
+                status_code=404,
+            )
+        if operation.get("status") != "waiting":
+            raise BuilderConversationError(
+                "runtime_binding_not_waiting",
+                "This Builder operation is not waiting for Runtime binding.",
+            )
+        diagnostic = _load_object(operation.get("diagnostic_json"))
+        if diagnostic.get("waiting_for") not in {
+            "waiting_for_runtime_binding",
+            "waiting_for_runtime_credential",
+        }:
+            raise BuilderConversationError(
+                "runtime_binding_not_waiting",
+                "This Builder operation is not waiting for Runtime binding.",
+            )
+        binding_slot = "primary_model"
+        if request.credential_scope == "device":
+            try:
+                assert self.runtime is not None and self.runtime.credentials is not None
+                binding = self.runtime.credentials.set_binding(
+                    project_id,
+                    None,
+                    request.credential_id,
+                    request.model_id,
+                )
+                binding_slot = binding.slot
+            except ProviderCredentialError as exc:
+                raise BuilderConversationError(exc.code, str(exc)) from exc
+        resolution = _load_object(diagnostic.get("resolution_json"))
+        input_payload = _load_object(operation.get("input_json"))
+        locale: Literal["zh", "en"] = request.locale
+        self.store.append_message(
+            message_id=new_uuid7(),
+            conversation_id=conversation_id,
+            sequence=self.store.next_sequence(conversation_id),
+            role="assistant",
+            kind="confirm",
+            content=(
+                "已选择 Runtime Provider，继续生成 Agent Proposal。"
+                if locale == "zh"
+                else "Runtime Provider selected. Continuing Agent Proposal generation."
+            ),
+            operation_id=operation_id,
+            payload=_facts(
+                {
+                    "credential_id": request.credential_id,
+                    "model_id": request.model_id,
+                    "binding_slot": binding_slot,
+                    "credential_scope": request.credential_scope,
+                }
+            ),
+            created_at=_now(),
+        )
+        self.store.update_operation(
+            operation_id,
+            status="in_progress",
+            updated_at=_now(),
+            diagnostic=_facts(
+                {
+                    "runtime_binding_status": "confirmed",
+                    "credential_id": request.credential_id,
+                    "model_id": request.model_id,
+                    "credential_scope": request.credential_scope,
+                    "resolution_json": json.dumps(
+                        resolution, ensure_ascii=False, sort_keys=True
+                    )[:12_000],
+                }
+            ),
+        )
+        content = str(input_payload.get("content") or "")
+        receipts = HarnessReceiptRecorder(
+            self.store,
+            self.factory.harness,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            operation_id=operation_id,
+            profile=self.factory.resolved_capability_profile(),
+        )
+        generate = self._generate_product
+        try:
+            generate(
+                project_id,
+                conversation_id,
+                operation_id,
+                resolution,
+                content,
+                locale,
+                receipts=receipts,
+            )
+        except FactoryProviderError as exc:
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code=exc.code,
+                message=str(exc),
+                details=dict(exc.details or {}),
+            )
+        except (FactoryError, ProjectError, ContractValidationError) as exc:
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code=str(getattr(exc, "code", "builder_operation_failed")),
+                message=str(exc),
+                details={},
+            )
+        return self.snapshot(project_id, conversation_id, resolution=resolution)
+
+    def _generate_product(
         self,
         project_id: str,
         conversation_id: str,
@@ -829,7 +1130,7 @@ class BuilderConversationService:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
-        goal = str(resolution.get("instruction") or content)
+        goal = content.strip() or str(resolution.get("instruction") or "")
         session = self.factory.create_session(project_id, goal, receipts=receipts)
         session_id = str(session["session_id"])
         self.store.update_operation(
@@ -963,21 +1264,124 @@ class BuilderConversationService:
                 operation_id, "succeeded", factory_session_id=session_id
             )
             return generated
-        self._emit(
-            operation_id,
-            PROPOSAL_READY,
-            locale,
+        if str(generated.get("target_kind") or "") == "workflow":
+            return self._materialize_workflow_proposal(
+                project_id,
+                conversation_id,
+                operation_id,
+                session_id,
+                generated,
+                name,
+                locale,
+                on_event=on_event,
+            )
+        if self.edits is None:
+            raise FactoryError(
+                "agent_creation_proposal_unavailable",
+                "The canonical Agent creation proposal service is unavailable.",
+            )
+        candidate = self.factory.compile_review_source(project_id, session_id)
+        proposal = self.edits.create_agent_proposal(
+            project_id,
+            candidate=candidate,
+            conversation_id=conversation_id,
+            operation_id=operation_id,
+            factory_session_id=session_id,
+            persist=False,
+        )
+        materialized = self.store.materialize_builder_proposal(
+            proposal_store=self.edits.store,
+            proposal=proposal,
+            locale=locale,
+            summary="",
             facts=_facts(
                 {
                     "factory_session_id": session_id,
                     "agent_name": name[:200],
-                    "state": state,
                 }
             ),
-            on_event=on_event,
+            created_at=_now(),
         )
-        self._complete_operation(operation_id, "waiting", factory_session_id=session_id)
+        event = materialized.get("event")
+        if event is not None and on_event is not None:
+            on_event(self._public_event(event))
         return generated
+
+    def _materialize_workflow_proposal(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        session_id: str,
+        generated: dict[str, Any],
+        name: str,
+        locale: Literal["zh", "en"],
+        *,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if self.edits is None:
+            raise FactoryError(
+                "workflow_creation_proposal_unavailable",
+                "The canonical Workflow creation proposal service is unavailable.",
+            )
+        self.store.update_operation(
+            operation_id,
+            status="in_progress",
+            updated_at=_now(),
+            factory_session_id=session_id,
+            kind="create_workflow",
+        )
+        review = self.factory.compile_review_source(project_id, session_id)
+        proposal = self.edits.create_workflow_proposal(
+            project_id,
+            candidate=review,
+            conversation_id=conversation_id,
+            operation_id=operation_id,
+            factory_session_id=session_id,
+            persist=False,
+        )
+        materialized = self.store.materialize_builder_proposal(
+            proposal_store=self.edits.store,
+            proposal=proposal,
+            locale=locale,
+            summary="",
+            facts=_facts(
+                {
+                    "factory_session_id": session_id,
+                    "workflow_name": name[:200],
+                    "target_kind": "workflow",
+                    "product_shape": str(generated.get("product_shape") or ""),
+                }
+            ),
+            created_at=_now(),
+        )
+        event = materialized.get("event")
+        if event is not None and on_event is not None:
+            on_event(self._public_event(event))
+        return generated
+
+    def _generate_workflow(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        resolution: dict[str, Any],
+        content: str,
+        locale: Literal["zh", "en"],
+        *,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        receipts: HarnessReceiptRecorder | None = None,
+    ) -> dict[str, Any]:
+        return self._generate_product(
+            project_id,
+            conversation_id,
+            operation_id,
+            resolution,
+            content,
+            locale,
+            on_event=on_event,
+            receipts=receipts,
+        )
 
     def _create_component_proposal(
         self,
@@ -1615,7 +2019,11 @@ class BuilderConversationService:
 
     def _ensure_readable_title(self, conversation_id: str, title: str) -> str:
         compact = _clean(title)
-        if compact and compact != _TITLE_PLACEHOLDER:
+        if (
+            compact
+            and compact != _TITLE_PLACEHOLDER
+            and not _looks_like_identity(compact)
+        ):
             return title
         repaired = _provisional_title(self._first_user_content(conversation_id))
         if repaired != title:
@@ -1667,6 +2075,257 @@ class BuilderConversationService:
                 )
             ],
         }
+
+    def command_agent_creation_proposal(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        proposal_id: str,
+        command: Literal["apply", "reject"],
+        *,
+        confirm: bool,
+        locale: Literal["zh", "en"],
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise BuilderConversationError(
+                "agent_creation_confirmation_required",
+                "Explicit confirmation is required before applying an Agent Proposal.",
+            )
+        operation = self.store.operation(operation_id, conversation_id)
+        if operation is None:
+            raise BuilderConversationError(
+                "builder_operation_not_found",
+                "Builder operation was not found",
+                status_code=404,
+            )
+        if operation.get("proposal_id") != proposal_id:
+            raise BuilderConversationError(
+                "agent_proposal_operation_mismatch",
+                "The Agent Proposal does not belong to this Builder operation.",
+            )
+        if self.edits is None:
+            raise BuilderConversationError(
+                "agent_creation_proposal_unavailable",
+                "The canonical Agent creation proposal service is unavailable.",
+            )
+        proposal = self.edits.get(project_id, proposal_id)
+        proposal_kind = str(proposal.get("proposal_kind") or "")
+        if (
+            proposal_kind not in {"create_agent", "create_workflow"}
+            or proposal.get("conversation_id") != conversation_id
+            or proposal.get("operation_id") != operation_id
+        ):
+            raise BuilderConversationError(
+                "agent_proposal_operation_mismatch",
+                "The Agent Proposal does not match this Builder operation.",
+            )
+        if (
+            command == "apply"
+            and proposal.get("state") == "applied"
+            and operation.get("status") == "succeeded"
+        ) or (
+            command == "reject"
+            and proposal.get("state") == "rejected"
+            and operation.get("status") == "rejected"
+        ):
+            return self.snapshot(project_id, conversation_id)
+        if command == "apply" and proposal.get("state") == "rejected":
+            raise BuilderConversationError(
+                "agent_proposal_closed",
+                "A rejected Agent Proposal cannot be applied.",
+                status_code=409,
+            )
+        if command == "reject" and proposal.get("state") == "applied":
+            raise BuilderConversationError(
+                "agent_proposal_closed",
+                "An applied Agent Proposal cannot be rejected.",
+                status_code=409,
+            )
+        if command == "reject":
+            rejected = self.edits.command(
+                project_id, proposal_id, "reject", confirm=True
+            )
+            self._emit(
+                operation_id,
+                PROPOSAL_REJECTED,
+                locale,
+                facts=_facts(
+                    {"proposal_id": proposal_id, "proposal_kind": proposal_kind}
+                ),
+            )
+            self._complete_operation(operation_id, "rejected", proposal_id=proposal_id)
+            if proposal_kind == "create_workflow":
+                rejected_copy = (
+                    "已拒绝 Workflow 提案。"
+                    if locale == "zh"
+                    else "Workflow Proposal rejected."
+                )
+            else:
+                rejected_copy = (
+                    "已拒绝 Agent 提案。"
+                    if locale == "zh"
+                    else "Agent Proposal rejected."
+                )
+            self.store.append_message(
+                message_id=new_uuid7(),
+                conversation_id=conversation_id,
+                sequence=self.store.next_sequence(conversation_id),
+                role="assistant",
+                kind="result",
+                content=rejected_copy,
+                operation_id=operation_id,
+                payload=_facts(
+                    {"proposal_id": proposal_id, "state": rejected["state"]}
+                ),
+                created_at=_now(),
+            )
+            return self.snapshot(project_id, conversation_id)
+
+        self._emit(
+            operation_id,
+            PROPOSAL_CONFIRMED,
+            locale,
+            facts=_facts({"proposal_id": proposal_id, "proposal_kind": proposal_kind}),
+        )
+        self._emit(
+            operation_id,
+            APPLY_STARTED,
+            locale,
+            facts=_facts({"proposal_id": proposal_id, "proposal_kind": proposal_kind}),
+        )
+        try:
+            applied = self.edits.command(project_id, proposal_id, "apply", confirm=True)
+        except (FactoryError, DraftConflict, ProjectError) as exc:
+            code = getattr(exc, "code", "agent_creation_apply_failed")
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code=str(code),
+                message=str(exc),
+                details={"stage": "agent_creation_apply"},
+            )
+            return self.snapshot(project_id, conversation_id)
+        if proposal_kind == "create_workflow":
+            workflow = applied.get("applied_workflow")
+            if not isinstance(workflow, dict):
+                self._fail_operation(
+                    conversation_id,
+                    operation_id,
+                    locale,
+                    code="workflow_creation_apply_incomplete",
+                    message=(
+                        "The canonical Workflow Proposal did not return "
+                        "an installed Workflow."
+                    ),
+                    details={"stage": "workflow_creation_apply"},
+                )
+                return self.snapshot(project_id, conversation_id)
+            session_id = str(proposal.get("factory_session_id") or "")
+            session = None
+            if session_id:
+                session = self.factory.mark_workflow_applied(
+                    project_id, session_id, str(workflow["workflow_id"])
+                )
+            self._emit(
+                operation_id,
+                APPLY_COMPLETED,
+                locale,
+                facts=_facts(
+                    {
+                        "proposal_id": proposal_id,
+                        "proposal_kind": "create_workflow",
+                        "workflow_id": str(workflow["workflow_id"]),
+                        "workflow_name": str(workflow.get("name") or ""),
+                    }
+                ),
+            )
+            self._emit(
+                operation_id,
+                OPERATION_COMPLETED,
+                locale,
+                facts=_facts({"proposal_id": proposal_id}),
+            )
+            self._complete_operation(operation_id, "succeeded", proposal_id=proposal_id)
+            self.store.append_message(
+                message_id=new_uuid7(),
+                conversation_id=conversation_id,
+                sequence=self.store.next_sequence(conversation_id),
+                role="assistant",
+                kind="result",
+                content=(
+                    "Workflow Draft 已创建。"
+                    if locale == "zh"
+                    else "Workflow Draft created from the confirmed Proposal."
+                ),
+                operation_id=operation_id,
+                payload=_facts(
+                    {
+                        "proposal_id": proposal_id,
+                        "workflow_id": str(workflow["workflow_id"]),
+                    }
+                ),
+                created_at=_now(),
+            )
+            return self.snapshot(project_id, conversation_id, factory_session=session)
+        agent = applied.get("applied_agent")
+        if not isinstance(agent, dict):
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="agent_creation_apply_incomplete",
+                message=(
+                    "The canonical Agent Proposal did not return an installed Agent."
+                ),
+                details={"stage": "agent_creation_apply"},
+            )
+            return self.snapshot(project_id, conversation_id)
+        session_id = str(proposal.get("factory_session_id") or "")
+        session = None
+        if session_id:
+            session = self.factory.mark_agent_applied(
+                project_id, session_id, str(agent["agent_id"])
+            )
+        self._emit(
+            operation_id,
+            APPLY_COMPLETED,
+            locale,
+            facts=_facts(
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_kind": "create_agent",
+                    "agent_id": str(agent["agent_id"]),
+                    "agent_name": str(agent.get("name") or ""),
+                }
+            ),
+        )
+        self._emit(
+            operation_id,
+            OPERATION_COMPLETED,
+            locale,
+            facts=_facts({"proposal_id": proposal_id}),
+        )
+        self._complete_operation(operation_id, "succeeded", proposal_id=proposal_id)
+        self.store.append_message(
+            message_id=new_uuid7(),
+            conversation_id=conversation_id,
+            sequence=self.store.next_sequence(conversation_id),
+            role="assistant",
+            kind="result",
+            content=(
+                "Agent Draft 已创建。"
+                if locale == "zh"
+                else "Agent Draft created from the confirmed Proposal."
+            ),
+            operation_id=operation_id,
+            payload=_facts(
+                {"proposal_id": proposal_id, "agent_id": str(agent["agent_id"])}
+            ),
+            created_at=_now(),
+        )
+        return self.snapshot(project_id, conversation_id, factory_session=session)
 
     def start_test_run(
         self, project_id: str, conversation_id: str, request: TestRunRequest
@@ -2180,9 +2839,19 @@ def _clean(value: str) -> str:
     return " ".join(value.split()).strip()
 
 
+def _looks_like_identity(value: str) -> bool:
+    compact = value.strip()
+    if len(compact) != 36 or compact.count("-") != 4:
+        return False
+    hexpart = compact.replace("-", "")
+    return len(hexpart) == 32 and all(
+        char in "0123456789abcdefABCDEF" for char in hexpart
+    )
+
+
 def _title(content: str) -> str:
     compact = _clean(content)
-    if not compact:
+    if not compact or _looks_like_identity(compact):
         return _TITLE_PLACEHOLDER
     if len(compact) <= _TITLE_LIMIT:
         return compact
@@ -2191,7 +2860,7 @@ def _title(content: str) -> str:
 
 def _provisional_title(content: str) -> str:
     compact = _clean(content)
-    if not compact:
+    if not compact or _looks_like_identity(compact):
         return "新对话"
     clause = _CLAUSE_SPLIT.split(compact, maxsplit=1)[0].strip() or compact
     extracted = clause
@@ -2209,7 +2878,7 @@ def _provisional_title(content: str) -> str:
 
 def _title_is_provisional(current: str, first_user: str) -> bool:
     compact = _clean(current)
-    if not compact or compact == _TITLE_PLACEHOLDER:
+    if not compact or compact == _TITLE_PLACEHOLDER or _looks_like_identity(compact):
         return True
     if not first_user:
         return False

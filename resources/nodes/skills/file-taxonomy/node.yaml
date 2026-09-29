@@ -2,6 +2,8 @@
 availability: ready
 description: Propose folders, rename rules, and keep/archive candidates from a listing.
 factory_selectable: true
+capabilities:
+- file_taxonomy
 kind: skill
 name: File Taxonomy
 required_permissions:

@@ -2,6 +2,8 @@
 availability: ready
 description: Plan audience, outline, dependencies, review points, and success criteria.
 factory_selectable: true
+capabilities:
+- content_planning
 kind: skill
 name: Content Planner
 required_permissions:

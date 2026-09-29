@@ -22,7 +22,9 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "enum": ["1.0"]
+      "enum": [
+        "1.0"
+      ]
     },
     "goal": {
       "type": "string",
@@ -46,9 +48,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "type"],
+        "required": [
+          "name",
+          "type"
+        ],
         "properties": {
-          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
           "type": {
             "type": "string",
             "enum": [
@@ -64,11 +73,24 @@
               "document",
               "file",
               "audio",
-              "video"
+              "video",
+              "collection"
             ]
           },
-          "description": { "type": "string", "maxLength": 240 },
-          "multiple": { "type": "boolean" }
+          "description": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 160
+          }
         }
       }
     },
@@ -79,9 +101,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "type"],
+        "required": [
+          "name",
+          "type"
+        ],
         "properties": {
-          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
           "type": {
             "type": "string",
             "enum": [
@@ -97,11 +126,24 @@
               "document",
               "file",
               "audio",
-              "video"
+              "video",
+              "collection"
             ]
           },
-          "description": { "type": "string", "maxLength": 240 },
-          "multiple": { "type": "boolean" }
+          "description": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 160
+          }
         }
       }
     },
@@ -109,49 +151,90 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 12,
-      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "capability_intents": {
       "type": "array",
       "description": "Names of Project-bound tools only. Leave empty when no tool is required. Never copy policy sentences here.",
       "maxItems": 8,
-      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "knowledge_intents": {
       "type": "array",
       "maxItems": 8,
-      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "approval_points": {
       "type": "array",
       "maxItems": 4,
-      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "success_criteria": {
       "type": "array",
       "maxItems": 8,
-      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "user_constraints": {
       "type": "array",
       "maxItems": 8,
-      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "step_intents": {
       "type": "array",
-      "description": "Optional duty graph. Omit only for a simple one-model Agent. Include one object per real duty. Use depends_on for order. A condition must declare exactly two semantic branches with key and label. Every branch-local duty must set branch_condition to the condition semantic_key and branch_key to one declared branch; its dependencies must stay in that branch. A transform may use output_mapping to map declared output field names to deterministic literals or {{input_field}} references. A reusable_capability explicitly requests a Project-reusable semantic capability and must include capability_requirement plus typed inputs and outputs. dependency_requirement may name an existing Project-bound Tool for a reusable capability step. The server resolves names, chooses a safe implementation, and compiles nodes. Do not emit IDs, hashes, versions, permissions, or canvas data.",
+      "description": "Optional duty graph. Omit only for a simple one-model Agent. Include one object per real user-required duty. Use depends_on for order and control flow; it does not declare value transfer between steps. A condition must declare exactly two semantic branches with key and label. Every branch-local duty must set branch_condition to the parent condition or approval semantic_key and branch_key to one declared branch, or to approved/rejected for an approval. Only the last Model on each path to Output emits the Agent's declared top-level outputs and preserves every output field name. Earlier Model steps write a working note named by semantic_key. Human confirmation is approval; do not invent a decision input to re-test the same confirmation with a Condition. A Transform is a genuine deterministic duty only when it maps declared Agent inputs or literals to declared Agent outputs; it cannot read a preceding Model or step output. Do not invent a mapping-only Transform to rename/copy Model output. Step-level inputs and outputs are valid only when reusable_capability=true on model, transform, or capability steps; they describe the reusable component contract, not general step dataflow. A reusable_capability explicitly requests a Project-reusable semantic capability and must include capability_requirement plus typed inputs and outputs. dependency_requirement may name an existing Project-bound Tool for a reusable capability step. The server resolves names, chooses a safe implementation, and compiles nodes. Do not emit IDs, hashes, versions, permissions, or canvas data.",
       "maxItems": 12,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["semantic_key", "name", "purpose", "operation_kind"],
+        "required": [
+          "semantic_key",
+          "name",
+          "purpose",
+          "operation_kind"
+        ],
         "properties": {
-          "semantic_key": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-          "purpose": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "semantic_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
           "operation_kind": {
             "type": "string",
-            "description": "model=LLM duty. capability=Project tool. transform=field mapping. condition=branch with exactly two semantic branches; the server maps them deterministically to true/false runtime ports. approval=human must confirm. verification=deterministic check such as non-empty output; do not invent a verifier implementation.",
+            "description": "model=LLM duty. capability=Project tool. transform=field mapping. condition=exactly two semantic branches whose purpose is a supported comparison over a declared Agent input; the server maps them deterministically to true/false runtime ports. Natural-language classification must not be silently replaced by a non-empty/default check. approval=human must confirm; later duties use branch_key approved or rejected. verification=deterministic check such as non-empty output; do not invent a verifier implementation.",
             "enum": [
               "model",
               "capability",
@@ -165,7 +248,11 @@
             "type": "array",
             "description": "semantic_key values that must complete first.",
             "maxItems": 8,
-            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
           },
           "capability_requirement": {
             "type": "string",
@@ -181,35 +268,111 @@
           },
           "reusable_capability": {
             "type": "boolean",
-            "description": "True only when the request needs this duty as a reusable Project capability. Requires capability_requirement, typed inputs, and typed outputs."
+            "description": "True only when a model, transform, or capability duty is requested as a reusable Project capability. Requires capability_requirement, typed inputs, and typed outputs for that reusable component contract."
           },
           "inputs": {
             "type": "array",
+            "description": "Typed input ports for this step. The server compiles data edges; optional source names input.field or step_key.port.",
             "maxItems": 16,
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["name", "type"],
+              "required": [
+                "name",
+                "type"
+              ],
               "properties": {
-                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-                "type": { "type": "string", "enum": ["string", "number", "integer", "boolean", "object", "array", "table", "image", "pdf", "document", "file", "audio", "video"] },
-                "description": { "type": "string", "maxLength": 240 },
-                "multiple": { "type": "boolean" }
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "integer",
+                    "boolean",
+                    "object",
+                    "array",
+                    "table",
+                    "image",
+                    "pdf",
+                    "document",
+                    "file",
+                    "audio",
+                    "video",
+                    "collection"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "multiple": {
+                  "type": "boolean"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": "string",
+                  "maxLength": 160
+                }
               }
             }
           },
           "outputs": {
             "type": "array",
+            "description": "Typed output ports for this step. Ordinary model, transform, capability, and approval steps may declare them. The server compiles data edges.",
             "maxItems": 8,
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["name", "type"],
+              "required": [
+                "name",
+                "type"
+              ],
               "properties": {
-                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-                "type": { "type": "string", "enum": ["string", "number", "integer", "boolean", "object", "array", "table", "image", "pdf", "document", "file", "audio", "video"] },
-                "description": { "type": "string", "maxLength": 240 },
-                "multiple": { "type": "boolean" }
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "integer",
+                    "boolean",
+                    "object",
+                    "array",
+                    "table",
+                    "image",
+                    "pdf",
+                    "document",
+                    "file",
+                    "audio",
+                    "video",
+                    "collection"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "multiple": {
+                  "type": "boolean"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": "string",
+                  "maxLength": 160
+                }
               }
             }
           },
@@ -221,30 +384,47 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["key", "label"],
+              "required": [
+                "key",
+                "label"
+              ],
               "properties": {
-                "key": { "type": "string", "minLength": 1, "maxLength": 64 },
-                "label": { "type": "string", "minLength": 1, "maxLength": 80 }
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
               }
             }
+          },
+          "condition_expression": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Executable V1 Condition predicate. Required for a condition step; use only a supported == or != comparison over a declared Agent input. Keep human intent in purpose; do not use purpose as executable code."
           },
           "branch_condition": {
             "type": "string",
             "minLength": 1,
             "maxLength": 64,
-            "description": "Semantic key of the parent condition for a branch-local duty."
+            "description": "Semantic key of the parent condition or approval for a branch-local duty."
           },
           "branch_key": {
             "type": "string",
             "minLength": 1,
             "maxLength": 64,
-            "description": "Semantic branch key declared by branch_condition."
+            "description": "Semantic branch key declared by the parent condition, or approved/rejected when the parent is an approval."
           },
           "output_mapping": {
             "type": "object",
             "minProperties": 1,
             "maxProperties": 8,
-            "description": "Transform mapping from declared output field names to literals or {{input_field}} references.",
+            "description": "Transform mapping from declared output field names to literals or {{port}} references to Agent inputs or this step's input ports.",
             "additionalProperties": {
               "type": "string",
               "minLength": 1,

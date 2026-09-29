@@ -14,12 +14,15 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from veyra_agent_platform.contracts.agent import AgentSource
+from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.contracts.common import (
     ContractValidationError,
     new_uuid7,
     require_uuid7,
 )
 from veyra_agent_platform.contracts.typed_io import typed_fields_to_wire
+from veyra_agent_platform.local.library.dependencies import inspect_agent_dependencies
+from veyra_agent_platform.local.projects.origins import CommunityAgentOrigin
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 
@@ -94,7 +97,14 @@ class AgentImportService:
         self.projects = projects
         self.catalog = catalog
 
-    def analyze_file(self, *, filename: str | None, contents: bytes) -> dict[str, Any]:
+    def analyze_file(
+        self,
+        *,
+        filename: str | None,
+        contents: bytes,
+        community_origin: CommunityAgentOrigin | None = None,
+        target_project_id: str | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(filename, str) or not filename.strip():
             raise AgentImportError(
                 "agent_import_filename_invalid", "A source filename is required"
@@ -103,7 +113,13 @@ class AgentImportService:
         lower_name = normalized_name.lower()
         if lower_name.endswith(".zip"):
             files = _archive_files(contents)
-            return self._analyze(files, source_kind="zip", source_name=normalized_name)
+            return self._analyze(
+                files,
+                source_kind="zip",
+                source_name=normalized_name,
+                community_origin=community_origin,
+                target_project_id=target_project_id,
+            )
         if Path(normalized_name).suffix.lower() not in _YAML_SUFFIXES:
             raise AgentImportError(
                 "agent_import_file_type_invalid",
@@ -111,7 +127,11 @@ class AgentImportService:
             )
         _assert_body(contents)
         return self._analyze(
-            {normalized_name: contents}, source_kind="yaml", source_name=normalized_name
+            {normalized_name: contents},
+            source_kind="yaml",
+            source_name=normalized_name,
+            community_origin=community_origin,
+            target_project_id=target_project_id,
         )
 
     def analyze_folder(self, path: str) -> dict[str, Any]:
@@ -162,6 +182,32 @@ class AgentImportService:
             raise AgentImportError(
                 "agent_import_record_invalid", "Generated Agent source is invalid"
             ) from exc
+        community_origin = self._validated_community_origin(
+            record.get("community_origin"), source
+        )
+        saved_validation = record.get("project_validation")
+        if saved_validation is not None:
+            if not isinstance(saved_validation, Mapping):
+                raise AgentImportError(
+                    "agent_import_record_invalid",
+                    "Project dependency preview is invalid",
+                )
+            if saved_validation.get("project_id") != project_id:
+                raise AgentImportError(
+                    "agent_import_project_mismatch",
+                    "Confirm the import in the Project that was reviewed",
+                )
+            current_validation = self._project_validation(source, project_id)
+            if current_validation["source_hash"] != saved_validation.get(
+                "source_hash"
+            ) or current_validation["assessment_hash"] != saved_validation.get(
+                "assessment_hash"
+            ):
+                raise AgentImportError(
+                    "agent_import_dependencies_changed",
+                    "Project dependencies changed after preview; "
+                    "analyze the package again",
+                )
         manifest = record.get("manifest")
         if not isinstance(manifest, dict):
             raise AgentImportError(
@@ -190,6 +236,7 @@ class AgentImportService:
                 name=name,
                 description=description,
                 parent_agent_id=parent_agent_id,
+                community_origin=community_origin,
                 extra_files=extra_files,
             )
         except ProjectError as exc:
@@ -205,6 +252,8 @@ class AgentImportService:
         *,
         source_kind: str,
         source_name: str,
+        community_origin: CommunityAgentOrigin | None = None,
+        target_project_id: str | None = None,
     ) -> dict[str, Any]:
         for body in files.values():
             _scan_secret_markers(body)
@@ -240,8 +289,15 @@ class AgentImportService:
                     source_name=source_name,
                     source_path=source_path,
                     files=files,
+                    community_origin=community_origin,
+                    target_project_id=target_project_id,
                 )
             if _looks_like_generic_source(payload):
+                if community_origin is not None or target_project_id is not None:
+                    raise AgentImportError(
+                        "agent_import_community_source_invalid",
+                        "Project-scoped Community review requires a Veyra Agent source",
+                    )
                 return self._record_from_generic(
                     payload,
                     source_kind=source_kind,
@@ -267,7 +323,18 @@ class AgentImportService:
         source_name: str,
         source_path: str,
         files: Mapping[str, bytes],
+        community_origin: CommunityAgentOrigin | None = None,
+        target_project_id: str | None = None,
     ) -> dict[str, Any]:
+        if community_origin is not None and (
+            community_origin.slug != source.slug
+            or community_origin.version != source.version
+            or community_origin.source_hash != source.source_hash
+        ):
+            raise AgentImportError(
+                "community_origin_mismatch",
+                "Community provenance does not match the downloaded Agent source",
+            )
         capabilities = [
             {
                 "kind": "agent_source",
@@ -287,6 +354,11 @@ class AgentImportService:
             capabilities=capabilities,
             warnings=[],
         )
+        project_validation = (
+            self._project_validation(source, target_project_id)
+            if target_project_id is not None
+            else None
+        )
         return self._persist(
             source_kind=source_kind,
             source_name=source_name,
@@ -299,6 +371,8 @@ class AgentImportService:
             generated_source=source.to_dict(),
             manifest=manifest,
             files=files,
+            community_origin=community_origin,
+            project_validation=project_validation,
         )
 
     def _record_from_generic(
@@ -382,7 +456,8 @@ class AgentImportService:
                 "model",
                 "model",
                 "partial",
-                "Mapped to model.primary; configure the provider API in Settings",
+                "Mapped to model.primary; bind a User Runtime Provider in "
+                "Provider Credentials",
             )
         )
         if isinstance(model_value, Mapping) and any(
@@ -827,6 +902,8 @@ class AgentImportService:
         generated_source: dict[str, Any],
         manifest: dict[str, Any],
         files: Mapping[str, bytes],
+        community_origin: CommunityAgentOrigin | None = None,
+        project_validation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         import_id = new_uuid7()
         record = {
@@ -843,10 +920,82 @@ class AgentImportService:
             "warnings": warnings,
             "generated_source": generated_source,
             "manifest": {**manifest, "import_id": import_id},
+            **(
+                {"community_origin": community_origin.to_dict()}
+                if community_origin is not None
+                else {}
+            ),
+            **(
+                {"project_validation": project_validation}
+                if project_validation is not None
+                else {}
+            ),
         }
         self._write_input_files(import_id, files)
         self._write_record(record)
         return record
+
+    def _project_validation(
+        self, source: AgentSource, project_id: str
+    ) -> dict[str, Any]:
+        try:
+            self.projects.project_summary(project_id)
+        except ProjectError as exc:
+            raise AgentImportError(exc.code, str(exc)) from exc
+        result = inspect_agent_dependencies(
+            self.projects, self.catalog, project_id, source
+        )
+        evidence = {
+            "dependencies": result["dependencies"],
+            "dependency_summary": result["dependency_summary"],
+            "runtime_ready": result["runtime_ready"],
+        }
+        return {
+            "project_id": project_id,
+            "source_hash": source.source_hash,
+            **evidence,
+            "runtime_ready_scope": "agent_dependencies",
+            "assessment_hash": sha256_digest(evidence),
+        }
+
+    @staticmethod
+    def _validated_community_origin(
+        value: object, source: AgentSource
+    ) -> CommunityAgentOrigin | None:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise AgentImportError(
+                "agent_import_record_invalid", "Community provenance is invalid"
+            )
+        try:
+            origin = CommunityAgentOrigin.from_optional_fields(
+                owner_handle=value.get("owner_handle")
+                if isinstance(value.get("owner_handle"), str)
+                else None,
+                slug=value.get("slug") if isinstance(value.get("slug"), str) else None,
+                version=value.get("version")
+                if isinstance(value.get("version"), str)
+                else None,
+                source_hash=value.get("source_hash")
+                if isinstance(value.get("source_hash"), str)
+                else None,
+            )
+        except ValueError as exc:
+            raise AgentImportError(
+                "agent_import_record_invalid", "Community provenance is invalid"
+            ) from exc
+        if (
+            origin is None
+            or origin.slug != source.slug
+            or origin.version != source.version
+            or origin.source_hash != source.source_hash
+        ):
+            raise AgentImportError(
+                "community_origin_mismatch",
+                "Community provenance does not match the downloaded Agent source",
+            )
+        return origin
 
     def _read_record(self, import_id: str) -> dict[str, Any]:
         try:

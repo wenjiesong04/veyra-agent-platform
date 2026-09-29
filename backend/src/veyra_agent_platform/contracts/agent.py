@@ -27,6 +27,14 @@ from .common import (
     require_uuid7,
     thaw_json,
 )
+from .condition import parse_value_path
+from .dataflow import (
+    DataEdge,
+    data_edges_to_wire,
+    parse_data_edges,
+    validate_data_edges,
+)
+from .interaction import INTERACTION_AUTO, INTERACTION_MODES, resolve_interaction_mode
 from .resource import (
     AgentVersionRef,
     ProjectOwnedResource,
@@ -37,15 +45,26 @@ from .resource import (
 )
 from .typed_io import TypedField, parse_typed_fields, typed_fields_to_wire
 
+MAX_REVISIONS = 10
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]*@[0-9]+\.[0-9]+\.[0-9]+$")
-_HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+_HOST = re.compile(
+    r"^(?:localhost|127\.0\.0\.1|"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})$"
+)
 _SECRET_REF = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 HARD_MAX_NODES = 128
 HARD_MAX_TRANSITIONS = 256
 HARD_MAX_CONCURRENT_RUNS = 16
 HARD_MAX_RUN_SECONDS = 86_400
-_BINDING_KINDS = frozenset({"skill", "policy", "template", "mcp_tool", "knowledge"})
+_BINDING_KINDS = frozenset(
+    {"skill", "policy", "template", "mcp_tool", "knowledge", "tool"}
+)
+EXECUTION_KIND_LOOP = "loop"
+EXECUTION_KIND_GRAPH = "graph"
+_EXECUTION_KINDS = frozenset({EXECUTION_KIND_LOOP, EXECUTION_KIND_GRAPH})
+DEFAULT_MAX_TURNS = 8
+HARD_MAX_TURNS = 32
 
 
 class ComponentType(StrEnum):
@@ -112,6 +131,7 @@ _WORKFLOW_GRAPH_TYPES = frozenset(
     {
         ComponentType.START,
         ComponentType.AGENT_CALL,
+        ComponentType.TOOL,
         ComponentType.CONDITION,
         ComponentType.TRANSFORM,
         ComponentType.HUMAN_APPROVAL,
@@ -226,6 +246,10 @@ class FlowNode:
     agent_ref: str | None = None
     input_mapping: Mapping[str, str] | None = None
     output_mapping: Mapping[str, str] | None = None
+    inputs: Mapping[str, TypedField] | None = None
+    outputs: Mapping[str, TypedField] | None = None
+    review: str | None = None
+    max_revisions: int | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> FlowNode:
@@ -245,6 +269,10 @@ class FlowNode:
             "agent_ref",
             "input_mapping",
             "output_mapping",
+            "inputs",
+            "outputs",
+            "review",
+            "max_revisions",
         }
         require_keys(item, allowed=fields, required={"id", "component_type"})
         node_id = require_string(item["id"], "node.id", pattern=NODE_ID_RE)
@@ -257,25 +285,40 @@ class FlowNode:
         values = {key: item.get(key) for key in fields - {"id", "component_type"}}
         allowed_by_type: dict[ComponentType, set[str]] = {
             ComponentType.START: set(),
-            ComponentType.AGENT: {"model_ref", "system_prompt"},
-            ComponentType.MODEL: {"model_ref", "system_prompt"},
+            ComponentType.AGENT: {"model_ref", "system_prompt", "inputs", "outputs"},
+            ComponentType.MODEL: {"model_ref", "system_prompt", "inputs", "outputs"},
             ComponentType.TOOL: {
                 "uses",
                 "network_hosts",
                 "input_mapping",
                 "output_mapping",
+                "inputs",
+                "outputs",
             },
             ComponentType.CUSTOM_COMPONENT: {
                 "uses",
                 "input_mapping",
                 "output_mapping",
+                "inputs",
+                "outputs",
             },
-            ComponentType.CONDITION: {"expression"},
-            ComponentType.TRANSFORM: {"mapping"},
-            ComponentType.HUMAN_APPROVAL: {"prompt"},
+            ComponentType.CONDITION: {"expression", "inputs"},
+            ComponentType.TRANSFORM: {"mapping", "inputs", "outputs"},
+            ComponentType.HUMAN_APPROVAL: {
+                "prompt",
+                "review",
+                "max_revisions",
+                "inputs",
+            },
             ComponentType.VERIFIER: {"checks"},
             ComponentType.OUTPUT: {"output_name"},
-            ComponentType.AGENT_CALL: {"agent_ref", "input_mapping", "output_mapping"},
+            ComponentType.AGENT_CALL: {
+                "agent_ref",
+                "input_mapping",
+                "output_mapping",
+                "inputs",
+                "outputs",
+            },
         }
         present = {key for key in values if key in item}
         forbidden = present - allowed_by_type[component_type]
@@ -321,6 +364,36 @@ class FlowNode:
         )
         if checks == ():
             raise ContractValidationError("node.checks must not be empty")
+        node_inputs = (
+            parse_typed_fields(item["inputs"], f"node {node_id}.inputs")
+            if "inputs" in present
+            else None
+        )
+        node_outputs = (
+            parse_typed_fields(item["outputs"], f"node {node_id}.outputs")
+            if "outputs" in present
+            else None
+        )
+        review: str | None = None
+        if "review" in present:
+            review = ".".join(
+                parse_value_path(
+                    require_string(item["review"], "node.review"),
+                    field_name=f"node {node_id}.review",
+                )
+            )
+        max_revisions: int | None = None
+        if "max_revisions" in present:
+            raw_revisions = item["max_revisions"]
+            if (
+                isinstance(raw_revisions, bool)
+                or not isinstance(raw_revisions, int)
+                or not 0 <= raw_revisions <= MAX_REVISIONS
+            ):
+                raise ContractValidationError(
+                    f"node {node_id}.max_revisions must be 0 to {MAX_REVISIONS}"
+                )
+            max_revisions = raw_revisions
         return cls(
             id=node_id,
             component_type=component_type,
@@ -368,7 +441,19 @@ class FlowNode:
                 if "output_mapping" in present
                 else None
             ),
+            inputs=node_inputs,
+            outputs=node_outputs,
+            review=review,
+            max_revisions=max_revisions,
         )
+
+    @property
+    def bounded_revisions(self) -> int:
+        """Revision rounds a HumanApproval may loop through; 0 means no loop."""
+
+        if self.component_type is not ComponentType.HUMAN_APPROVAL:
+            return 0
+        return self.max_revisions or 0
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -388,10 +473,16 @@ class FlowNode:
             "agent_ref",
             "input_mapping",
             "output_mapping",
+            "review",
+            "max_revisions",
         ):
             value = getattr(self, key)
             if value is not None:
                 result[key] = list(value) if key == "checks" else thaw_json(value)
+        if self.inputs is not None:
+            result["inputs"] = typed_fields_to_wire(self.inputs)
+        if self.outputs is not None:
+            result["outputs"] = typed_fields_to_wire(self.outputs)
         return result
 
 
@@ -751,6 +842,7 @@ class AgentBlueprint:
     requested_permissions: PermissionContract
     verification: VerifierContract
     ui_suggestions: Mapping[str, Any]
+    data_edges: tuple[DataEdge, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> AgentBlueprint:
@@ -767,7 +859,7 @@ class AgentBlueprint:
             "verification",
             "ui_suggestions",
         }
-        require_keys(item, allowed=required, required=required)
+        require_keys(item, allowed=required | {"data_edges"}, required=required)
         require_schema_version(item)
         blueprint = cls(
             schema_version=SCHEMA_VERSION,
@@ -790,6 +882,7 @@ class AgentBlueprint:
             ),
             verification=VerifierContract.from_dict(item["verification"]),
             ui_suggestions=_ui_layout(item["ui_suggestions"]),
+            data_edges=parse_data_edges(item.get("data_edges"), "data_edges"),
         )
         return blueprint.validated()
 
@@ -800,13 +893,21 @@ class AgentBlueprint:
             self.outputs,
             self.verification,
             allowed_types=_AGENT_GRAPH_TYPES,
+            namespaced_ports=bool(self.data_edges),
         )
         self.required_capabilities.validate_nodes(self.nodes)
         _validate_ui_node_references(self.ui_suggestions, self.nodes, "ui_suggestions")
+        if self.data_edges:
+            validate_data_edges(
+                inputs=self.inputs,
+                outputs=self.outputs,
+                nodes=self.nodes,
+                edges=self.data_edges,
+            )
         return self
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "goal": self.goal,
             "inputs": typed_fields_to_wire(self.inputs),
@@ -818,6 +919,9 @@ class AgentBlueprint:
             "verification": self.verification.to_dict(),
             "ui_suggestions": thaw_json(self.ui_suggestions),
         }
+        if self.data_edges:
+            payload["data_edges"] = data_edges_to_wire(self.data_edges)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -944,7 +1048,7 @@ def _ui_bindings(value: Any) -> dict[str, dict[str, Any]]:
         if kind not in _BINDING_KINDS:
             raise ContractValidationError(
                 "ui.bindings.kind must be skill, policy, template, mcp_tool, "
-                "or knowledge"
+                "knowledge, or tool"
             )
         x, y = entry["x"], entry["y"]
         if any(
@@ -1008,7 +1112,7 @@ def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
         entry = require_mapping(payload, "ui.notes entry")
         require_keys(
             entry,
-            allowed={"x", "y", "text", "color", "width", "manual_position"},
+            allowed={"x", "y", "text", "color", "width", "height", "manual_position"},
             required={"x", "y", "text"},
         )
         if not isinstance(entry["text"], str) or len(entry["text"]) > 4000:
@@ -1040,6 +1144,18 @@ def _ui_notes(value: Any) -> dict[str, dict[str, Any]]:
                     "ui.notes.width must be an integer between 160 and 640"
                 )
             note["width"] = width
+        if "height" in entry:
+            height = entry["height"]
+            if (
+                isinstance(height, bool)
+                or not isinstance(height, int)
+                or height < 96
+                or height > 640
+            ):
+                raise ContractValidationError(
+                    "ui.notes.height must be an integer between 96 and 640"
+                )
+            note["height"] = height
         if "manual_position" in entry:
             manual_position = entry["manual_position"]
             if not isinstance(manual_position, bool):
@@ -1074,7 +1190,20 @@ class AgentSource:
     lock: Mapping[str, str]
     knowledge_refs: tuple[str, ...] = ()
     version: str = "1.0.0"
+    data_edges: tuple[DataEdge, ...] = ()
+    execution_kind: str = EXECUTION_KIND_GRAPH
+    interaction_mode: str = INTERACTION_AUTO
+    instructions: str = ""
+    max_turns: int = DEFAULT_MAX_TURNS
+    handoff_agent_refs: tuple[str, ...] = ()
     _version_present: bool = field(default=False, repr=False, compare=False)
+
+    @property
+    def is_loop(self) -> bool:
+        return self.execution_kind == EXECUTION_KIND_LOOP
+
+    def resolved_interaction_mode(self) -> str:
+        return resolve_interaction_mode(self.interaction_mode, self.inputs)
 
     @classmethod
     def from_dict(cls, data: Any) -> AgentSource:
@@ -1092,11 +1221,14 @@ class AgentSource:
             "outputs",
             "nodes",
             "transitions",
+            "data_edges",
             "extensions",
             "ui",
             "lock",
         }
-        require_keys(item, allowed=allowed, required=allowed - {"version"})
+        require_keys(
+            item, allowed=allowed, required=allowed - {"version", "data_edges"}
+        )
         require_schema_version(item)
         if item["agentspec_version"] != "26.1" or item["component_type"] != "Flow":
             raise ContractValidationError(
@@ -1115,6 +1247,11 @@ class AgentSource:
                 "skill_refs",
                 "policy_refs",
                 "knowledge_refs",
+                "execution_kind",
+                "interaction_mode",
+                "instructions",
+                "max_turns",
+                "handoff_agent_refs",
             },
             required={"runtime_profile", "secret_refs", "permissions", "verification"},
         )
@@ -1169,6 +1306,14 @@ class AgentSource:
             ui=ui,
             lock=freeze_json(dict(lock)),
             version=require_semver(item.get("version", "1.0.0"), "version"),
+            data_edges=parse_data_edges(item.get("data_edges"), "data_edges"),
+            execution_kind=_execution_kind(veyra.get("execution_kind")),
+            interaction_mode=_interaction_mode(veyra.get("interaction_mode")),
+            instructions=_optional_instructions(veyra.get("instructions")),
+            max_turns=_max_turns(veyra.get("max_turns")),
+            handoff_agent_refs=_strict_str_list(
+                veyra.get("handoff_agent_refs", []), "handoff_agent_refs"
+            ),
             _version_present="version" in item,
         )
         if any(
@@ -1183,8 +1328,16 @@ class AgentSource:
             source.outputs,
             source.verification,
             allowed_types=_AGENT_GRAPH_TYPES,
+            namespaced_ports=bool(source.data_edges),
         )
         _validate_ui_node_references(source.ui, source.nodes, "ui")
+        if source.data_edges:
+            validate_data_edges(
+                inputs=source.inputs,
+                outputs=source.outputs,
+                nodes=source.nodes,
+                edges=source.data_edges,
+            )
         tool_references = {
             node.uses.rsplit("@", 1)[0]
             for node in source.nodes
@@ -1241,8 +1394,25 @@ class AgentSource:
 
         if self.knowledge_refs:
             result["extensions"]["veyra"]["knowledge_refs"] = list(self.knowledge_refs)
+        if self.execution_kind != EXECUTION_KIND_GRAPH:
+            result["extensions"]["veyra"]["execution_kind"] = self.execution_kind
+        if self.interaction_mode != INTERACTION_AUTO:
+            result["extensions"]["veyra"]["interaction_mode"] = self.interaction_mode
+        if self.instructions:
+            result["extensions"]["veyra"]["instructions"] = self.instructions
+        if (
+            self.max_turns != DEFAULT_MAX_TURNS
+            or self.execution_kind == EXECUTION_KIND_LOOP
+        ):
+            result["extensions"]["veyra"]["max_turns"] = self.max_turns
+        if self.handoff_agent_refs:
+            result["extensions"]["veyra"]["handoff_agent_refs"] = list(
+                self.handoff_agent_refs
+            )
         if self._version_present or self.version != "1.0.0":
             result["version"] = self.version
+        if self.data_edges:
+            result["data_edges"] = data_edges_to_wire(self.data_edges)
         return result
 
     @property
@@ -1345,6 +1515,44 @@ def _validate_ui_node_references(
         )
 
 
+def _execution_kind(value: Any) -> str:
+    if value is None:
+        return EXECUTION_KIND_GRAPH
+    kind = require_string(value, "execution_kind")
+    if kind not in _EXECUTION_KINDS:
+        raise ContractValidationError("execution_kind must be loop or graph")
+    return kind
+
+
+def _interaction_mode(value: Any) -> str:
+    if value is None:
+        return INTERACTION_AUTO
+    mode = require_string(value, "interaction_mode")
+    if mode not in INTERACTION_MODES:
+        raise ContractValidationError(
+            "interaction_mode must be auto, chat, form, or hybrid"
+        )
+    return mode
+
+
+def _optional_instructions(value: Any) -> str:
+    if value is None:
+        return ""
+    return require_string(value, "instructions")
+
+
+def _max_turns(value: Any) -> int:
+    if value is None:
+        return DEFAULT_MAX_TURNS
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ContractValidationError("max_turns must be an integer")
+    if value < 1 or value > HARD_MAX_TURNS:
+        raise ContractValidationError(
+            f"max_turns must be between 1 and {HARD_MAX_TURNS}"
+        )
+    return int(value)
+
+
 def _validate_graph(
     nodes: tuple[FlowNode, ...],
     transitions: tuple[Transition, ...],
@@ -1352,6 +1560,7 @@ def _validate_graph(
     verification: VerifierContract,
     *,
     allowed_types: frozenset[ComponentType] = _AGENT_GRAPH_TYPES,
+    namespaced_ports: bool = False,
 ) -> None:
     if len(nodes) > HARD_MAX_NODES:
         raise ContractValidationError(
@@ -1441,9 +1650,28 @@ def _validate_graph(
         todo.extend(edge.to_node for edge in outgoing[node_id])
     if set(types) != reached:
         raise ContractValidationError("every node must be reachable from Start")
-    indegree = {node.id: 0 for node in nodes}
-    for transitions_from_node in outgoing.values():
+    _validate_node_outputs(nodes, outputs, namespaced_ports=namespaced_ports)
+    _validate_node_inputs(nodes)
+    # A revise loop is only bounded when every cycle passes a HumanApproval
+    # that declares max_revisions; the Runtime counts those visits.
+    gates = (
+        {node.id for node in nodes if node.bounded_revisions > 0}
+        if allowed_types == _AGENT_GRAPH_TYPES
+        else set()
+    )
+    if any(
+        node.component_type is not ComponentType.HUMAN_APPROVAL
+        and node.max_revisions is not None
+        for node in nodes
+    ):
+        raise ContractValidationError("max_revisions is only valid on HumanApproval")
+    indegree = {node.id: 0 for node in nodes if node.id not in gates}
+    for source_id, transitions_from_node in outgoing.items():
+        if source_id in gates:
+            continue
         for transition_item in transitions_from_node:
+            if transition_item.to_node in gates:
+                continue
             indegree[transition_item.to_node] += 1
     zero_indegree = [node_id for node_id, degree in indegree.items() if degree == 0]
     processed = 0
@@ -1451,10 +1679,47 @@ def _validate_graph(
         node_id = zero_indegree.pop()
         processed += 1
         for transition_item in outgoing[node_id]:
+            if transition_item.to_node in gates:
+                continue
             indegree[transition_item.to_node] -= 1
             if indegree[transition_item.to_node] == 0:
                 zero_indegree.append(transition_item.to_node)
-    if processed != len(nodes):
+    if processed != len(indegree):
         raise ContractValidationError(
-            "Flow graph must be a DAG; Loop is not a V1 component"
+            "Flow graph cycles must pass through a HumanApproval with "
+            "max_revisions; unbounded loops are not allowed"
         )
+
+
+def _validate_node_outputs(
+    nodes: tuple[FlowNode, ...],
+    outputs: Mapping[str, TypedField],
+    *,
+    namespaced_ports: bool = False,
+) -> None:
+    node_ids = {node.id for node in nodes}
+    declared: dict[str, TypedField] = {}
+    for node in nodes:
+        if not node.outputs:
+            continue
+        for name, field_spec in node.outputs.items():
+            if not namespaced_ports and name in node_ids:
+                raise ContractValidationError(
+                    f"node {node.id} output {name} collides with a node id"
+                )
+            expected = outputs.get(name) or declared.get(name)
+            if expected is not None and (
+                expected.compact_type != field_spec.compact_type
+                or expected.multiple != field_spec.multiple
+            ):
+                raise ContractValidationError(
+                    f"node {node.id} output {name} must be a "
+                    f"{expected.compact_type}{'[]' if expected.multiple else ''}"
+                )
+            declared.setdefault(name, field_spec)
+
+
+def _validate_node_inputs(nodes: tuple[FlowNode, ...]) -> None:
+    """Node-local ports are namespaced by node id under data_edges."""
+
+    _ = nodes

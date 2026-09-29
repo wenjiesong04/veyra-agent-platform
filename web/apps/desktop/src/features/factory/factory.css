@@ -402,25 +402,48 @@
 
 .factory-stage-track {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   margin: 0 0 12px;
-  padding: 0;
+  padding: 0 0 2px;
+  overflow-x: auto;
   list-style: none;
 }
 
 .factory-stage-track li {
+  flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 4px 8px;
+  padding: 5px 10px;
   color: var(--subtle);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .factory-stage-track li[data-active="true"] {
   color: var(--accent-strong);
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
   background: var(--accent-soft);
+}
+
+.factory-stage-track li[data-current="true"] {
+  animation: factory-stage-pulse 1.4s ease-in-out infinite;
+}
+
+.factory-canvas-live {
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@keyframes factory-stage-pulse {
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-stage-track li[data-current="true"] { animation: none; }
 }
 
 .factory-canvas-plan,
@@ -434,8 +457,176 @@
   margin-top: 8px;
 }
 
+.factory-canvas-actions.is-priority {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft));
+  box-shadow: var(--soft-shadow);
+}
+
 .factory-canvas-actions .ui-button {
   min-width: 0;
+}
+
+.factory-capability-proposal {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.factory-proposal-summary > .ui-eyebrow {
+  color: var(--accent-strong);
+}
+
+.factory-proposal-summary > strong {
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.factory-proposal-goal {
+  display: -webkit-box;
+  max-height: 3.1em;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.factory-proposal-contract {
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.factory-proposal-contract p {
+  display: grid;
+  grid-template-columns: minmax(68px, max-content) minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.factory-proposal-contract p > span {
+  color: var(--subtle);
+  font-weight: 700;
+}
+
+.factory-proposal-resources,
+.factory-proposal-gaps {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.factory-proposal-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.factory-proposal-readiness > strong { color: var(--ink); }
+.factory-proposal-readiness.is-requires_configuration { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
+.factory-proposal-readiness.is-unavailable { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: var(--bad-soft); }
+
+.factory-proposal-resources > strong,
+.factory-proposal-gaps > strong {
+  color: var(--ink);
+}
+
+.factory-proposal-resource,
+.factory-proposal-gaps > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+
+.factory-proposal-resource > div,
+.factory-proposal-gaps > div > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.factory-proposal-resource > div > strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.factory-proposal-resource small,
+.factory-proposal-gaps small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.factory-proposal-resource details,
+.factory-proposal-gaps details {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.factory-proposal-resource details summary,
+.factory-proposal-gaps details summary,
+.factory-proposal-details summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.factory-proposal-resource details code,
+.factory-proposal-gaps details code {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.factory-proposal-details {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.factory-proposal-details > div {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.factory-proposal-details pre {
+  max-height: min(34vh, 16rem);
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px;
+  color: var(--muted);
+  background: var(--surface);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .factory-canvas-kicker,
@@ -449,6 +640,22 @@
 
 .factory-canvas-assembling {
   color: var(--accent-strong);
+}
+
+.factory-review-canvas.studio-canvas {
+  flex: none;
+  width: 100%;
+  height: 480px;
+  min-height: 420px;
+}
+
+.factory-review-canvas .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.factory-review-canvas .react-flow__node-noteNode {
+  pointer-events: all !important;
 }
 
 .agent-convo-flow.is-assembling .agent-convo-flow-node {

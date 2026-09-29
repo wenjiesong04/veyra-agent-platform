@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from veyra_agent_platform.contracts.typed_io import looks_like_artifact_ref
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.artifacts.media import (
+    MAX_ARTIFACT_UPLOAD_BYTES,
     ArtifactIntakeError,
     inspect_artifact,
     sanitize_filename,
@@ -107,7 +108,13 @@ def test_missing_artifact_and_size_limit(tmp_path: Path) -> None:
         assert missing.status_code == 404
         huge = client.post(
             f"/api/v1/projects/{project['project_id']}/artifacts",
-            files={"file": ("photo.png", _PNG + b"x" * 8_000_001, "image/png")},
+            files={
+                "file": (
+                    "photo.png",
+                    _PNG + b"x" * (MAX_ARTIFACT_UPLOAD_BYTES + 1),
+                    "image/png",
+                )
+            },
         )
         assert huge.status_code == 422
         assert huge.json()["code"] == "artifact_too_large"

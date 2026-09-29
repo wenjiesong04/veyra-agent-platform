@@ -20,6 +20,11 @@ from veyra_agent_platform.contracts.common import (
     IdempotencyKey,
     new_uuid7,
 )
+from veyra_agent_platform.contracts.condition import (
+    TEMPLATE_TOKEN_RE,
+    parse_condition_expression,
+    resolve_value_path,
+)
 from veyra_agent_platform.contracts.custom_component import (
     CustomComponentDefinition,
     CustomComponentImplementationKind,
@@ -29,10 +34,15 @@ from veyra_agent_platform.contracts.typed_io import (
     TypedField,
     artifact_id_from_value,
     looks_like_artifact_ref,
+    looks_like_collection_ref,
     value_matches_field,
 )
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 from veyra_agent_platform.local.artifacts import ArtifactService
+from veyra_agent_platform.local.artifacts.extract import (
+    artifact_plain_text,
+    extract_document,
+)
 from veyra_agent_platform.local.library.dependencies import (
     inspect_agent_dependencies,
 )
@@ -49,11 +59,19 @@ from veyra_agent_platform.local.resources.project import (
     ProjectResourceService,
 )
 from veyra_agent_platform.local.resources.readiness import ResourceReadiness
+from veyra_agent_platform.local.runtime.dataflow import DataflowStore
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
-from .client import RuntimeModelClient, RuntimeProviderError
+from .agent_loop import AgentLoopRuntime, loop_tool_references
+from .client import GeneratedImage, RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
 from .conversations import AgentConversationService
+from .credentials import (
+    IMAGE_BINDING_SLOT,
+    RUNTIME_BINDING_SLOT,
+    ProviderCredentialStore,
+    node_binding_slot,
+)
 from .model_capabilities import (
     RuntimeModelCapabilities,
     runtime_model_capabilities,
@@ -61,10 +79,18 @@ from .model_capabilities import (
 from .profiles import RuntimeApiProfile, RuntimeProfileStore
 from .tools import ProducedArtifact, ToolAuthorization, ToolRuntime, ToolRuntimeError
 
-_TOKEN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
-_COMPARE = re.compile(
-    r"^([a-z][a-z0-9_]*)(?:\s*)(==|!=)(?:\s*)('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|true|false|[0-9]+)$"
-)
+PRIMARY_MODEL_REF = "model.primary"
+IMAGE_MODEL_REF = "model.image"
+MODEL_REF_SLOTS = {
+    PRIMARY_MODEL_REF: RUNTIME_BINDING_SLOT,
+    IMAGE_MODEL_REF: IMAGE_BINDING_SLOT,
+}
+_VISITS = "$visits"
+_MAX_VALUE_CHARS = 24_000
+_MAX_PREVIEW_CHARS = 4_000
+_MAX_PROMPT_IMAGES = 8
+_MAX_COMMENT_CHARS = 4_000
+_MAX_IMAGES_PER_STEP = 4
 
 
 class _RunAbandoned(Exception):
@@ -99,6 +125,7 @@ class _ExecutionPause:
     values: dict[str, Any]
     events: list[tuple[str | None, str, dict[str, Any]]]
     tool_calls: tuple[_ToolCallRecord, ...]
+    details: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,7 +137,7 @@ class _ExecutionOutcome:
     pause: _ExecutionPause | None
 
 
-class RuntimeService:
+class RuntimeService(AgentLoopRuntime):
     def __init__(
         self,
         repository: LocalRepository,
@@ -124,6 +151,7 @@ class RuntimeService:
         resource_readiness: ResourceReadiness | None = None,
         artifacts: ArtifactService | None = None,
         custom_components: CustomComponentService | None = None,
+        credentials: ProviderCredentialStore | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
@@ -134,26 +162,63 @@ class RuntimeService:
         self.project_resources = project_resources or ProjectResourceService(
             projects, self.tools.catalog, self.custom_components
         )
-        self.resource_readiness = resource_readiness or ResourceReadiness(
-            self.tools.catalog, self.model, self.tools._adapters.keys(), self.tools.mcp
-        )
         self.profiles = profiles or RuntimeProfileStore(repository)
+        self.credentials = credentials
+        self.resource_readiness = resource_readiness or ResourceReadiness(
+            self.tools.catalog,
+            self.model,
+            self.tools._adapters.keys(),
+            self.tools.mcp,
+            model_configured=self._runtime_model_configured,
+        )
         self.conversations = conversations
         self.artifacts = artifacts or ArtifactService(repository, projects.object_root)
         self.custom_components.project_resource_readiness = (
             self.resource_readiness.project
         )
-        self.custom_components.model_recipe_configured = lambda: bool(
-            self.model.status().get("configured")
-        )
+        self.custom_components.model_recipe_configured = self._runtime_model_configured
         self.repository.interrupt_orphan_runs()
+
+    def _runtime_model_configured(self) -> bool:
+        if self.credentials is not None:
+            return (
+                any(item.readiness == "ready" for item in self.credentials.list())
+                or self.model.transport is not None
+            )
+        return bool(self.model.configured)
 
     def status(self) -> dict[str, Any]:
         payload = self.model.status()
+        if self.credentials is not None:
+            payload["configured"] = self._runtime_model_configured()
+            payload["allow_process_environment_key"] = False
+            payload["user_provided_only"] = True
         payload["modalities"] = runtime_model_capabilities(
             self.model.settings
         ).to_dict()
         return payload
+
+    def builder_runtime_preflight(self, project_id: str) -> dict[str, Any]:
+        """Return the durable Builder gate without contacting a Provider."""
+        if self.credentials is None:
+            return {
+                "status": "ready",
+                "credentials": [],
+                "binding_slot": "primary_model",
+            }
+        credentials = [
+            item.to_dict()
+            for item in self.credentials.list()
+            if item.readiness == "ready"
+        ]
+        return {
+            "status": "waiting_for_runtime_binding"
+            if credentials
+            else "waiting_for_runtime_credential",
+            "credentials": credentials,
+            "binding_slot": "primary_model",
+            "project_id": project_id,
+        }
 
     def validate_profile(self, profile: RuntimeApiProfile) -> dict[str, Any]:
         """Validate a supplied profile without persisting it or running a prompt."""
@@ -199,8 +264,25 @@ class RuntimeService:
             ),
         }
 
-    def readiness(self, project_id: str, agent_id: str) -> dict[str, Any]:
+    def readiness(
+        self, project_id: str, agent_id: str, *, version_id: str | None = None
+    ) -> dict[str, Any]:
         """Return a no-effect startup preflight for one effective Agent Runtime."""
+        self.library._agent_in_project(project_id, agent_id)
+        if version_id:
+            version = self.repository.version(version_id)
+            if (
+                version is None
+                or version["agent_id"] != agent_id
+                or not int(version["committed"] or 0)
+            ):
+                raise RuntimeError(
+                    "agent_version_not_found", "Committed Agent version not found"
+                )
+            source = AgentSource.from_dict(json.loads(version["source_json"]))
+            report = self.readiness_for_source(project_id, agent_id, source)
+            report["version_id"] = version_id
+            return report
         agent = self.library._agent_in_project(project_id, agent_id)
         source_path = self.library._source_path(project_id, agent)
         source_text = self.projects._read_text(source_path)
@@ -240,9 +322,35 @@ class RuntimeService:
                 else "Effective Runtime model credentials are not configured."
             )
         )
-        _, profile_source = self.profiles.effective(project_id, agent_id)
+        if self.credentials is not None:
+            resolved = self.credentials.effective_credential(project_id, agent_id)
+            raw_source = resolved[1].source if resolved else "default"
+        else:
+            _, raw_source = self.profiles.effective(project_id, agent_id)
+        profile_source = _readiness_profile_source(raw_source)
         tool_checks = self._tool_readiness(project_id, source)
+        for missing in self._missing_tool_secrets(source):
+            tool_checks.append(missing)
         tools_ready = all(item["ready"] for item in tool_checks)
+        secret_gap = any(
+            item.get("code") == "needs_configuration" for item in tool_checks
+        )
+        tools_code = (
+            "ready"
+            if tools_ready
+            else "needs_configuration"
+            if secret_gap
+            else "tool_runtime_unavailable"
+        )
+        tools_detail = (
+            "Tool Runtime authorization preflight passed."
+            if tools_ready
+            else (
+                "This Agent needs configuration before it can run."
+                if secret_gap
+                else "One or more Tools cannot pass Runtime authorization."
+            )
+        )
         modalities = runtime_model_capabilities(model.settings)
         modality_check = _runtime_modality_readiness(source, requires_model, modalities)
         checks = [
@@ -271,14 +379,25 @@ class RuntimeService:
             {
                 "id": "tools",
                 "ready": tools_ready,
-                "code": "ready" if tools_ready else "tool_runtime_unavailable",
-                "detail": (
-                    "Tool Runtime authorization preflight passed."
-                    if tools_ready
-                    else "One or more Tools cannot pass Runtime authorization."
-                ),
+                "code": tools_code,
+                "detail": tools_detail,
             },
         ]
+        if _uses_image_model(source):
+            image_model = self._model_for(project_id, agent_id, IMAGE_BINDING_SLOT)
+            image_ready = bool(image_model.status()["configured"])
+            checks.append(
+                {
+                    "id": "image_model",
+                    "ready": image_ready,
+                    "code": "ready" if image_ready else "image_model_not_configured",
+                    "detail": (
+                        f"Image model {image_model.settings.model_id} is bound."
+                        if image_ready
+                        else "Bind an image generation model for the image steps."
+                    ),
+                }
+            )
         return {
             "schema_version": SCHEMA_VERSION,
             "project_id": project_id,
@@ -442,6 +561,14 @@ class RuntimeService:
         )
         if not check["ready"]:
             raise RuntimeError(str(check["code"]), str(check["detail"]))
+        if (
+            _uses_image_model(source)
+            and not self._model_for(project_id, agent_id, IMAGE_BINDING_SLOT).configured
+        ):
+            raise RuntimeError(
+                "image_model_not_configured",
+                "Bind an image generation model to this Agent before running it",
+            )
 
     def components(self) -> dict[str, Any]:
         from veyra_agent_platform.local.components import component_registry
@@ -449,6 +576,37 @@ class RuntimeService:
         return {"schema_version": SCHEMA_VERSION, "components": component_registry()}
 
     def run(
+        self,
+        project_id: str,
+        agent_id: str,
+        inputs: dict[str, Any],
+        idempotency_key: str,
+        conversation_id: str | None = None,
+        append_user: bool = True,
+        *,
+        source: str = "draft",
+        version_id: str | None = None,
+    ) -> dict[str, Any]:
+        if source == "committed" or version_id:
+            return self.run_committed(
+                project_id,
+                agent_id,
+                inputs,
+                idempotency_key,
+                conversation_id=conversation_id,
+                version_id=version_id,
+                append_user=append_user,
+            )
+        return self._run_draft(
+            project_id,
+            agent_id,
+            inputs,
+            idempotency_key,
+            conversation_id=conversation_id,
+            append_user=append_user,
+        )
+
+    def _run_draft(
         self,
         project_id: str,
         agent_id: str,
@@ -583,6 +741,256 @@ class RuntimeService:
         )
         return started
 
+    def run_committed(
+        self,
+        project_id: str,
+        agent_id: str,
+        inputs: dict[str, Any],
+        idempotency_key: str,
+        *,
+        version_id: str | None = None,
+        conversation_id: str | None = None,
+        append_user: bool = True,
+    ) -> dict[str, Any]:
+        """Execute a committed Agent version. Never reads the current draft."""
+
+        IdempotencyKey(SCHEMA_VERSION, idempotency_key)
+        self.library._agent_in_project(project_id, agent_id)
+        version = self._resolve_committed_version(
+            project_id, agent_id, version_id, conversation_id
+        )
+        source = AgentSource.from_dict(json.loads(version["source_json"]))
+        if source.agent_id != agent_id or source.source_hash != version["source_hash"]:
+            raise RuntimeError(
+                "agent_version_invalid", "Agent version integrity check failed"
+            )
+        if conversation_id and self.conversations is not None:
+            stored = self.conversations.initial_inputs(
+                project_id, agent_id, conversation_id
+            )
+            if stored:
+                inputs = {**stored, **inputs}
+        inputs = self._prepare_inputs(project_id, source, inputs)
+        self._require_runtime_modalities(project_id, agent_id, source)
+        self._require_app_preflight(project_id, agent_id, source)
+        version_id = version["version_id"]
+        persist_initial = bool(
+            conversation_id is None
+            or (
+                self.conversations is not None
+                and not self.conversations.initial_inputs(
+                    project_id, agent_id, conversation_id
+                )
+            )
+        )
+        scope = f"run-committed:{project_id}:{agent_id}:{version_id}"
+        digest = sha256_digest(
+            {
+                "version_id": version_id,
+                "inputs": inputs,
+                "conversation_id": conversation_id,
+            }
+        )
+        with self.repository.transaction() as connection:
+            replay = self.repository.idempotent_response(
+                connection, scope, idempotency_key, digest
+            )
+            if replay is not None:
+                return replay
+            run_id = new_uuid7()
+            conversation_context = ""
+            resolved_conversation_id = conversation_id
+            if self.conversations is not None and (conversation_id or append_user):
+                resolved_conversation_id, conversation_context = (
+                    self.conversations.prepare_turn(
+                        connection,
+                        project_id=project_id,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        inputs=inputs,
+                        run_id=run_id,
+                        append_user=append_user,
+                        agent_version_id=version_id,
+                        persist_initial_inputs=persist_initial,
+                    )
+                )
+            elif conversation_id:
+                raise RuntimeError(
+                    "conversation_unavailable",
+                    "Agent conversation service is unavailable",
+                )
+            self.repository.create_run(
+                connection,
+                run_id=run_id,
+                project_id=project_id,
+                agent_id=agent_id,
+                version_id=version_id,
+                created_at=_now(),
+                inputs=inputs,
+                conversation_id=resolved_conversation_id,
+            )
+            self.repository.add_run_events(
+                connection,
+                run_id,
+                [(None, "run.created", {}), (None, "run.started", {})],
+            )
+            started = self._row_payload(
+                connection.execute(
+                    "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            )
+            self.repository.remember_response(
+                connection, scope, idempotency_key, digest, started
+            )
+        self._schedule_execution(
+            run_id,
+            lambda: self._complete_execution(
+                project_id,
+                run_id,
+                source,
+                inputs,
+                start_node=None,
+                approved=False,
+                conversation_id=resolved_conversation_id,
+                conversation_context=conversation_context,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+            ),
+        )
+        return started
+
+    def _resolve_committed_version(
+        self,
+        project_id: str,
+        agent_id: str,
+        version_id: str | None,
+        conversation_id: str | None,
+    ) -> Any:
+        pinned: str | None = None
+        if conversation_id and self.conversations is not None:
+            pinned = self.conversations.conversation_version(
+                project_id, agent_id, conversation_id
+            )
+            if pinned and version_id and pinned != version_id:
+                raise RuntimeError(
+                    "conversation_version_mismatch",
+                    "This conversation is pinned to a different Agent version",
+                )
+            if pinned:
+                version_id = pinned
+        if not version_id:
+            latest = self.repository.latest_committed_version(agent_id)
+            if latest is None:
+                raise RuntimeError(
+                    "agent_has_no_committed_version",
+                    "This Agent has no runnable version yet. "
+                    "Commit a version in Studio before using it.",
+                )
+            version_id = str(latest["version_id"])
+        version = self.repository.version(version_id)
+        if (
+            version is None
+            or version["agent_id"] != agent_id
+            or not int(version["committed"] or 0)
+        ):
+            raise RuntimeError(
+                "agent_version_not_found", "Committed Agent version not found"
+            )
+        return version
+
+    def _require_app_preflight(
+        self, project_id: str, agent_id: str, source: AgentSource
+    ) -> None:
+        report = self.readiness_for_source(project_id, agent_id, source)
+        model = report.get("model") or {}
+        if model.get("required") and not model.get("configured"):
+            raise RuntimeError(
+                "runtime_not_configured", "Runtime model is not configured."
+            )
+        for dependency in report.get("dependencies") or []:
+            status = str(dependency.get("status") or "")
+            detail = str(dependency.get("detail") or "")
+            if status == "configuration_required":
+                raise RuntimeError(
+                    "needs_configuration",
+                    detail or "This Agent needs configuration before it can run.",
+                )
+            if status == "resource_unbound":
+                raise RuntimeError(
+                    "resource_unbound",
+                    detail or "A required resource is not bound to this Project.",
+                )
+            if status in {"lock_mismatch", "project_binding_stale"}:
+                raise RuntimeError(
+                    "resource_identity_conflict",
+                    detail or "Pinned resource identity does not match this Agent.",
+                )
+        missing = self._missing_tool_secrets(source)
+        if missing:
+            raise RuntimeError(
+                "needs_configuration",
+                str(missing[0]["detail"]),
+            )
+
+    def _missing_tool_secrets(self, source: AgentSource) -> list[dict[str, Any]]:
+        from veyra_agent_platform.local.secrets import resolve_secret
+
+        missing: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        references: list[tuple[str, str]] = []
+        for node in source.nodes:
+            if node.component_type is not ComponentType.TOOL or not node.uses:
+                continue
+            if node.uses in seen:
+                continue
+            seen.add(node.uses)
+            references.append((node.id, node.uses))
+        for reference in loop_tool_references(source):
+            if reference in seen:
+                continue
+            seen.add(reference)
+            references.append(("capability", reference))
+        for node_id, reference in references:
+            try:
+                resource = self.tools.catalog.by_reference(reference)
+            except Exception:
+                continue
+            spec = resource.get("spec") if isinstance(resource, dict) else {}
+            if not isinstance(spec, dict):
+                continue
+            secret_ref = spec.get("secret_ref")
+            secret_env = spec.get("secret_env")
+            if not isinstance(secret_ref, str) or not secret_ref:
+                continue
+            token = resolve_secret(
+                self.tools._secret_store,
+                secret_ref,
+                secret_env if isinstance(secret_env, str) else "",
+            )
+            if token:
+                continue
+            identity = reference.split("@", 1)[0]
+            detail = (
+                "This Agent needs configuration before it can run. "
+                "GitHub connection required."
+                if "github" in identity
+                else (
+                    "This Agent needs configuration before it can run. "
+                    "A required integration is not configured."
+                )
+            )
+            missing.append(
+                {
+                    "node_id": node_id,
+                    "reference": reference,
+                    "ready": False,
+                    "code": "needs_configuration",
+                    "detail": detail,
+                }
+            )
+        return missing
+
     def run_version(
         self,
         project_id: str,
@@ -662,6 +1070,7 @@ class RuntimeService:
         idempotency_key: str,
         *,
         checkpoint_id: str | None = None,
+        comment: str | None = None,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         self.library._agent_in_project(project_id, agent_id)
@@ -674,8 +1083,20 @@ class RuntimeService:
             raise ProjectError("unknown Agent run")
         if command not in {"approve", "reject", "stop", "resume", "retry"}:
             raise RuntimeError("command_invalid", "Unsupported run command")
+        note = (comment or "").strip()
+        if note and command not in {"approve", "reject"}:
+            raise RuntimeError(
+                "command_invalid", "Only Approve and Reject accept a comment"
+            )
+        if len(note) > _MAX_COMMENT_CHARS:
+            raise RuntimeError(
+                "command_invalid",
+                f"Approval comments are limited to {_MAX_COMMENT_CHARS} characters",
+            )
         scope = f"run-command:{run_id}"
         digest = sha256_digest({"command": command})
+        if note:
+            digest = sha256_digest({"command": command, "comment": note})
         if checkpoint_id is not None:
             if command != "resume":
                 raise RuntimeError(
@@ -707,6 +1128,7 @@ class RuntimeService:
         return self._resolve_approval(
             row,
             decision="approved" if command == "approve" else "rejected",
+            comment=note,
             scope=scope,
             idempotency_key=idempotency_key,
             digest=digest,
@@ -791,6 +1213,7 @@ class RuntimeService:
                     values=outcome.pause.values,
                     events=[],
                     tool_calls=outcome.pause.tool_calls,
+                    details=outcome.pause.details,
                 ),
                 scope=scope,
                 idempotency_key=idempotency_key,
@@ -909,12 +1332,13 @@ class RuntimeService:
                 created_at=now,
             )
             self.repository.set_run_status(connection, run_id, status="waiting")
+            requested = {"prompt": pause.prompt, **dict(pause.details or {})}
             self.repository.add_run_events(
                 connection,
                 run_id,
                 [
                     (pause.node_id, "node.waiting", {"reason": "approval"}),
-                    (pause.node_id, "approval.requested", {"prompt": pause.prompt}),
+                    (pause.node_id, "approval.requested", requested),
                     (
                         pause.node_id,
                         "checkpoint.created",
@@ -1455,6 +1879,7 @@ class RuntimeService:
         scope: str,
         idempotency_key: str,
         digest: str,
+        comment: str = "",
     ) -> dict[str, Any]:
         if row["status"] != "waiting":
             raise RuntimeError(
@@ -1496,19 +1921,48 @@ class RuntimeService:
                 and "written" not in values
             ):
                 values["written"] = False
-            next_node = next(
-                (
-                    edge.to_node
-                    for edge in source.transitions
-                    if edge.from_node == pending["node_id"]
-                    and edge.port.value == decision
-                ),
-                "",
+            gate = next(
+                (node for node in source.nodes if node.id == pending["node_id"]),
+                None,
             )
-            if not next_node:
-                raise RuntimeError(
-                    "transition_missing",
-                    f"node {pending['node_id']} did not select a valid transition",
+            round_number = int(values.get(_VISITS, {}).get(pending["node_id"], 1))
+            exhausted = (
+                decision == "rejected"
+                and gate is not None
+                and gate.bounded_revisions > 0
+                and round_number > gate.bounded_revisions
+            )
+            if source.is_loop:
+                next_node = None
+            else:
+                next_node = next(
+                    (
+                        edge.to_node
+                        for edge in source.transitions
+                        if edge.from_node == pending["node_id"]
+                        and edge.port.value == decision
+                    ),
+                    "",
+                )
+                if not next_node:
+                    raise RuntimeError(
+                        "transition_missing",
+                        f"node {pending['node_id']} did not select a valid transition",
+                    )
+            if (
+                not source.is_loop
+                and pending["node_id"] not in source.inputs
+                and pending["node_id"] not in source.outputs
+            ):
+                values[pending["node_id"]] = {
+                    "decision": decision,
+                    "comment": comment,
+                    "round": round_number,
+                }
+            if not source.data_edges and not source.is_loop:
+                assert next_node is not None
+                values = _bind_blank_approval_condition(
+                    source, next_node, decision, values
                 )
             self.repository.remember_response(
                 connection, scope, idempotency_key, digest, self._row_payload(row)
@@ -1518,7 +1972,7 @@ class RuntimeService:
                 command_id=command_id,
                 run_id=row["run_id"],
                 command_type="approve" if decision == "approved" else "reject",
-                payload={"decision": decision},
+                payload={"decision": decision, "comment": comment},
                 status="accepted",
                 created_at=now,
             )
@@ -1529,6 +1983,47 @@ class RuntimeService:
                 command_id=command_id,
                 resolved_at=now,
             )
+            resolved_payload: dict[str, Any] = {"decision": decision}
+            if comment:
+                resolved_payload["comment"] = comment
+            if exhausted:
+                resolved_payload["revision_limit_reached"] = True
+            if exhausted:
+                self.repository.set_run_status(
+                    connection, row["run_id"], status="running"
+                )
+                self.repository.add_run_events(
+                    connection,
+                    row["run_id"],
+                    [
+                        (pending["node_id"], "approval.resolved", resolved_payload),
+                        (
+                            pending["node_id"],
+                            "node.failed",
+                            {"code": "revision_limit_reached"},
+                        ),
+                        (None, "run.failed", {"code": "revision_limit_reached"}),
+                    ],
+                )
+                self.repository.mark_command_applied(
+                    connection, command_id, applied_at=now
+                )
+                self.repository.finish_run(
+                    connection,
+                    row["run_id"],
+                    status="failed",
+                    result=None,
+                    code="revision_limit_reached",
+                    message=("The review was rejected after the last allowed revision"),
+                    finished_at=now,
+                )
+                return self._stored_run_response(
+                    connection,
+                    row["run_id"],
+                    scope=scope,
+                    idempotency_key=idempotency_key,
+                    digest=digest,
+                )
             self.repository.set_run_status(connection, row["run_id"], status="running")
             self.repository.add_run_events(
                 connection,
@@ -1537,7 +2032,7 @@ class RuntimeService:
                     (
                         pending["node_id"],
                         "approval.resolved",
-                        {"decision": decision},
+                        resolved_payload,
                     ),
                     (
                         pending["node_id"],
@@ -1604,7 +2099,14 @@ class RuntimeService:
         verified: bool = False,
     ) -> None:
         try:
-            outcome = self._execute(
+            if self.credentials is not None:
+                resolved = self.credentials.effective_credential(
+                    project_id, source.agent_id
+                )
+                if resolved is not None:
+                    self.credentials.mark_used(resolved[0].credential_id)
+            executor = self._execute_loop if source.is_loop else self._execute
+            outcome = executor(
                 project_id,
                 run_id,
                 source,
@@ -1627,6 +2129,15 @@ class RuntimeService:
             )
         except _RunAbandoned:
             return
+        except (RuntimeProviderError, ToolRuntimeError) as exc:
+            if self._is_running(run_id):
+                self._fail_run(
+                    run_id,
+                    RuntimeError(exc.code, str(exc)),
+                    scope=scope,
+                    idempotency_key=idempotency_key,
+                    digest=digest,
+                )
         except RuntimeError as exc:
             if self._is_running(run_id):
                 self._fail_run(
@@ -1655,6 +2166,7 @@ class RuntimeService:
             "agent_id": row["agent_id"],
             "version_id": row["version_id"],
             "conversation_id": row["conversation_id"],
+            "run_target_kind": "agent",
             "status": row["status"],
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
             "error": (
@@ -1748,6 +2260,20 @@ class RuntimeService:
                 self._resolve_artifact_ref(project_id, name, field, item, error_code)
                 for item in value
             ]
+        if field.artifact_kind == "collection":
+            if not looks_like_collection_ref(value) or not isinstance(value, Mapping):
+                raise RuntimeError(
+                    error_code, f"{name} must be a collection of ArtifactRef items"
+                )
+            items = [
+                self._resolve_artifact_ref(project_id, name, field, item, error_code)
+                for item in value.get("items") or []
+            ]
+            return {
+                "kind": "collection",
+                "collection_id": str(value.get("collection_id") or ""),
+                "items": items,
+            }
         return self._resolve_artifact_ref(project_id, name, field, value, error_code)
 
     def _resolve_artifact_ref(
@@ -1852,6 +2378,7 @@ class RuntimeService:
             if node.component_type is ComponentType.START
         )
         values = dict(inputs)
+        store = DataflowStore.from_source(source, values) if source.data_edges else None
         result: dict[str, Any] = {}
         verifier_passed = verified
         events: list[tuple[str | None, str, dict[str, Any]]] = []
@@ -1861,7 +2388,8 @@ class RuntimeService:
             events.append((node_id, kind, payload))
             self._persist_event(run_id, node_id, kind, payload)
 
-        for _ in range(len(nodes) + 1):
+        rounds = 1 + sum(node.bounded_revisions for node in source.nodes)
+        for _ in range((len(nodes) + 1) * rounds):
             if not self._is_running(run_id):
                 raise _RunAbandoned()
             node = nodes[current]
@@ -1877,22 +2405,43 @@ class RuntimeService:
                 tool_calls=tuple(tool_calls),
             )
             tool_calls.clear()
-            emit(
-                node.id,
-                "node.started",
-                {"component_type": node.component_type.value},
-            )
+            start_payload: dict[str, Any] = {
+                "component_type": node.component_type.value
+            }
+            if node.component_type in {ComponentType.AGENT, ComponentType.MODEL}:
+                node_model = self._model_for_node(project_id, source, node)
+                slot = MODEL_REF_SLOTS.get(node.model_ref or "", RUNTIME_BINDING_SLOT)
+                start_payload.update(
+                    self._model_evidence(
+                        project_id,
+                        source.agent_id,
+                        node_model,
+                        node_binding_slot(node.id)
+                        if self.credentials is not None
+                        and self.credentials.binding(
+                            project_id, source.agent_id, node_binding_slot(node.id)
+                        )
+                        is not None
+                        else slot,
+                    )
+                )
+            emit(node.id, "node.started", start_payload)
+            step_output: Any = None
             try:
                 if node.component_type is ComponentType.START:
                     port = "next"
                 elif node.component_type is ComponentType.TRANSFORM:
                     assert node.mapping is not None
-                    values.update(
-                        {
-                            key: _interpolate(template, values)
-                            for key, template in node.mapping.items()
-                        }
-                    )
+                    local_values = self._typed_node_values(store, node, values)
+                    mapped = {
+                        key: _transform_value(template, local_values)
+                        for key, template in node.mapping.items()
+                    }
+                    values.update(mapped)
+                    if store is not None:
+                        store.record(node.id, mapped)
+                        values = store.merge_into(values)
+                    step_output = _output_preview(mapped)
                     port = "next"
                 elif node.component_type is ComponentType.CONDITION:
                     assert node.expression is not None
@@ -1962,6 +2511,7 @@ class RuntimeService:
                         values=tool_values,
                         authorization=authorization,
                         approved=approved,
+                        project_id=project_id,
                     )
                     produced = self._materialize_produced_artifacts(
                         project_id,
@@ -1981,9 +2531,11 @@ class RuntimeService:
                         input_digest=record.input_digest,
                         receipt=receipt,
                     )
-                    values.update(
-                        self._tool_output_values(node, {**execution.output, **produced})
+                    tool_output = self._tool_output_values(
+                        node, {**execution.output, **produced}
                     )
+                    values.update(tool_output)
+                    step_output = _output_preview(tool_output)
                     port = "next"
                 elif node.component_type is ComponentType.CUSTOM_COMPONENT:
                     values.update(
@@ -2002,6 +2554,10 @@ class RuntimeService:
                     port = "next"
                 elif node.component_type is ComponentType.OUTPUT:
                     assert node.output_name is not None
+                    if store is not None:
+                        values = store.merge_into(values)
+                        produced = store.run_outputs(source.outputs)
+                        values.update(produced)
                     result = self._prepare_outputs(project_id, source, values)
                     emit(node.id, "node.completed", {})
                     return _ExecutionOutcome(
@@ -2090,23 +2646,44 @@ class RuntimeService:
                     def emit_model_delta(token: str, node_id: str = node.id) -> None:
                         emit(node_id, "model.delta", {"delta": token})
 
-                    values.update(
-                        self._run_agent(
-                            project_id,
-                            node,
-                            source,
-                            values,
-                            model,
-                            context_text,
-                            conversation_context,
-                            on_token=emit_model_delta,
+                    produced_values = self._run_agent(
+                        project_id,
+                        node,
+                        source,
+                        self._typed_node_values(store, node, values),
+                        self._model_for_node(project_id, source, node),
+                        context_text,
+                        conversation_context,
+                        on_token=emit_model_delta,
+                        run_id=run_id,
+                        emit=emit,
+                    )
+                    values.update(produced_values)
+                    if store is not None:
+                        recorded = produced_values.get(node.id)
+                        ports = (
+                            recorded
+                            if isinstance(recorded, Mapping)
+                            else {
+                                name: produced_values[name]
+                                for name in (node.outputs or {})
+                                if name in produced_values
+                            }
                         )
+                        if isinstance(ports, Mapping):
+                            store.record(node.id, dict(ports))
+                        values = store.merge_into(values)
+                    step_output = _output_preview(
+                        produced_values.get(node.id, produced_values)
                     )
                     port = "next"
                 elif node.component_type is ComponentType.HUMAN_APPROVAL:
                     prompt = node.prompt or ""
                     if "{{" in prompt:
                         prompt = _interpolate(prompt, values)
+                    visits = dict(values.get(_VISITS) or {})
+                    visits[node.id] = int(visits.get(node.id, 0)) + 1
+                    values[_VISITS] = visits
                     return _ExecutionOutcome(
                         events=events,
                         tool_calls=tuple(tool_calls),
@@ -2118,6 +2695,7 @@ class RuntimeService:
                             values=values,
                             events=events,
                             tool_calls=tuple(tool_calls),
+                            details=_approval_details(node, values, visits[node.id]),
                         ),
                     )
                 else:
@@ -2150,7 +2728,10 @@ class RuntimeService:
                 runtime_error.events = events
                 runtime_error.tool_calls = tuple(tool_calls)
                 raise runtime_error from None
-            emit(node.id, "node.completed", {"port": port})
+            completed: dict[str, Any] = {"port": port}
+            if step_output is not None:
+                completed["output"] = step_output
+            emit(node.id, "node.completed", completed)
             time.sleep(0.03)
             if not self._is_running(run_id):
                 raise _RunAbandoned()
@@ -2216,7 +2797,10 @@ class RuntimeService:
 
     def _source_requires_model(self, project_id: str, source: AgentSource) -> bool:
         for node in source.nodes:
-            if node.component_type in {ComponentType.AGENT, ComponentType.MODEL}:
+            if (
+                node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
+                and node.model_ref != IMAGE_MODEL_REF
+            ):
                 return True
             if node.component_type is ComponentType.CUSTOM_COMPONENT:
                 try:
@@ -2397,6 +2981,7 @@ class RuntimeService:
             prompt = definition.implementation.instruction or ""
             if "{{" in prompt:
                 prompt = _interpolate(prompt, component_values)
+            prompt = _with_output_contract(prompt, definition.outputs)
             user_content = json.dumps(
                 component_values, ensure_ascii=False, sort_keys=True
             )
@@ -2409,7 +2994,8 @@ class RuntimeService:
                 [
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_content},
-                ]
+                ],
+                response_format=_runtime_response_format(definition.outputs),
             ):
                 if not isinstance(token, str) or not token:
                     continue
@@ -2496,6 +3082,7 @@ class RuntimeService:
             values=tool_values,
             authorization=authorization,
             approved=approved,
+            project_id=project_id,
         )
         produced_artifacts = self._materialize_produced_artifacts(
             project_id,
@@ -2533,13 +3120,18 @@ class RuntimeService:
         knowledge_context: str = "",
         conversation_context: str = "",
         on_token: Callable[[str], None] | None = None,
+        *,
+        run_id: str | None = None,
+        emit: Callable[[str | None, str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        if node.model_ref == IMAGE_MODEL_REF:
+            return self._run_image_model(project_id, run_id, node, source, values, emit)
         if not model.configured:
             raise RuntimeError(
                 "runtime_not_configured",
                 "Agent nodes require a Runtime model API key",
             )
-        if node.model_ref != "model.primary":
+        if node.model_ref != PRIMARY_MODEL_REF:
             raise RuntimeError(
                 "runtime_model_unknown",
                 "Agent model_ref is not the host Runtime profile",
@@ -2547,8 +3139,29 @@ class RuntimeService:
         prompt = self._agent_system_prompt(node, source)
         if "{{" in prompt:
             prompt = _interpolate(prompt, values)
+        structured: Mapping[str, TypedField] | None = node.outputs
+        if structured:
+            prompt = _with_step_contract(prompt, structured)
+            response_format = (
+                None if _plain_text_field(structured) else {"type": "json_object"}
+            )
+            emits_outputs = True
+        else:
+            emits_outputs = _model_writes_agent_outputs(source, node.id)
+            if emits_outputs:
+                prompt = _with_output_contract(prompt, source.outputs)
+            response_format = (
+                _runtime_response_format(source.outputs) if emits_outputs else None
+            )
         capabilities = runtime_model_capabilities(model.settings)
-        user_content: Any = _agent_user_content(source, values, capabilities)
+        user_content: Any = self._model_user_content(
+            project_id,
+            source,
+            values,
+            capabilities,
+            current_node=node.id,
+            fields=node.inputs,
+        )
         extra = knowledge_context + conversation_context
         if extra:
             if isinstance(user_content, str):
@@ -2559,20 +3172,239 @@ class RuntimeService:
                     {"type": "text", "text": extra},
                 ]
         user_content = self._provider_user_content(project_id, user_content)
-        messages = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
         ]
-        fragments: list[str] = []
-        for token in model.stream(messages):
-            if not isinstance(token, str) or not token:
-                continue
-            fragments.append(token)
+        content = _stream_model_text(model, messages, response_format, on_token)
+        if not emits_outputs:
+            return {node.id: content}
+
+        def parse(text: str) -> dict[str, Any]:
+            if structured:
+                return self._structured_step_values(
+                    project_id, run_id, node.id, structured, text, emit
+                )
+            return _model_output_values(text, source.outputs, values, node.id)
+
+        try:
+            return parse(content)
+        except RuntimeError as exc:
+            if exc.code != "agent_output_invalid":
+                raise
+            repair = [
+                *messages,
+                {"role": "assistant", "content": content},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your reply did not match the output contract: {exc}. "
+                        "Reply again with only the corrected result."
+                    ),
+                },
+            ]
             if on_token is not None:
-                on_token(token)
-        return _model_output_values(
-            "".join(fragments).strip(), source.outputs, values, node.id
+                on_token("\n\n")
+            return parse(_stream_model_text(model, repair, response_format, on_token))
+
+    def _structured_step_values(
+        self,
+        project_id: str,
+        run_id: str | None,
+        node_id: str,
+        fields: Mapping[str, TypedField],
+        content: str,
+        emit: Callable[[str | None, str, dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        plain = _plain_text_field(fields)
+        if plain is not None:
+            raw: dict[str, Any] = {plain: content}
+        else:
+            try:
+                raw = _json_object_reply(content)
+            except RuntimeError:
+                if len(fields) != 1:
+                    raise
+                name, field = next(iter(fields.items()))
+                if field.compact_type != "object" or field.multiple:
+                    raise
+                raw = {name: {"text": content}}
+        result: dict[str, Any] = {}
+        for name, field in fields.items():
+            if name not in raw or raw[name] is None:
+                if field.required:
+                    raise RuntimeError(
+                        "agent_output_invalid", f"field {name} is missing"
+                    )
+                continue
+            value = raw[name]
+            if field.is_artifact():
+                value = self._text_artifacts(
+                    project_id, run_id, node_id, name, field, value, emit
+                )
+            else:
+                value = _coerce_field_value(field, value)
+                if not value_matches_field(field, value):
+                    expected = field.compact_type + ("[]" if field.multiple else "")
+                    allowed = f" (one of {', '.join(field.enum)})" if field.enum else ""
+                    raise RuntimeError(
+                        "agent_output_invalid",
+                        f"field {name} must be a {expected}{allowed}",
+                    )
+            result[name] = value
+        return {node_id: result, **result}
+
+    def _text_artifacts(
+        self,
+        project_id: str,
+        run_id: str | None,
+        node_id: str,
+        name: str,
+        field: TypedField,
+        value: Any,
+        emit: Callable[[str | None, str, dict[str, Any]], None] | None,
+    ) -> Any:
+        """Save model-authored text as document or file artifacts."""
+
+        if field.artifact_kind not in {"document", "file"}:
+            raise RuntimeError(
+                "agent_output_invalid",
+                f"field {name} is a {field.compact_type}; a text model cannot "
+                "produce it. Use an image model step for images.",
+            )
+        items = value if field.multiple and isinstance(value, list) else [value]
+        if not all(isinstance(item, str) and item.strip() for item in items):
+            raise RuntimeError(
+                "agent_output_invalid", f"field {name} must be document text"
+            )
+        suffix, media = (
+            (".md", "text/markdown")
+            if field.artifact_kind == "document"
+            else (".txt", "text/plain")
         )
+        refs = [
+            self._store_artifact(
+                project_id,
+                run_id,
+                node_id,
+                f"{name}-{index}{suffix}" if len(items) > 1 else f"{name}{suffix}",
+                str(item).encode("utf-8"),
+                media,
+                emit,
+            )
+            for index, item in enumerate(items, start=1)
+        ]
+        return refs if field.multiple else refs[0]
+
+    def _store_artifact(
+        self,
+        project_id: str,
+        run_id: str | None,
+        node_id: str,
+        filename: str,
+        contents: bytes,
+        claimed_type: str | None,
+        emit: Callable[[str | None, str, dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        try:
+            record = self.artifacts.upload(
+                project_id,
+                filename,
+                contents,
+                claimed_type=claimed_type,
+                source_kind="runtime_output",
+                run_id=run_id,
+            )
+        except ProjectError as exc:
+            raise RuntimeError(exc.code, str(exc)) from exc
+        if emit is not None:
+            emit(
+                node_id,
+                "artifact.created",
+                {
+                    "artifact_id": record["artifact_id"],
+                    "media_type": record["media_type"],
+                    "filename": record["filename"],
+                    "size_bytes": record["size_bytes"],
+                    "digest": record["sha256"],
+                    "node_id": node_id,
+                },
+            )
+        return {
+            "kind": "artifact",
+            "artifact_id": record["artifact_id"],
+            "media_type": record["media_type"],
+            "filename": record["filename"],
+        }
+
+    def _run_image_model(
+        self,
+        project_id: str,
+        run_id: str | None,
+        node: FlowNode,
+        source: AgentSource,
+        values: dict[str, Any],
+        emit: Callable[[str | None, str, dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        fields = node.outputs or {}
+        images = [
+            (name, field)
+            for name, field in fields.items()
+            if field.is_artifact() and field.artifact_kind == "image"
+        ]
+        if len(images) != 1:
+            raise RuntimeError(
+                "image_step_invalid",
+                "An image generation step needs exactly one image output",
+            )
+        name, field = images[0]
+        prompt = self._agent_system_prompt(node, source)
+        if "{{" in prompt:
+            prompt = _interpolate(prompt, values)
+        try:
+            brief = _agent_user_message(source, values)
+        except RuntimeError:
+            brief = ""
+        prompt = "\n\n".join(part for part in (prompt.strip(), brief.strip()) if part)
+        if not prompt:
+            raise RuntimeError("image_step_invalid", "The image prompt is empty")
+        client = self._model_for(project_id, source.agent_id, IMAGE_BINDING_SLOT)
+        if not client.configured:
+            raise RuntimeError(
+                "image_model_not_configured",
+                "Bind an image generation model to this Agent before running it",
+            )
+        count = 2 if field.multiple else 1
+        generated: list[GeneratedImage] = []
+        try:
+            while len(generated) < count:
+                batch = client.generate_images(prompt, count=count - len(generated))
+                if not batch:
+                    break
+                generated.extend(batch)
+        except RuntimeProviderError as exc:
+            raise RuntimeError(exc.code, str(exc)) from exc
+        if not generated:
+            raise RuntimeError(
+                "image_generation_empty", "The image model returned no image"
+            )
+        refs = [
+            self._store_artifact(
+                project_id,
+                run_id,
+                node.id,
+                f"{name}-{index}{image.suffix}",
+                image.contents,
+                image.media_type,
+                emit,
+            )
+            for index, image in enumerate(generated[:_MAX_IMAGES_PER_STEP], start=1)
+        ]
+        result: dict[str, Any] = {name: refs if field.multiple else refs[0]}
+        for other, other_field in fields.items():
+            if other != name and other_field.compact_type == "string":
+                result[other] = prompt
+        return {node.id: result, **result}
 
     def _provider_user_content(
         self, project_id: str, content: str | list[dict[str, Any]]
@@ -2613,22 +3445,173 @@ class RuntimeService:
             rewritten.append(dict(part))
         return rewritten
 
-    def _model_for(self, project_id: str, agent_id: str) -> RuntimeModelClient:
-        profile, _ = self.profiles.effective(project_id, agent_id)
-        if profile is None:
+    def _model_user_content(
+        self,
+        project_id: str,
+        source: AgentSource,
+        values: dict[str, Any],
+        capabilities: RuntimeModelCapabilities,
+        *,
+        current_node: str | None = None,
+        fields: Mapping[str, TypedField] | None = None,
+    ) -> str | list[dict[str, Any]]:
+        declared = fields or source.inputs
+        extracted: dict[str, str] = {}
+        for name, field in declared.items():
+            if not field.is_artifact() or field.artifact_kind in {
+                "image",
+                "collection",
+            }:
+                continue
+            text = self._artifact_plain_text(project_id, field, values.get(name))
+            if text:
+                extracted[name] = text
+        documents: dict[str, str] = {}
+        for key, value in _public_values(values).items():
+            if key in declared:
+                continue
+            for ref in _artifact_refs(value):
+                artifact_id = artifact_id_from_value(ref)
+                media = str(ref.get("media_type") or "")
+                if not artifact_id or media.startswith("image/"):
+                    continue
+                if artifact_id in documents:
+                    continue
+                try:
+                    record, payload = self.artifacts.read_bytes(project_id, artifact_id)
+                except ProjectError:
+                    continue
+                content = extract_document(
+                    record.filename, record.media_type, payload, artifact_id
+                )
+                text = content.plaintext()
+                if text:
+                    documents[artifact_id] = text
+        return _agent_user_content(
+            source,
+            values,
+            capabilities,
+            extracted,
+            current_node=current_node,
+            documents=documents,
+            fields=declared,
+        )
+
+    def _artifact_plain_text(
+        self, project_id: str, field: TypedField, value: Any
+    ) -> str:
+        items = value if field.multiple and isinstance(value, list) else [value]
+        chunks: list[str] = []
+        for item in items:
+            if not looks_like_artifact_ref(item) or not isinstance(item, Mapping):
+                continue
+            artifact_id = artifact_id_from_value(item)
+            if not artifact_id:
+                continue
+            try:
+                record, payload = self.artifacts.read_bytes(project_id, artifact_id)
+            except ProjectError:
+                continue
+            text = artifact_plain_text(record.filename, record.media_type, payload)
+            if text:
+                chunks.append(text)
+        return "\n".join(chunks)
+
+    def _typed_node_values(
+        self,
+        store: DataflowStore | None,
+        node: FlowNode,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        if store is None:
+            return values
+        context = store.context_for(node)
+        local = dict(values)
+        local.update(context.resolved_inputs)
+        return local
+
+    def _model_for_node(
+        self, project_id: str, source: AgentSource, node: FlowNode
+    ) -> RuntimeModelClient:
+        slots = [
+            node_binding_slot(node.id),
+            MODEL_REF_SLOTS.get(node.model_ref or "", RUNTIME_BINDING_SLOT),
+        ]
+        if node.model_ref == IMAGE_MODEL_REF:
+            slots.append(IMAGE_BINDING_SLOT)
+        slots.append(RUNTIME_BINDING_SLOT)
+        seen: set[str] = set()
+        last = self._model_for(project_id, source.agent_id, RUNTIME_BINDING_SLOT)
+        for slot in slots:
+            if slot in seen:
+                continue
+            seen.add(slot)
+            client = self._model_for(project_id, source.agent_id, slot)
+            last = client
+            if client.configured:
+                return client
+        return last
+
+    def _model_for(
+        self, project_id: str, agent_id: str, slot: str = RUNTIME_BINDING_SLOT
+    ) -> RuntimeModelClient:
+        if self.credentials is not None:
+            resolved = self.credentials.effective_credential(project_id, agent_id, slot)
+            if resolved is not None:
+                credential, binding = resolved
+                settings = self.model.settings.model_copy(
+                    update={
+                        "provider_type": credential.provider_type,
+                        "model_base_url": credential.base_url,
+                        "model_id": binding.model_id,
+                        "allow_process_environment_key": False,
+                    }
+                )
+                return RuntimeModelClient(
+                    settings,
+                    transport=self.model.transport,
+                    secret_store=self.model.secret_store,
+                    secret_ref=self.credentials.secret_ref(credential.credential_id),
+                )
+        # Injected transports are test/runtime adapters and do not carry a
+        # process credential. Keep them usable for deterministic local tests.
+        if self.model.transport is not None:
             return self.model
+        # A missing binding is a normal user-action state, not permission to
+        # reuse the Platform Builder credential or the shared model.primary ref.
         settings = self.model.settings.model_copy(
-            update={
-                "model_base_url": profile.base_url,
-                "model_id": profile.model_id,
-                "model_api_key_env": profile.api_key_env,
-            }
+            update={"allow_process_environment_key": False}
         )
         return RuntimeModelClient(
             settings,
-            transport=self.model.transport,
+            transport=None,
             secret_store=self.model.secret_store,
+            secret_ref=f"runtime.unbound.{project_id}.{agent_id}.{slot}",
         )
+
+    def _model_evidence(
+        self,
+        project_id: str,
+        agent_id: str,
+        model: RuntimeModelClient,
+        slot: str = RUNTIME_BINDING_SLOT,
+    ) -> dict[str, str]:
+        if self.credentials is not None:
+            resolved = self.credentials.effective_credential(project_id, agent_id, slot)
+            if resolved is not None:
+                credential, binding = resolved
+                return {
+                    "provider": credential.provider_type,
+                    "model": binding.model_id,
+                    "credential_type": "user",
+                    "credential_alias": credential.label,
+                    "credential_scope": credential.credential_scope,
+                }
+        return {
+            "provider": model.settings.provider_type,
+            "model": model.settings.model_id,
+            "credential_type": "test" if model.transport is not None else "unbound",
+        }
 
     def _agent_system_prompt(self, node: Any, source: AgentSource) -> str:
         prompt = node.system_prompt or ""
@@ -2691,6 +3674,24 @@ def _json_safe_payload(value: Any) -> Any:
     return value
 
 
+def _uses_image_model(source: AgentSource) -> bool:
+    return any(
+        node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
+        and node.model_ref == IMAGE_MODEL_REF
+        for node in source.nodes
+    )
+
+
+def _readiness_profile_source(source: str) -> str:
+    """Map internal binding sources onto the RuntimeReadiness contract."""
+
+    if source == "explicit":
+        return "agent"
+    if source in {"agent", "project", "default"}:
+        return source
+    return "default"
+
+
 def _runtime_modality_readiness(
     source: AgentSource,
     requires_model: bool,
@@ -2705,28 +3706,22 @@ def _runtime_modality_readiness(
             "code": "unsupported_modality",
             "detail": "Audio/video runtime adapters are not enabled",
         }
-    if "image" not in kinds or not requires_model:
-        return {
-            "ready": True,
-            "code": "ready",
-            "detail": "Runtime model modalities match this Agent.",
-        }
-    if modalities.image_input == "supported":
-        return {
-            "ready": True,
-            "code": "ready",
-            "detail": "Runtime model supports image input.",
-        }
-    if modalities.image_input == "unknown":
+    if "image" in kinds and requires_model and modalities.image_input == "unsupported":
         return {
             "ready": False,
             "code": "runtime_model_incompatible",
-            "detail": "Runtime model image input support is unknown.",
+            "detail": "Runtime model does not support image input",
+        }
+    if "image" in kinds and requires_model:
+        return {
+            "ready": True,
+            "code": "ready",
+            "detail": "Runtime model accepts image input.",
         }
     return {
-        "ready": False,
-        "code": "runtime_model_incompatible",
-        "detail": "Runtime model does not support image input",
+        "ready": True,
+        "code": "ready",
+        "detail": "Runtime model modalities match this Agent.",
     }
 
 
@@ -2734,48 +3729,125 @@ def _agent_user_content(
     source: AgentSource,
     values: dict[str, Any],
     capabilities: RuntimeModelCapabilities,
+    extracted: Mapping[str, str] | None = None,
+    *,
+    current_node: str | None = None,
+    documents: Mapping[str, str] | None = None,
+    fields: Mapping[str, TypedField] | None = None,
 ) -> str | list[dict[str, Any]]:
     image_parts: list[dict[str, Any]] = []
-    for name, field in source.inputs.items():
-        if not field.is_artifact() or field.artifact_kind != "image":
-            continue
-        raw = values.get(name)
-        refs = raw if field.multiple and isinstance(raw, list) else [raw]
-        for item in refs:
-            if not looks_like_artifact_ref(item):
-                continue
-            if capabilities.image_input != "supported":
+    seen: set[str] = set()
+    declared = fields or source.inputs
+
+    def add_image(item: Any, *, required: bool) -> None:
+        artifact_id = artifact_id_from_value(item)
+        if not artifact_id or artifact_id in seen:
+            return
+        if len(image_parts) >= _MAX_PROMPT_IMAGES:
+            return
+        if capabilities.image_input == "unsupported":
+            if required:
                 raise RuntimeError(
                     "runtime_model_incompatible",
                     "Runtime model does not support image input",
                 )
-            artifact_id = artifact_id_from_value(item)
-            media_type = ""
-            if isinstance(item, Mapping):
-                media_type = str(item.get("media_type") or "")
-            image_parts.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"artifact://{artifact_id}",
-                        "media_type": media_type,
-                    },
-                }
-            )
-    text = _agent_user_message(source, values)
+            return
+        seen.add(artifact_id)
+        media_type = (
+            str(item.get("media_type") or "") if isinstance(item, Mapping) else ""
+        )
+        image_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"artifact://{artifact_id}",
+                    "media_type": media_type,
+                },
+            }
+        )
+
+    for name, field in declared.items():
+        raw = values.get(name)
+        if looks_like_collection_ref(raw) and isinstance(raw, Mapping):
+            for item in raw.get("items") or []:
+                if looks_like_artifact_ref(item) and str(
+                    item.get("media_type") or ""
+                ).startswith("image/"):
+                    add_image(item, required=field.artifact_kind == "image")
+            continue
+        if not field.is_artifact() or field.artifact_kind != "image":
+            continue
+        refs = raw if field.multiple and isinstance(raw, list) else [raw]
+        for item in refs:
+            if looks_like_artifact_ref(item):
+                add_image(item, required=True)
+    for key, value in _public_values(values).items():
+        if key in declared or key == current_node:
+            continue
+        for ref in _artifact_refs(value):
+            if str(ref.get("media_type") or "").startswith("image/"):
+                add_image(ref, required=False)
+    text = _agent_user_message(
+        source,
+        values,
+        extracted,
+        current_node=current_node,
+        documents=documents,
+        fields=declared,
+    )
     if not image_parts:
         return text
     return [{"type": "text", "text": text}, *image_parts]
 
 
-def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:
+def _agent_user_message(
+    source: AgentSource,
+    values: dict[str, Any],
+    extracted: Mapping[str, str] | None = None,
+    *,
+    current_node: str | None = None,
+    documents: Mapping[str, str] | None = None,
+    fields: Mapping[str, TypedField] | None = None,
+) -> str:
+    excerpts = extracted or {}
+    public = _public_values(values)
+    declared = fields or source.inputs
     parts: list[str] = []
-    for name, value in values.items():
-        field = source.inputs.get(name)
-        if field is not None and field.is_artifact():
-            parts.append(_artifact_prompt_line(name, field, value))
+    for name, field in declared.items():
+        if name not in public:
             continue
-        parts.append(f"{name}: {value}")
+        value = public[name]
+        if field.is_artifact():
+            parts.append(
+                _artifact_prompt_line(name, field, value, excerpts.get(name, ""))
+            )
+            continue
+        parts.append(f"{name}: {_render_value(value)}")
+    if fields is None:
+        node_ids = {node.id for node in source.nodes}
+        labels = source.ui.get("labels") or {}
+        covered = {
+            field_name
+            for node in source.nodes
+            if node.outputs and node.id in public
+            for field_name in node.outputs
+        }
+        earlier: list[str] = []
+        for key, value in public.items():
+            if key in source.inputs or key == current_node or key in covered:
+                continue
+            heading = f"[{key}]"
+            if key in node_ids and labels.get(key):
+                heading = f"[{key}] {labels[key]}"
+            body = _render_value(value)
+            for ref in _artifact_refs(value):
+                artifact_id = artifact_id_from_value(ref) or ""
+                text = (documents or {}).get(artifact_id)
+                if text:
+                    body += f"\n{ref.get('filename') or 'document'}:\n{text}"
+            earlier.append(f"{heading}\n{_bounded(body)}")
+        if earlier:
+            parts.append("\nEarlier step results:\n" + "\n\n".join(earlier))
     if not parts:
         raise RuntimeError(
             "agent_input_missing", "Agent nodes need at least one input value"
@@ -2783,7 +3855,236 @@ def _agent_user_message(source: AgentSource, values: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _artifact_prompt_line(name: str, field: TypedField, value: Any) -> str:
+def _public_values(values: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in values.items() if not key.startswith("$")}
+
+
+def _artifact_refs(value: Any) -> list[Mapping[str, Any]]:
+    """Every ArtifactRef nested in a JSON value, depth-first."""
+
+    if looks_like_artifact_ref(value) and isinstance(value, Mapping):
+        return [value]
+    found: list[Mapping[str, Any]] = []
+    if isinstance(value, Mapping):
+        for item in value.values():
+            found.extend(_artifact_refs(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_artifact_refs(item))
+    return found
+
+
+def _render_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, int | float):
+        return str(value)
+    if looks_like_artifact_ref(value) and isinstance(value, Mapping):
+        kind = str(value.get("media_type") or "file").split("/")[0]
+        return f"[{kind}: {value.get('filename') or 'artifact'}]"
+    return json.dumps(
+        _artifact_placeholders(value), ensure_ascii=False, indent=2, sort_keys=False
+    )
+
+
+def _artifact_placeholders(value: Any) -> Any:
+    if looks_like_artifact_ref(value) and isinstance(value, Mapping):
+        return _render_value(value)
+    if isinstance(value, Mapping):
+        return {key: _artifact_placeholders(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_artifact_placeholders(item) for item in value]
+    return value
+
+
+def _bounded(text: str, limit: int = _MAX_VALUE_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n…[truncated]"
+
+
+def _output_preview(value: Any) -> Any:
+    """A JSON-safe, size-bounded copy of a step result for run events."""
+
+    if isinstance(value, str):
+        return _bounded(value, _MAX_PREVIEW_CHARS)
+    if isinstance(value, Mapping):
+        if looks_like_artifact_ref(value):
+            return dict(value)
+        return {
+            str(key): _output_preview(item)
+            for key, item in value.items()
+            if not str(key).startswith("$")
+        }
+    if isinstance(value, list):
+        return [_output_preview(item) for item in value[:50]]
+    return value
+
+
+def _approval_details(
+    node: FlowNode, values: Mapping[str, Any], round_number: int
+) -> dict[str, Any]:
+    details: dict[str, Any] = {"round": round_number}
+    if node.bounded_revisions:
+        details["max_revisions"] = node.bounded_revisions
+        details["revisions_left"] = max(0, node.bounded_revisions - round_number + 1)
+    if node.review:
+        try:
+            review = resolve_value_path(values, tuple(node.review.split(".")))
+        except KeyError:
+            review = None
+        if review is not None:
+            details["review"] = _output_preview(review)
+    return details
+
+
+def _stream_model_text(
+    model: RuntimeModelClient,
+    messages: list[dict[str, Any]],
+    response_format: Mapping[str, Any] | None,
+    on_token: Callable[[str], None] | None,
+) -> str:
+    fragments: list[str] = []
+    for token in model.stream(messages, response_format=response_format):
+        if not isinstance(token, str) or not token:
+            continue
+        fragments.append(token)
+        if on_token is not None:
+            on_token(token)
+    return "".join(fragments).strip()
+
+
+_TEXT_ARTIFACT_KINDS = frozenset({"document", "file"})
+
+
+def _plain_text_field(fields: Mapping[str, TypedField]) -> str | None:
+    """A single text-like step output is returned as plain text, not JSON."""
+
+    if len(fields) != 1:
+        return None
+    name, field = next(iter(fields.items()))
+    if field.multiple or field.enum:
+        return None
+    if field.type == "string":
+        return name
+    if field.is_artifact() and field.artifact_kind in _TEXT_ARTIFACT_KINDS:
+        return name
+    return None
+
+
+def _field_contract_line(name: str, field: TypedField) -> str:
+    kind: str = field.compact_type
+    if field.is_artifact() and field.artifact_kind == "document":
+        kind = "document (Markdown text)"
+    elif field.is_artifact() and field.artifact_kind == "file":
+        kind = "file (plain text contents)"
+    elif field.type == "table":
+        kind = "table (array of row objects with the same keys)"
+    if field.multiple:
+        kind = f"list of {kind}"
+    line = f"- {name}: {kind}"
+    if field.enum:
+        choices = ", ".join(json.dumps(item, ensure_ascii=False) for item in field.enum)
+        line += f"; one of {choices}"
+    if not field.required:
+        line += "; optional"
+    if field.description:
+        line += f" — {field.description}"
+    return line
+
+
+def _with_step_contract(prompt: str, fields: Mapping[str, TypedField]) -> str:
+    lines = [_field_contract_line(name, field) for name, field in fields.items()]
+    plain = _plain_text_field(fields)
+    if plain is not None:
+        contract = (
+            "Runtime output contract (authoritative): reply with only the content "
+            f"of `{plain}`, no preamble and no JSON wrapper.\n" + "\n".join(lines)
+        )
+    else:
+        skeleton = {name: "…" for name in fields}
+        contract = (
+            "Runtime output contract (authoritative): reply with one JSON object "
+            "using exactly these keys. Do not ask the user questions; if a fact is "
+            "missing, state a reasonable assumption inside the result.\n"
+            + "\n".join(lines)
+            + "\nShape: "
+            + json.dumps(skeleton, ensure_ascii=False)
+        )
+    return f"{prompt}\n\n{contract}" if prompt else contract
+
+
+_FENCE = re.compile(r"^```[a-zA-Z0-9_-]*\s*\n(?P<body>.*)\n```\s*$", re.DOTALL)
+
+
+def _json_reply(content: str) -> Any:
+    text = content.strip()
+    fenced = _FENCE.match(text)
+    if fenced is not None:
+        text = fenced.group("body").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "agent_output_invalid", "the reply is not valid JSON"
+        ) from exc
+
+
+def _json_object_reply(content: str) -> dict[str, Any]:
+    parsed = _json_reply(content)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("agent_output_invalid", "the reply is not a JSON object")
+    return parsed
+
+
+def _coerce_field_value(field: TypedField, value: Any) -> Any:
+    """Repair obvious JSON shape slips without guessing content."""
+
+    if field.multiple:
+        if not isinstance(value, list):
+            value = [value]
+        inner = replace(field, multiple=False)
+        return [_coerce_field_value(inner, item) for item in value]
+    if field.type == "string":
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            value = str(value)
+        if isinstance(value, str) and field.enum and value not in field.enum:
+            folded = {item.casefold(): item for item in field.enum}
+            return folded.get(value.strip().casefold(), value)
+        if isinstance(value, dict | list):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+    if field.type == "integer" and isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return value
+    if field.type == "number" and isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return value
+    if field.type == "boolean" and isinstance(value, str):
+        lowered = value.strip().casefold()
+        if lowered in {"true", "yes", "是"}:
+            return True
+        if lowered in {"false", "no", "否"}:
+            return False
+    if field.type in {"object", "array", "table"} and isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _artifact_prompt_line(
+    name: str, field: TypedField, value: Any, extracted: str = ""
+) -> str:
     items = value if field.multiple and isinstance(value, list) else [value]
     labels: list[str] = []
     for item in items:
@@ -2791,7 +4092,102 @@ def _artifact_prompt_line(name: str, field: TypedField, value: Any) -> str:
         if looks_like_artifact_ref(item) and isinstance(item, Mapping):
             filename = str(item.get("filename") or "")
         labels.append(filename or "artifact")
-    return f"{name}: [{field.compact_type} {', '.join(labels)}]"
+    line = f"{name}: [{field.compact_type} {', '.join(labels)}]"
+    if extracted:
+        return f"{line}\n{extracted}"
+    return line
+
+
+def _model_writes_agent_outputs(source: AgentSource, node_id: str) -> bool:
+    """True when this Model can reach Output before another Model node."""
+
+    outgoing: dict[str, list[str]] = {}
+    kinds = {node.id: node.component_type for node in source.nodes}
+    for edge in source.transitions:
+        outgoing.setdefault(edge.from_node, []).append(edge.to_node)
+    seen: set[str] = set()
+    pending = list(outgoing.get(node_id, []))
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        kind = kinds.get(current)
+        if kind is ComponentType.OUTPUT:
+            return True
+        if kind in {ComponentType.MODEL, ComponentType.AGENT}:
+            continue
+        pending.extend(outgoing.get(current, []))
+    return False
+
+
+def _bind_blank_approval_condition(
+    source: AgentSource,
+    next_node: str,
+    decision: str,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    """Treat a blank approval as the Condition's confirm literal.
+
+    Generated graphs often compare a free-text input such as ``decision`` to
+    ``confirm``, while the approval card only offers approve/reject. Approve
+    with an empty field takes the true branch; an explicit value is kept.
+    """
+
+    if decision != "approved":
+        return values
+    node = next((item for item in source.nodes if item.id == next_node), None)
+    if (
+        node is None
+        or node.component_type is not ComponentType.CONDITION
+        or not node.expression
+    ):
+        return values
+    try:
+        parsed = parse_condition_expression(node.expression)
+    except ContractValidationError:
+        return values
+    if parsed.operator != "==" or len(parsed.path) != 1:
+        return values
+    current = values.get(parsed.field)
+    if current is None or (isinstance(current, str) and not current.strip()):
+        updated = dict(values)
+        updated[parsed.field] = parsed.literal
+        return updated
+    return values
+
+
+def _json_outputs_required(outputs: Mapping[str, TypedField]) -> bool:
+    targets = list(outputs.items())
+    if not targets:
+        return False
+    return not (
+        len(targets) == 1
+        and targets[0][1].compact_type == "string"
+        and not targets[0][1].multiple
+    )
+
+
+def _runtime_response_format(
+    outputs: Mapping[str, TypedField],
+) -> dict[str, str] | None:
+    if not _json_outputs_required(outputs):
+        return None
+    return {"type": "json_object"}
+
+
+def _with_output_contract(prompt: str, outputs: Mapping[str, TypedField]) -> str:
+    if not _json_outputs_required(outputs):
+        return prompt
+    fields = "\n".join(
+        f"- {name} ({field.compact_type})" for name, field in outputs.items()
+    )
+    contract = (
+        "Runtime output contract (authoritative): return one JSON object with "
+        "exactly these declared fields; do not rename, omit, or add fields.\n"
+        f"{fields}"
+    )
+    return f"{prompt}\n\n{contract}" if prompt else contract
 
 
 def _model_output_values(
@@ -2803,9 +4199,12 @@ def _model_output_values(
     """Accept declared outputs; later Model nodes may overwrite earlier results."""
 
     recorded = {} if node_id in outputs else {node_id: content}
-    targets = [(name, field) for name, field in outputs.items() if name not in values]
-    if not targets:
-        targets = list(outputs.items())
+    # Model output fields are allowed to reuse an input name. For example, a
+    # review Agent can accept ``status`` and return the normalized/decided
+    # ``status``. The model response is the authoritative value for every
+    # declared output; filtering names already present in ``values`` would
+    # turn a multi-field JSON response into a string-valued field.
+    targets = list(outputs.items())
     if (
         len(targets) == 1
         and targets[0][1].compact_type == "string"
@@ -2813,8 +4212,8 @@ def _model_output_values(
     ):
         return {**recorded, targets[0][0]: content}
     try:
-        parsed: Any = json.loads(content)
-    except json.JSONDecodeError as exc:
+        parsed: Any = _json_reply(content)
+    except RuntimeError as exc:
         raise RuntimeError(
             "agent_output_invalid", "Agent model did not return valid JSON outputs"
         ) from exc
@@ -2837,51 +4236,69 @@ def _model_output_values(
     return {**recorded, **parsed}
 
 
-def _interpolate(template: str, values: dict[str, Any]) -> str:
-    def replacement(match: re.Match[str]) -> str:
-        name = match.group(1)
-        if name not in values:
-            raise RuntimeError("interpolation_missing", f"field {name} is unavailable")
-        return str(values[name])
-
-    rendered = _TOKEN.sub(replacement, template)
-    if "{{" in rendered or "}}" in rendered:
+def _lookup(values: Mapping[str, Any], path: str) -> Any:
+    if path.startswith("$"):
+        raise RuntimeError("interpolation_missing", f"field {path} is unavailable")
+    try:
+        return resolve_value_path(values, tuple(path.split(".")))
+    except KeyError as exc:
         raise RuntimeError(
-            "interpolation_invalid", "Transform interpolation only accepts {{field}}"
+            "interpolation_missing", f"field {path} is unavailable"
+        ) from exc
+
+
+def _interpolate(template: str, values: dict[str, Any]) -> str:
+    leftover = TEMPLATE_TOKEN_RE.sub("", template)
+    if "{{" in leftover or "}}" in leftover:
+        raise RuntimeError(
+            "interpolation_invalid",
+            "Templates only accept {{field}} or {{step.field}} references",
         )
-    return rendered
+    return TEMPLATE_TOKEN_RE.sub(
+        lambda match: _render_value(_lookup(values, match.group(1))), template
+    )
+
+
+def _transform_value(template: str, values: dict[str, Any]) -> Any:
+    """A whole-value reference keeps its type; mixed text renders a string."""
+
+    whole = TEMPLATE_TOKEN_RE.fullmatch(template.strip())
+    if whole is not None:
+        return _lookup(values, whole.group(1))
+    return _interpolate(template, values)
 
 
 def _condition(expression: str, values: dict[str, Any]) -> bool:
-    match = _COMPARE.fullmatch(expression)
-    if match is None or match.group(1) not in values:
+    try:
+        parsed = parse_condition_expression(expression)
+    except ContractValidationError as exc:
+        raise RuntimeError("condition_invalid", str(exc)) from exc
+    try:
+        return parsed.evaluate(values)
+    except KeyError as exc:
         raise RuntimeError(
             "condition_invalid",
-            "Condition must use field == or != a string, boolean, or integer literal",
-        )
-    left, operator, raw = values[match.group(1)], match.group(2), match.group(3)
-    if raw.startswith('"'):
-        try:
-            right: Any = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "condition_invalid",
-                "Condition contains an invalid string literal",
-            ) from exc
-    elif raw.startswith("'"):
-        right = raw[1:-1]
-    elif raw == "true":
-        right = True
-    elif raw == "false":
-        right = False
-    else:
-        right = int(raw)
-    return bool(left == right if operator == "==" else left != right)
+            f"Condition references {parsed.field}, which is unavailable at runtime",
+        ) from exc
+    except ValueError as exc:
+        raise RuntimeError("condition_invalid", str(exc)) from exc
 
 
 def _check(check: str, values: dict[str, Any]) -> bool:
     if check == "output.not_empty":
         return any(bool(value) for value in values.values())
+    if check == "schema_valid":
+        result = values.get("result")
+        return isinstance(result, dict)
+    if check.startswith("required_fields:"):
+        name = check.split(":", 1)[1]
+        return name in values and values[name] not in {None, "", []}
+    if check.startswith("artifact_exists:"):
+        name = check.split(":", 1)[1]
+        return bool(values.get(name))
+    if check.startswith("constraint_match:"):
+        expression = check.split(":", 1)[1]
+        return _condition(expression, values)
     raise RuntimeError("verifier_invalid", f"unsupported verifier check: {check}")
 
 

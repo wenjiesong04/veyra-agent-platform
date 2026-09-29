@@ -151,7 +151,7 @@ def test_factory_status_never_claims_to_execute_drafts(tmp_path: Path) -> None:
         )
 
 
-def test_conversation_without_provider_and_generate_requires_key(
+def test_conversation_without_provider_still_generates_deterministic_plan(
     tmp_path: Path,
 ) -> None:
     with _client(tmp_path) as client:
@@ -169,23 +169,22 @@ def test_conversation_without_provider_and_generate_requires_key(
         generate = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/{session['session_id']}/generate"
         )
-        assert generate.status_code == 503
-        assert generate.json()["code"] == "factory_provider_not_configured"
+        assert generate.status_code == 200, generate.text
+        payload = generate.json()
+        assert payload["state"] == "review"
+        assert payload["executes_drafts"] is False
+        status = client.get("/api/v1/factory/status")
+        assert status.status_code == 200
+        assert status.json()["configured"] is False
 
 
-def test_generate_repairs_then_applies_draft_without_running(tmp_path: Path) -> None:
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion("{"),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-        ]
-    )
+def test_generate_loop_agent_then_applies_draft_without_running(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport([_completion("What should success look like?")])
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
         created = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "Prepare a research brief"},
+            json={"goal": "创建一个翻译助手，把中文翻译成自然英语。"},
         )
         session_id = created.json()["session_id"]
         generated = client.post(
@@ -194,7 +193,13 @@ def test_generate_repairs_then_applies_draft_without_running(tmp_path: Path) -> 
         assert generated.status_code == 200
         session = generated.json()
         assert session["state"] == "review"
-        assert session["candidate"]["name"] == "礼物包装 Agent"
+        assert session["candidate"]["name"] == "Translation Agent"
+        assert session.get("execution_kind") == "loop"
+        assert session.get("target_kind") == "agent"
+        types = [node["component_type"] for node in session["blueprint"]["nodes"]]
+        assert types == ["Start", "Model", "Output"]
+        assert "HumanApproval" not in types
+        assert "Condition" not in types
         assert session["run_availability"] == "requires_configuration"
         refused = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
@@ -212,24 +217,66 @@ def test_generate_repairs_then_applies_draft_without_running(tmp_path: Path) -> 
         draft = client.get(f"/api/v1/projects/{project_id}/agents/{agent_id}/draft")
         assert draft.status_code == 200
         source = draft.json()["source"]
-        prompt = source["nodes"][1]["system_prompt"]
-        assert "包装" in prompt
-        assert "理解礼物与对象" in prompt
-        assert source["extensions"]["veyra"]["skill_refs"] == []
-        bindings = source["ui"].get("bindings") or {}
-        assert not any(item.get("kind") == "skill" for item in bindings.values())
+        assert source["extensions"]["veyra"]["execution_kind"] == "loop"
+        assert source["outputs"]["translation"]
         runs = client.get(f"/api/v1/projects/{project_id}/agents/{agent_id}/runs")
         assert runs.status_code == 200
         assert runs.json()["runs"] == []
 
 
+def test_research_loop_apply_pins_web_search(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport([_completion("What should success look like?")])
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        listed = client.get(f"/api/v1/projects/{project_id}/resources").json()
+        before = {
+            item["reference"]
+            for item in listed["resources"]
+            if item.get("scope") == "project"
+        }
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "创建一个研究助手，可以搜索网页并整理成报告。"},
+        )
+        session_id = created.json()["session_id"]
+        generated = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
+        )
+        assert generated.status_code == 200
+        session = generated.json()
+        search_plan = next(
+            item
+            for item in session["resource_plan"]
+            if "web.search" in item["reference"]
+        )
+        assert search_plan["bind_status"] == "will_bind"
+        applied = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
+            json={"confirm": True},
+        )
+        assert applied.status_code == 200, applied.text
+        listed = client.get(f"/api/v1/projects/{project_id}/resources").json()
+        pinned = {
+            item["reference"]
+            for item in listed["resources"]
+            if item.get("scope") == "project"
+        }
+        assert search_plan["reference"] in pinned
+        assert search_plan["reference"] not in before
+        agent_id = applied.json()["agent"]["agent_id"]
+        draft = client.get(
+            f"/api/v1/projects/{project_id}/agents/{agent_id}/draft"
+        ).json()["source"]
+        pin = next(
+            item
+            for item in listed["resources"]
+            if item["reference"] == search_plan["reference"]
+        )
+        assert draft["lock"][search_plan["reference"]] == pin["bound_content_hash"]
+
+
 def test_apply_draft_can_create_a_child_of_an_existing_agent(tmp_path: Path) -> None:
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-        ]
-    )
+    transport = ScriptedKimiTransport([_completion("What should success look like?")])
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
         parent = client.post(
@@ -240,7 +287,7 @@ def test_apply_draft_can_create_a_child_of_an_existing_agent(tmp_path: Path) -> 
         parent_id = parent.json()["agent_id"]
         created = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "Revise the parent Agent into a research brief"},
+            json={"goal": "创建一个翻译助手，把中文翻译成自然英语。"},
         )
         session_id = created.json()["session_id"]
         generated = client.post(
@@ -269,20 +316,15 @@ def test_apply_draft_can_create_a_child_of_an_existing_agent(tmp_path: Path) -> 
         assert child_record["parent_agent_id"] == parent_id
 
 
-def test_apply_draft_uses_semantic_plan_name_and_deconflicts(tmp_path: Path) -> None:
+def test_apply_draft_uses_loop_agent_name_and_deconflicts(tmp_path: Path) -> None:
     def _script() -> ScriptedKimiTransport:
-        return ScriptedKimiTransport(
-            [
-                _completion("What should success look like?"),
-                _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-            ]
-        )
+        return ScriptedKimiTransport([_completion("What should success look like?")])
 
     with _client(tmp_path, _script()) as client:
         project_id = _project(client)
         first_session = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "Wrap gifts"},
+            json={"goal": "创建一个礼品包装设计助手。"},
         ).json()["session_id"]
         assert (
             client.post(
@@ -295,11 +337,11 @@ def test_apply_draft_uses_semantic_plan_name_and_deconflicts(tmp_path: Path) -> 
             json={"confirm": True},
         )
         assert first.status_code == 200, first.text
-        assert first.json()["agent"]["name"] == "礼物包装 Agent"
+        assert first.json()["agent"]["name"] == "Packaging Designer Agent"
         client.app.state.factory.client.transport = _script()
         second_session = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "Wrap gifts again"},
+            json={"goal": "创建一个礼品包装设计助手，再做一个。"},
         ).json()["session_id"]
         assert (
             client.post(
@@ -312,16 +354,14 @@ def test_apply_draft_uses_semantic_plan_name_and_deconflicts(tmp_path: Path) -> 
             json={"confirm": True},
         )
         assert second.status_code == 200, second.text
-        assert second.json()["agent"]["name"] == "礼物包装 Agent(1)"
+        assert second.json()["agent"]["name"] == "Packaging Designer Agent(1)"
         assert second.json()["agent"]["agent_id"] != first.json()["agent"]["agent_id"]
 
 
-def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> None:
-    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
-    plan["capability_intents"] = ["read GitHub issues"]
-    transport = ScriptedKimiTransport(
-        [_completion("Need more detail?"), _completion(json.dumps(plan))]
-    )
+def test_github_tool_is_locked_needs_configuration_not_quarantined(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport([_completion("Need more detail?")])
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
         created = client.post(
@@ -334,38 +374,32 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
         )
         assert generated.status_code == 200
         session = generated.json()
-        assert session["state"] == "missing_capability"
-        assert "github" in session["missing_capabilities"][0]["reference"].casefold()
-        assert session["missing_capabilities"][0]["proposal"]["executable"] is False
-        assert session["missing_capabilities"][0]["proposal"]["action"] == (
-            "quarantined_resource_draft"
-        )
+        assert session["state"] == "review"
+        assert session["missing_capabilities"] == []
+        bindings = (session["blueprint"].get("ui_suggestions") or {}).get(
+            "bindings"
+        ) or {}
+        assert any("github.read" in str(item).casefold() for item in bindings.values())
+        github = [
+            item
+            for item in session.get("resource_plan") or []
+            if "github.read" in str(item.get("reference") or "")
+        ]
+        assert github
+        assert github[0]["bind_status"] in {
+            "needs_configuration",
+            "requires_configuration",
+        }
         applied = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/"
             f"{created.json()['session_id']}/apply-draft",
             json={"confirm": True},
         )
-        assert applied.status_code == 422
-        assert applied.json()["code"] == "factory_blueprint_missing"
-        drafted = client.post(
-            "/api/v1/resources/drafts",
-            json={
-                "confirm": True,
-                "kind": "tool",
-                "requested_reference": "veyra.tool.github.issues@1.0.0",
-                "name": "GitHub Read proposal",
-            },
-        )
-        assert drafted.status_code == 201
-        resource = drafted.json()["resource"]
-        assert resource["availability"] == "quarantined"
-        assert resource["factory_selectable"] is False
-        assert resource["origin"] == "workshop"
-        assert drafted.json()["executable"] is False
+        assert applied.status_code == 200
         listed = client.get("/api/v1/resources", params={"availability": "quarantined"})
         assert listed.status_code == 200
-        assert any(
-            item["resource_id"] == resource["resource_id"]
+        assert not any(
+            "github" in str(item.get("reference") or "").casefold()
             for item in listed.json()["resources"]
         )
 
@@ -373,15 +407,7 @@ def test_unknown_github_tool_is_quarantined_not_registered(tmp_path: Path) -> No
 def test_generate_uploaded_item_agent_does_not_require_filesystem(
     tmp_path: Path,
 ) -> None:
-    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
-    plan["capability_intents"] = [
-        "read files",
-        "read uploaded files",
-        "接受用户上传的物品图片",
-    ]
-    transport = ScriptedKimiTransport(
-        [_completion("Need more detail?"), _completion(json.dumps(plan))]
-    )
+    transport = ScriptedKimiTransport([_completion("Need more detail?")])
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
         created = client.post(
@@ -396,55 +422,13 @@ def test_generate_uploaded_item_agent_does_not_require_filesystem(
         session = generated.json()
         assert session["state"] == "review"
         assert session["missing_capabilities"] == []
-        assert session["blueprint"] is not None
+        permissions = session["blueprint"]["requested_permissions"]
+        assert permissions["filesystem_read_roots"] == []
+        assert permissions["filesystem_write_roots"] == []
 
 
-def test_exhausted_repairs_stay_retryable(tmp_path: Path) -> None:
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion("{"),
-            _completion("{"),
-            _completion("{"),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-        ]
-    )
-    with _client(tmp_path, transport) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "Prepare a research brief"},
-        )
-        session_id = created.json()["session_id"]
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
-        )
-        assert failed.status_code == 422
-        assert failed.json()["code"] == "factory_generation_invalid"
-        session = client.get(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}"
-        )
-        assert session.status_code == 200
-        payload = session.json()
-        assert payload["state"] == "ready"
-        assert payload["ready"] is True
-        assert payload["diagnostics"]
-        retried = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
-        )
-        assert retried.status_code == 200
-        assert retried.json()["state"] == "review"
-
-
-def test_generate_sends_moonshot_compatible_schema_without_creating_draft(
-    tmp_path: Path,
-) -> None:
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-        ]
-    )
+def test_generate_does_not_request_semantic_plan_json(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport([_completion("What should success look like?")])
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
         before = client.get(f"/api/v1/projects/{project_id}").json()["agents"]
@@ -460,39 +444,15 @@ def test_generate_sends_moonshot_compatible_schema_without_creating_draft(
         session = generated.json()
         assert session["state"] == "review"
         assert session["blueprint"]["goal"]
-        assert session["resource_plan"]
         after_generate = client.get(f"/api/v1/projects/{project_id}").json()["agents"]
         assert after_generate == before
-        _messages, response_format = transport.calls[1]
-        assert response_format["type"] == "json_schema"
-        schema = response_format["json_schema"]["schema"]
-        assert response_format["json_schema"]["strict"] is True
-        dumped = json.dumps(schema)
-        assert "oneOf" not in dumped
-        assert '"const"' not in dumped
-        assert "$ref" not in dumped
-        assert "nodes" not in schema["properties"]
-        assert "required_capabilities" not in schema["properties"]
-        assert schema["properties"]["goal"]["type"] == "string"
-        assert schema["properties"]["suggested_name"]["type"] == "string"
-        items = schema["properties"]["capability_intents"]["items"]
-        assert items["type"] == "string"
-        step_properties = schema["properties"]["step_intents"]["items"]["properties"]
-        assert "branches" in step_properties
-        assert "branch_condition" in step_properties
-        assert "branch_key" in step_properties
-        assert "output_mapping" in step_properties
-        kinds = schema["properties"]["step_intents"]["items"]["properties"][
-            "operation_kind"
-        ]
-        assert kinds["enum"] == [
-            "model",
-            "capability",
-            "transform",
-            "condition",
-            "approval",
-            "verification",
-        ]
+        formats = [item[1] for item in transport.calls]
+        assert not any(
+            isinstance(item, dict) and item.get("type") == "json_schema"
+            for item in formats
+        )
+        types = [node["component_type"] for node in session["blueprint"]["nodes"]]
+        assert "HumanApproval" not in types
         refused = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
             json={"confirm": False},
@@ -501,360 +461,63 @@ def test_generate_sends_moonshot_compatible_schema_without_creating_draft(
         assert client.get(f"/api/v1/projects/{project_id}").json()["agents"] == before
 
 
-def test_generate_repairs_incomplete_branches_without_extra_model_call(
-    tmp_path: Path,
-) -> None:
-    plan = json.loads(json.dumps(VALID_SEMANTIC_PLAN))
-    plan["step_intents"] = [
-        {
-            "semantic_key": "summarize",
-            "name": "合同摘要",
-            "purpose": "生成合同摘要",
-            "operation_kind": "model",
-        },
-        {
-            "semantic_key": "confirm",
-            "name": "用户确认",
-            "purpose": "请确认合同摘要",
-            "operation_kind": "approval",
-            "depends_on": ["summarize"],
-            "branches": [{"when": "approved"}],
-        },
-        {
-            "semantic_key": "verify",
-            "name": "结果检查",
-            "purpose": "output is not empty",
-            "operation_kind": "verification",
-            "depends_on": ["confirm"],
-        },
-    ]
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion(json.dumps(plan)),
-        ]
+def test_generate_packaging_pipeline_is_a_workflow(tmp_path: Path) -> None:
+    transport = ScriptedKimiTransport([_completion("What should success look like?")])
+    goal = (
+        "创建一个商品包装设计流程。"
+        "先让商品分析 Agent 分析上传的商品图片，"
+        "再让市场研究 Agent 调研竞品，"
+        "然后让包装设计 Agent 提出设计，"
+        "我确认后再生成最终包装效果图。"
     )
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
         created = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "生成合同摘要并让用户确认"},
+            json={"goal": goal},
         )
         session_id = created.json()["session_id"]
         generated = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
+        )
+        assert generated.status_code == 200, generated.text
+        session = generated.json()
+        assert session["state"] == "review"
+        assert session.get("target_kind") == "workflow"
+        assert session.get("execution_kind") == "workflow"
+        types = [node["component_type"] for node in session["blueprint"]["nodes"]]
+        assert types[0] == "Start"
+        assert types.count("AgentCall") >= 3
+        assert "HumanApproval" in types
+        assert types[-1] == "Output"
+        applied = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
+            json={"confirm": True},
+        )
+        assert applied.status_code == 422
+        assert applied.json()["code"] == "factory_generation_blocked"
+
+
+def test_generate_does_not_silently_compile_a_dag_for_simple_intents(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport([_completion("What should success look like?")])
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        created = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions",
+            json={"goal": "创建一个翻译助手，把中文翻译成自然英语。"},
+        )
+        generated = client.post(
+            f"/api/v1/projects/{project_id}/factory/sessions/"
+            f"{created.json()['session_id']}/generate"
         )
         assert generated.status_code == 200
         types = [
             node["component_type"] for node in generated.json()["blueprint"]["nodes"]
         ]
-        assert "HumanApproval" in types
-        assert "Verifier" in types
-        assert len(transport.calls) == 2
-
-
-def test_generate_does_not_silently_degrade_complex_intents(tmp_path: Path) -> None:
-    broken = {
-        "schema_version": "1.0",
-        "goal": "生成合同摘要",
-        "suggested_name": "合同摘要",
-        "description": "摘要后确认",
-        "inputs": [{"name": "contract", "type": "string"}],
-        "outputs": [{"name": "summary", "type": "string"}],
-        "steps": ["摘要", "确认"],
-        "capability_intents": [],
-        "knowledge_intents": [],
-        "approval_points": [],
-        "success_criteria": [],
-        "user_constraints": [],
-        "step_intents": [{"operation_kind": "approval"}],
-    }
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion(json.dumps(broken)),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-            _completion(json.dumps(VALID_SEMANTIC_PLAN)),
-        ]
-    )
-    with _client(tmp_path, transport) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "生成合同摘要并让用户确认"},
-        )
-        session_id = created.json()["session_id"]
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
-        )
-        assert failed.status_code == 422
-        assert failed.json()["code"] == "factory_generation_invalid"
-        diagnostics = client.get(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}"
-        ).json()["diagnostics"]
-        assert any("silent_v1_degradation" in item for item in diagnostics)
-        assert any("category=" in item for item in diagnostics)
-
-
-def test_schema_invalid_blueprint_does_not_create_a_draft(tmp_path: Path) -> None:
-    invalid = {"schema_version": "1.0", "goal": "wrap a gift"}
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion(json.dumps(invalid)),
-            _completion(json.dumps(invalid)),
-            _completion(json.dumps(invalid)),
-        ]
-    )
-    with _client(tmp_path, transport) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "帮我生成礼物包装 agent"},
-        )
-        session_id = created.json()["session_id"]
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/generate"
-        )
-        assert failed.status_code == 422
-        assert failed.json()["code"] == "factory_generation_invalid"
-        session = client.get(
-            f"/api/v1/projects/{project_id}/factory/sessions/{session_id}"
-        )
-        diagnostics = session.json()["diagnostics"]
-        assert any("AgentSemanticPlan" in item for item in diagnostics)
-        assert any("ContractValidationError" in item for item in diagnostics)
-        assert any("missing field" in item for item in diagnostics)
+        assert types == ["Start", "Model", "Output"]
         assert client.get(f"/api/v1/projects/{project_id}").json()["agents"] == []
-
-
-def test_unknown_component_cannot_bypass_compile(tmp_path: Path) -> None:
-    blueprint = json.loads(json.dumps(VALID_BLUEPRINT))
-    blueprint["nodes"].insert(
-        1, {"id": "magic", "component_type": "MagicWand", "uses": "veyra.tool.unknown"}
-    )
-    transport = ScriptedKimiTransport(
-        [
-            _completion("What should success look like?"),
-            _completion(json.dumps(blueprint)),
-            _completion(json.dumps(blueprint)),
-            _completion(json.dumps(blueprint)),
-        ]
-    )
-    with _client(tmp_path, transport) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "Use a magic wand"},
-        )
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{created.json()['session_id']}/generate"
-        )
-        assert failed.status_code == 422
-        assert failed.json()["code"] == "factory_generation_invalid"
-        assert client.get(f"/api/v1/projects/{project_id}").json()["agents"] == []
-
-
-def test_provider_400_returns_typed_diagnostic_without_secrets(
-    tmp_path: Path,
-) -> None:
-    class RejectingTransport:
-        def models(self) -> tuple[str, ...]:
-            return ("kimi-k3",)
-
-        def complete(
-            self,
-            messages: object,
-            *,
-            response_format: object = None,
-        ) -> KimiCompletion:
-            if response_format is None:
-                return _completion("What should success look like?")
-            raise FactoryProviderError(
-                "factory_request_invalid",
-                "Factory model request was rejected "
-                "[invalid_request_error at $defs.required_capabilities]",
-                details={
-                    "http_status": "400",
-                    "provider_error_type": "invalid_request_error",
-                    "rejected_field": "$defs.required_capabilities",
-                    "bounded_message": "type is not defined",
-                },
-            )
-
-    with _client(tmp_path, RejectingTransport()) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "帮我生成礼物包装 agent"},
-        )
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{created.json()['session_id']}/generate"
-        )
-        assert failed.status_code == 502
-        payload = failed.json()
-        assert payload["code"] == "factory_request_invalid"
-        assert payload["details"]["http_status"] == "400"
-        assert payload["details"]["provider_error_type"] == "invalid_request_error"
-        assert "sk-" not in payload["message"]
-        assert "Authorization" not in json.dumps(payload)
-
-
-def test_schema_compatibility_400_retries_once_as_json_object(tmp_path: Path) -> None:
-    class CompatibilityTransport:
-        def __init__(self) -> None:
-            self.formats: list[object] = []
-
-        def models(self) -> tuple[str, ...]:
-            return ("kimi-k3",)
-
-        def complete(
-            self,
-            messages: object,
-            *,
-            response_format: object = None,
-        ) -> KimiCompletion:
-            del messages
-            self.formats.append(response_format)
-            if response_format is None:
-                return _completion("What should success look like?")
-            if isinstance(response_format, dict) and response_format.get("type") == (
-                "json_schema"
-            ):
-                raise FactoryProviderError(
-                    "factory_request_invalid",
-                    "Factory model request was rejected",
-                    details={
-                        "http_status": "400",
-                        "provider_error_type": "invalid_request_error",
-                        "rejected_field": "response_format.json_schema",
-                        "bounded_message": (
-                            "response_format.json_schema is not a valid "
-                            "moonshot flavored json schema"
-                        ),
-                    },
-                )
-            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
-
-    transport = CompatibilityTransport()
-    with _client(tmp_path, transport) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "帮我生成礼物包装 agent"},
-        )
-        generated = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{created.json()['session_id']}/generate"
-        )
-        assert generated.status_code == 200, generated.text
-        assert generated.json()["state"] == "review"
-        assert transport.formats[-2]["type"] == "json_schema"  # type: ignore[index]
-        assert transport.formats[-1] == {"type": "json_object"}
-        assert client.get(f"/api/v1/projects/{project_id}").json()["agents"] == []
-
-
-def test_openai_compatible_host_uses_json_object_without_schema_fallback(
-    tmp_path: Path,
-) -> None:
-    class RecordingTransport:
-        def __init__(self) -> None:
-            self.formats: list[object] = []
-
-        def models(self) -> tuple[str, ...]:
-            return ("kimi-k3",)
-
-        def complete(
-            self,
-            messages: object,
-            *,
-            response_format: object = None,
-        ) -> KimiCompletion:
-            del messages
-            self.formats.append(response_format)
-            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
-
-    transport = RecordingTransport()
-    with _client(
-        tmp_path,
-        transport,
-        factory_settings=FactorySettings(model_base_url="https://llm.example.test/v1"),
-    ) as client:
-        status = client.get("/api/v1/factory/status").json()
-        assert status["capability_profile"]["provider_family"] == "openai_compatible"
-        assert status["capability_profile"]["structured_output"] == "json_object"
-        assert status["capability_profile"]["json_object_fallback"] is False
-        assert status["capability_profile"]["source"] == "static_known"
-        assert status["capability_profile"]["probed"] is False
-        assert status["capability_profile"]["status"] == "unknown"
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "帮我生成礼物包装 agent"},
-        )
-        generated = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{created.json()['session_id']}/generate"
-        )
-        assert generated.status_code == 200, generated.text
-        assert generated.json()["state"] == "review"
-        assert transport.formats[-1] == {"type": "json_object"}
-        assert not any(
-            isinstance(item, dict) and item.get("type") == "json_schema"
-            for item in transport.formats
-        )
-
-
-def test_openai_compatible_schema_400_does_not_retry(tmp_path: Path) -> None:
-    class RejectingTransport:
-        def __init__(self) -> None:
-            self.generate_calls = 0
-
-        def models(self) -> tuple[str, ...]:
-            return ("kimi-k3",)
-
-        def complete(
-            self,
-            messages: object,
-            *,
-            response_format: object = None,
-        ) -> KimiCompletion:
-            del messages
-            if response_format is None:
-                return _completion("What inputs should it receive?")
-            self.generate_calls += 1
-            raise FactoryProviderError(
-                "factory_request_invalid",
-                "Factory model request was rejected",
-                details={
-                    "http_status": "400",
-                    "provider_error_type": "invalid_request_error",
-                    "rejected_field": "response_format.json_schema",
-                    "bounded_message": "response_format.json_schema is not a valid "
-                    "moonshot flavored json schema",
-                },
-            )
-
-    transport = RejectingTransport()
-    with _client(
-        tmp_path,
-        transport,
-        factory_settings=FactorySettings(model_base_url="https://llm.example.test/v1"),
-    ) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "帮我生成礼物包装 agent"},
-        )
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{created.json()['session_id']}/generate"
-        )
-        assert failed.status_code == 502
-        assert failed.json()["code"] == "factory_request_invalid"
-        assert transport.generate_calls == 1
 
 
 def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> None:
@@ -874,9 +537,7 @@ def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> 
         ) -> KimiCompletion:
             self.formats.append(response_format)
             self.prompts.append(json.dumps(messages))
-            if response_format is None:
-                return _completion("What should success look like?")
-            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
+            return _completion("What should success look like?")
 
     transport = RecordingTransport()
     with _client(tmp_path, transport) as client:
@@ -905,14 +566,14 @@ def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> 
             f"{created.json()['session_id']}/generate"
         )
         assert generated.status_code == 200, generated.text
-        assert any(
+        assert not any(
             isinstance(item, dict) and item.get("type") == "json_schema"
             for item in transport.formats
         )
         assert all(PROBE_USER_CONTENT not in prompt for prompt in transport.prompts)
 
 
-def test_generate_uses_json_object_only_when_profile_allows(
+def test_openai_compatible_host_does_not_need_json_schema_for_generate(
     tmp_path: Path,
 ) -> None:
     class RecordingTransport:
@@ -930,28 +591,16 @@ def test_generate_uses_json_object_only_when_profile_allows(
         ) -> KimiCompletion:
             del messages
             self.formats.append(response_format)
-            if response_format is None:
-                return _completion("What should success look like?")
-            return _completion(json.dumps(VALID_SEMANTIC_PLAN))
+            return _completion("What should success look like?")
 
     transport = RecordingTransport()
-    with _client(tmp_path, transport) as client:
-        factory = _factory(client)
-        seed = derive_provider_capability_profile(factory.client.settings)
-        factory.profiles.put(
-            replace(
-                seed,
-                structured_output="json_object",
-                strict_json_schema=False,
-                json_object_fallback=False,
-                strict_json_schema_support="unsupported",
-                json_object_support="supported",
-                source="fallback",
-                status="known",
-                probed=True,
-                checked_at="2026-09-19T12:00:00Z",
-            )
-        )
+    with _client(
+        tmp_path,
+        transport,
+        factory_settings=FactorySettings(model_base_url="https://llm.example.test/v1"),
+    ) as client:
+        status = client.get("/api/v1/factory/status").json()
+        assert status["capability_profile"]["provider_family"] == "openai_compatible"
         project_id = _project(client)
         created = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions",
@@ -963,55 +612,10 @@ def test_generate_uses_json_object_only_when_profile_allows(
         )
         assert generated.status_code == 200, generated.text
         assert generated.json()["state"] == "review"
-        assert transport.formats[-1] == {"type": "json_object"}
         assert not any(
             isinstance(item, dict) and item.get("type") == "json_schema"
             for item in transport.formats
         )
-
-
-def test_rate_limit_does_not_fallback_or_mark_unsupported(tmp_path: Path) -> None:
-    class RateLimitedTransport:
-        def __init__(self) -> None:
-            self.generate_calls = 0
-
-        def models(self) -> tuple[str, ...]:
-            return ("kimi-k3",)
-
-        def complete(
-            self,
-            messages: object,
-            *,
-            response_format: object = None,
-        ) -> KimiCompletion:
-            del messages
-            if response_format is None:
-                return _completion("What inputs should it receive?")
-            self.generate_calls += 1
-            raise FactoryProviderError(
-                "factory_rate_limited",
-                "Factory model service is rate limited",
-                details={"http_status": "429"},
-            )
-
-    transport = RateLimitedTransport()
-    with _client(tmp_path, transport) as client:
-        project_id = _project(client)
-        created = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions",
-            json={"goal": "帮我生成礼物包装 agent"},
-        )
-        failed = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{created.json()['session_id']}/generate"
-        )
-        assert failed.status_code == 502
-        assert failed.json()["code"] == "factory_rate_limited"
-        assert transport.generate_calls == 1
-        profile = client.get("/api/v1/factory/status").json()["capability_profile"]
-        assert profile["strict_json_schema"] is True
-        assert profile["strict_json_schema_support"] == "unknown"
-        assert profile["summary"]["status"] != "Not supported"
 
 
 def test_capability_probe_endpoint_uses_synthetic_prompt(tmp_path: Path) -> None:

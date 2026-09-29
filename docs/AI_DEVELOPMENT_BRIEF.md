@@ -122,6 +122,7 @@ Idea → Build → Run → Observe → Trust → Reuse → Share
 | Knowledge & Files | 明确选择的可信上下文 |
 | Runtime / Runs | 执行、审批、观察、恢复、审计 |
 | Community | 发现、讨论、发布、导入和复用 |
+| 公开展示与社区 (`5174`) | 匿名产品展示，以及社区目录和账号；不是 Cloud Workspace |
 
 每个新功能都要回答：它是否加强了 Build / Run / Observe / Trust / Reuse / Share
 中的某个真实闭环？只增加术语、资源数、页面数或技术复杂度，而不能形成可验收的
@@ -135,8 +136,12 @@ Runs。对象之间应有明确来源、版本、权限、依赖、生命周期�
 “属于 Project”是逻辑关系，不意味着把聊天、Run 状态、账号和 Secret 都写入 Project 文件夹。
 
 - Project 是容器和 Dashboard，不是又一个图编辑器。
-- Agent 与 Workflow 是平级资源；不能把 Agent 改名成 Workflow。Agent 定义可运行能力，
-  Workflow 用固定 immutable Agent version 编排调用和控制流。
+- Agent 与 Workflow 是平级资源；不能把 Agent 改名成 Workflow。
+  Agent 是可独立运行的 AI 能力单元（模型、说明、工具、知识、技能、策略、
+  输入输出契约、带 `max_turns` 的 Runtime Loop），不是固定 DAG。
+  Workflow 才是显式编排图（Start、AgentCall、Tool、Condition、Transform、
+  HumanApproval、Verifier、Output、typed ports、`data_edges`）。
+  Workflow 通过锁定的 `agent_id@version_id` 调用 Agent，从不执行 Draft。
 - Agent source 为 `*.vagent.yaml`，Workflow source 为 `*.vworkflow.yaml`。
   Draft 可修改且受 revision/ETag 保护，已保存/发布版本不可变。
 - Source、behavior、依赖锁和包内容需要各自可核对的 hash；仅移动 Canvas 布局不应
@@ -164,14 +169,15 @@ Studio 是 Agent / Workflow 的可视化设计环境。Canvas 展示结构、执
 Human Approval、Output 及其它正式支持的能力，但产品概念不等于同名 wire 节点：
 
 - 输入由 source inputs 与 Start 等真实契约表达，不虚构独立 `Input` 节点类型。
-- Agent 画布承载 Start、Model、Tool、Condition、Transform、HumanApproval、Verifier、
-  Output 和显式知识绑定。AgentCall 不出现在 Agent 画布。
-- Workflow 画布承载 Start、AgentCall、Condition、Transform、HumanApproval、Verifier、
-  Output；不直接放 Model 或 Tool。AgentCall 锁定 `agent_id@version_id`，不是文件路径或
-  随时变化的 latest。Agent 内部图可以包含 Condition/Transform，这是能力图而不是
-  把 Agent 变成 Workflow。
-- MCP 在资源和 UI 中归入 Tools，发现描述经规范化后落为 Tool 节点；不是与 Agent、
-  Workflow、Component、Knowledge 平级的新产品层。
+- Agent Studio 编辑能力：Model、Instructions、Tools、Knowledge、Skills、
+  Memory、Policies、输入输出。Agent Canvas 是能力关系图，不是执行 DAG。
+  新生成的 Agent 使用 loop runtime；历史 graph Agent 仍可打开，不静默迁移。
+  AgentCall 不出现在 Agent 画布。
+- Workflow Studio 才承载 Start、AgentCall、Tool、Condition、Transform、
+  HumanApproval、Verifier、Output、typed ports 与 `data_edges`。
+  AgentCall 锁定 `agent_id@version_id`，不是文件路径或随时变化的 latest。
+- MCP 在资源和 UI 中归入 Tools；不是与 Agent、Workflow、Component、Knowledge
+  平级的新产品层。
 - Component 保留 primitive / composite 分类；composite 展开成已锁定的 primitive，
   不是任意新 Flow 类型。Knowledge、Files、Runs、Resource Library 不因共享编辑能力而变成 Canvas。
 
@@ -189,6 +195,9 @@ Run 和 AI 修改结果。Project Chat 操作已绑定项目；Global/New Chat �
 Veyra Builder Agent 是平台自己的项目构建 Agent，不是普通聊天机器人。稳定 Prompt
 保存产品模型、资源优先复用、最小权限和确认原则；动态 Harness 注入真实项目清单、目标
 source/revision/ETag、资源锁/readiness、权限和数据绑定，不把状态堆进静态提示词。
+Builder 先判断 `create_agent` 还是 `create_workflow`：单一 AI 角色、自主使用工具/
+知识的请求走 Agent 能力链；固定多阶段、多 Agent、业务审批或条件路由走 Workflow
+typed graph。歧义默认 Agent，并说明可以改成 Workflow。不要把每个 Agent 编译成 DAG。
 Factory 保留为创建 Blueprint 的适配器，Edit Proposal 提升为共享安全变更协议；按上下文
 扩展能力，而不是长期维护 Factory、Studio AI、Project Chat、Agent Builder 四套逻辑。
 
@@ -332,8 +341,12 @@ Importer → Import IR → Capability Resolver → Veyra Source → Veyra Runtim
 
 ## 14. 前端原则
 
-Desktop 是主要工作台。现有前端大部分应保留并渐进优化，优先根据真实后端能力完善
-UI，不为重新设计而重新设计，也不复制旧 Veyra 的产品模块和状态模型。
+Desktop (`5173`) 和 Local API (`8771`) 是本机工作台。生成、Chat、Studio、Runtime
+都在本机完成，不依赖 Cloud Project、Cloud Conversation 或 Cloud Run。
+`5174` 只提供公开展示和社区目录/账号。`8772` 是账号和 immutable Registry，不执行 Agent，
+也不是 Cloud data plane。
+现有前端大部分应保留并渐进优化，
+优先根据真实后端能力完善 UI，不为重新设计而重新设计，也不复制旧 Veyra 的产品模块和状态模型。
 
 Community、Resource Library、Knowledge、Run Workbench、Monitor、Data / Analytics
 可以重点重新审视，但必须符合产品对象与职责：信息架构清晰、用户能理解、有来源和

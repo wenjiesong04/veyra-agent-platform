@@ -10,3 +10,5 @@ export { ForgotPasswordPage } from "./pages/forgot-password";
 export { LoginPage } from "./pages/login";
 export { RegisterPage } from "./pages/register";
 export { accountInitials } from "./identity";
+export { CommunitySectionNav } from "./community-section-nav";
+export type { CommunitySection } from "./community-section-nav";

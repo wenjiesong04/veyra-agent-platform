@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 
 from veyra_agent_platform.contracts.typed_io import ArtifactKind
 
-MAX_ARTIFACT_UPLOAD_BYTES = 8_000_000
+MAX_ARTIFACT_UPLOAD_BYTES = 25_000_000
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _FORBIDDEN_SUFFIXES = {
     ".html",
@@ -35,11 +35,26 @@ _IMAGE_SUFFIXES = {
     ".webp": "image/webp",
 }
 _PDF_SUFFIXES = {".pdf": "application/pdf"}
+_AUDIO_SUFFIXES = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".flac": "audio/flac",
+}
+_VIDEO_SUFFIXES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+}
 _DOCUMENT_SUFFIXES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
     ".markdown": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".rtf": "application/rtf",
 }
 
@@ -77,12 +92,15 @@ def inspect_artifact(
     if len(contents) > MAX_ARTIFACT_UPLOAD_BYTES:
         raise ArtifactIntakeError(
             "artifact_too_large",
-            "Artifact upload exceeds 8,000,000 bytes",
+            f"Artifact upload exceeds {MAX_ARTIFACT_UPLOAD_BYTES:,} bytes",
         )
     sniffed = _sniff(contents)
     suffix = PurePosixPath(filename.lower()).suffix
     if sniffed is not None:
         media_type, kind = sniffed
+        if kind in {"audio", "video"} and suffix in {".m4a", ".mp4", ".mov"}:
+            media_type = {**_AUDIO_SUFFIXES, **_VIDEO_SUFFIXES}[suffix]
+            kind = "audio" if suffix == ".m4a" else "video"
         expected = {**_IMAGE_SUFFIXES, **_PDF_SUFFIXES}.get(suffix)
         if expected and expected != media_type:
             raise ArtifactIntakeError(
@@ -113,9 +131,9 @@ def _claimed_matches(claimed: str, media_type: str, kind: ArtifactKind) -> bool:
         return True
     if claimed.endswith("/*"):
         return media_type.startswith(claimed[:-1])
-    if claimed in {"image", "pdf", "document", "file"}:
+    if claimed in {"image", "pdf", "document", "file", "audio", "video"}:
         return claimed == kind
-    return False
+    return kind in {"audio", "video"} and claimed.split("/")[0] in {"audio", "video"}
 
 
 def _sniff(contents: bytes) -> tuple[str, ArtifactKind] | None:
@@ -129,4 +147,21 @@ def _sniff(contents: bytes) -> tuple[str, ArtifactKind] | None:
         return "image/webp", "image"
     if contents.startswith(b"%PDF"):
         return "application/pdf", "pdf"
+    if contents.startswith(b"RIFF") and contents[8:12] == b"WAVE":
+        return "audio/wav", "audio"
+    if contents.startswith(b"ID3") or contents[:2] in {b"\xff\xfb", b"\xff\xf3"}:
+        return "audio/mpeg", "audio"
+    if contents.startswith(b"OggS"):
+        return "audio/ogg", "audio"
+    if contents.startswith(b"fLaC"):
+        return "audio/flac", "audio"
+    if contents[4:8] == b"ftyp":
+        brand = contents[8:12]
+        if brand in {b"M4A ", b"M4B "}:
+            return "audio/mp4", "audio"
+        if brand == b"qt  ":
+            return "video/quicktime", "video"
+        return "video/mp4", "video"
+    if contents.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm", "video"
     return None
