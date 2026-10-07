@@ -134,13 +134,24 @@ def classify_factory_strategy(
             "will not invent a substitute",
             "none",
         )
-    if lowered.endswith(SKILL_SUFFIXES) or lowered not in KNOWN_EXECUTABLE:
+    if lowered.endswith(SKILL_SUFFIXES):
+        if (
+            requirement.side_effect != "none"
+            or requirement.network != "none"
+            or requirement.filesystem != "none"
+        ):
+            return _unsupported(
+                "Instruction Skills cannot supply an external effect or data access; "
+                "bind a supported Tool or integration for this capability",
+                "none",
+            )
         title = capability.replace("_", " ")
         return ResourceFactoryStrategy(
             can_generate=True,
             resource_kind="skill",
             generation_strategy="skill_instruction",
-            reason=f"Veyra can create a quarantined Skill for {title}",
+            reason=f"Veyra can scaffold an instruction Skill for {title}; "
+            "a concrete user-provided method is required before approval",
             risk_level="low",
             status="generatable",
         )

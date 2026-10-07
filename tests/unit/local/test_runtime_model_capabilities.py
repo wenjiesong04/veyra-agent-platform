@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.typed_io import parse_typed_fields
+from veyra_agent_platform.local.models.contracts import (
+    CapabilityEvidence,
+    CapabilityEvidenceSource,
+    CapabilityStatus,
+    ModelCapability,
+    ModelVerification,
+    ModelVerificationState,
+)
 from veyra_agent_platform.local.runtime.client import (
     RuntimeProviderError,
     _assert_provider_safe_messages,
@@ -55,42 +65,72 @@ def _supported() -> RuntimeModelCapabilities:
         video_input="unsupported",
         audio_input="unsupported",
         structured_json_output="supported",
-        source="static_profile",
+        source="registry",
     )
 
 
-def test_kimi_k3_image_input_is_supported() -> None:
-    profile = runtime_model_capabilities(
-        RuntimeSettings(
-            model_base_url="https://api.moonshot.cn/v1",
-            model_id="kimi-k3",
+def test_runtime_settings_do_not_infer_capabilities_from_model_names() -> None:
+    for provider, endpoint, model_id in (
+        ("moonshot", "https://api.moonshot.cn/v1", "kimi-k3"),
+        ("openai", "https://api.openai.com/v1", "gpt-4o"),
+        ("moonshot", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
+    ):
+        profile = runtime_model_capabilities(
+            RuntimeSettings(
+                provider_type=provider,
+                model_base_url=endpoint,
+                model_id=model_id,
+            )
         )
+        assert profile.image_input == "unknown"
+        assert profile.text_input == "unknown"
+        assert profile.structured_json_output == "unknown"
+        assert profile.source == "unknown"
+
+
+def test_registry_evidence_can_be_ready_while_profile_state_is_declared() -> None:
+    evidence = CapabilityEvidence(
+        source=CapabilityEvidenceSource.PROVIDER_METADATA,
+        observed_at=datetime.now(UTC).isoformat(),
     )
-    assert profile.image_input == "supported"
-    assert profile.video_input == "unsupported"
-    assert profile.source == "static_profile"
+    profile = SimpleNamespace(
+        provider_type="openai_compatible",
+        provider_model_id="declared-model",
+        enabled=True,
+        registry_ready=True,
+        verification=ModelVerification(state=ModelVerificationState.DECLARED),
+        capabilities={
+            "image_input": ModelCapability(
+                status=CapabilityStatus.SUPPORTED,
+                evidence=evidence,
+            )
+        },
+    )
+    view = runtime_model_capabilities(RuntimeSettings(), profile=profile)
+    assert view.image_input == "supported"
+    assert view.source == "registry"
 
 
-def test_other_user_runtime_models_accept_image_input() -> None:
+def test_openai_model_name_does_not_infer_image_input() -> None:
     profile = runtime_model_capabilities(
         RuntimeSettings(
             model_base_url="https://api.openai.com/v1",
             model_id="gpt-4o",
         )
     )
-    assert profile.image_input == "supported"
+    assert profile.image_input == "unknown"
     assert profile.source == "unknown"
 
 
-def test_known_text_only_moonshot_models_reject_image_input() -> None:
+def test_text_only_model_name_does_not_infer_image_input_support_or_rejection() -> None:
     profile = runtime_model_capabilities(
         RuntimeSettings(
             model_base_url="https://api.moonshot.cn/v1",
             model_id="moonshot-v1-8k",
         )
     )
-    assert profile.image_input == "unsupported"
-    assert profile.source == "static_profile"
+    assert profile.image_input == "unknown"
+    assert profile.source == "unknown"
 
 
 def test_readiness_profile_source_maps_binding_origins() -> None:
@@ -100,24 +140,28 @@ def test_readiness_profile_source_maps_binding_origins() -> None:
     assert _readiness_profile_source("default") == "default"
 
 
-def test_image_agent_readiness_passes_for_kimi_k3() -> None:
+def test_image_agent_readiness_fails_until_image_input_is_verified() -> None:
     source = _source(inputs={"photo": "image"})
     profile = runtime_model_capabilities(RuntimeSettings())
     check = _runtime_modality_readiness(source, True, profile)
-    assert check["ready"] is True
-    assert check["code"] == "ready"
+    assert check["ready"] is False
+    assert check["code"] == "model_capability_unknown"
 
 
-def test_image_agent_readiness_fails_for_text_only_model() -> None:
+def test_image_agent_readiness_fails_for_unsupported_image_input() -> None:
     source = _source(inputs={"photo": "image"})
     check = _runtime_modality_readiness(
         source,
         True,
-        runtime_model_capabilities(
-            RuntimeSettings(
-                model_base_url="https://api.moonshot.cn/v1",
-                model_id="kimi-k2",
-            )
+        RuntimeModelCapabilities(
+            provider="scripted",
+            model_id="test-image-input-unsupported",
+            text_input="supported",
+            image_input="unsupported",
+            video_input="unsupported",
+            audio_input="unsupported",
+            structured_json_output="unknown",
+            source="registry",
         ),
     )
     assert check["ready"] is False
@@ -164,7 +208,7 @@ def test_supported_image_parts_use_artifact_url_not_host_path() -> None:
     assert "product.png" in dumped
 
 
-def test_text_only_image_content_fails_before_provider() -> None:
+def test_unverified_image_content_fails_before_provider() -> None:
     source = _source(inputs={"photo": "image"})
     ref = {
         "kind": "artifact",
@@ -172,15 +216,10 @@ def test_text_only_image_content_fails_before_provider() -> None:
         "media_type": "image/png",
         "filename": "product.png",
     }
-    profile = runtime_model_capabilities(
-        RuntimeSettings(
-            model_base_url="https://api.moonshot.cn/v1",
-            model_id="moonshot-v1-32k",
-        )
-    )
-    with pytest.raises(RuntimeError, match="does not support image input") as caught:
+    profile = runtime_model_capabilities(RuntimeSettings())
+    with pytest.raises(RuntimeError, match="has not been verified") as caught:
         _agent_user_content(source, {"photo": ref}, profile)
-    assert caught.value.code == "runtime_model_incompatible"
+    assert caught.value.code == "model_capability_unknown"
 
 
 def test_extracted_document_text_stays_in_prompt() -> None:

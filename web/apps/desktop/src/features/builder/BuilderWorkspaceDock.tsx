@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Maximize2, Minimize2, X } from "lucide-react";
-import { IconButton } from "@veyra/ui";
+import { IconButton, useTheme } from "@veyra/ui";
 
 type Locale = "zh" | "en";
 export type BuilderWorkspaceTab = "workbench" | "test";
@@ -37,10 +37,11 @@ function readAccent(node: HTMLElement): { fill: string; line: string } {
 
 function BuilderLiveField({ live }: { live: boolean }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const { reducedMotion } = useTheme();
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    const animated = live && !reducedMotion;
     let ctx: CanvasRenderingContext2D | null = null;
     try {
       ctx = canvas.getContext("2d");
@@ -80,14 +81,12 @@ function BuilderLiveField({ live }: { live: boolean }) {
       }
     };
     resize();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
-    observer?.observe(host);
     const draw = () => {
       const speed = live ? 1 : 0.42;
       const link = live ? 108 : 84;
       ctx.clearRect(0, 0, width, height);
       for (const particle of particles) {
-        if (!reduced) {
+        if (animated) {
           particle.x += particle.vx * speed;
           particle.y += particle.vy * speed;
           if (particle.x < -8) particle.x = width + 8;
@@ -117,14 +116,19 @@ function BuilderLiveField({ live }: { live: boolean }) {
         }
       }
       ctx.globalAlpha = 1;
-      if (!reduced) frame = window.requestAnimationFrame(draw);
+      if (animated) frame = window.requestAnimationFrame(draw);
     };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      resize();
+      if (!animated) draw();
+    });
+    observer?.observe(host);
     draw();
     return () => {
       observer?.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [live]);
+  }, [live, reducedMotion]);
   return <canvas ref={canvasRef} className="builder-live-field" aria-hidden="true" />;
 }
 

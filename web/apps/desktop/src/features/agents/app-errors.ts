@@ -3,9 +3,29 @@ import { LocalApiClientError } from "../../api/local-client";
 type Locale = "zh" | "en";
 
 const PRODUCT: Record<string, { zh: string; en: string }> = {
+  workflow_execution_failed: {
+    zh: "工作流执行发生内部错误。已完成的子 Agent 结果仍可查看。",
+    en: "The Workflow encountered an internal error. Results from completed child Agents are still available.",
+  },
+  output_invalid: {
+    zh: "结果不符合声明的输出字段。请在 Studio 检查输出定义。",
+    en: "The result does not match the declared output fields. Review the outputs in Studio.",
+  },
+  output_type_invalid: {
+    zh: "结果类型与输出定义不一致。请在 Studio 检查字段类型和文件输出。",
+    en: "The result type does not match its output definition. Review field types and file outputs in Studio.",
+  },
   runtime_not_configured: {
     zh: "尚未配置运行模型。",
     en: "Runtime model is not configured.",
+  },
+  runtime_invalid_response: {
+    zh: "模型服务没有返回可用的回答。可以重试；已执行的工具记录仍可查看。",
+    en: "The model service did not return a usable answer. You can retry; completed Tool records remain available.",
+  },
+  runtime_output_truncated: {
+    zh: "模型在完成回答前达到输出上限。本轮未执行新动作；请缩小本次任务，或提高运行模型的输出额度后重试。",
+    en: "The model reached its output limit before finishing. No new action was executed for this response. Reduce the task or raise the runtime output budget before retrying.",
   },
   needs_configuration: {
     zh: "这个 Agent 运行前还需要配置集成。",

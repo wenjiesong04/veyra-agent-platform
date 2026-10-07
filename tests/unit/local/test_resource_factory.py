@@ -24,6 +24,22 @@ _SKILL_TEXT = (
     "创建一个 Agent。capability: structured_comparison_method。"
     "它需要一种当前目录里没有的结构化比较方法。"
 )
+_SKILL_INSTRUCTION = (
+    "Purpose\n"
+    "Compare supplied product options using the customer's stated priorities.\n\n"
+    "When to use\n"
+    "Use when option specifications and a customer priority list are provided.\n\n"
+    "Procedure\n"
+    "1. Extract price, material, and delivery time from each provided option.\n"
+    "2. Mark missing values as unknown.\n"
+    "3. Rank options by the customer's priority order, recording supporting facts.\n\n"
+    "Expected output\n"
+    "A comparison table, ordered recommendation, and unresolved questions.\n\n"
+    "Constraints\n"
+    "Use only provided facts; do not invent specifications or external access.\n\n"
+    "Failure handling\n"
+    "Ask the customer for priorities or missing information before ranking."
+)
 _LOOKUP_TEXT = "创建一个 Agent。capability: mock_status_lookup。"
 _HTTP_WRAPPER = {
     "base_adapter": "veyra.runtime.http.request",
@@ -71,7 +87,9 @@ def test_skill_draft_validate_publish_resolver_and_composer(tmp_path: Path) -> N
     operation_id = planned.operation_id
 
     drafted = factory.ensure_skill_draft(
-        planned, CapabilityRequirement(capability=_SKILL_CAP, required=True)
+        planned,
+        CapabilityRequirement(capability=_SKILL_CAP, required=True),
+        instruction=_SKILL_INSTRUCTION,
     )
     assert drafted.draft is not None
     assert drafted.draft["availability"] == "quarantined"
@@ -184,13 +202,15 @@ def test_skill_revision_is_a_new_version(tmp_path: Path) -> None:
     _spec, _reqs, missing_plan = _resolve(catalog, _SKILL_TEXT)
     planned = factory.plan_missing(missing_plan)[0]
     drafted = factory.ensure_skill_draft(
-        planned, CapabilityRequirement(capability=_SKILL_CAP, required=True)
+        planned,
+        CapabilityRequirement(capability=_SKILL_CAP, required=True),
+        instruction=_SKILL_INSTRUCTION,
     )
     published = factory.publish(drafted, confirm=True)
     first_hash = published.published["content_hash"]
     instruction = drafted.draft["spec"]["instruction"].replace(
-        "Restate the criteria implied by the capability name.",
-        "Restate comparison criteria using only provided facts.",
+        "price, material, and delivery time",
+        "price, material, delivery time, and warranty",
     )
     revised = factory.revise_skill(
         published.published["resource_id"],
@@ -213,6 +233,7 @@ def test_disabled_skill_is_not_selected(tmp_path: Path) -> None:
     drafted = factory.ensure_skill_draft(
         factory.plan_missing(missing_plan)[0],
         CapabilityRequirement(capability=_SKILL_CAP, required=True),
+        instruction=_SKILL_INSTRUCTION,
     )
     published = factory.publish(drafted, confirm=True)
     workshop.set_enabled(
@@ -243,3 +264,82 @@ def test_plan_roundtrip_keeps_snapshot(tmp_path: Path) -> None:
     assert restored.snapshot_hash == drafted.snapshot_hash
     assert restored.draft["spec"]["instruction"] == drafted.draft["spec"]["instruction"]
     assert restored.validation == drafted.validation
+
+
+def test_skill_name_only_stays_unresolved_until_the_actual_method_is_supplied(
+    tmp_path: Path,
+) -> None:
+    factory, catalog, _workshop = _factory(tmp_path)
+    _spec, _requirements, missing = _resolve(catalog, _SKILL_TEXT)
+    requirement = CapabilityRequirement(capability=_SKILL_CAP, required=True)
+    scaffold = factory.ensure_skill_draft(factory.plan_missing(missing)[0], requirement)
+    assert scaffold.status == "requires_user_configuration"
+    assert scaffold.requirements == ("skill_instruction",)
+    assert scaffold.validation["passed"] is False
+    assert scaffold.draft["spec"]["instruction_status"] == "scaffold"
+    assert scaffold.draft["spec"]["validation_passed"] is False
+    before = scaffold.draft["content_hash"]
+    same = factory.ensure_skill_draft(scaffold, requirement)
+    assert same.snapshot_hash == scaffold.snapshot_hash
+    assert same.draft["content_hash"] == before
+    replanned = factory.plan_missing(missing, existing=[scaffold.to_dict()])[0]
+    assert replanned.status == "requires_user_configuration"
+    assert replanned.requirements == ("skill_instruction",)
+    assert replanned.validation["passed"] is False
+    assert replanned.snapshot_hash == scaffold.snapshot_hash
+    with pytest.raises(ResourceFactoryError) as caught:
+        factory.publish(scaffold, confirm=True)
+    assert caught.value.code == "factory_skill_instruction_required"
+    _spec, _requirements, still_missing = _resolve(catalog, _SKILL_TEXT)
+    assert any(item.capability == _SKILL_CAP for item in still_missing.missing_required)
+    assert not any(_SKILL_CAP in item.capabilities for item in still_missing.selected)
+
+    completed = factory.ensure_skill_draft(
+        scaffold, requirement, instruction=_SKILL_INSTRUCTION
+    )
+    assert completed.draft["resource_id"] == scaffold.draft["resource_id"]
+    assert completed.draft["spec"]["instruction"] == _SKILL_INSTRUCTION
+    assert completed.validation["passed"] is True
+    assert completed.draft["availability"] == "quarantined"
+    with pytest.raises(ResourceFactoryError) as stale:
+        factory.publish(completed, confirm=True, snapshot_hash=scaffold.snapshot_hash)
+    assert stale.value.code == "factory_snapshot_mismatch"
+    published = factory.publish(completed, confirm=True)
+    assert published.published["availability"] == "ready"
+    assert published.published["spec"]["instruction"] == _SKILL_INSTRUCTION
+
+
+def test_old_generic_factory_template_cannot_be_approved_as_a_method(
+    tmp_path: Path,
+) -> None:
+    from veyra_agent_platform.local.resources.resource_factory import (
+        skill_instruction_for,
+    )
+
+    factory, catalog, workshop = _factory(tmp_path)
+    _spec, _requirements, missing = _resolve(catalog, _SKILL_TEXT)
+    requirement = CapabilityRequirement(capability=_SKILL_CAP, required=True)
+    scaffold = factory.ensure_skill_draft(factory.plan_missing(missing)[0], requirement)
+    payload = workshop.overlay_payload(
+        scaffold.draft["resource_id"], scaffold.draft["version"]
+    )
+    payload["spec"].pop("instruction_status")
+    payload["spec"]["instruction"] = skill_instruction_for(_SKILL_CAP)
+    payload["spec"]["validation_passed"] = True
+    old_draft = workshop.replace_overlay(
+        payload["resource_id"], payload["version"], payload
+    )
+    old = ResourceFactoryPlan.from_dict(
+        {
+            **scaffold.to_dict(),
+            "draft": old_draft,
+            "snapshot_hash": snapshot_identity(old_draft),
+        }
+    )
+    with pytest.raises(ResourceFactoryError) as caught:
+        factory.publish(old, confirm=True)
+    assert caught.value.code == "factory_skill_instruction_required"
+    assert (
+        catalog.detail(payload["resource_id"], payload["version"])["content_hash"]
+        == old_draft["content_hash"]
+    )

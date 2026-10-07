@@ -21,6 +21,8 @@ from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.runtime.client import RuntimeCompletion
 from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
 
+from .verified_runtime_model import verified_client
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -90,6 +92,19 @@ def _run_until_settled(
     assert started.status_code == 200
     assert started.json()["status"] == "running"
     return _await_run(client, url, started.json()["run_id"])
+
+
+def _start_rejected(
+    client: TestClient, url: str, inputs: dict[str, object]
+) -> dict[str, Any]:
+    started = client.post(
+        url,
+        json={"inputs": inputs},
+        headers={"Idempotency-Key": new_uuid7()},
+    )
+    assert started.status_code == 422, started.text
+    payload: dict[str, Any] = started.json()
+    return payload
 
 
 def _command_until_settled(
@@ -689,7 +704,7 @@ def test_runtime_status_is_unconfigured_without_host_key(tmp_path: Path) -> None
         assert payload["model_id"] == "kimi-k3"
         assert payload["user_provided_only"] is True
         assert payload["allow_process_environment_key"] is False
-        assert payload["modalities"]["image_input"] == "supported"
+        assert payload["modalities"]["image_input"] == "unknown"
         assert payload["modalities"]["video_input"] == "unsupported"
         assert payload["modalities"]["audio_input"] == "unsupported"
         assert payload["modalities"]["model_id"] == "kimi-k3"
@@ -706,9 +721,8 @@ def test_agent_node_requires_runtime_key(tmp_path: Path) -> None:
         ).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
-        response = _run_until_settled(client, url, {"request": "Summarize this"})
-        assert response["status"] == "failed"
-        assert response["error"]["code"] == "runtime_not_configured"
+        rejected = _start_rejected(client, url, {"request": "Summarize this"})
+        assert rejected["code"] == "runtime_not_configured"
 
 
 def test_agent_node_uses_injected_runtime_model(tmp_path: Path) -> None:
@@ -717,7 +731,7 @@ def test_agent_node_uses_injected_runtime_model(tmp_path: Path) -> None:
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         status = client.get("/api/v1/runtime/status").json()
         assert status["configured"] is True
         project = client.post(
@@ -745,7 +759,7 @@ def test_skill_context_is_locked_injected_and_receipted(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -779,7 +793,7 @@ def test_runtime_profile_validation_and_agent_readiness_use_effective_model(
         "model_id": "kimi-k3",
         "api_key_env": "MOONSHOT_API_KEY",
     }
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         validated = client.post(
             "/api/v1/runtime/profile/validate", json={"profile": profile}
         )
@@ -817,7 +831,7 @@ def test_agent_node_accepts_declared_object_output(tmp_path: Path) -> None:
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -840,7 +854,7 @@ def test_agent_model_can_overwrite_an_input_with_declared_output(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -872,8 +886,8 @@ def test_production_mode_does_not_use_host_process_key(
         ).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
-        response = _run_until_settled(client, url, {"request": "Hello"})
-        assert response["error"]["code"] == "runtime_not_configured"
+        rejected = _start_rejected(client, url, {"request": "Hello"})
+        assert rejected["code"] == "runtime_not_configured"
 
 
 def test_catalogued_filesystem_read_tool_runs_inside_project_and_records_receipt(
@@ -1587,7 +1601,7 @@ def test_knowledge_binding_sends_locked_context_and_rejects_changed_document(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post(
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
@@ -1658,7 +1672,7 @@ def test_loop_agent_runtime_emits_model_and_final_output(tmp_path: Path) -> None
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         base = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}"
@@ -1692,7 +1706,7 @@ def test_loop_agent_runtime_stops_at_max_turns(tmp_path: Path) -> None:
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [payload]}).json()
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
@@ -1721,7 +1735,7 @@ def test_workflow_agent_call_runs_committed_loop_agent(tmp_path: Path) -> None:
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
         agent_url = (

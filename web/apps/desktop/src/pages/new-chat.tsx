@@ -10,43 +10,52 @@ export function NewChatPage({ projectId, conversationId }: { projectId?: string;
   const { api, projects, upsertProject } = useProjectWorkspace();
   const { select, createProject, start } = useChatScopeNavigation();
   const [scopedProject, setScopedProject] = React.useState(() => projects.find((project) => project.project_id === projectId) ?? null);
-  const [scopedError, setScopedError] = React.useState(false);
+  const [scopedErrorProjectId, setScopedErrorProjectId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!projectId) return;
+    if (!projectId) {
+      setScopedProject(null);
+      setScopedErrorProjectId(null);
+      return;
+    }
     const existing = projects.find((project) => project.project_id === projectId);
     if (existing) {
       setScopedProject(existing);
-      setScopedError(false);
+      setScopedErrorProjectId(null);
       return;
     }
-    setScopedError(false);
+    let active = true;
+    setScopedErrorProjectId(null);
     void api.getProject(projectId).then((next) => {
+      if (!active) return;
       setScopedProject(next);
       upsertProject(next);
     }).catch(() => {
+      if (!active) return;
       setScopedProject(null);
-      setScopedError(true);
+      setScopedErrorProjectId(projectId);
     });
+    return () => { active = false; };
   }, [api, projectId, projects, upsertProject]);
 
-  const current: ChatTarget = scopedProject
-    ? { kind: "project", projectId: scopedProject.project_id, name: scopedProject.name }
+  const currentProject = scopedProject?.project_id === projectId ? scopedProject : null;
+  const current: ChatTarget = currentProject
+    ? { kind: "project", projectId: currentProject.project_id, name: currentProject.name }
     : { kind: "new" };
 
-  if (projectId && scopedError) {
+  if (projectId && scopedErrorProjectId === projectId) {
     return <ErrorState message={locale === "zh" ? "无法打开这个项目。" : "This Project could not be opened."} />;
   }
 
-  if (projectId && !scopedProject) {
+  if (projectId && !currentProject) {
     return <LoadingState label={locale === "zh" ? "正在打开项目…" : "Opening Project…"} />;
   }
 
-  if (projectId && scopedProject) {
+  if (projectId && currentProject) {
     return (
       <ProjectBuilderConversation
-        key={`${scopedProject.project_id}:${conversationId ?? "new"}`}
-        project={scopedProject}
+        key={`${currentProject.project_id}:${conversationId ?? "new"}`}
+        project={currentProject}
         locale={locale}
         conversationId={conversationId}
         scope={{

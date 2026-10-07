@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import time
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 
+from .test_runtime_routes import ScriptedRuntimeTransport
+from .verified_runtime_model import verified_client
 
-def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        create_app(
-            LocalSettings(
-                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
-                project_storage_root=tmp_path / "projects",
-            )
-        )
+
+def _client(tmp_path: Path) -> AbstractContextManager[TestClient]:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
     )
+    return verified_client(settings, ScriptedRuntimeTransport("Work item done."))
 
 
 def test_orchestrator_creates_and_dispatches_local_work_items(tmp_path: Path) -> None:

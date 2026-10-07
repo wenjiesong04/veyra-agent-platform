@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,10 @@ from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
 from veyra_agent_platform.local.builder.agent_composer import compose_loop_agent
 from veyra_agent_platform.local.builder.agent_loop_compiler import (
     loop_agent_blueprint_payload,
+)
+from veyra_agent_platform.local.builder.agent_state import (
+    check_agent_state,
+    register_agent_state,
 )
 from veyra_agent_platform.local.builder.capability_from_plan import (
     derive_plan_capabilities,
@@ -83,6 +88,7 @@ from veyra_agent_platform.local.library.resource_truth import (
     annotate_resource_plan,
     pin_catalog_locks,
 )
+from veyra_agent_platform.local.models.registry import ModelRegistry
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import (
     ResourceCatalog,
@@ -128,6 +134,7 @@ from .semantic_plan_repair import (
     validation_error_path,
 )
 from .store import FactorySessionRepository, _specification_record
+from .task_structure_planner import FactoryTaskStructurePlanner
 
 
 class _StageEmitter(Protocol):
@@ -179,6 +186,9 @@ class FactoryService:
         workshop: ResourceWorkshop | None = None,
         library: Any | None = None,
         entity_store: Any | None = None,
+        model_registry: ModelRegistry | None = None,
+        runtime_bindings: Callable[[str], Mapping[str, Mapping[str, str]]]
+        | None = None,
     ) -> None:
         self.store = store
         self.projects = projects
@@ -187,6 +197,8 @@ class FactoryService:
         self.workshop = workshop
         self.library = library
         self.entity_store = entity_store
+        self.model_registry = model_registry
+        self.runtime_bindings = runtime_bindings
         self.project_resources = project_resources or ProjectResourceService(
             projects, catalog
         )
@@ -299,6 +311,8 @@ class FactoryService:
             payload["proposal_preview"] = record["proposal_preview"]
         if record.get("blocked_reason"):
             payload["blocked_reason"] = record["blocked_reason"]
+        if _model_setup_required(record.get("proposal_preview")):
+            payload["run_availability"] = "requires_configuration"
         return payload
 
     def compile_review_source(self, project_id: str, session_id: str) -> dict[str, Any]:
@@ -335,6 +349,14 @@ class FactoryService:
         if isinstance(compiled, dict):
             source = AgentSource.from_dict(compiled)
             blueprint_payload = json.loads(session["blueprint_json"])
+            run_availability = self._run_availability(
+                {
+                    "blueprint": blueprint_payload,
+                    "resource_plan": json.loads(session["resource_plan_json"]),
+                }
+            )
+            if _model_setup_required(record.get("proposal_preview")):
+                run_availability = "requires_configuration"
             return {
                 "target_kind": "agent",
                 "source": source.to_dict(),
@@ -345,17 +367,14 @@ class FactoryService:
                     if isinstance(record.get("required_project_resources"), list)
                     else []
                 ),
-                "run_availability": self._run_availability(
-                    {
-                        "blueprint": blueprint_payload,
-                        "resource_plan": json.loads(session["resource_plan_json"]),
-                    }
-                ),
+                "run_availability": run_availability,
                 "identity": {"name": source.name, "slug": source.slug},
                 "semantic_plan": json.loads(session["semantic_plan_json"])
                 if session["semantic_plan_json"]
                 else None,
                 "specification": record.get("specification"),
+                "execution_plan": record.get("execution_plan"),
+                "proposal_preview": record.get("proposal_preview"),
             }
         try:
             blueprint = AgentBlueprint.from_dict(json.loads(session["blueprint_json"]))
@@ -488,11 +507,12 @@ class FactoryService:
                     "factory_not_ready",
                     "Add enough requirement detail before generating a Blueprint",
                 )
-            _ = receipts
-            # The V2 compile is deterministic and must not require the Platform
-            # Builder Provider; Runtime Agent Provider checks happen at run time.
+            if receipts is not None and not self.client.configured:
+                raise FactoryProviderNotConfigured()
             requirement = self._session_requirement(session_id)
-            return self._generate_v2_product(project_id, session_id, requirement, stage)
+            return self._generate_v2_product(
+                project_id, session_id, requirement, stage, receipts=receipts
+            )
 
     def _generate_v2_product(
         self,
@@ -500,8 +520,24 @@ class FactoryService:
         session_id: str,
         requirement: str,
         stage: _StageEmitter,
+        *,
+        receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
         stage(SPECIFICATION_STARTED)
+        planner = (
+            FactoryTaskStructurePlanner(
+                harness=self.harness,
+                project_id=project_id,
+                complete=self._complete_with_receipt,
+                profile=self._capability_profile(),
+                receipts=receipts,
+                ensure_model=self.client.ensure_model,
+                max_repairs=self.client.settings.repair_attempts,
+            )
+            if self.client.configured
+            else None
+        )
+        planning_source = "provider" if planner is not None else "offline_heuristic"
         knowledge = list(
             self.projects.project_summary(project_id).get("knowledge") or []
         )
@@ -511,8 +547,29 @@ class FactoryService:
             project_resources=self._project_resource_list(project_id),
             knowledge_inventory=knowledge,
             secret_configured=self._secret_configured,
+            planner_provider=planner,
+            planner_repair=planner.repair if planner is not None else None,
+            planner_review=planner.review_product if planner is not None else None,
+            model_profiles=(
+                self.model_registry.list_profiles()
+                if self.model_registry is not None
+                else ()
+            ),
+            model_bindings=(
+                self.runtime_bindings(project_id)
+                if self.runtime_bindings is not None
+                else {}
+            ),
+            model_defaults=(
+                self.model_registry.list_defaults()
+                if self.model_registry is not None
+                else ()
+            ),
         )
         preview = proposal_preview(product)
+        preview["planning_source"] = planning_source
+        if planner is None:
+            preview["semantic_validated"] = False
         if product.status != "review" or product.plan is None:
             stage(
                 SPECIFICATION_COMPLETED,
@@ -577,6 +634,7 @@ class FactoryService:
                 factory_plans,
                 preview,
                 stage,
+                planning_source=planning_source,
             )
         assert product.source is not None
         assert product.specification is not None
@@ -621,6 +679,9 @@ class FactoryService:
             ready=True,
             next_prompt=(
                 "Review the Agent capabilities, then apply only when you confirm."
+                if planner is not None
+                else "Offline compiler preview; semantic planning has not been "
+                "performed. Review the draft before applying."
             ),
             blueprint=blueprint_payload,
             diagnostics=list(resolved.diagnostics),
@@ -664,6 +725,8 @@ class FactoryService:
         factory_plans: list[Any],
         preview: dict[str, Any],
         stage: _StageEmitter,
+        *,
+        planning_source: str,
     ) -> dict[str, Any]:
         orchestration = product.orchestration
         resolved = product.resolved
@@ -694,6 +757,9 @@ class FactoryService:
             ready=True,
             next_prompt=(
                 "Review the composite plan, then apply only when you confirm."
+                if planning_source == "provider"
+                else "Offline compiler preview; semantic planning has not been "
+                "performed. Review the draft before applying."
             ),
             blueprint=preview_blueprint,
             diagnostics=list(resolved.diagnostics),
@@ -1200,6 +1266,10 @@ class FactoryService:
                         "; ".join(exc.diagnostics),
                     ) from exc
             try:
+                check_agent_state(project_id, source, self.entity_store)
+            except ValueError as exc:
+                raise FactoryError("factory_state_contract_invalid", str(exc)) from exc
+            try:
                 pin_catalog_locks(
                     self.project_resources, self.catalog, project_id, source
                 )
@@ -1213,6 +1283,14 @@ class FactoryService:
                 )
             except ProjectError as exc:
                 raise FactoryError("factory_apply_failed", str(exc)) from exc
+            try:
+                register_agent_state(project_id, source, self.entity_store)
+            except Exception as exc:
+                with suppress(ProjectError, OSError):
+                    self.projects.remove_agent(project_id, str(agent["agent_id"]))
+                raise FactoryError(
+                    "factory_state_registration_failed", str(exc)
+                ) from exc
             self._set_state(
                 session_id,
                 "completed",
@@ -1950,6 +2028,33 @@ def _generation_record(row: Any) -> dict[str, Any]:
         "blocked_reason": extras.get("blocked_reason") or record.get("blocked_reason"),
         "entity_schema": extras.get("entity_schema") or record.get("entity_schema"),
     }
+
+
+def _model_setup_required(proposal_preview: Any) -> bool:
+    if not isinstance(proposal_preview, dict):
+        return False
+    models = proposal_preview.get("models")
+    if not isinstance(models, list):
+        return False
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        if item.get("required") and item.get("status") in {
+            "needs_setup",
+            "missing_capability",
+            "unsupported",
+        }:
+            return True
+        issue = item.get("issue")
+        if (
+            item.get("optional")
+            and isinstance(issue, dict)
+            and issue.get("code") == "optional_model_capability_unavailable"
+        ):
+            # The current candidate still uses the optional model capability.
+            # Runtime needs a profile or a separately compiled fallback first.
+            return True
+    return False
 
 
 def _stored_specification(row: Any) -> dict[str, Any] | None:

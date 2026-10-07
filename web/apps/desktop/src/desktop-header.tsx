@@ -117,10 +117,11 @@ export function desktopHeader(
   if (route.kind === "project-workflows") {
     return { title: contextLabels.workflows, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }) };
   }
-  if (route.kind === "project-workflow") {
+  if (route.kind === "project-workflow" || route.kind === "project-workflow-run") {
     const workflow = project?.workflows?.find((item) => item.workflow_id === route.workflowId);
     const workflowLabel = workflow?.name || workflow?.slug || contextLabels.workflows;
-    return { title: workflowLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, { label: workflowLabel, href: projectRoutePaths.workflow(route.projectId, route.workflowId ?? ""), icon: Workflow }) };
+    const workflowCrumb = { label: workflowLabel, href: projectRoutePaths.workflow(route.projectId, route.workflowId ?? ""), icon: Workflow };
+    return { title: workflowLabel, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.workflows, href: projectRoutePaths.workflows(route.projectId), icon: Workflow }, workflowCrumb, ...(route.kind === "project-workflow-run" ? [{ label: locale === "zh" ? "运行" : "Run", href: projectRoutePaths.workflowRun(route.projectId, route.workflowId ?? ""), icon: Play }] : [])) };
   }
   if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") {
     return { title: contextLabels.knowledge, breadcrumbs: projectTrail(home, projectCrumb, { label: contextLabels.knowledge, href: projectRoutePaths.knowledge(route.projectId), icon: BookOpen }) };

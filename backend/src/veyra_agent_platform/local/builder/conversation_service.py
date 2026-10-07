@@ -174,6 +174,7 @@ _PROVIDER_STAGES = {
     "factory_unavailable": "semantic_plan",
     "factory_provider_not_configured": "semantic_plan",
     "factory_generation_invalid": "semantic_generation",
+    "factory_generation_blocked": "task_planning",
     "factory_missing_capability": "semantic_compilation",
     "builder_resolution_invalid": "intent_resolution",
 }
@@ -289,6 +290,7 @@ class BuilderConversationService:
         *,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_preview: Callable[[str], None] | None = None,
+        on_snapshot: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         self._require_project(project_id)
         conversation_id, operation_id, content, locale, focus = self._begin(
@@ -297,6 +299,8 @@ class BuilderConversationService:
         resolution: dict[str, Any] | None = None
         factory_session: dict[str, Any] | None = None
         try:
+            if on_snapshot is not None:
+                on_snapshot(self.snapshot(project_id, conversation_id))
             self._emit(
                 operation_id,
                 INTENT_STARTED,
@@ -948,22 +952,37 @@ class BuilderConversationService:
                 }
             ),
         )
+        if waiting_for == "waiting_for_runtime_credential":
+            clarification = (
+                "还没有可用的 Runtime 模型 API，请先添加并选择一个 Provider。"
+                if locale == "zh"
+                else (
+                    "No Runtime model API is available. "
+                    "Add and select a Provider first."
+                )
+            )
+        elif waiting_for == "waiting_for_runtime_binding":
+            clarification = (
+                "请先为这个 Agent 选择运行时服务商和模型，然后继续。"
+                if locale == "zh"
+                else (
+                    "Choose the Runtime Provider and model for this Agent "
+                    "before continuing."
+                )
+            )
+        else:
+            clarification = (
+                "还没有可用的 Runtime 模型 API。"
+                if locale == "zh"
+                else "No Runtime model API is available."
+            )
         self.store.append_message(
             message_id=new_uuid7(),
             conversation_id=conversation_id,
             sequence=self.store.next_sequence(conversation_id),
             role="assistant",
             kind="clarification",
-            content=(
-                "还没有可用的 Runtime 模型 API，请先添加并选择一个 Provider。"
-                if waiting_for == "waiting_for_runtime_credential" and locale == "zh"
-                else (
-                    "Choose the Runtime Provider and model for this Agent before "
-                    "continuing."
-                )
-                if waiting_for == "waiting_for_runtime_binding"
-                else "还没有可用的 Runtime 模型 API。"
-            ),
+            content=clarification,
             operation_id=operation_id,
             payload=_facts(
                 {
@@ -1130,7 +1149,15 @@ class BuilderConversationService:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
-        goal = content.strip() or str(resolution.get("instruction") or "")
+        original = content.strip()
+        clarified = str(resolution.get("instruction") or "").strip()
+        goal = original
+        if clarified and clarified != original:
+            goal = (
+                f"{original}\n\nClarified requirement:\n{clarified}"
+                if original
+                else clarified
+            )
         session = self.factory.create_session(project_id, goal, receipts=receipts)
         session_id = str(session["session_id"])
         self.store.update_operation(
@@ -1157,6 +1184,17 @@ class BuilderConversationService:
             project_id, session_id, on_stage=on_stage, receipts=receipts
         )
         state = str(generated.get("state") or "")
+        if generated.get("blocked_reason"):
+            self._fail_operation(
+                conversation_id,
+                operation_id,
+                locale,
+                code="factory_generation_blocked",
+                message=str(generated["blocked_reason"]),
+                details={"stage": "task_planning"},
+                on_event=on_event,
+            )
+            return generated
         candidate = generated.get("candidate") if isinstance(generated, dict) else None
         name = ""
         if isinstance(candidate, dict):
@@ -2976,6 +3014,24 @@ def _failure_text(
     http_status = diagnostic.get("http_status") or ""
     error_type = diagnostic.get("provider_error_type") or ""
     safe_message = _SECRET.sub("<redacted>", " ".join(message.split()))[:240]
+    if code == "factory_generation_blocked":
+        return (
+            "还不能生成可运行方案。生成器未能完整表达这次需求，未创建 Agent。"
+            "请调整需求后重试；检查详情可帮助定位需要修复的能力。\n"
+            f"检查详情：{safe_message}"
+            if locale == "zh"
+            else "A runnable proposal could not be generated. No Agent was created. "
+            "Revise the requirement and retry. Diagnostic: " + safe_message
+        )
+    if code == "factory_rate_limited":
+        return (
+            "服务商暂时限制了请求（HTTP 429），方案审查未完成。尚未创建 Agent。"
+            "请稍后重试；不需要重新填写 API 密钥。"
+            if locale == "zh"
+            else "The provider temporarily limited requests. Review did not finish "
+            "and no Agent was created. Retry later; "
+            "your API key does not need changing."
+        )
     generated = "factory" in code or stage == "blueprint_generation"
     if locale == "zh":
         heading = "Agent 结构生成失败" if generated else "Builder 未能完成这次操作"

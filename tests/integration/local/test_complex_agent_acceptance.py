@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
 from .test_factory_routes import ScriptedKimiTransport, _completion
 from .test_loop_resource_truth import _PNG
 from .test_runtime_routes import ScriptedRuntimeTransport, _await_run
+from .verified_runtime_model import verified_client
 
 _RESEARCH = (
     "创建一个研究分析助手。\n"
@@ -101,20 +103,20 @@ def _client(
     *,
     runtime: object | None = None,
     tool_adapters: dict[str, Any] | None = None,
-) -> TestClient:
-    return TestClient(
-        create_app(
-            LocalSettings(
-                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
-                project_storage_root=tmp_path / "projects",
-            ),
-            factory_transport=ScriptedKimiTransport(
-                [_completion("ok") for _ in range(24)]
-            ),
-            runtime_transport=runtime,
-            tool_adapters=tool_adapters,
-        )
+) -> AbstractContextManager[TestClient]:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
     )
+    options: dict[str, Any] = {
+        "factory_transport": ScriptedKimiTransport(
+            [_completion("ok") for _ in range(24)]
+        ),
+        "tool_adapters": tool_adapters,
+    }
+    if runtime is None:
+        return TestClient(create_app(settings, **options))
+    return verified_client(settings, runtime, **options)
 
 
 def _project(client: TestClient, name: str) -> dict[str, Any]:
@@ -629,14 +631,21 @@ def test_packaging_analysis_hybrid_multimodal_and_honest_image_gap(
         assert "重点分析颜色是否符合品牌规范" in follow_blob
         missing = _generate(client, project_id, _IMAGE_GEN)
         gap = _plan_by_capability(missing, "image_generation")
-        assert gap and gap[0]["bind_status"] == "missing"
-        factory = next(
+        assert gap == []
+        model_gap = next(
             item
-            for item in missing["resource_factory_plans"]
-            if item["capability"] == "image_generation"
+            for item in missing["proposal_preview"]["models"]
+            if item["slot"] == "image"
         )
-        assert factory["status"] == "unsupported"
-        assert factory["can_generate"] is False
+        assert model_gap["status"] == "needs_setup"
+        assert model_gap["issue"]["unknown"] == ["image_generation"]
+        assert model_gap["issue"]["missing"] == []
+        assert missing["state"] == "review"
+        assert missing["run_availability"] == "requires_configuration"
+        assert not any(
+            item["capability"] == "image_generation"
+            for item in missing["resource_factory_plans"]
+        )
 
 
 def test_factory_generated_skill_reaches_committed_app_runtime(tmp_path: Path) -> None:

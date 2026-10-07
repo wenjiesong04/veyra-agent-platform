@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BuilderConversationSnapshot, BuilderOperationEvent, BuilderResolveRequest, EditProposal, EditTargetKind, FactorySession } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
@@ -51,6 +51,21 @@ async function propose() {
 }
 
 describe("Project Chat Builder", () => {
+  it.each([false, true])("does not restore an old route when a delayed turn finishes after navigation (unmounted=%s)", async (unmounted) => {
+    const { api, page } = setup("agent", [], false);
+    let finish!: (snapshot: BuilderConversationSnapshot) => void;
+    Object.assign(api, { submitBuilderTurn: vi.fn().mockImplementation(() => new Promise((resolve) => { finish = resolve; })) });
+    await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Create a reconciliation assistant" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(finish).toBeDefined());
+    if (unmounted) page.unmount();
+    const nextRoute = "#/projects/project-2/chat?conversation=next-conversation";
+    window.location.hash = nextRoute;
+    await act(async () => { finish(durableSnapshot()); });
+    expect(window.location.hash).toBe(nextRoute);
+  });
+
   it("adopts a same-project scope change before resolving the next message", async () => {
     const { api } = setup("agent", [], false);
     await screen.findByRole("textbox", { name: "Message" });
@@ -595,6 +610,49 @@ function durableSnapshot(overrides: Partial<BuilderConversationSnapshot> = {}): 
 }
 
 describe("Durable Project Chat", () => {
+  it("keeps an old blocked turn still while a later turn owns the current session", async () => {
+    const previous = durableSnapshot().operations[0];
+    const snapshot = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "in_progress" },
+      messages: [
+        { message_id: "m-old", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "创建保留设计状态的助手", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-new", conversation_id: "conv-1", sequence: 1, role: "user", kind: "user", content: "补充新的工作方式", operation_id: "op-2", payload: {}, created_at: "2026-09-18T00:01:00Z" },
+      ],
+      operations: [
+        { ...previous, status: "succeeded", error_code: null, factory_session_id: "previous-session", diagnostic: {}, events: [
+          { event_id: "e-old-start", operation_id: "op-1", sequence: 0, kind: "builder.semantic_plan.started", label: "Planning", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+          { event_id: "e-old-end", operation_id: "op-1", sequence: 1, kind: "builder.specification.completed", label: "Resolved", summary: "", facts: { target_kind: "blocked", blocked_reason: "State requirement cannot be represented" }, created_at: "2026-09-18T00:00:18Z" },
+          { event_id: "e-old-done", operation_id: "op-1", sequence: 2, kind: "builder.operation.completed", label: "Ended", summary: "", facts: {}, created_at: "2026-09-18T00:00:18Z" },
+        ] },
+        { ...previous, operation_id: "op-2", status: "in_progress", error_code: null, factory_session_id: "session-1", diagnostic: {}, created_at: "2026-09-18T00:01:00Z", events: [
+          { event_id: "e-new-start", operation_id: "op-2", sequence: 0, kind: "builder.semantic_plan.started", label: "Planning", summary: "", facts: {}, created_at: "2026-09-18T00:01:00Z" },
+        ] },
+      ],
+      factory_session: { ...factoryReviewSession(), state: "generating", blueprint: null },
+    });
+    const { api, wrapper } = setup("agent", [], false, "zh");
+    const submitBuilderTurn = vi.fn();
+    Object.assign(api, {
+      submitBuilderTurn,
+      getBuilderConversation: vi.fn().mockResolvedValue(snapshot),
+    });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByRole("button", { name: "构建 Agent · 已阻塞" })).toBeInTheDocument();
+    expect(screen.queryByText("已完成")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "方案暂时无法生成" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "正在生成方案" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "在画布中查看" }));
+    const stopped = screen.getByRole("heading", { name: "方案暂时无法生成" }).closest(".builder-workspace-dock");
+    expect(stopped).not.toHaveClass("is-live");
+    expect(stopped?.querySelector('[data-current="true"]')).toBeNull();
+    expect(screen.getByText("当前无法按要求保存和恢复任务状态。")).toBeInTheDocument();
+    const planning = screen.getByRole("heading", { name: "正在生成方案" }).closest(".builder-workspace-dock");
+    expect(planning).toHaveClass("is-live");
+    expect(submitBuilderTurn).not.toHaveBeenCalled();
+  });
+
   it("persists the turn on the server without sending client history as truth", async () => {
     const { api } = setup("agent", [], false);
     const snapshot = durableSnapshot({
@@ -1061,6 +1119,63 @@ describe("Durable Project Chat", () => {
     });
     expect(screen.getByText("Specifying Agent").closest("li")).toHaveAttribute("data-state", "current");
     expect(getBuilderConversation.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it.each(["create_agent", "create_workflow"] as const)("shows runtime binding while the %s stream is still open", async (kind) => {
+    const early = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "in_progress" },
+      messages: [{ message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Build a packaging designer", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" }],
+      operations: [{ ...durableSnapshot().operations[0], kind, target_kind: kind === "create_agent" ? "agent" : "workflow", status: "in_progress", error_code: null, diagnostic: {}, events: [] }],
+    });
+    const waiting = durableSnapshot({
+      ...early,
+      conversation: { ...early.conversation, last_operation_status: "waiting", updated_at: "2026-09-18T00:00:02Z" },
+      messages: [...early.messages, { message_id: "m-wait", conversation_id: "conv-1", sequence: 1, role: "assistant", kind: "clarification", content: "Choose a Runtime model to continue.", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:02Z" }],
+      operations: [{ ...early.operations[0], status: "waiting", updated_at: "2026-09-18T00:00:02Z", diagnostic: { waiting_for: "waiting_for_runtime_binding" } }],
+    });
+    const { api } = setup("agent", [], false);
+    let finish!: (snapshot: BuilderConversationSnapshot) => void;
+    const submitBuilderTurn = vi.fn().mockImplementation((_projectId: string, _input: unknown, options: { onSnapshot?: (snapshot: BuilderConversationSnapshot) => void }) => {
+      options.onSnapshot?.(early);
+      return new Promise<BuilderConversationSnapshot>((resolve) => { finish = resolve; });
+    });
+    const getBuilderConversation = vi.fn().mockResolvedValue(waiting);
+    Object.assign(api, {
+      submitBuilderTurn,
+      getBuilderConversation,
+      listRuntimeCredentials: vi.fn().mockResolvedValue({ credentials: [{ credential_id: "credential-1", label: "Kimi", provider_type: "moonshot", default_model_id: "kimi-k3", capabilities: { models: ["kimi-k3"] } }] }),
+    });
+    fireEvent.change(await screen.findByRole("textbox", { name: "Message" }), { target: { value: "Build a packaging designer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("region", { name: "Runtime model setup" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Confirm and continue" })).toBeEnabled();
+    expect(getBuilderConversation).toHaveBeenCalledWith("project-1", "conv-1");
+    await act(async () => { finish(waiting); });
+  });
+
+  it("does not leave an unsupported create in the understanding workbench", async () => {
+    const snapshot = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "succeeded" },
+      messages: [
+        { message_id: "m-user", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Build several connected Agents", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" },
+        { message_id: "m-answer", conversation_id: "conv-1", sequence: 1, role: "assistant", kind: "assistant", content: "This needs several objects and cannot be created in one step.", operation_id: "op-1", payload: { status: "unsupported" }, created_at: "2026-09-18T00:00:02Z" },
+      ],
+      operations: [{
+        ...durableSnapshot().operations[0], kind: "create_workflow", target_kind: "workflow", status: "succeeded", error_code: null,
+        events: [
+          { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.intent.resolved", label: "Understanding request", summary: "", facts: { status: "unsupported", create_kind: "workflow" }, created_at: "2026-09-18T00:00:01Z" },
+          { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.operation.completed", label: "Completed", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
+        ],
+      }],
+    });
+    const { api, wrapper } = setup("agent", [], false);
+    Object.assign(api, { submitBuilderTurn: vi.fn(), getBuilderConversation: vi.fn().mockResolvedValue(snapshot) });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByText("This needs several objects and cannot be created in one step.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build Workflow · not created" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Workbench" })).not.toBeInTheDocument();
   });
 
   it("starts an explicit Test Agent run from the completed workbench", async () => {

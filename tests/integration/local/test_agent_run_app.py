@@ -20,6 +20,7 @@ from veyra_agent_platform.contracts.interaction import (
 from veyra_agent_platform.contracts.typed_io import parse_typed_fields
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.models.contracts import CapabilityStatus
 from veyra_agent_platform.local.resources import ResourceCatalog
 from veyra_agent_platform.local.runtime.approvals import tool_approval_summary
 from veyra_agent_platform.local.runtime.client import (
@@ -31,11 +32,14 @@ from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
 from .test_loop_resource_truth import (
     _PNG,
     _attach,
-    _create_project,
     _loop_source,
     _pin,
     _set_io,
 )
+from .test_loop_resource_truth import (
+    _create_project as _create_project_base,
+)
+from .test_provider_credentials import MemorySecretStore
 from .test_runtime_routes import (
     ScriptedRuntimeTransport,
     _await_run,
@@ -57,7 +61,46 @@ def _make_client(tmp_path: Path, transport: object, **kwargs: Any) -> TestClient
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    return TestClient(create_app(settings, runtime_transport=transport, **kwargs))
+    return TestClient(
+        create_app(
+            settings,
+            runtime_transport=transport,
+            secret_store=MemorySecretStore(),
+            **kwargs,
+        )
+    )
+
+
+def _create_project(client: TestClient, source: dict[str, Any]) -> dict[str, Any]:
+    """Give isolated Runtime fixtures a verified scripted model, not a host key."""
+    project = _create_project_base(client, source)
+    credential = client.post(
+        "/api/v1/runtime-credentials",
+        json={
+            "provider_type": "moonshot",
+            "label": "Scripted test model",
+            "api_key": "test-only-runtime-key",
+            "default_model_id": "kimi-k3",
+        },
+    )
+    assert credential.status_code == 201, credential.text
+    credential_id = credential.json()["credential"]["credential_id"]
+    registry = client.app.state.model_registry
+    profiles = registry.list_profiles_for_connection(credential_id)
+    assert len(profiles) == 1
+    for capability in ("text_generation", "image_input", "structured_output"):
+        registry.record_capability_probe(
+            profiles[0].model_profile_id,
+            capability,
+            CapabilityStatus.SUPPORTED,
+            detail="Scripted test transport supports this capability.",
+        )
+    bound = client.patch(
+        f"/api/v1/projects/{project['project_id']}/runtime-binding",
+        json={"credential_id": credential_id, "model_id": "kimi-k3"},
+    )
+    assert bound.status_code == 200, bound.text
+    return project
 
 
 def _commit(client: TestClient, project_id: str, agent_id: str) -> dict[str, Any]:
@@ -467,7 +510,7 @@ def test_runtime_preflight_fail_closed(tmp_path: Path) -> None:
     )
     source = _loop_source("创建一个翻译助手，把中文翻译成自然英语。")
     with TestClient(create_app(settings)) as client:
-        project = _create_project(client, source)
+        project = _create_project_base(client, source)
         agent_id = project["agents"][0]["agent_id"]
         _commit(client, project["project_id"], agent_id)
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent_id}/run"

@@ -17,7 +17,7 @@ from .common import (
     require_string,
     thaw_json,
 )
-from .task_structure import StateRequirement, TaskIOField, TaskStructure
+from .task_structure import StateRequirement, TaskIOField, TaskStructure, _field_sources
 
 ProductShape = Literal[
     "PURE_AGENT",
@@ -137,6 +137,8 @@ class PlanActor:
     capabilities: tuple[str, ...]
     brief: str
     reuse_of: str = ""
+    inputs: tuple[TaskIOField, ...] = ()
+    outputs: tuple[TaskIOField, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -146,6 +148,10 @@ class PlanActor:
             "capabilities": list(self.capabilities),
             "brief": self.brief,
         }
+        if self.inputs:
+            payload["inputs"] = [item.to_dict() for item in self.inputs]
+        if self.outputs:
+            payload["outputs"] = [item.to_dict() for item in self.outputs]
         if self.reuse_of:
             payload["reuse_of"] = self.reuse_of
         return payload
@@ -155,7 +161,16 @@ class PlanActor:
         item = require_mapping(data, field)
         require_keys(
             item,
-            allowed={"id", "kind", "name", "capabilities", "brief", "reuse_of"},
+            allowed={
+                "id",
+                "kind",
+                "name",
+                "capabilities",
+                "brief",
+                "reuse_of",
+                "inputs",
+                "outputs",
+            },
             required={"id", "kind", "name", "brief"},
         )
         kind = require_string(item["kind"], f"{field}.kind")
@@ -174,6 +189,18 @@ class PlanActor:
             capabilities=capabilities,
             brief=require_string(item["brief"], f"{field}.brief")[:400],
             reuse_of=str(item.get("reuse_of") or "")[:80],
+            inputs=tuple(
+                TaskIOField.from_dict(value, f"{field}.inputs[{index}]")
+                for index, value in enumerate(
+                    require_list(item.get("inputs") or [], f"{field}.inputs")
+                )
+            ),
+            outputs=tuple(
+                TaskIOField.from_dict(value, f"{field}.outputs[{index}]")
+                for index, value in enumerate(
+                    require_list(item.get("outputs") or [], f"{field}.outputs")
+                )
+            ),
         )
 
 
@@ -196,6 +223,7 @@ class PlanStep:
     on_approved: str = ""
     on_rejected: str = ""
     on_next: str = ""
+    input_sources: Mapping[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -224,6 +252,8 @@ class PlanStep:
             payload["checks"] = list(self.checks)
         if self.expected_schema:
             payload["expected_schema"] = dict(self.expected_schema)
+        if self.input_sources:
+            payload["input_sources"] = dict(self.input_sources)
         return payload
 
     @classmethod
@@ -249,6 +279,7 @@ class PlanStep:
                 "on_approved",
                 "on_rejected",
                 "on_next",
+                "input_sources",
             },
             required={"id", "kind", "why"},
         )
@@ -289,6 +320,9 @@ class PlanStep:
             on_approved=str(item.get("on_approved") or "")[:80],
             on_rejected=str(item.get("on_rejected") or "")[:80],
             on_next=str(item.get("on_next") or "")[:80],
+            input_sources=freeze_json(
+                _field_sources(item.get("input_sources"), f"{field}.input_sources")
+            ),
         )
 
 

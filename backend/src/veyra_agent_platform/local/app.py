@@ -47,6 +47,7 @@ from .host_env import load_host_process_env
 from .library import LibraryService
 from .mcp import McpServerStore, McpService
 from .mcp.transport import TransportFactory
+from .models.registry import ModelRegistry
 from .orchestrator import OrchestratorService, OrchestratorStore
 from .plugins import PluginService
 from .projects import ProjectService
@@ -165,10 +166,13 @@ def create_app(
             repository, resolved_secret_store
         )
         application.state.provider_credentials = provider_credentials
+        model_registry = ModelRegistry(repository, provider_credentials)
+        application.state.model_registry = model_registry
         application.state.provider_credential_service = ProviderCredentialService(
             provider_credentials,
             resolved_runtime_settings,
             runtime_transport,
+            model_registry=model_registry,
         )
         workshop = ResourceWorkshop(overlay_root, catalog)
         application.state.workshop = workshop
@@ -187,6 +191,8 @@ def create_app(
             workshop=workshop,
             library=application.state.library,
             entity_store=entity_store,
+            model_registry=model_registry,
+            runtime_bindings=model_registry.runtime_binding_profiles,
         )
         mcp = McpService(
             McpServerStore(database_path),
@@ -218,6 +224,7 @@ def create_app(
             artifacts=application.state.artifacts,
             custom_components=custom_components,
             credentials=provider_credentials,
+            model_registry=model_registry,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime
@@ -280,6 +287,7 @@ def create_app(
     application.state.secrets = resolved_secret_store
     application.state.provider_credentials = None
     application.state.provider_credential_service = None
+    application.state.model_registry = None
     application.state.project_sync = None
     application.state.project_artifacts = None
     application.add_exception_handler(TypedApiError, typed_error_response)

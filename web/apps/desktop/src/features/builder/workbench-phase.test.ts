@@ -55,4 +55,31 @@ describe("workbenchPhase", () => {
     expect(openStageStartedAt(events)).toBe("2026-09-18T00:01:30Z");
     expect(runningClock("2026-09-18T00:01:30Z", Date.parse("2026-09-18T00:03:05Z"), "zh")).toBe("已进行 1:35");
   });
+
+  it("uses a blocked Factory result even when a legacy operation says succeeded", () => {
+    const stopped = operation(["builder.semantic_plan.started", "builder.operation.completed"], "succeeded");
+    expect(workbenchPhase(stopped, { ...session, state: "ready", blocked_reason: "Invalid output mapping" }, null)).toBe("blocked");
+    expect(workbenchPhase({ ...stopped, status: "failed", error_code: "factory_generation_blocked" }, null, null)).toBe("blocked");
+    expect(workbenchPhase(stopped, { ...session, state: "missing_capability", blocked_reason: "missing model" }, null)).toBe("missing");
+  });
+
+  it("retains a historical operation's blocked result after the conversation moves to another session", () => {
+    const old = operation(["builder.semantic_plan.started", "builder.specification.completed", "builder.operation.completed"], "succeeded");
+    old.events[1].facts = { target_kind: "blocked", blocked_reason: "State requirement cannot be represented" };
+    expect(workbenchPhase(old, null, null)).toBe("blocked");
+    const active = operation(["builder.semantic_plan.started"]);
+    expect(workbenchPhase(active, session, null)).toBe("planning");
+  });
+
+  it("does not allow a previous started or proposal event to override failure", () => {
+    const failed = operation(["builder.semantic_plan.started", "builder.proposal.ready", "builder.operation.failed"], "failed");
+    expect(workbenchPhase(failed, { ...session, state: "ready" }, null)).toBe("failed");
+    expect(workbenchPhase(operation(["builder.semantic_plan.started", "builder.operation.completed"], "succeeded"), null, null)).toBe("finished");
+    expect(workbenchPhase(operation(["builder.semantic_plan.started"], "rejected"), null, null)).toBe("finished");
+    expect(workbenchPhase(failed, { ...session, state: "completed" }, "created-agent")).toBe("completed");
+  });
+
+  it.each(["builder.operation.completed", "builder.operation.failed"])("closes the plan clock after %s", (terminal) => {
+    expect(openStageStartedAt(operation(["builder.semantic_plan.started", terminal]).events)).toBeNull();
+  });
 });

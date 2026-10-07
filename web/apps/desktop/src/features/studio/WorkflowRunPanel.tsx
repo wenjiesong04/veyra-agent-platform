@@ -5,6 +5,7 @@ import { Alert, Button, Panel, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { nodeRunStates, type NodeRunState } from "./live-run";
 import { RunApprovalBar } from "./RunApprovalBar";
+import { WorkflowInputReplyBar } from "./WorkflowInputReplyBar";
 import { RunEvidence } from "../runs/RunDetail";
 import { persistRunId } from "../runs/run-location";
 import { useStudioChrome } from "./studio-chrome";
@@ -44,6 +45,7 @@ export function WorkflowRunPanel({
   const { chrome, setChrome } = useStudioChrome();
   const [inputs, setInputs] = React.useState<Record<string, JsonValue>>(() => initialSourceInputs(source.inputs));
   const [run, setRun] = React.useState<WorkflowRunResponse | null>(null);
+  const [runSource, setRunSource] = React.useState<WorkflowSource | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const zh = locale === "zh";
@@ -55,6 +57,7 @@ export function WorkflowRunPanel({
   React.useEffect(() => {
     setInputs(initialSourceInputs(source.inputs));
     setRun(null);
+    setRunSource(null);
     setError("");
   }, [source.workflow_id, schema]);
 
@@ -81,6 +84,7 @@ export function WorkflowRunPanel({
       const detailed = api.getWorkflowRun
         ? await api.getWorkflowRun(projectId, workflowId, started.run_id)
         : started;
+      setRunSource(source);
       setRun(detailed);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "本地运行失败。" : "The local run failed."));
@@ -89,12 +93,12 @@ export function WorkflowRunPanel({
     }
   };
 
-  const command = async (value: "approve" | "reject" | "stop") => {
+  const command = async (value: "approve" | "reject" | "stop" | "reply", inputs?: Record<string, JsonValue>) => {
     if (!run || !api.commandWorkflowRun || busy) return;
     setBusy(true);
     setError("");
     try {
-      setRun(await api.commandWorkflowRun(projectId, workflowId, run.run_id, { command: value }));
+      setRun(await api.commandWorkflowRun(projectId, workflowId, run.run_id, { command: value, ...(inputs ? { inputs } : {}) }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "运行命令失败。" : "The run command failed."));
     } finally {
@@ -141,9 +145,9 @@ export function WorkflowRunPanel({
             <Button icon={Play} variant="primary" size="sm" disabled={disabled || inFlight || !api.runWorkflow} onClick={() => void start()}>
               {inFlight ? (zh ? "运行中…" : "Running…") : (zh ? "测试运行" : "Test run")}
             </Button>
-            {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => { setRun(null); setError(""); persistRunId(null); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
+            {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => { setRun(null); setRunSource(null); setError(""); persistRunId(null); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
-          <RunApprovalBar run={run ? workflowRunAsAgentRun(run) : null} locale={locale} disabled={busy} onCommand={(value) => void command(value)} />
+          {run?.waiting?.kind === "input" ? <WorkflowInputReplyBar run={run} schema={runSource?.nodes.find((node) => node.id === run.waiting?.node_id)?.inputs ?? {}} locale={locale} disabled={busy} api={api} projectId={projectId} onReply={(reply) => void command("reply", reply)} /> : <RunApprovalBar run={run ? workflowRunAsAgentRun(run) : null} locale={locale} disabled={busy} onCommand={(value) => void command(value)} />}
           {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
           {!api.runWorkflow ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
           {(!disabled && (api.workflowRuntimeReadiness || api.runtimeStatus)) ? <WorkflowRuntimeNote api={api} projectId={projectId} workflowId={workflowId} locale={locale} /> : null}

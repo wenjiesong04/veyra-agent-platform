@@ -13,6 +13,7 @@ from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
 from veyra_agent_platform.contracts.canonical import file_hash, sha256_digest
 from veyra_agent_platform.contracts.common import (
     SCHEMA_VERSION,
+    ContractValidationError,
     IdempotencyKey,
     new_uuid7,
 )
@@ -646,7 +647,46 @@ class LibraryService:
         expected_etag: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        IdempotencyKey(SCHEMA_VERSION, idempotency_key)
+        return self._save_workflow_version(
+            project_id=project_id,
+            workflow_id=workflow_id,
+            expected_revision=expected_revision,
+            expected_etag=expected_etag,
+            committed=True,
+            idempotency_key=idempotency_key,
+        )
+
+    @_serialized
+    def snapshot_workflow_draft(
+        self,
+        *,
+        project_id: str,
+        workflow_id: str,
+        expected_revision: int,
+        expected_etag: str,
+    ) -> dict[str, Any]:
+        """Persist the exact Studio Test Run source without committing it."""
+        return self._save_workflow_version(
+            project_id=project_id,
+            workflow_id=workflow_id,
+            expected_revision=expected_revision,
+            expected_etag=expected_etag,
+            committed=False,
+            idempotency_key=None,
+        )
+
+    def _save_workflow_version(
+        self,
+        *,
+        project_id: str,
+        workflow_id: str,
+        expected_revision: int,
+        expected_etag: str,
+        committed: bool,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        if idempotency_key is not None:
+            IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         workflow = self._workflow_in_project(project_id, workflow_id)
         scope = f"workflow-commit:{project_id}:{workflow_id}"
         source_path = self._workflow_source_path(project_id, workflow)
@@ -658,10 +698,32 @@ class LibraryService:
             {"expected_revision": expected_revision, "expected_etag": expected_etag}
         )
         with self.repository.transaction() as connection:
-            replay = self.repository.idempotent_response(
-                connection, scope, idempotency_key, request_digest
+            replay = (
+                self.repository.idempotent_response(
+                    connection, scope, idempotency_key, request_digest
+                )
+                if idempotency_key is not None
+                else None
             )
             if replay is not None:
+                replay_version = self.repository.workflow_version_for_workflow(
+                    workflow_id, replay["version_id"]
+                )
+                if replay_version is None:
+                    raise ProjectError(
+                        "Committed Workflow version is unavailable",
+                        "workflow_version_invalid",
+                    )
+                if committed and not self.repository.mark_workflow_version_committed(
+                    connection,
+                    workflow_id=workflow_id,
+                    version_id=replay["version_id"],
+                ):
+                    raise ProjectError(
+                        "Workflow version could not be committed",
+                        "workflow_version_invalid",
+                    )
+                replay["committed"] = bool(committed or replay_version["committed"])
                 return replay
             draft = connection.execute(
                 "SELECT * FROM workflow_drafts WHERE workflow_id = ?",
@@ -700,10 +762,18 @@ class LibraryService:
                         "created_at": datetime.now(UTC)
                         .isoformat()
                         .replace("+00:00", "Z"),
+                        "committed": committed,
                     },
                 )
             else:
                 version_id = existing["version_id"]
+            if committed and not self.repository.mark_workflow_version_committed(
+                connection, workflow_id=workflow_id, version_id=version_id
+            ):
+                raise ProjectError(
+                    "Workflow version could not be committed",
+                    "workflow_version_invalid",
+                )
             self.repository.attach_file_to_workflow_version(
                 connection,
                 version_id=version_id,
@@ -722,11 +792,61 @@ class LibraryService:
                 else source.behavior_hash,
                 "lock_hash": existing["lock_hash"] if existing else source.lock_hash,
                 "file_hash": current_file_hash,
+                "committed": bool(committed or (existing and existing["committed"])),
             }
-            self.repository.remember_response(
-                connection, scope, idempotency_key, request_digest, result
-            )
+            if idempotency_key is not None:
+                self.repository.remember_response(
+                    connection, scope, idempotency_key, request_digest, result
+                )
             return result
+
+    @_serialized
+    def workflow_version_snapshot(
+        self,
+        project_id: str,
+        workflow_id: str,
+        version_id: str | None,
+        *,
+        committed_only: bool = True,
+    ) -> dict[str, Any] | None:
+        """Resolve and verify one immutable Workflow snapshot for Runtime use."""
+        workflow = self._workflow_in_project(project_id, workflow_id)
+        version = (
+            self.repository.latest_committed_workflow_version(workflow_id)
+            if version_id is None
+            else self.repository.workflow_version_for_workflow(workflow_id, version_id)
+        )
+        if version is None:
+            return None
+        if committed_only and not bool(version["committed"]):
+            raise ProjectError(
+                "Workflow version has not been explicitly committed",
+                "workflow_version_not_committed",
+            )
+        try:
+            source = WorkflowSource.from_dict(json.loads(version["source_json"]))
+            source_text = version["source_text"]
+            source_from_text = WorkflowSource.from_dict(
+                self.projects._parse_yaml(source_text, workflow["slug"])
+            )
+        except (ContractValidationError, TypeError, ValueError) as exc:
+            raise ProjectError(
+                "Workflow version source is invalid", "workflow_version_invalid"
+            ) from exc
+        if (
+            source.workflow_id != workflow_id
+            or source.slug != workflow["slug"]
+            or source_from_text.to_dict() != source.to_dict()
+            or source.source_hash != version["source_hash"]
+            or source.behavior_hash != version["behavior_hash"]
+            or source.lock_hash != version["lock_hash"]
+            or file_hash(source_text) != version["file_hash"]
+        ):
+            raise ProjectError(
+                "Workflow version source or hash does not match its snapshot",
+                "workflow_version_invalid",
+            )
+        return dict(version)
 
     def versions(self, project_id: str, agent_id: str) -> dict[str, Any]:
         self._agent_in_project(project_id, agent_id)
@@ -760,11 +880,9 @@ class LibraryService:
             "created_at": row["created_at"],
             "source": json.loads(row["source_json"]),
         }
-        if identity_field == "agent_id":
-            keys = row.keys() if hasattr(row, "keys") else []
-            payload["committed"] = (
-                bool(row["committed"]) if "committed" in keys else False
-            )
+        keys = row.keys() if hasattr(row, "keys") else []
+        if "committed" in keys:
+            payload["committed"] = bool(row["committed"])
         return payload
 
     def export(self, project_id: str, agent_id: str) -> dict[str, Any]:

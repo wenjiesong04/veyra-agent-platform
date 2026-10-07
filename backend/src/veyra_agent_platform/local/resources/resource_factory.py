@@ -8,6 +8,7 @@ executes model-written code.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from veyra_agent_platform.contracts.canonical import sha256_digest
@@ -75,19 +76,41 @@ class ResourceFactory:
             wrapper = wrappers.get(gap.capability)
             strategy = classify_factory_strategy(requirement, wrapper=wrapper)
             previous = prior.get(gap.capability)
+            pending_method = bool(
+                strategy.generation_strategy == "skill_instruction"
+                and previous
+                and previous.draft
+                and not previous.published
+                and skill_draft_needs_method(previous.draft)
+            )
             operation_id = previous.operation_id if previous else new_uuid7()
             results.append(
                 ResourceFactoryPlan(
                     capability=gap.capability,
-                    status=strategy.status,
+                    status="requires_user_configuration"
+                    if pending_method
+                    else strategy.status,
                     strategy=strategy.generation_strategy,
                     can_generate=strategy.can_generate,
-                    reason=strategy.reason,
+                    reason="Add method, inputs, and output criteria before approval"
+                    if pending_method
+                    else strategy.reason,
                     risk_level=strategy.risk_level,
                     resource_kind=strategy.resource_kind,
-                    requirements=strategy.requirements,
+                    requirements=("skill_instruction",)
+                    if pending_method
+                    else strategy.requirements,
                     draft=previous.draft if previous else None,
-                    validation=previous.validation if previous else None,
+                    validation={
+                        "passed": False,
+                        "kind": "skill",
+                        "code": "factory_skill_instruction_required",
+                        "capabilities": [gap.capability],
+                    }
+                    if pending_method
+                    else previous.validation
+                    if previous
+                    else None,
                     published=previous.published if previous else None,
                     snapshot_hash=previous.snapshot_hash if previous else None,
                     proposal_id=proposal_id
@@ -98,30 +121,91 @@ class ResourceFactory:
         return results
 
     def ensure_skill_draft(
-        self, planned: ResourceFactoryPlan, requirement: CapabilityRequirement
+        self,
+        planned: ResourceFactoryPlan,
+        requirement: CapabilityRequirement,
+        *,
+        instruction: str | None = None,
     ) -> ResourceFactoryPlan:
-        if planned.strategy != "skill_instruction" or not planned.can_generate:
+        classified = classify_factory_strategy(requirement)
+        if (
+            planned.strategy != "skill_instruction"
+            or not planned.can_generate
+            or classified.generation_strategy != "skill_instruction"
+        ):
             raise ResourceFactoryError(
                 "factory_unsupported",
                 planned.reason or "Skill generation is unsupported",
             )
+        provided = (
+            instruction
+            if isinstance(instruction, str) and instruction.strip()
+            else None
+        )
         if planned.draft and planned.snapshot_hash:
-            return planned
-        instruction = skill_instruction_for(requirement.capability)
+            stored = str((planned.draft.get("spec") or {}).get("instruction") or "")
+            if not provided:
+                if skill_draft_needs_method(planned.draft):
+                    return replace(
+                        planned,
+                        status="requires_user_configuration",
+                        requirements=("skill_instruction",),
+                        validation={
+                            "passed": False,
+                            "kind": "skill",
+                            "code": "factory_skill_instruction_required",
+                            "capabilities": [requirement.capability],
+                            "reason": "A name alone does not define a usable method",
+                        },
+                    )
+                return planned
+            if provided == stored and not skill_draft_needs_method(planned.draft):
+                return planned
+            current = self.catalog.detail(
+                str(planned.draft["resource_id"]), str(planned.draft["version"])
+            )
+            if provided and (
+                planned.published or current.get("availability") != "quarantined"
+            ):
+                raise ResourceFactoryError(
+                    "factory_skill_revision_required",
+                    "Different instructions require a new published Skill version",
+                )
+        scaffold = not provided or skill_draft_needs_method(
+            {
+                "spec": {"instruction": provided},
+                "capabilities": [requirement.capability],
+            }
+        )
+        instruction = (
+            _skill_scaffold_instruction(requirement.capability)
+            if scaffold
+            else provided
+        )
+        assert isinstance(instruction, str)
         name = _display_name(requirement.capability)
         description = (
             f"Factory Skill for the `{requirement.capability}` capability. "
             "Instruction resource only; it does not grant tools or permissions."
         )
-        try:
-            validation = validate_skill_draft(
-                instruction=instruction,
-                capabilities=[requirement.capability],
-                name=name,
-                description=description,
-            )
-        except ResourceFactoryValidationError as exc:
-            raise ResourceFactoryError(exc.code, str(exc)) from exc
+        if scaffold:
+            validation = {
+                "passed": False,
+                "kind": "skill",
+                "code": "factory_skill_instruction_required",
+                "capabilities": [requirement.capability],
+                "reason": "A capability name alone does not define a usable method",
+            }
+        else:
+            try:
+                validation = validate_skill_draft(
+                    instruction=instruction,
+                    capabilities=[requirement.capability],
+                    name=name,
+                    description=description,
+                )
+            except ResourceFactoryValidationError as exc:
+                raise ResourceFactoryError(exc.code, str(exc)) from exc
         resource_id, package_id = _new_resource_id("skill", requirement.capability)
         payload = _skill_payload(
             resource_id=resource_id,
@@ -133,18 +217,29 @@ class ResourceFactory:
             selectable=False,
             runtime_status="runtime_not_supported",
             version="0.0.1",
+            validation_passed=not scaffold,
+            instruction_status="scaffold" if scaffold else "provided",
         )
-        resource = self.workshop.write_overlay(payload, package_id=package_id)
+        if planned.draft and planned.snapshot_hash:
+            payload["resource_id"] = str(planned.draft["resource_id"])
+            payload["version"] = str(planned.draft["version"])
+            resource = self.workshop.replace_overlay(
+                payload["resource_id"], payload["version"], payload
+            )
+        else:
+            resource = self.workshop.write_overlay(payload, package_id=package_id)
         digest = snapshot_identity(resource)
         return ResourceFactoryPlan(
             capability=planned.capability,
-            status=planned.status,
+            status="requires_user_configuration" if scaffold else "generatable",
             strategy=planned.strategy,
             can_generate=True,
-            reason=planned.reason,
+            reason="Add method, inputs, and output criteria before approval"
+            if scaffold
+            else planned.reason,
             risk_level=planned.risk_level,
             resource_kind="skill",
-            requirements=planned.requirements,
+            requirements=("skill_instruction",) if scaffold else (),
             draft=resource,
             validation=validation,
             published=None,
@@ -237,17 +332,40 @@ class ResourceFactory:
                 current.get("content_hash"),
                 published_hash,
             }:
+                validation = planned.validation
+                if current.get("kind") == "skill":
+                    if skill_draft_needs_method(current):
+                        raise ResourceFactoryError(
+                            "factory_skill_instruction_required",
+                            "A real Skill method is required before publishing",
+                        )
+                    try:
+                        instruction = str(
+                            (current.get("spec") or {}).get("instruction") or ""
+                        )
+                        validation = validate_skill_draft(
+                            instruction=instruction,
+                            capabilities=list(current.get("capabilities") or []),
+                            name=str(current.get("name") or ""),
+                            description=str(current.get("description") or ""),
+                        )
+                    except ResourceFactoryValidationError as exc:
+                        raise ResourceFactoryError(exc.code, str(exc)) from exc
                 return ResourceFactoryPlan(
                     capability=planned.capability,
-                    status=planned.status,
+                    status="generatable"
+                    if current.get("kind") == "skill"
+                    else planned.status,
                     strategy=planned.strategy,
                     can_generate=planned.can_generate,
                     reason=planned.reason,
                     risk_level=planned.risk_level,
                     resource_kind=planned.resource_kind,
-                    requirements=planned.requirements,
+                    requirements=()
+                    if current.get("kind") == "skill"
+                    else planned.requirements,
                     draft=planned.draft,
-                    validation=planned.validation,
+                    validation=validation,
                     published=current,
                     snapshot_hash=planned.snapshot_hash,
                     proposal_id=planned.proposal_id,
@@ -261,6 +379,16 @@ class ResourceFactory:
         payload = self.workshop.overlay_payload(resource_id, version)
         try:
             if payload.get("kind") == "skill":
+                if skill_draft_needs_method(payload):
+                    raise ResourceFactoryError(
+                        "factory_skill_instruction_required",
+                        "This Skill is a scaffold. Add a method before approval",
+                    )
+                strategy = classify_factory_strategy(
+                    CapabilityRequirement(capability=planned.capability)
+                )
+                if strategy.generation_strategy != "skill_instruction":
+                    raise ResourceFactoryError("factory_unsupported", strategy.reason)
                 instruction = str((payload.get("spec") or {}).get("instruction") or "")
                 validate_skill_draft(
                     instruction=instruction,
@@ -339,6 +467,7 @@ class ResourceFactory:
         payload["tags"] = ["workshop", "factory", "quarantined"]
         spec = payload.setdefault("spec", {})
         spec["instruction"] = instruction
+        spec["instruction_status"] = "provided"
         spec["review_required"] = True
         spec["validation_passed"] = True
         spec["executable"] = False
@@ -379,6 +508,42 @@ def skill_instruction_for(capability: str) -> str:
     )
 
 
+def _skill_scaffold_instruction(capability: str) -> str:
+    return (
+        "Purpose\n"
+        f"Draft only for `{capability}`. "
+        "The capability name does not define a usable method.\n\n"
+        "When to use\n"
+        "Do not bind or run until the user supplies the actual method.\n\n"
+        "Procedure\n"
+        "Add the concrete steps and required inputs supplied by the user.\n\n"
+        "Expected output\n"
+        "Add the result format and acceptance criteria for the supplied method.\n\n"
+        "Constraints\n"
+        "Instruction text cannot create Tools, data access, or external effects.\n\n"
+        "Failure handling\n"
+        "Keep the capability unresolved while the method or inputs are missing."
+    )
+
+
+def skill_draft_needs_method(resource: Mapping[str, Any]) -> bool:
+    """Identify Factory placeholders without altering stored resource bytes."""
+    spec = resource.get("spec") or {}
+    if not isinstance(spec, Mapping):
+        return True
+    instruction = str(spec.get("instruction") or "")
+    if not instruction.strip() or spec.get("instruction_status") == "scaffold":
+        return True
+    return any(
+        instruction
+        in {
+            skill_instruction_for(str(capability)),
+            _skill_scaffold_instruction(str(capability)),
+        }
+        for capability in resource.get("capabilities") or []
+    )
+
+
 def _skill_payload(
     *,
     resource_id: str,
@@ -390,6 +555,8 @@ def _skill_payload(
     selectable: bool,
     runtime_status: str,
     version: str,
+    validation_passed: bool = True,
+    instruction_status: str = "provided",
 ) -> dict[str, Any]:
     return {
         "resource_id": resource_id,
@@ -406,7 +573,8 @@ def _skill_payload(
         "spec": {
             "executable": False,
             "origin": "factory",
-            "validation_passed": True,
+            "validation_passed": validation_passed,
+            "instruction_status": instruction_status,
             "review_required": True,
             "instruction": instruction,
             "ui": {

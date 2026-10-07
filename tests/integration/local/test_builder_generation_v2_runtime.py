@@ -10,6 +10,7 @@ import json
 import sqlite3
 import time
 from collections import Counter
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
 from .test_factory_routes import ScriptedKimiTransport, _completion
 from .test_loop_resource_truth import _PNG
 from .test_runtime_routes import ScriptedRuntimeTransport
+from .verified_runtime_model import verified_client
 
 RESEARCH = "帮我做一个研究助手，可以搜索网页并整理报告"
 WORKSPACE = "帮我做一个可以查看和修改项目文件的开发助手，写文件前需要确认"
@@ -84,20 +86,22 @@ def _fake_search(**kwargs: Any) -> ToolExecution:
     )
 
 
-def _client(tmp_path: Path, runtime: object | None = None) -> TestClient:
-    return TestClient(
-        create_app(
-            LocalSettings(
-                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
-                project_storage_root=tmp_path / "projects",
-            ),
-            factory_transport=ScriptedKimiTransport(
-                [_completion("ok") for _ in range(24)]
-            ),
-            runtime_transport=runtime,
-            tool_adapters={"veyra.runtime.web.search": _fake_search},
-        )
+def _client(
+    tmp_path: Path, runtime: object | None = None
+) -> AbstractContextManager[TestClient]:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
     )
+    options: dict[str, Any] = {
+        "factory_transport": ScriptedKimiTransport(
+            [_completion("ok") for _ in range(24)]
+        ),
+        "tool_adapters": {"veyra.runtime.web.search": _fake_search},
+    }
+    if runtime is None:
+        return TestClient(create_app(settings, **options))
+    return verified_client(settings, runtime, **options)
 
 
 def _project(client: TestClient) -> str:
@@ -317,6 +321,9 @@ def test_workflow_state_write_then_read_uses_entity_store(tmp_path: Path) -> Non
             if item["resource_id"] == "veyra.tool.entity.read"
         )
         source["lock"][read_tool["reference"]] = read_tool["content_hash"]
+        source["extensions"]["veyra"]["permissions"]["tools"].append(
+            read_tool["resource_id"]
+        )
         saved = client.patch(
             f"{url}/draft",
             json={"source": source, "expected_revision": draft.json()["revision"]},
@@ -511,7 +518,10 @@ def test_secondhand_partial_flow_pauses_for_human_input(tmp_path: Path) -> None:
         assert waiting["waiting"]["kind"] == "input", waiting["waiting"]
         replied = client.post(
             f"{url}/runs/{waiting['run_id']}/commands",
-            json={"command": "reply", "inputs": {"model": "ABC-1"}},
+            json={
+                "command": "reply",
+                "inputs": {waiting["waiting"]["expected_fields"][0]: "ABC-1"},
+            },
             headers={"Idempotency-Key": new_uuid7()},
         )
         assert replied.status_code == 200, replied.text

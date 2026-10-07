@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION
 from veyra_agent_platform.contracts.execution_plan import (
@@ -57,7 +58,15 @@ def compile_execution_plan(
         steps=steps,
         inputs=structure.inputs,
         outputs=structure.outputs,
-        state=structure.state,
+        state=(
+            None
+            if shape.shape == "PURE_AGENT"
+            and not structure.lifecycle.persistent
+            and structure.state is not None
+            and structure.state.scope in {"run", "conversation"}
+            and not any(b.kind == "state" for b in structure.execution_boundaries)
+            else structure.state
+        ),
         capabilities=_capabilities(structure),
         tool_approvals=_tool_approvals(structure),
         business_approvals=_business_approvals(structure),
@@ -69,7 +78,11 @@ def compile_execution_plan(
 def _actors(structure: TaskStructure, shape: str) -> tuple[PlanActor, ...]:
     if shape == "PURE_AGENT":
         caps = _capabilities(structure)
-        name = structure.goal[:40] or "Agent"
+        name = (
+            structure.actors[0].role[:60]
+            if structure.actors and structure.actors[0].role
+            else structure.goal[:40] or "Agent"
+        )
         return (
             PlanActor(
                 id="main",
@@ -92,6 +105,8 @@ def _actors(structure: TaskStructure, shape: str) -> tuple[PlanActor, ...]:
                 name=_actor_name(item.role, item.id),
                 capabilities=item.capabilities,
                 brief=item.reason or item.role,
+                inputs=item.inputs,
+                outputs=item.outputs,
             )
         )
     if not actors:
@@ -135,6 +150,8 @@ def _steps(
             ),
             PlanStep(id="output", kind="output", why="Return the declared outputs"),
         )
+    if any(stage.actor for stage in structure.stages):
+        return _semantic_steps(structure, actors)
     vision = next((item.id for item in actors if "vision" in item.capabilities), "")
     search = next(
         (item.id for item in actors if "web_search" in item.capabilities),
@@ -195,6 +212,9 @@ def _steps(
                         source=human.source,
                     )
                 )
+        elif boundary.kind == "human_input":
+            if not any(item.id == _nid(boundary.stage) for item in side):
+                backbone.append(_boundary_step(boundary))
         elif boundary.kind == "tool" and boundary.capability == "web_search" and search:
             if not any(item.id == "research" for item in backbone):
                 backbone.append(
@@ -329,7 +349,7 @@ def _wire(backbone: list[PlanStep], side: list[PlanStep]) -> tuple[PlanStep, ...
             on_true = step.on_true or nxt or "output"
             on_false = step.on_false or "output"
             on_next = on_true
-        elif step.kind == "human_approval":
+        elif step.kind in {"human_approval", "human_input"}:
             on_approved = nxt or "output"
             on_rejected = "output"
             on_next = on_approved
@@ -353,6 +373,7 @@ def _wire(backbone: list[PlanStep], side: list[PlanStep]) -> tuple[PlanStep, ...
                 capability=step.capability,
                 source=step.source,
                 expected_schema=step.expected_schema,
+                input_sources=step.input_sources,
                 on_true=on_true,
                 on_false=on_false,
                 on_approved=on_approved,
@@ -393,17 +414,144 @@ def _wire(backbone: list[PlanStep], side: list[PlanStep]) -> tuple[PlanStep, ...
 def _matching_input(
     structure: TaskStructure, boundary: ExecutionBoundary
 ) -> ExecutionBoundary | None:
-    wanted = {
-        "information_check": "request_missing",
-        "image_quality": "request_new_images",
-    }.get(_nid(boundary.stage))
-    if wanted:
-        for item in structure.execution_boundaries:
-            if item.kind == "human_input" and _nid(item.stage) == wanted:
-                return item
-    if _nid(boundary.stage) in {"amount_gate", "threshold_gate"}:
-        return None
+    # Legacy language plans have branch labels rather than executable stage ids.
+    # Associate a following request by structural position, not business names.
+    boundaries = structure.execution_boundaries
+    index = boundaries.index(boundary)
+    for item in boundaries[index + 1 :]:
+        if item.kind == "human_input":
+            return item
+        if item.kind in {"condition", "human_approval", "verification", "state"}:
+            break
     return None
+
+
+def _boundary_step(boundary: ExecutionBoundary, *, step_id: str = "") -> PlanStep:
+    kinds = {
+        "condition": "condition",
+        "human_input": "human_input",
+        "human_approval": "human_approval",
+        "verification": "verifier",
+        "state": "state_write",
+    }
+    kind = kinds.get(boundary.kind)
+    if kind is None:
+        raise ValueError(f"unsupported execution boundary: {boundary.kind}")
+    return PlanStep(
+        id=step_id or _nid(boundary.stage),
+        kind=kind,  # type: ignore[arg-type]
+        why=boundary.reason,
+        expression=boundary.expression,
+        question=boundary.question,
+        prompt=boundary.reason if kind == "human_approval" else "",
+        checks=boundary.checks,
+        entity=boundary.entity,
+        capability=boundary.capability,
+        expected_schema=boundary.expected_schema,
+        source=boundary.source,
+    )
+
+
+def _semantic_steps(
+    structure: TaskStructure, actors: tuple[PlanActor, ...]
+) -> tuple[PlanStep, ...]:
+    """Compile the model's semantic ordering; capability labels are not ordering."""
+    known = {actor.id: actor for actor in actors}
+    if len(known) != len(actors):
+        raise ValueError("duplicate task actor id")
+    stage_ids = [_nid(stage.id) for stage in structure.stages]
+    if len(set(stage_ids)) != len(stage_ids) or {"start", "output"} & set(stage_ids):
+        raise ValueError("duplicate or reserved task stage id")
+    backbone = [PlanStep(id="start", kind="start", why="Run begins")]
+    used: set[int] = set()
+    for stage in structure.stages:
+        if stage.actor:
+            if stage.actor not in known:
+                raise ValueError(f"unknown stage actor: {stage.actor}")
+            backbone.append(
+                PlanStep(
+                    id=_nid(stage.id),
+                    kind="agent_call",
+                    agent=stage.actor,
+                    why=stage.summary,
+                    source=stage.source,
+                    input_sources=stage.input_sources,
+                )
+            )
+        matching = [
+            (index, boundary)
+            for index, boundary in enumerate(structure.execution_boundaries)
+            if _nid(boundary.stage) == _nid(stage.id)
+        ]
+        for index, boundary in matching:
+            used.add(index)
+            if boundary.kind in {"reasoning", "multimodal", "tool", "artifact"}:
+                if boundary.kind == "tool" and boundary.required:
+                    actor = known.get(stage.actor)
+                    if actor is None or boundary.capability not in actor.capabilities:
+                        raise ValueError(
+                            "required capability boundary has no owning actor"
+                        )
+                elif (
+                    boundary.required
+                    and not stage.actor
+                    and boundary.kind != "artifact"
+                ):
+                    raise ValueError("required reasoning boundary has no owning actor")
+                continue
+            if boundary.kind == "human_approval" and boundary.approval_class == "tool":
+                continue
+            if boundary.kind == "state":
+                backbone.append(
+                    PlanStep(
+                        id=f"{_nid(stage.id)}_state_type",
+                        kind="transform",
+                        why="Bind the declared entity type",
+                        entity=boundary.entity,
+                    )
+                )
+            suffix = (
+                f"_{boundary.kind}_{index}" if stage.actor or len(matching) > 1 else ""
+            )
+            backbone.append(_boundary_step(boundary, step_id=_nid(stage.id) + suffix))
+        if not stage.actor and not matching:
+            raise ValueError(f"stage has no executable actor or boundary: {stage.id}")
+    for index, boundary in enumerate(structure.execution_boundaries):
+        if index in used:
+            continue
+        if boundary.kind in {"reasoning", "multimodal", "tool", "artifact"}:
+            if boundary.required and boundary.kind != "artifact":
+                raise ValueError("required boundary has no executable semantic stage")
+            continue
+        if boundary.kind == "human_approval" and boundary.approval_class == "tool":
+            continue
+        if boundary.required:
+            # A required user/state/check boundary may not silently disappear.
+            if boundary.kind == "state":
+                backbone.append(
+                    PlanStep(
+                        id=f"{_nid(boundary.stage)}_state_type",
+                        kind="transform",
+                        why="Bind the declared entity type",
+                        entity=boundary.entity,
+                    )
+                )
+            backbone.append(_boundary_step(boundary))
+    backbone.append(PlanStep(id="output", kind="output", why="Return outputs"))
+    wired = list(_wire(backbone, []))
+    # Model plans may name branch stage ids. Labels alone do not grant looping.
+    boundary_by_stage = {
+        _nid(item.stage): item for item in structure.execution_boundaries
+    }
+    for index, step in enumerate(wired):
+        if step.kind != "condition":
+            continue
+        condition_boundary = boundary_by_stage.get(step.id)
+        if condition_boundary and len(condition_boundary.branches) == 2:
+            targets = tuple(_nid(value) for value in condition_boundary.branches)
+            if all(target in {item.id for item in wired} for target in targets):
+                wired[index] = replace(step, on_true=targets[0], on_false=targets[1])
+    return tuple(wired)
 
 
 def _boundary(structure: TaskStructure, kind: str) -> ExecutionBoundary | None:
@@ -419,7 +567,9 @@ def _source(structure: TaskStructure, kind: str) -> str:
 
 
 def _capabilities(structure: TaskStructure) -> tuple[str, ...]:
-    names: list[str] = []
+    names: list[str] = [
+        capability for actor in structure.actors for capability in actor.capabilities
+    ]
     for item in structure.execution_boundaries:
         if item.capability:
             names.append(item.capability)

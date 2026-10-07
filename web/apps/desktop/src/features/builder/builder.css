@@ -173,6 +173,75 @@
   padding: clamp(16px, 3vw, 28px);
   color: var(--ink);
 }
+.builder-runtime-binding-card {
+  display: grid;
+  gap: 20px;
+  width: min(100%, 900px);
+  margin: 0 auto;
+  padding: clamp(18px, 3vw, 28px);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.builder-runtime-binding-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.builder-runtime-binding-heading { display: grid; gap: 8px; min-width: 0; }
+.builder-runtime-binding-eyebrow {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.builder-runtime-binding-heading h3 { margin: 0; font-size: clamp(19px, 2.2vw, 24px); letter-spacing: -.035em; }
+.builder-runtime-binding-heading p { max-width: 60ch; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.builder-runtime-binding-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 25%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 700;
+}
+.builder-runtime-binding-status span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.builder-runtime-binding-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.builder-runtime-binding-fields label { display: grid; gap: 9px; min-width: 0; color: var(--muted); font-size: 12px; font-weight: 700; }
+.builder-runtime-binding-fields select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 36px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.builder-runtime-binding-fields select:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.builder-runtime-binding-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.builder-runtime-binding-empty { display: grid; justify-items: start; gap: 12px; }
+.builder-runtime-binding-note { margin: -5px 0 0; color: var(--subtle); font-size: 11px; }
+.builder-runtime-binding-error { margin: 0; color: var(--bad); font-size: 12px; }
+@media (max-width: 640px) {
+  .builder-runtime-binding-head { flex-direction: column; gap: 12px; }
+  .builder-runtime-binding-fields { grid-template-columns: 1fr; }
+  .builder-runtime-binding-actions .ui-button { width: 100%; }
+}
 .builder-component-proposal > header {
   display: flex;
   align-items: flex-start;

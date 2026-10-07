@@ -95,4 +95,19 @@ describe("NewChatPage", () => {
     await screen.findByRole("textbox", { name: "Message" });
     expect(api.createProject).not.toHaveBeenCalled();
   });
+
+  it("does not show the previous Project chat while a new Project route loads", async () => {
+    const beta = { ...alpha, project_id: "project-2", name: "Beta", root_path: "/tmp/project-2", agents: [] };
+    let finish!: (project: ProjectSummaryResponse) => void;
+    const pending = new Promise<ProjectSummaryResponse>((resolve) => { finish = resolve; });
+    const api = apiFor([alpha]);
+    api.getProject = vi.fn().mockImplementation((projectId: string) => projectId === "project-2" ? pending : Promise.resolve(alpha));
+    const view = render(<ThemeProvider><ProjectWorkspaceProvider api={api}><NewChatPage projectId="project-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    await waitFor(() => expect(document.querySelector('[data-project-id="project-1"]')).toBeInTheDocument());
+    view.rerender(<ThemeProvider><ProjectWorkspaceProvider api={api}><NewChatPage projectId="project-2" /></ProjectWorkspaceProvider></ThemeProvider>);
+    expect(document.querySelector('[data-project-id="project-1"]')).not.toBeInTheDocument();
+    expect(screen.getByText("Opening Project…")).toBeInTheDocument();
+    finish(beta);
+    await waitFor(() => expect(document.querySelector('[data-project-id="project-2"]')).toBeInTheDocument());
+  });
 });

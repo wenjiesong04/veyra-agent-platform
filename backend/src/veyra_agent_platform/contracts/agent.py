@@ -43,7 +43,13 @@ from .resource import (
     ResourceRef,
     require_semver,
 )
-from .typed_io import TypedField, parse_typed_fields, typed_fields_to_wire
+from .task_structure import StateRequirement
+from .typed_io import (
+    TypedField,
+    parse_typed_field,
+    parse_typed_fields,
+    typed_fields_to_wire,
+)
 
 MAX_REVISIONS = 10
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -1196,6 +1202,7 @@ class AgentSource:
     instructions: str = ""
     max_turns: int = DEFAULT_MAX_TURNS
     handoff_agent_refs: tuple[str, ...] = ()
+    state_contract: StateRequirement | None = None
     _version_present: bool = field(default=False, repr=False, compare=False)
 
     @property
@@ -1252,6 +1259,7 @@ class AgentSource:
                 "instructions",
                 "max_turns",
                 "handoff_agent_refs",
+                "state_contract",
             },
             required={"runtime_profile", "secret_refs", "permissions", "verification"},
         )
@@ -1314,6 +1322,7 @@ class AgentSource:
             handoff_agent_refs=_strict_str_list(
                 veyra.get("handoff_agent_refs", []), "handoff_agent_refs"
             ),
+            state_contract=_agent_state_contract(veyra.get("state_contract")),
             _version_present="version" in item,
         )
         if any(
@@ -1408,6 +1417,10 @@ class AgentSource:
         if self.handoff_agent_refs:
             result["extensions"]["veyra"]["handoff_agent_refs"] = list(
                 self.handoff_agent_refs
+            )
+        if self.state_contract is not None:
+            result["extensions"]["veyra"]["state_contract"] = (
+                self.state_contract.to_dict()
             )
         if self._version_present or self.version != "1.0.0":
             result["version"] = self.version
@@ -1513,6 +1526,22 @@ def _validate_ui_node_references(
         raise ContractValidationError(
             f"{field}.branch_labels references non-Condition node(s): {colliding}"
         )
+
+
+def _agent_state_contract(value: Any) -> StateRequirement | None:
+    if value is None:
+        return None
+    state = StateRequirement.from_dict(value, "state_contract")
+    if state.identity not in state.fields and state.identity != "entity_id":
+        raise ContractValidationError(
+            "state_contract identity must name a field or entity_id"
+        )
+    if len(state.fields) > 24:
+        raise ContractValidationError("state_contract fields exceed the platform limit")
+    for kind in state.fields.values():
+        if kind != "artifact":
+            parse_typed_field(kind, "state_contract.field")
+    return state
 
 
 def _execution_kind(value: Any) -> str:

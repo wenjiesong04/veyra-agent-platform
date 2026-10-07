@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowRunResponse, WorkflowSource } from "@veyra/api-contracts";
@@ -107,6 +107,22 @@ describe("WorkflowRunPanel", () => {
     expect(await screen.findByText("Write notes.txt?")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(commandWorkflowRun).toHaveBeenCalledWith("project-1", "wf-1", "run-w1", { command: "approve" }));
+  });
+
+  it("collects declared fields and replies to a human-input wait", async () => {
+    const inputSource: WorkflowSource = { ...source, nodes: [...source.nodes, { id: "input", component_type: "HumanApproval", prompt: "Which model?", review: "input", inputs: { model: "string" } }] };
+    const waiting: WorkflowRunResponse = { ...run, status: "waiting", result: null, finished_at: null, waiting: { kind: "input", node_id: "input", prompt: "Which model?", expected_fields: ["model"] } };
+    const commandWorkflowRun = vi.fn().mockResolvedValue({ ...run, waiting: null });
+    const api = { runWorkflow: vi.fn().mockResolvedValue(waiting), getWorkflowRun: vi.fn().mockResolvedValue(waiting), commandWorkflowRun } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<WorkflowRunPanel api={api} projectId="project-1" workflowId="wf-1" source={inputSource} disabled={false} locale="en" />);
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
+    await user.click(screen.getByRole("button", { name: "Test run" }));
+    const reply = await screen.findByRole("region", { name: "Provide run input" });
+    expect(within(reply).queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    await user.type(within(reply).getByRole("textbox"), "ABC-1");
+    await user.click(within(reply).getByRole("button", { name: "Submit and continue" }));
+    await waitFor(() => expect(commandWorkflowRun).toHaveBeenCalledWith("project-1", "wf-1", "run-w1", { command: "reply", inputs: { model: "ABC-1" } }));
   });
 
   it("collapses the overlay chrome without leaving the JSON editor behind", async () => {

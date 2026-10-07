@@ -1,6 +1,7 @@
 import { isArtifactRef, type ArtifactRef, type JsonObject, type JsonValue } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { ArtifactCard } from "./RuntimeInputForm";
+import { ReadableRuntimeOutput } from "./ReadableRuntimeOutput";
 
 type Locale = "zh" | "en";
 
@@ -9,13 +10,16 @@ export function RuntimeOutputView({
   locale,
   projectId,
   api,
+  presentation = "technical",
 }: {
   result: JsonValue | null | undefined;
   locale: Locale;
   projectId?: string;
   api?: Pick<LocalProjectApi, "artifactContent">;
+  presentation?: "technical" | "reading";
 }) {
   if (result == null) return null;
+  if (presentation === "reading") return <ReadableRuntimeOutput value={result} locale={locale} projectId={projectId} api={api} />;
   if (isArtifactRef(result)) {
     return <ArtifactCard item={result} locale={locale} projectId={projectId} api={api} />;
   }

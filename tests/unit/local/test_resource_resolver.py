@@ -7,6 +7,7 @@ from veyra_agent_platform.local.builder.agent_composer import compose_loop_agent
 from veyra_agent_platform.local.builder.capability_requirements import (
     claimed_resource_references,
     derive_capability_requirements,
+    requirement_for,
 )
 from veyra_agent_platform.local.builder.specification import infer_agent_specification
 from veyra_agent_platform.local.resources import ResourceCatalog
@@ -61,6 +62,21 @@ def test_exact_capability_match_selects_web_search() -> None:
     resource = catalog.by_reference(selected[0].reference)
     assert "web_search" in resource["capabilities"]
     assert selected[0].bind_status == "will_bind"
+
+
+def test_descriptor_input_types_select_and_bind_arithmetic_for_the_runtime() -> None:
+    catalog = ResourceCatalog()
+    spec = infer_agent_specification("核对金额和差额")
+    plan = ResourceResolver(catalog).resolve(spec, (requirement_for("arithmetic"),))
+    selected = _by_capability(plan.selected, "arithmetic")
+    assert len(selected) == 1 and not plan.missing_required
+    source = compose_loop_agent(spec, plan, requirement="核对金额和差额")
+    assert selected[0].reference in source.lock
+    assert "veyra.tool.math.calculate" in source.permissions.tools
+    assert any(
+        binding["reference"] == selected[0].reference
+        for binding in source.ui["bindings"].values()
+    )
 
 
 def test_already_bound_is_preferred_over_a_second_binding() -> None:

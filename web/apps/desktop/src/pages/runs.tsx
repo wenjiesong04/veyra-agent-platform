@@ -63,7 +63,7 @@ function toWorkflowRow(run: WorkflowRunResponse, projectName: string, workflowNa
     name: workflowName,
     projectName,
     projectId: run.project_id,
-    href: withRunId(projectRoutePaths.workflow(run.project_id, run.workflow_id), run.run_id),
+    href: withRunId(projectRoutePaths.workflowRun(run.project_id, run.workflow_id), run.run_id),
     status: run.status,
     startedAt: run.created_at,
     finishedAt: run.finished_at,

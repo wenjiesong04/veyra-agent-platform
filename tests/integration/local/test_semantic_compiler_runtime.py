@@ -3,19 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from tests.integration.local.test_runtime_routes import (
     ScriptedRuntimeTransport,
     _await_run,
 )
+from tests.integration.local.verified_runtime_model import verified_client
 from tests.unit.local.test_semantic_plan_compiler import (
     _empty_context,
     _plan,
     _step,
 )
 from veyra_agent_platform.contracts.common import new_uuid7
-from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.builder.semantic_compiler import compile_semantic_plan
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.factory.compiler import compile_blueprint
@@ -69,7 +68,7 @@ def test_compiled_multi_model_graph_executes_each_model_node(tmp_path: Path) -> 
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post(
             "/api/v1/projects", json={"agents": [source.to_dict()]}
         ).json()

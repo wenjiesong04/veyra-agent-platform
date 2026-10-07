@@ -33,6 +33,7 @@ export const projectRoutePaths = {
   agentRun: (projectId: string, agentId: string) => `#/projects/${encodeRouteSegment(projectId)}/agents/${encodeRouteSegment(agentId)}/run`,
   workflows: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/workflows`,
   workflow: (projectId: string, workflowId: string) => `#/projects/${encodeRouteSegment(projectId)}/workflows/${encodeRouteSegment(workflowId)}`,
+  workflowRun: (projectId: string, workflowId: string) => `#/projects/${encodeRouteSegment(projectId)}/workflows/${encodeRouteSegment(workflowId)}/run`,
   knowledge: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/knowledge`,
   knowledgeItem: (projectId: string, knowledgeId: string) => `#/projects/${encodeRouteSegment(projectId)}/knowledge/${encodeRouteSegment(knowledgeId)}`,
   files: (projectId: string) => `#/projects/${encodeRouteSegment(projectId)}/files`,
@@ -54,7 +55,7 @@ export const libraryRoutePaths = {
   file: (fileId: string) => `#/files/${encodeRouteSegment(fileId)}`,
 } as const;
 
-export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
+export type ProjectRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-workflow-run" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "agent-detail" | "agent-version" | "factory" | "agent-design" | "agent-analysis" | "agent-run";
 export type CommunitySubrouteKind = "community-published" | "community-starred" | "community-mine";
 export type DesktopSubrouteKind = "component" | "file" | "community-entry" | "community-version" | CommunitySubrouteKind;
 export type DesktopAuthRouteKind = "login" | "register" | "forgot-password";
@@ -172,6 +173,7 @@ export function parseDesktopRoute(input: string): DesktopRouteLocation {
   if (parts.length === 3 && parts[2] === "runs") return { kind: "project-runs", path, projectId };
   const nestedId = parts[3] ? decodeRouteSegment(parts[3]) : null;
   if (parts.length === 4 && parts[2] === "workflows" && nestedId) return { kind: "project-workflow", path, projectId, workflowId: nestedId };
+  if (parts.length === 5 && parts[2] === "workflows" && nestedId && parts[4] === "run") return { kind: "project-workflow-run", path, projectId, workflowId: nestedId };
   if (parts.length === 4 && parts[2] === "knowledge" && nestedId) return { kind: "project-knowledge-item", path, projectId, knowledgeId: nestedId };
 
   const agentId = parts[3] ? decodeRouteSegment(parts[3]) : null;

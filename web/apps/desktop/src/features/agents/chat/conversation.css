@@ -1475,7 +1475,23 @@
 }
 
 .agent-app-description[open] p {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
   white-space: pre-wrap;
+}
+
+.agent-app-description[open] summary span,
+.agent-app-description[open] summary .is-closed,
+.agent-app-description:not([open]) summary .is-open {
+  display: none;
+}
+
+.agent-app-description[open] summary {
+  position: sticky;
+  top: 0;
+  justify-content: flex-end;
+  background: var(--surface);
 }
 
 .agent-app-header > div:first-child {
@@ -1549,8 +1565,11 @@
 
 .agent-app-sidebar-block h3 {
   margin: 0;
-  font-size: 12px;
+  padding: 0 8px;
+  color: var(--subtle);
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .agent-app-sidebar-block button,
@@ -1559,13 +1578,47 @@
   text-align: left;
 }
 
+.agent-app-sidebar-block > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: var(--accent-strong);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.agent-app-sidebar-block > button::before {
+  content: "+";
+  font-size: 14px;
+  line-height: 1;
+}
+
+.agent-app-sidebar-block > button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+}
+
+.agent-app-sidebar-empty {
+  margin: 0;
+  padding: 0 8px;
+  color: var(--subtle);
+  font-size: 12px;
+}
+
 .agent-app-sidebar ul,
 .agent-app-run-list {
   margin: 0;
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 6px;
+  gap: 2px;
 }
 
 .agent-app-run-list li,
@@ -1578,6 +1631,27 @@
 
 .agent-app-sidebar li button {
   flex-wrap: wrap;
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  transition: background 140ms ease;
+}
+
+.agent-app-sidebar li button:hover {
+  background: var(--surface-soft);
+}
+
+.agent-app-sidebar li button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 650;
 }
 
 .agent-app-sidebar li small {
@@ -1591,8 +1665,19 @@
   width: 100%;
   align-items: center;
   justify-content: space-between;
+  border-radius: 10px;
+  padding: 7px 8px 7px 10px;
   color: inherit;
   text-decoration: none;
+  transition: background 140ms ease;
+}
+
+.agent-app-run-list a:hover {
+  background: var(--surface-soft);
+}
+
+.agent-app-run-list a[aria-current="page"] {
+  background: var(--accent-soft);
 }
 
 .agent-app-activity-strip {
@@ -1827,4 +1912,79 @@
   .agent-mini-canvas li[data-state="waiting"] {
     animation: none;
   }
+}
+
+/* Compact attachments and fields inside the composer */
+.agent-convo-composer .runtime-input-field {
+  gap: 4px;
+}
+
+.agent-convo-composer .runtime-artifact-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-convo-composer .runtime-artifact-list li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(100%, 18rem);
+}
+
+.agent-convo-composer .runtime-artifact-list li > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.agent-convo-composer .runtime-artifact-card {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 0;
+  padding: 6px 8px 6px 6px;
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.agent-convo-composer .runtime-artifact-card img {
+  grid-row: 1 / span 2;
+  width: 44px;
+  height: 44px;
+  max-height: none;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.agent-convo-composer .runtime-artifact-card strong {
+  grid-column: 2;
+  max-width: 9rem;
+}
+
+.agent-convo-composer .runtime-artifact-card small {
+  grid-column: 2;
+  font-size: 10.5px;
+}
+
+.agent-convo-composer .runtime-artifact-card button {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+.agent-convo-composer .runtime-input-file-help {
+  display: none;
+}
+
+.agent-convo-composer .runtime-artifact-input:has(.runtime-artifact-list li) input[type="file"] {
+  width: 7.2rem;
+  color: transparent;
+}
+.agent-app-input-question {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
 }

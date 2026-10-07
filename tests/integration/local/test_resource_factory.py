@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import AbstractContextManager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,27 @@ from .test_runtime_routes import (
     _command_until_settled,
     _run_until_settled,
 )
+from .verified_runtime_model import verified_client
 
 _SKILL_GOAL = (
     "创建一个 Agent。capability: structured_comparison_method。"
     "它需要一种当前 Veyra 没有的结构化比较方法。"
+)
+_SKILL_INSTRUCTION = (
+    "Purpose\n"
+    "Compare supplied product options using the customer's stated priorities.\n\n"
+    "When to use\n"
+    "Use when option specifications and a customer priority list are provided.\n\n"
+    "Procedure\n"
+    "1. Extract price, material, and delivery time from each provided option.\n"
+    "2. Mark missing values as unknown.\n"
+    "3. Rank options by the customer's priority order, recording supporting facts.\n\n"
+    "Expected output\n"
+    "A comparison table, ordered recommendation, and unresolved questions.\n\n"
+    "Constraints\n"
+    "Use only provided facts; do not invent specifications or external access.\n\n"
+    "Failure handling\n"
+    "Ask the customer for priorities or missing information before ranking."
 )
 _LOOKUP_GOAL = "创建一个 Agent。capability: mock_status_lookup。"
 _SHELL_GOAL = "创建一个 Agent。capability: run_arbitrary_shell。"
@@ -46,18 +64,15 @@ def _app_client(
     *,
     factory_transport: ScriptedKimiTransport | None = None,
     runtime_transport: ScriptedRuntimeTransport | None = None,
-) -> TestClient:
-    return TestClient(
-        create_app(
-            LocalSettings(
-                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
-                project_storage_root=tmp_path / "projects",
-            ),
-            factory_transport=factory_transport
-            or ScriptedKimiTransport([_completion("ok")]),
-            runtime_transport=runtime_transport,
-        )
+) -> AbstractContextManager[TestClient]:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
     )
+    factory = factory_transport or ScriptedKimiTransport([_completion("ok")])
+    if runtime_transport is None:
+        return TestClient(create_app(settings, factory_transport=factory))
+    return verified_client(settings, runtime_transport, factory_transport=factory)
 
 
 def _project(client: TestClient) -> str:
@@ -86,6 +101,53 @@ def _plan_for(session: dict[str, Any], capability: str) -> dict[str, Any]:
         for item in session["resource_factory_plans"]
         if item["capability"] == capability
     )
+
+
+def _approve_user_method(
+    client: TestClient, project_id: str, session: dict[str, Any]
+) -> dict[str, Any]:
+    planned = _plan_for(session, "structured_comparison_method")
+    factory_url = (
+        f"/api/v1/projects/{project_id}/factory/sessions/"
+        f"{session['session_id']}/factory-resources/approve"
+    )
+    scaffold_approval = client.post(
+        factory_url,
+        json={
+            "confirm": True,
+            "capability": "structured_comparison_method",
+            "content_hash": planned["snapshot_hash"],
+            "bind_to_project": True,
+        },
+    )
+    assert scaffold_approval.status_code == 422, scaffold_approval.text
+    assert scaffold_approval.json()["code"] == "factory_skill_instruction_required"
+    resource = planned["draft"]
+    workshop_url = (
+        f"/api/v1/resources/{resource['resource_id']}/versions/"
+        f"{resource['version']}/approve"
+    )
+    shortcut = client.post(workshop_url, json={})
+    assert shortcut.status_code == 422, shortcut.text
+    assert shortcut.json()["code"] == "workshop_instruction_required"
+    supplied = client.post(workshop_url, json={"instruction": _SKILL_INSTRUCTION})
+    assert supplied.status_code == 200, supplied.text
+    reviewed = supplied.json()["resource"]
+    assert reviewed["availability"] == "ready"
+    assert reviewed["spec"]["instruction"] == _SKILL_INSTRUCTION
+    assert reviewed["spec"]["instruction_status"] == "provided"
+    assert reviewed["content_hash"] != resource["content_hash"]
+    approved = client.post(
+        factory_url,
+        json={
+            "confirm": True,
+            "capability": "structured_comparison_method",
+            "content_hash": reviewed["content_hash"],
+            "bind_to_project": True,
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    return approved.json()
 
 
 def _start_mock_http() -> tuple[HTTPServer, int]:
@@ -129,11 +191,13 @@ def test_generate_skill_approve_resolver_runtime(tmp_path: Path) -> None:
             and item.get("bind_status") == "missing"
         ]
         assert missing
-        assert missing[0]["factory_status"] == "generatable"
+        assert missing[0]["factory_status"] == "requires_user_configuration"
         planned = _plan_for(session, "structured_comparison_method")
         assert planned["strategy"] == "skill_instruction"
         assert planned["draft"]["availability"] == "quarantined"
-        assert planned["validation"]["passed"] is True
+        assert planned["validation"]["passed"] is False
+        assert planned["requirements"] == ["skill_instruction"]
+        assert planned["draft"]["spec"]["instruction_status"] == "scaffold"
         first_hash = planned["snapshot_hash"]
         reloaded = client.get(
             f"/api/v1/projects/{project_id}/factory/sessions/{session['session_id']}"
@@ -159,22 +223,15 @@ def test_generate_skill_approve_resolver_runtime(tmp_path: Path) -> None:
         assert tampered.status_code == 422
         assert tampered.json()["code"] == "factory_snapshot_mismatch"
 
-        approved = client.post(
-            f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{session['session_id']}/factory-resources/approve",
-            json={
-                "confirm": True,
-                "capability": "structured_comparison_method",
-                "content_hash": first_hash,
-                "bind_to_project": True,
-            },
-        )
-        assert approved.status_code == 200, approved.text
-        published_plan = _plan_for(approved.json(), "structured_comparison_method")
+        approved = _approve_user_method(client, project_id, session)
+        published_plan = _plan_for(approved, "structured_comparison_method")
+        assert published_plan["status"] == "generatable"
+        assert published_plan["requirements"] == []
+        assert published_plan["validation"]["passed"] is True
         published = published_plan["published"]
         selected = next(
             item
-            for item in approved.json()["resource_plan"]
+            for item in approved["resource_plan"]
             if item.get("capability") == "structured_comparison_method"
         )
         assert selected["bind_status"] in {"will_bind", "already_bound"}
@@ -186,7 +243,7 @@ def test_generate_skill_approve_resolver_runtime(tmp_path: Path) -> None:
             json={
                 "confirm": True,
                 "capability": "structured_comparison_method",
-                "content_hash": first_hash,
+                "content_hash": published["content_hash"],
                 "bind_to_project": True,
             },
         )
@@ -236,7 +293,7 @@ def test_generate_skill_approve_resolver_runtime(tmp_path: Path) -> None:
         blob = json.dumps(runtime.calls, ensure_ascii=False)
         assert "Structured Comparison Method" in blob
         assert "Purpose" in blob
-        assert published["spec"]["instruction"].splitlines()[1] in blob
+        assert _SKILL_INSTRUCTION in runtime.calls[-1][0]["content"]
 
 
 def test_generated_http_wrapper_runs_against_localhost(tmp_path: Path) -> None:
@@ -412,43 +469,44 @@ def test_image_generation_stays_missing_and_unsupported(tmp_path: Path) -> None:
     with _app_client(tmp_path) as client:
         project_id = _project(client)
         session = _generate(client, project_id, _IMAGE_GOAL)
-        missing = [
-            item
+        assert not any(
+            item.get("capability") == "image_generation"
             for item in session["resource_plan"]
-            if item.get("capability") == "image_generation"
-            and item.get("bind_status") == "missing"
-        ]
-        assert missing
-        planned = _plan_for(session, "image_generation")
-        assert planned["status"] == "unsupported"
-        assert planned["can_generate"] is False
+        )
+        image_slot = next(
+            item
+            for item in session["proposal_preview"]["models"]
+            if "image_generation" in item["required"]
+        )
+        assert image_slot["status"] == "needs_setup"
         refused = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/"
             f"{session['session_id']}/factory-resources/drafts",
             json={"confirm": True, "capability": "image_generation"},
         )
         assert refused.status_code == 422
-        assert refused.json()["code"] == "factory_unsupported"
+        assert refused.json()["code"] == "factory_capability_missing"
 
 
 def test_disable_published_skill_drops_resolver_selection(tmp_path: Path) -> None:
-    with _app_client(tmp_path) as client:
+    runtime = ScriptedRuntimeTransport(
+        [json.dumps({"action": "final", "outputs": {"result": "compared"}})]
+    )
+    with _app_client(tmp_path, runtime_transport=runtime) as client:
         project_id = _project(client)
         session = _generate(client, project_id, _SKILL_GOAL)
         planned = _plan_for(session, "structured_comparison_method")
-        approved = client.post(
+        assert planned["status"] == "requires_user_configuration"
+        assert planned["validation"]["passed"] is False
+        approved = _approve_user_method(client, project_id, session)
+        published = _plan_for(approved, "structured_comparison_method")["published"]
+        applied = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{session['session_id']}/factory-resources/approve",
-            json={
-                "confirm": True,
-                "capability": "structured_comparison_method",
-                "content_hash": planned["snapshot_hash"],
-            },
+            f"{session['session_id']}/apply-draft",
+            json={"confirm": True},
         )
-        assert approved.status_code == 200, approved.text
-        published = _plan_for(approved.json(), "structured_comparison_method")[
-            "published"
-        ]
+        assert applied.status_code == 200, applied.text
+        agent_id = applied.json()["agent"]["agent_id"]
         disabled = client.post(
             f"/api/v1/resources/{published['resource_id']}/versions/"
             f"{published['version']}/enable",
@@ -456,6 +514,12 @@ def test_disable_published_skill_drops_resolver_selection(tmp_path: Path) -> Non
         )
         assert disabled.status_code == 200, disabled.text
         assert disabled.json()["resource"]["availability"] == "disabled"
+        refused = client.post(
+            f"/api/v1/projects/{project_id}/agents/{agent_id}/run",
+            json={"inputs": {"request": "compare two provided options"}},
+        )
+        assert refused.status_code == 422, refused.text
+        assert not runtime.calls
         retry = _generate(client, project_id, _SKILL_GOAL)
         missing = [
             item
@@ -464,3 +528,8 @@ def test_disable_published_skill_drops_resolver_selection(tmp_path: Path) -> Non
             and item.get("bind_status") == "missing"
         ]
         assert missing
+        assert not any(
+            item.get("reference") == published["reference"]
+            and item.get("bind_status") in {"will_bind", "already_bound"}
+            for item in retry["resource_plan"]
+        )

@@ -7,7 +7,28 @@ export type WorkbenchPhase =
   | "validating"
   | "review"
   | "missing"
-  | "completed";
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "finished";
+
+export function isBlockedCreation(
+  operation: BuilderConversationOperation | undefined,
+  session: FactorySession | null,
+): boolean {
+  if (session?.state === "missing_capability" || operation?.error_code === "factory_missing_capability") return false;
+  return Boolean(session?.blocked_reason?.trim())
+    || operation?.error_code === "factory_generation_blocked"
+    || Boolean(operation?.events.some((event) => (
+      event.kind === "builder.specification.completed" || event.kind === "builder.semantic_plan.completed"
+    ) && (event.facts.target_kind === "blocked" || Boolean(event.facts.blocked_reason?.trim()))));
+}
+
+export function isUnsupportedCreate(operation: BuilderConversationOperation): boolean {
+  return operation.status === "succeeded"
+    && (operation.kind === "create_agent" || operation.kind === "create_workflow")
+    && operation.events.some((event) => event.kind === "builder.intent.resolved" && event.facts.status === "unsupported");
+}
 
 export function workbenchPhase(
   operation: BuilderConversationOperation | undefined,
@@ -16,9 +37,14 @@ export function workbenchPhase(
 ): WorkbenchPhase {
   if (createdAgentId || session?.state === "completed") return "completed";
   if (session?.state === "missing_capability" || operation?.error_code === "factory_missing_capability") return "missing";
+  if (isBlockedCreation(operation, session)) return "blocked";
+  if (operation?.status === "failed") return "failed";
+  if (operation?.status === "rejected" || session?.state === "abandoned") return "finished";
   if (session?.state === "review") return "review";
   const kinds = new Set((operation?.events ?? []).map((item) => item.kind));
+  if (kinds.has("builder.operation.failed")) return "failed";
   if (kinds.has("builder.proposal.ready")) return "review";
+  if (operation?.status === "succeeded" || kinds.has("builder.operation.completed")) return "finished";
   if (kinds.has("builder.validation.started") && !kinds.has("builder.validation.completed")) return "validating";
   if (kinds.has("builder.compile.started") || kinds.has("builder.capabilities.started")) return "compiling";
   if (kinds.has("builder.specification.started") || kinds.has("builder.semantic_plan.started")) return "planning";
@@ -36,6 +62,7 @@ const STAGE_DONE: Record<string, string> = {
 
 export function openStageStartedAt(events: Array<{ kind: string; created_at: string }>): string | null {
   const seen = new Set(events.map((event) => event.kind));
+  if (seen.has("builder.operation.completed") || seen.has("builder.operation.failed")) return null;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const done = STAGE_DONE[events[index]?.kind ?? ""];
     if (done && !seen.has(done)) return events[index]?.created_at ?? null;

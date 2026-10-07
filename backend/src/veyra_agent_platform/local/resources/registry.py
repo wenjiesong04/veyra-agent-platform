@@ -60,6 +60,8 @@ _RUNTIME_STATUS: Final[frozenset[str]] = frozenset(
     {"supported", "runtime_not_configured", "runtime_not_supported"}
 )
 _FAMILY_KINDS: Final[dict[str, str]] = {
+    "math": "tool",
+    "table": "tool",
     "core": "component",
     "composites": "component",
     "filesystem": "tool",

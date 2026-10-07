@@ -167,7 +167,7 @@ export type RuntimeModelCapabilities = {
   video_input: CapabilityState;
   audio_input: CapabilityState;
   structured_json_output: CapabilityState;
-  source: "static_profile" | "unknown";
+  source: "static_profile" | "registry" | "unknown";
 };
 
 export function isTypedFieldSpec(value: unknown): value is TypedFieldSpec {
@@ -218,6 +218,7 @@ export type FlowNode = {
   expression?: string;
   mapping?: Record<string, string>;
   prompt?: string;
+  review?: string;
   checks?: string[];
   output_name?: string;
   inputs?: TypedFields;
@@ -279,6 +280,15 @@ export type AgentSource = {
       max_turns?: number;
       interaction_mode?: "auto" | "chat" | "form" | "hybrid";
       handoff_agent_refs?: string[];
+      state_contract?: {
+        entity: string;
+        identity: string;
+        scope: "run" | "conversation" | "project" | "entity";
+        fields: Record<string, string>;
+        statuses: string[];
+        revision: boolean;
+        source?: string;
+      };
     };
   };
   ui: {
@@ -881,6 +891,7 @@ export type WorkflowVersionSnapshot = {
   behavior_hash: string;
   created_at: string;
   source: WorkflowSource;
+  committed?: boolean;
 };
 export type ListWorkflowVersionsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
@@ -1196,6 +1207,39 @@ export type ProviderCredentialStatus = "unverified" | "active" | "invalid" | "di
 export type ProviderCredentialScope = "device" | "cloud";
 export type ProviderCredentialSecretState = "available" | "missing" | "unavailable";
 export type ProviderCredentialReadiness = "ready" | "needs_reentry" | "unavailable" | "disabled" | "invalid" | "unverified";
+export const MODEL_CAPABILITY_NAMES = ["text_input", "image_input", "audio_input", "video_input", "text_generation", "image_generation", "image_editing", "audio_generation", "video_generation", "structured_output", "tool_calling", "reasoning", "speech_to_text", "text_to_speech", "embeddings", "reranking"] as const;
+export type ModelCapabilityName = (typeof MODEL_CAPABILITY_NAMES)[number];
+export type ModelCapabilityStatus = "supported" | "unsupported" | "unknown";
+export type ModelCapabilityEvidenceSource = "provider_metadata" | "provider_adapter" | "active_probe" | "user_declared" | "inferred";
+export type ModelCapabilityEvidence = { source: ModelCapabilityEvidenceSource; observed_at: string; detail?: string };
+export type ModelCapabilityRecord = { status: ModelCapabilityStatus; evidence: ModelCapabilityEvidence | null };
+export type ModelProfile = {
+  model_profile_id: string;
+  provider_connection_id: string;
+  provider_type: string;
+  provider_label: string;
+  provider_model_id: string;
+  display_name: string;
+  enabled: boolean;
+  listed: boolean;
+  metadata: Record<string, JsonValue>;
+  capabilities: Record<ModelCapabilityName, ModelCapabilityRecord>;
+  verification: { state: "unknown" | "declared" | "verified" | "failed" | "stale"; source: ModelCapabilityEvidenceSource | null; verified_at: string | null; last_checked_at: string | null; stale_reason: string | null; error_code: string | null };
+  capability_revision: number;
+  capability_digest: string;
+  discovered_at: string | null;
+  created_at: string;
+  updated_at: string;
+  connection_readiness: ProviderCredentialReadiness;
+  registry_ready: boolean;
+};
+export type ModelRegistryResponse = { schema_version: typeof LOCAL_API_SCHEMA_VERSION; models: ModelProfile[] };
+export type ModelDiscoveryResponse = { schema_version: typeof LOCAL_API_SCHEMA_VERSION; discovery: { state: "ready" | "failed" | "stale"; discovered_at: string | null; models_found: number; error_code?: string }; models: ModelProfile[] };
+export type ModelDefault = { role: string; model_profile_id: string; provider_connection_id: string; provider_model_id: string; capability_digest: string; capability_revision: number; updated_at: string };
+export type ModelDefaultsResponse = { schema_version: typeof LOCAL_API_SCHEMA_VERSION; defaults: ModelDefault[] };
+export type ModelCapabilityRequirement = { slot: string; actor_id?: string | null; required: ModelCapabilityName[]; optional: ModelCapabilityName[]; reason: string; source: string };
+export type ModelResolutionStatus = "already_bound" | "will_bind" | "needs_setup" | "missing_capability" | "unsupported";
+export type ModelResolution = ModelCapabilityRequirement & { status: ModelResolutionStatus; selected_model_profile_id?: string | null; selected_model_display_name?: string | null; selected_provider_label?: string | null; issue?: { code: string; message: string; missing: ModelCapabilityName[]; unknown: ModelCapabilityName[]; unsupported: ModelCapabilityName[] } | null };
 export type ProviderCredential = {
   schema_version?: typeof LOCAL_API_SCHEMA_VERSION;
   credential_id: string;
@@ -1213,6 +1257,10 @@ export type ProviderCredential = {
   updated_at: string;
   validated_at: string | null;
   last_used_at: string | null;
+  discovery_state?: "unknown" | "ready" | "failed" | "stale";
+  discovery_checked_at?: string | null;
+  discovered_at?: string | null;
+  discovery_error_code?: string | null;
   secret_state: ProviderCredentialSecretState;
   readiness: ProviderCredentialReadiness;
 };
@@ -1225,6 +1273,12 @@ export type ProviderCredentialValidationResponse = {
   code: string;
   message: string;
   credential: ProviderCredential;
+  discovery?: ModelDiscoveryResponse["discovery"];
+  models?: ModelProfile[];
+  model_selection?: {
+    provider_model_id: string | null;
+    state: "ready" | "needs_setup" | "unconfigured";
+  };
 };
 export type CreateProviderCredentialRequest = {
   provider_type: string;
@@ -1525,8 +1579,9 @@ export type StartAgentRunRequest = {
 };
 
 export type RunCommandRequest = {
-  command: "approve" | "reject" | "stop" | "resume" | "retry";
+  command: "approve" | "reject" | "stop" | "resume" | "retry" | "reply";
   checkpoint_id?: string;
+  inputs?: Record<string, JsonValue>;
 };
 
 export type ComponentRuntimeStatus =
@@ -1898,10 +1953,22 @@ export type RuntimeProfileValidation = {
 };
 
 export type RuntimeReadinessCheck = {
-  id: "dependencies" | "model" | "modalities" | "tools";
+  id: "dependencies" | "model" | "modalities" | "tools" | "image_model";
   ready: boolean;
   code: string;
   detail: string;
+};
+
+export type RuntimeSetupIssue = {
+  code: string;
+  scope: string;
+  resource_type: string;
+  requirement: ModelCapabilityName[];
+  message: string;
+  action: "configure_model" | "verify_model" | "rebind_model";
+  agent_id?: string;
+  node_id?: string;
+  model_profile_id?: string;
 };
 
 export type RuntimeToolReadiness = {
@@ -1930,11 +1997,12 @@ export type RuntimeReadiness = {
   dependencies: AgentDependencyCheck[];
   tool_checks: RuntimeToolReadiness[];
   checks: RuntimeReadinessCheck[];
+  setup_issues?: RuntimeSetupIssue[];
   version_id?: string;
 };
 
 export type WorkflowRuntimeReadinessCheck = {
-  id: "agent_calls" | "permissions" | "limits";
+  id: "agent_calls" | "permissions" | "limits" | "tools";
   ready: boolean;
   code: string;
   detail: string;
@@ -1957,15 +2025,20 @@ export type WorkflowRuntimeCallReadiness = {
   dependency_summary: AgentDependencySummary;
   checks: RuntimeReadinessCheck[];
   tool_checks: RuntimeToolReadiness[];
+  setup_issues?: RuntimeSetupIssue[];
 };
 
 export type WorkflowRuntimeReadiness = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
   project_id: string;
   workflow_id: string;
+  source_kind?: "draft" | "committed";
+  version_id?: string | null;
+  source_hash?: string;
   ready: boolean;
   calls: WorkflowRuntimeCallReadiness[];
   checks: WorkflowRuntimeReadinessCheck[];
+  setup_issues?: RuntimeSetupIssue[];
 };
 
 export type SecretStatus = {
@@ -2005,6 +2078,8 @@ export type RuntimeEventKind =
   | "tool.started"
   | "tool.completed"
   | "tool.failed"
+  | "tool.input_rejected"
+  | "model.output_rejected"
   | "model.delta"
   | "approval.requested"
   | "approval.resolved"
@@ -2340,6 +2415,6 @@ export type OrchestratorStatus = {
 
 export type WorkflowRunResponse = Omit<AgentRunResponse, "agent_id"> & {
   workflow_id: string;
-  waiting: { kind: string; node_id: string; prompt: string; agent_id?: string; child_run_id?: string } | null;
+  waiting: { kind: string; node_id: string; prompt: string; expected_fields?: string[]; agent_id?: string; child_run_id?: string } | null;
   children: { node_id: string; agent_id: string; version_id: string; child_run_id: string | null; status: RuntimeRunStatus | null }[];
 };

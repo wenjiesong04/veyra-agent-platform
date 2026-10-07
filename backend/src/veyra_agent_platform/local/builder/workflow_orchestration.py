@@ -70,6 +70,7 @@ def materialize_workflow_source(
         if not version_id or not digest:
             raise ValueError("Workflow AgentCall requires a committed Agent version")
         ref = f"{agent_id}@{version_id}"
+        lock.pop(str(node["agent_ref"]), None)
         nodes.append({**node, "agent_ref": ref})
         lock[ref] = digest
     payload["nodes"] = nodes

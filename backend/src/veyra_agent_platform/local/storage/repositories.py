@@ -1029,8 +1029,8 @@ class LocalRepository:
             """
             INSERT INTO workflow_versions(
               version_id, workflow_id, source_hash, behavior_hash, lock_hash, file_hash,
-              source_json, source_text, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              source_json, source_text, created_at, committed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 values["version_id"],
@@ -1042,8 +1042,23 @@ class LocalRepository:
                 json.dumps(values["source"], sort_keys=True, separators=(",", ":")),
                 values["source_text"],
                 values["created_at"],
+                1 if values.get("committed") else 0,
             ),
         )
+
+    def mark_workflow_version_committed(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        workflow_id: str,
+        version_id: str,
+    ) -> bool:
+        cursor = connection.execute(
+            "UPDATE workflow_versions SET committed = 1 "
+            "WHERE workflow_id = ? AND version_id = ?",
+            (workflow_id, version_id),
+        )
+        return cursor.rowcount == 1
 
     def attach_file_to_workflow_version(
         self,
@@ -1221,6 +1236,31 @@ class LocalRepository:
                 "BY created_at DESC, version_id DESC",
                 (workflow_id,),
             ).fetchall()
+
+    def latest_committed_workflow_version(self, workflow_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM workflow_versions WHERE workflow_id = ? "
+                    "AND committed = 1 ORDER BY created_at DESC, version_id DESC "
+                    "LIMIT 1",
+                    (workflow_id,),
+                ).fetchone(),
+            )
+
+    def workflow_version_for_workflow(
+        self, workflow_id: str, version_id: str
+    ) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM workflow_versions "
+                    "WHERE workflow_id = ? AND version_id = ?",
+                    (workflow_id, version_id),
+                ).fetchone(),
+            )
 
     def workflow_version(self, version_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:

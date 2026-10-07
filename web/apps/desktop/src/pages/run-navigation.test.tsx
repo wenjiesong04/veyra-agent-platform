@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResponse, AgentSource, ProjectSummaryResponse, WorkItem } from "@veyra/api-contracts";
+import { projectRoutePaths } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { LocalApiClient, type LocalProjectApi } from "../api/local-client";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
@@ -58,6 +59,11 @@ function mount(api: LocalProjectApi, page: React.ReactNode) {
 afterEach(() => { cleanup(); window.history.replaceState(null, "", "#/projects"); });
 
 describe("historical run navigation", () => {
+  it("opens Workflow run details in the App and keeps Studio as the design surface", () => {
+    const workflowIdentity = { projectId: "project-1", workflowId: "workflow-1", runId: "workflow-run-1" };
+    expect(runDetailHref(workflowIdentity)).toBe(`${projectRoutePaths.workflowRun("project-1", "workflow-1")}?run_id=workflow-run-1`);
+    expect(runStudioHref(workflowIdentity)).toBe(`${projectRoutePaths.workflow("project-1", "workflow-1")}?run_id=workflow-run-1`);
+  });
   it("resumes an explicit execution checkpoint once and opens its descendant", async () => {
     const { api } = setup();
     const events = [{ ...run.events![0], kind: "checkpoint.created" as const, payload: { checkpoint_id: "checkpoint-1", waiting_kind: "execution" } }];
@@ -212,6 +218,16 @@ describe("historical run navigation", () => {
     expect(await screen.findByRole("heading", { name: run.run_id })).toBeInTheDocument();
     expect(api.getWorkflowRun).toHaveBeenCalledWith("project-1", "workflow-1", run.run_id);
     expect(api.getAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("routes a Workflow human-input wait to its typed App instead of offering approval", async () => {
+    const { api } = setup();
+    const { agent_id: _, ...summary } = run;
+    api.getWorkflowRun = vi.fn().mockResolvedValue({ ...summary, workflow_id: "workflow-1", status: "waiting", finished_at: null, result: null, children: [], waiting: { kind: "input", node_id: "collect", prompt: "Which model?", expected_fields: ["model"] } });
+    mount(api, <RunDetail api={api} projectId="project-1" workflowId="workflow-1" runId={run.run_id} locale="en" />);
+    expect(await screen.findByText("Workflow is waiting for input")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Workflow App" })).toHaveAttribute("href", runDetailHref({ projectId: "project-1", workflowId: "workflow-1", runId: run.run_id }));
   });
 
   it("rejects a detail response for another identity", async () => {

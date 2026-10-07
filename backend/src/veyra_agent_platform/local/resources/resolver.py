@@ -17,6 +17,7 @@ from veyra_agent_platform.contracts.resource_plan import (
     PlannedResource,
     ResourcePlan,
 )
+from veyra_agent_platform.contracts.typed_io import wire_field_compact_type
 from veyra_agent_platform.local.builder.capability_requirements import (
     claimed_resource_references,
 )
@@ -67,8 +68,12 @@ class ResourceResolver:
         knowledge_inventory: Sequence[Mapping[str, Any]] | None = None,
         catalog_resources: Sequence[Mapping[str, Any]] | None = None,
         claimed_references: Sequence[str] | None = None,
+        requested_references: Mapping[str, Sequence[str]] | None = None,
         requirement_text: str = "",
     ) -> ResourcePlan:
+        # Only a caller's reviewed, structured selection uses this channel.
+        # Text mentions/claimed references remain exclusion diagnostics only.
+        requested = _requested_map(requested_references)
         owned = list(project_resources or [])
         snapshot = [dict(item) for item in (catalog_resources or [])]
         if not snapshot:
@@ -92,27 +97,46 @@ class ResourceResolver:
             for item in snapshot
             if item.get("reference")
         }
+        conflicting_ids = _requested_version_conflicts(requested)
+        declared = {item.capability for item in requirements}
+        for capability in requested.keys() - declared:
+            diagnostics.append(f"requested_unused_capability:{capability}")
+            optional_unresolved.append(
+                MissingCapability(
+                    capability=capability,
+                    status="missing",
+                    reason="Requested resources cannot add an undeclared capability",
+                    required=False,
+                )
+            )
 
         for requirement in requirements:
             if requirement.capability in MODEL_ONLY_CAPABILITIES:
                 continue
             if requirement.capability == "project_knowledge":
                 continue
-            chosen = self._choose(
-                requirement,
-                snapshot,
-                owned,
-                catalog_by_ref,
-                diagnostics,
+            missing_reason = (
+                "No catalog resource provides this capability "
+                "in a selectable, supported state"
             )
+            if requirement.capability in requested:
+                chosen, missing_reason = self._choose_requested(
+                    requirement, requested[requirement.capability], owned,
+                    catalog_by_ref, conflicting_ids, diagnostics,
+                )
+            else:
+                chosen = self._choose(
+                    requirement,
+                    snapshot,
+                    owned,
+                    catalog_by_ref,
+                    diagnostics,
+                )
             if chosen is None:
                 gap = MissingCapability(
                     capability=requirement.capability,
                     status="missing",
-                    reason=(
-                        "No catalog resource provides this capability "
-                        "in a selectable, supported state"
-                    ),
+                    reason=missing_reason,
                     required=requirement.required,
                 )
                 if requirement.required:
@@ -204,6 +228,68 @@ class ResourceResolver:
             rejected.append(token)
             diagnostics.append(f"rejected_unknown_resource:{token}")
         return tuple(rejected)
+
+    def _choose_requested(
+        self,
+        requirement: CapabilityRequirement,
+        references: tuple[str, ...],
+        owned: Sequence[Mapping[str, Any]],
+        catalog_by_ref: Mapping[str, Mapping[str, Any]],
+        conflicting_ids: set[str],
+        diagnostics: list[str],
+    ) -> tuple[tuple[dict[str, Any], BindStatus, str] | None, str]:
+        capability = requirement.capability
+
+        def reject(code: str, reason: str) -> tuple[None, str]:
+            diagnostics.append(f"{code}:{capability}")
+            return None, reason
+
+        if len(references) != 1:
+            code = "requested_ambiguous" if references else "requested_unresolved"
+            return reject(code, "Select exactly one reviewed resource for this capability")
+        reference = references[0]
+        if reference != reference.strip() or reference.count("@") != 1:
+            return reject("requested_reference_invalid", "Requested resource needs an exact versioned reference")
+        try:
+            resource = self.catalog.by_reference(reference)
+        except ResourceCatalogError:
+            return reject("requested_reference_unknown", f"Requested resource version is not registered: {reference}")
+        eligible, code = _eligibility(resource, requirement)
+        if not eligible:
+            return reject(f"requested_{code}", f"Requested resource is not eligible: {reference} ({code})")
+        if not _capability_match(resource, capability):
+            return reject("requested_capability_mismatch", f"Requested resource does not provide {capability}: {reference}")
+        # An instruction-bearing Skill cannot replace an executable capability.
+        executable_required = any(
+            item.get("kind") in EXECUTABLE_KINDS and _capability_match(item, capability)
+            for item in self.catalog.resources()["resources"]
+        )
+        if executable_required and resource.get("kind") not in EXECUTABLE_KINDS:
+            return reject("requested_executable_required", "This capability still requires a registered executable Tool")
+        visible = catalog_by_ref.get(reference)
+        identity_fields = ("reference", "resource_id", "version", "kind", "content_hash")
+        if visible is None or any(visible.get(name) != resource.get(name) for name in identity_fields):
+            return reject("requested_snapshot_conflict", "Requested resource is absent or changed in the current catalog snapshot")
+        visible_eligible, visible_code = _eligibility(visible, requirement)
+        if not visible_eligible:
+            return reject(f"requested_{visible_code}", f"Requested resource is not eligible in this snapshot ({visible_code})")
+        resource_id = str(resource["resource_id"])
+        if resource_id in conflicting_ids:
+            return reject("requested_version_conflict", "One resource cannot select conflicting versions across capabilities")
+        pins = [
+            item for item in owned
+            if item.get("scope") == "project"
+            and (item.get("resource_id") or str(item.get("reference") or "").split("@", 1)[0]) == resource_id
+        ]
+        if any(pin.get("reference") != reference or pin_hash(pin) != resource["content_hash"] for pin in pins):
+            return reject("requested_project_pin_conflict", "Requested version/hash conflicts with the existing Project pin; review the pin before changing it")
+        status = self._bind_status(resource, owned, catalog_by_ref)
+        if status == "unavailable":
+            return reject("requested_unavailable", "Requested resource is unavailable; no substitute was selected")
+        if status == "already_bound":
+            resource["lock_hash"] = resource["content_hash"]
+        diagnostics.append(f"requested_selected:{reference}:{capability}")
+        return (resource, status, f"Explicit reviewed selection for {capability}: {reference}"), ""
 
     def _choose(
         self,
@@ -455,6 +541,38 @@ def _factory_item(resource: PlannedResource) -> dict[str, Any]:
     }
 
 
+def _requested_map(
+    requested: Mapping[str, Sequence[str]] | None,
+) -> dict[str, tuple[str, ...]]:
+    if requested is None:
+        return {}
+    if not isinstance(requested, Mapping) or len(requested) > 32:
+        raise ValueError("requested_references must be a bounded capability map")
+    result: dict[str, tuple[str, ...]] = {}
+    for capability, references in requested.items():
+        if (
+            not isinstance(capability, str) or not capability
+            or capability != capability.strip() or len(capability) > 80
+            or capability in MODEL_ONLY_CAPABILITIES or capability == "project_knowledge"
+        ):
+            raise ValueError("Requested references require a resource capability name")
+        if isinstance(references, str | bytes) or not isinstance(references, Sequence) or len(references) > 16:
+            raise ValueError("Each requested capability needs a bounded reference list")
+        if any(not isinstance(reference, str) or not reference or len(reference) > 512 for reference in references):
+            raise ValueError("Requested references must be nonempty bounded strings")
+        result[capability] = tuple(dict.fromkeys(references))
+    return result
+
+
+def _requested_version_conflicts(requested: Mapping[str, tuple[str, ...]]) -> set[str]:
+    versions: dict[str, set[str]] = {}
+    for references in requested.values():
+        for reference in references:
+            resource_id = reference.split("@", 1)[0]
+            versions.setdefault(resource_id, set()).add(reference)
+    return {resource_id for resource_id, references in versions.items() if len(references) > 1}
+
+
 def _capability_match(resource: Mapping[str, Any], capability: str) -> bool:
     tags = resource.get("capabilities") or []
     return capability in tags
@@ -491,7 +609,11 @@ def _io_compatible(spec: Mapping[str, Any], requirement: CapabilityRequirement) 
     schema = spec.get("input_schema")
     if not isinstance(schema, Mapping) or not schema:
         return True
-    resource_types = {str(value).casefold() for value in schema.values()}
+    resource_types = {
+        kind.casefold()
+        for value in schema.values()
+        if (kind := wire_field_compact_type(value)) is not None
+    }
     needed = {item.casefold() for item in requirement.input_types}
     return bool(needed & resource_types)
 

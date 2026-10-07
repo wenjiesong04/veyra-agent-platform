@@ -19,6 +19,8 @@ BLOCKED_AVAILABILITY = frozenset(
     {"unavailable", "disabled", "quarantined", "design_only"}
 )
 CAPABILITY_LABELS = {
+    "arithmetic": "Arithmetic",
+    "tabular_compare": "CSV Group Comparison",
     "web_search": "Web Search",
     "http_request": "HTTP Request",
     "browser_navigate": "Browser Navigate",
@@ -44,5 +46,7 @@ CAPABILITY_LABELS = {
     "verification_required": "Verification Required",
     "external_write_approval": "External Write Approval",
     "entity_read": "Entity Read",
+    "entity_query": "Entity Query",
+    "entity_history": "Entity History",
     "entity_write": "Entity Write",
 }

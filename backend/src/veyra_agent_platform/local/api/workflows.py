@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..runtime.workflow_service import WorkflowRuntimeService
 from .projects.routes import TypedApiError, _translate
-from .runtime.routes import RunCommandRequest, RunRequest
+from .runtime.routes import RunCommandRequest
+
+
+class WorkflowRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    source: Literal["draft", "committed"] = "draft"
+    version_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+    @model_validator(mode="after")
+    def validate_version_selection(self) -> WorkflowRunRequest:
+        if self.version_id is not None and self.source != "committed":
+            raise ValueError("version_id requires source='committed'")
+        return self
 
 
 def build_router() -> APIRouter:
@@ -22,21 +37,33 @@ def build_router() -> APIRouter:
     def run(
         project_id: str,
         workflow_id: str,
-        payload: RunRequest,
+        payload: WorkflowRunRequest,
         request: Request,
         idempotency_key: str = Header(),
     ) -> dict[str, Any]:
         return _translate(
             lambda: _runtime(request).run(
-                project_id, workflow_id, payload.inputs, idempotency_key
+                project_id,
+                workflow_id,
+                payload.inputs,
+                idempotency_key,
+                source=payload.source,
+                version_id=payload.version_id,
             )
         )
 
     @router.get("/runtime-readiness")
     def runtime_readiness(
-        project_id: str, workflow_id: str, request: Request
+        project_id: str,
+        workflow_id: str,
+        request: Request,
+        version_id: str | None = Query(default=None, min_length=36, max_length=36),
     ) -> dict[str, Any]:
-        return _translate(lambda: _runtime(request).readiness(project_id, workflow_id))
+        return _translate(
+            lambda: _runtime(request).readiness(
+                project_id, workflow_id, version_id=version_id
+            )
+        )
 
     @router.get("/runs")
     def runs(project_id: str, workflow_id: str, request: Request) -> dict[str, Any]:

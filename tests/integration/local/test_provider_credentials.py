@@ -12,23 +12,10 @@ from tests.integration.local.test_factory_routes import (
     _completion,
 )
 from tests.integration.local.test_runtime_routes import _agent_source
+from tests.integration.local.verified_runtime_model import MemorySecretStore
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
 from veyra_agent_platform.local.runtime.client import RuntimeCompletion
-
-
-class MemorySecretStore:
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-
-    def get(self, secret_ref: str) -> str | None:
-        return self.values.get(secret_ref)
-
-    def set(self, secret_ref: str, value: str) -> None:
-        self.values[secret_ref] = value
-
-    def delete(self, secret_ref: str) -> None:
-        self.values.pop(secret_ref, None)
 
 
 class RuntimeTransport:

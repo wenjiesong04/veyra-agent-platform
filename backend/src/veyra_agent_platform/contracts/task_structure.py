@@ -343,6 +343,8 @@ class TaskActor:
     role: str
     capabilities: tuple[str, ...]
     reason: str = ""
+    inputs: tuple[TaskIOField, ...] = ()
+    outputs: tuple[TaskIOField, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -352,6 +354,10 @@ class TaskActor:
         }
         if self.reason:
             payload["reason"] = self.reason
+        if self.inputs:
+            payload["inputs"] = [item.to_dict() for item in self.inputs]
+        if self.outputs:
+            payload["outputs"] = [item.to_dict() for item in self.outputs]
         return payload
 
     @classmethod
@@ -359,7 +365,7 @@ class TaskActor:
         item = require_mapping(data, field)
         require_keys(
             item,
-            allowed={"id", "role", "capabilities", "reason"},
+            allowed={"id", "role", "capabilities", "reason", "inputs", "outputs"},
             required={"id", "role"},
         )
         return cls(
@@ -369,7 +375,31 @@ class TaskActor:
                 item.get("capabilities") or [], f"{field}.capabilities", limit=16
             ),
             reason=_clip(str(item.get("reason") or "")),
+            inputs=tuple(
+                TaskIOField.from_dict(value, f"{field}.inputs[{index}]")
+                for index, value in enumerate(
+                    require_list(item.get("inputs") or [], f"{field}.inputs")
+                )
+            ),
+            outputs=tuple(
+                TaskIOField.from_dict(value, f"{field}.outputs[{index}]")
+                for index, value in enumerate(
+                    require_list(item.get("outputs") or [], f"{field}.outputs")
+                )
+            ),
         )
+
+
+def _field_sources(value: Any, field: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    fields = require_mapping(value, field)
+    if len(fields) > _MAX_ITEMS:
+        raise ContractValidationError(f"{field} exceeds {_MAX_ITEMS} entries")
+    return {
+        require_string(name, field): require_string(source, f"{field}.{name}")
+        for name, source in fields.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -378,6 +408,7 @@ class TaskStage:
     summary: str
     actor: str = ""
     source: str = ""
+    input_sources: Mapping[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"id": self.id, "summary": self.summary}
@@ -385,6 +416,8 @@ class TaskStage:
             payload["actor"] = self.actor
         if self.source:
             payload["source"] = self.source
+        if self.input_sources:
+            payload["input_sources"] = dict(self.input_sources)
         return payload
 
     @classmethod
@@ -392,7 +425,7 @@ class TaskStage:
         item = require_mapping(data, field)
         require_keys(
             item,
-            allowed={"id", "summary", "actor", "source"},
+            allowed={"id", "summary", "actor", "source", "input_sources"},
             required={"id", "summary"},
         )
         return cls(
@@ -400,6 +433,9 @@ class TaskStage:
             summary=_clip(require_string(item["summary"], f"{field}.summary")),
             actor=_clip(str(item.get("actor") or ""), 80),
             source=_clip(str(item.get("source") or "")),
+            input_sources=freeze_json(
+                _field_sources(item.get("input_sources"), f"{field}.input_sources")
+            ),
         )
 
 
@@ -456,6 +492,8 @@ class TaskStructure:
     state: StateRequirement | None = None
     user_requested_surface: str = ""
     user_shape_override: str = ""
+    constraints: tuple[str, ...] = ()
+    success_criteria: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -474,6 +512,10 @@ class TaskStructure:
             "orchestration_complexity": self.orchestration_complexity,
             "uncertainty": list(self.uncertainty),
         }
+        if self.constraints:
+            payload["constraints"] = list(self.constraints)
+        if self.success_criteria:
+            payload["success_criteria"] = list(self.success_criteria)
         if self.state is not None:
             payload["state"] = self.state.to_dict()
         if self.user_requested_surface:
@@ -503,6 +545,8 @@ class TaskStructure:
                 "state",
                 "user_requested_surface",
                 "user_shape_override",
+                "constraints",
+                "success_criteria",
             },
             required={"schema_version", "goal", "summary", "lifecycle"},
         )
@@ -560,6 +604,10 @@ class TaskStructure:
                 str(item.get("user_requested_surface") or ""), 40
             ),
             user_shape_override=_clip(str(item.get("user_shape_override") or ""), 40),
+            constraints=_string_list(item.get("constraints") or [], "constraints"),
+            success_criteria=_string_list(
+                item.get("success_criteria") or [], "success_criteria"
+            ),
         )
 
     def boundaries_of(self, kind: BoundaryKind) -> tuple[ExecutionBoundary, ...]:

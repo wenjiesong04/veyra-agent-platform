@@ -1,0 +1,42 @@
+# veyra.tool.entity.query@1.0.0
+availability: ready
+description: Query existing records in the current project by entity type and exact top-level data fields. Keep multiple matches for user selection. Truncated results do not prove absence.
+factory_selectable: true
+capabilities:
+- entity_query
+kind: tool
+name: Entity Query
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.entity.query
+resource_id: veyra.tool.entity.query
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.entity.query
+  approval_required: false
+  input_schema:
+    entity_type: string
+    filters:
+      type: object
+      required: false
+    limit:
+      type: integer
+      required: false
+  output_schema:
+    records: array
+    scanned: integer
+    truncated: boolean
+  tool_name: entity.query
+  ui:
+    category: state
+    icon: database
+    title: Query Entities
+tags:
+- state
+- local
+- read-only
+version: 1.0.0

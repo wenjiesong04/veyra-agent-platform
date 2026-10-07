@@ -29,6 +29,7 @@ import { ProjectDetailPage } from "./pages/project-detail";
 import { ProjectResourcesPage } from "./pages/project-resources";
 import { ProjectKnowledgePage } from "./pages/project-knowledge";
 import { ProjectWorkflowsPage } from "./pages/project-workflows";
+import { WorkflowAppPage } from "./pages/workflow-app";
 import { useProjectNavigation } from "./features/projects/project-navigation";
 import { RunsPage } from "./pages/runs";
 import { SettingsPage } from "./pages/settings";
@@ -134,6 +135,7 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "project-agents") return <ProjectDetailPage projectId={route.projectId} collection="agents" />;
   if (route.kind === "project-workflows") return <ProjectWorkflowsPage projectId={route.projectId} />;
   if (route.kind === "project-workflow") return <StudioPage projectId={route.projectId} workflowId={route.workflowId ?? ""} />;
+  if (route.kind === "project-workflow-run") return <WorkflowAppPage projectId={route.projectId} workflowId={route.workflowId ?? ""} />;
   if (route.kind === "project-knowledge" || route.kind === "project-knowledge-item") return <ProjectKnowledgePage projectId={route.projectId} knowledgeId={route.knowledgeId} />;
   if (route.kind === "project-files") return <FilesPage projectId={route.projectId} />;
   if (route.kind === "project-runs") return <RunsPage projectId={route.projectId} />;

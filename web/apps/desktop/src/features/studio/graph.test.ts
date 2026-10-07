@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSource, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
+import type { AgentSource, AgentVersionSnapshot, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
+import { agentCallRef } from "./agent-call";
 import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, isLoopAgent, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
@@ -302,6 +303,31 @@ describe("Studio graph adapter", () => {
     expect(note?.position.y).toBeLessThan(minY);
     const saved = sourceWithGraph(workflow, graph.nodes, graph.edges);
     expect(saved.ui.notes?.note_intro).toMatchObject({ manual_position: false, width: 420 });
+  });
+
+  it("accepts Agent output slugs with hyphens in Workflow call mappings", () => {
+    const version: AgentVersionSnapshot = {
+      agent_id: "01900000-0000-7000-8000-000000000098",
+      version_id: "01900000-0000-7000-8000-000000000099",
+      source_hash: "a".repeat(64), behavior_hash: "b".repeat(64), created_at: "2026-09-06T00:00:00Z",
+      source: { ...source, agent_id: "01900000-0000-7000-8000-000000000098", inputs: { image: "image" }, outputs: { "model-known": "boolean", result: "string" } },
+    };
+    const ref = agentCallRef(version);
+    const workflow: WorkflowSource = {
+      schema_version: "1.0", component_type: "Workflow", workflow_id: "01900000-0000-7000-8000-000000000090",
+      slug: "package-design", name: "Package design", description: "", inputs: { image: "image" }, outputs: { result: "string" },
+      nodes: [
+        { id: "start", component_type: "Start" },
+        { id: "identify", component_type: "AgentCall", agent_ref: ref, input_mapping: { image: "image" }, output_mapping: { "model-known": "model_known", result: "result" } },
+        { id: "out", component_type: "Output", output_name: "result" },
+      ],
+      transitions: [{ from: "start", port: "next", to: "identify" }, { from: "identify", port: "next", to: "out" }],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: {} }, lock: { [ref]: version.source_hash },
+    };
+    expect(graphDiagnostics(workflow, [], [version])).not.toContainEqual({ code: "agent_mapping_invalid", params: { nodeId: "identify" } });
+    const invalid = { ...workflow, nodes: workflow.nodes.map((node) => node.id === "identify" ? { ...node, output_mapping: { "model-known": "model-known", result: "result" } } : node) };
+    expect(graphDiagnostics(invalid, [], [version])).toContainEqual({ code: "agent_mapping_invalid", params: { nodeId: "identify" } });
   });
 
   it("inserts a Flow node by splitting an existing edge", () => {

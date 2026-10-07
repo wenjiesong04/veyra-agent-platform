@@ -5,7 +5,8 @@ import "@xyflow/react/dist/style.css";
 import type { FactoryResourcePlanItem, FactorySession, FlowNode, JsonObject, ResourceFactoryPlan, StudioNoteColor } from "@veyra/api-contracts";
 import { Alert, Button, IconButton, LinkButton, StatusBadge } from "@veyra/ui";
 import { blueprintGraph, blueprintPresentation } from "./factory-blueprint";
-import { runningClock, type WorkbenchPhase } from "../builder/workbench-phase";
+import { ModelRequirementCard, proposalModels } from "./ModelRequirementCard";
+import { isBlockedCreation, runningClock, type WorkbenchPhase } from "../builder/workbench-phase";
 import { CanvasEdgeActionsProvider, FlowEdge, type FlowEdgeData } from "../studio/canvas-edge";
 import { studioNodeTypes } from "../studio/canvas-nodes";
 import type { CanvasNodeData } from "../studio/graph";
@@ -26,6 +27,13 @@ const copy = {
     proposalHeading: "准备创建的内容",
     missing: "缺少能力",
     completed: "下一步",
+    blocked: "方案暂时无法生成",
+    failed: "方案生成失败",
+    finished: "本轮已结束",
+    blockedHint: "这一轮已停止，尚未创建 Agent 或 Workflow。可补充你希望它如何工作，再重新发送；查看原因了解当前限制。",
+    failedHint: "这一轮已停止。请查看上方的错误提示，处理原因后重新发送任务。",
+    finishedHint: "这一轮已结束。请查看上方的回复，再补充或调整任务要求。",
+    blockedDetails: "查看阻塞原因",
     abandoned: "会话已放弃",
     plan: "将引用这些已登记资源",
     emptyPlan: "确认创建意图后，这里会显示正在构建的对象。",
@@ -59,6 +67,13 @@ const copy = {
     proposalHeading: "What Veyra is proposing to create",
     missing: "Missing capabilities",
     completed: "Next steps",
+    blocked: "Plan blocked",
+    failed: "Plan generation failed",
+    finished: "This turn has ended",
+    blockedHint: "This turn has stopped without creating an Agent or Workflow. Clarify how you want it to work and send it again. Review the reason to understand the current limitation.",
+    failedHint: "This turn has stopped. Review the error above, address its cause, and send the task again.",
+    finishedHint: "This turn has ended. Review the reply above, then clarify or adjust the task.",
+    blockedDetails: "Review blocking reason",
     abandoned: "Session abandoned",
     plan: "These registered catalog resources will be used",
     emptyPlan: "Once create intent is known, the object being built appears here.",
@@ -85,6 +100,18 @@ const copy = {
 } as const;
 
 const stageOrder: WorkbenchPhase[] = ["understanding", "planning", "compiling", "validating", "review", "completed"];
+
+function blockedReasonLabel(reason: string, locale: Locale): string {
+  const reasons: Record<string, { zh: string; en: string }> = {
+    planner_invalid: { zh: "方案生成器返回的内容未通过检查。", en: "The generated plan did not pass validation." },
+    product_fidelity_invalid: { zh: "方案未完整保留你的要求，因此没有创建。", en: "The plan did not preserve all of your requirements, so nothing was created." },
+    compose_failed: { zh: "将方案转换为可运行内容时失败。", en: "The plan could not be compiled into executable content." },
+    compose_empty: { zh: "方案没有生成可创建的内容。", en: "The plan did not produce any content that could be created." },
+    unsupported_shape: { zh: "当前无法将这类需求转换成可运行的 Agent 或 Workflow。", en: "This task cannot currently be represented as an executable Agent or Workflow." },
+    "State requirement cannot be represented": { zh: "当前无法按要求保存和恢复任务状态。", en: "The requested task state cannot currently be saved and restored." },
+  };
+  return reasons[reason]?.[locale] ?? reason;
+}
 
 function stageLabel(state: WorkbenchPhase | FactorySession["state"], locale: Locale): string {
   const text = copy[locale];
@@ -500,6 +527,7 @@ function ProductPlanSummary({
   const business = Array.isArray(preview?.business_approvals) ? preview.business_approvals : [];
   const tools = Array.isArray(preview?.tool_approvals) ? preview.tool_approvals : [];
   const missing = Array.isArray(preview?.missing_required) ? preview.missing_required : [];
+  const models = proposalModels(preview?.models);
   const state = isRecord(preview?.persistent_state) ? preview.persistent_state : null;
   if (!preview && !shape) return null;
   return (
@@ -509,7 +537,7 @@ function ProductPlanSummary({
       <p>
         {zh ? "将创建：" : "Will create: "}
         {preview?.workflow ? (zh ? "1 个 Workflow" : "1 Workflow") : (zh ? "1 个 Agent" : "1 Agent")}
-        {agents.length ? (zh ? ` · ${agents.length} 个 Agent` : ` · ${agents.length} Agents`) : ""}
+        {preview?.workflow && agents.length ? (zh ? ` · ${agents.length} 个 Agent` : ` · ${agents.length} Agents`) : ""}
         {state ? (zh ? " · 1 个持久状态" : " · 1 persistent state") : ""}
       </p>
       {stages.length ? (
@@ -546,6 +574,10 @@ function ProductPlanSummary({
           {tools.length ? <p>{zh ? "安全审批：" : "Tool: "}{tools.map(String).join(", ")}</p> : null}
         </div>
       ) : null}
+      {models.length ? <div className="factory-proposal-models"><strong>{zh ? "模型能力" : "Model capabilities"}</strong>{models.map((model, index) => {
+        const actor = agents.find((item) => isRecord(item) && item.id === model.actor_id);
+        return <ModelRequirementCard key={`${model.actor_id ?? ""}:${model.slot}:${index}`} model={model} locale={locale} returnTo={window.location.hash} actorName={isRecord(actor) && typeof actor.name === "string" ? actor.name : undefined} />;
+      })}</div> : null}
       {state ? <p>{zh ? "持久状态：" : "Persistent state: "}{String(state.entity || "")}</p> : null}
       {missing.length ? (
         <div role="status">
@@ -609,21 +641,26 @@ export function FactoryAssemblyCanvas({
   embedded?: boolean;
 }) {
   const text = copy[locale];
+  const blockedReason = session?.blocked_reason || planSummary?.blocked_reason;
+  const resolvedPhase = createdAgentId || session?.state === "completed" ? "completed"
+    : session?.state === "missing_capability" ? "missing"
+    : isBlockedCreation(undefined, session) ? "blocked"
+    : phase ?? (
+      session?.state === "review" ? "review"
+      : session?.state === "abandoned" ? "finished"
+      : session?.state === "generating" || busy === "generate" ? "compiling"
+      : session?.state === "ready" ? "planning"
+      : "understanding"
+    );
+  const terminal = resolvedPhase === "blocked" || resolvedPhase === "failed" || resolvedPhase === "finished" || resolvedPhase === "completed";
+  const running = live && !terminal && resolvedPhase !== "missing" && resolvedPhase !== "review";
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!live || !stageStartedAt) return undefined;
+    if (!running || !stageStartedAt) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [live, stageStartedAt]);
-  const clock = live && stageStartedAt ? runningClock(stageStartedAt, now, locale) : "";
-  const resolvedPhase = phase ?? (
-    createdAgentId || session?.state === "completed" ? "completed"
-    : session?.state === "missing_capability" ? "missing"
-    : session?.state === "review" ? "review"
-    : session?.state === "generating" || busy === "generate" ? "compiling"
-    : session?.state === "ready" ? "planning"
-    : "understanding"
-  );
+  }, [running, stageStartedAt]);
+  const clock = running && stageStartedAt ? runningClock(stageStartedAt, now, locale) : "";
   const compiled = Boolean(session?.blueprint) && (resolvedPhase === "review" || resolvedPhase === "completed" || resolvedPhase === "missing");
   const assembled = resolvedPhase === "compiling" || resolvedPhase === "validating";
   const activeIndex = resolvedPhase === "missing" ? 4 : Math.max(stageOrder.indexOf(resolvedPhase), 0);
@@ -631,16 +668,22 @@ export function FactoryAssemblyCanvas({
   const showReject = showApply && Boolean(onReject);
   const showRevise = showApply && Boolean(onRevise);
   const showStudio = Boolean(studioHref && (createdAgentId || resolvedPhase === "completed"));
-  const showGenerate = Boolean(onGenerate);
-  const showQuarantine = Boolean(onQuarantine) && Boolean(session?.missing_capabilities.length);
+  const showGenerate = Boolean(onGenerate) && !terminal;
+  const showQuarantine = Boolean(onQuarantine) && Boolean(session?.missing_capabilities.length) && !terminal;
   const showActions = showApply || showReject || showRevise || showStudio || showGenerate || showQuarantine;
   const body = (
       <>
-        <ol className="factory-stage-track">
+        {!terminal || resolvedPhase === "completed" ? <ol className="factory-stage-track">
           {stageOrder.map((item, index) => (
-            <li key={item} data-active={index <= activeIndex ? "true" : "false"} data-current={live && index === activeIndex ? "true" : "false"}>{stageLabel(item, locale)}</li>
+            <li key={item} data-active={index <= activeIndex ? "true" : "false"} data-current={running && index === activeIndex ? "true" : "false"}>{stageLabel(item, locale)}</li>
           ))}
-        </ol>
+        </ol> : null}
+        {resolvedPhase === "blocked" || resolvedPhase === "failed" || resolvedPhase === "finished" ? (
+          <div className="factory-canvas-terminal" role="status" aria-live="polite">
+            <p>{resolvedPhase === "blocked" ? text.blockedHint : resolvedPhase === "failed" ? text.failedHint : text.finishedHint}</p>
+            {blockedReason ? <details><summary>{text.blockedDetails}</summary><p>{blockedReasonLabel(blockedReason, locale)}</p></details> : null}
+          </div>
+        ) : null}
         {clock ? <p className="factory-canvas-live" role="status">{stageLabel(resolvedPhase, locale)} · {clock}。{text.waiting}</p> : null}
         {resolvedPhase === "understanding" ? <p className="factory-canvas-empty">{text.understanding}…</p> : null}
         {resolvedPhase === "planning" ? (
@@ -721,7 +764,7 @@ export function FactoryAssemblyCanvas({
           <h3>{stageLabel(resolvedPhase, locale)}</h3>
         </div>
         <div className="factory-canvas-head-actions">
-          {session ? <StatusBadge label={session.state} tone={session.state === "completed" ? "good" : session.state === "missing_capability" ? "bad" : "warn"} /> : null}
+          {session ? <StatusBadge label={stageLabel(resolvedPhase, locale)} tone={resolvedPhase === "completed" ? "good" : resolvedPhase === "failed" ? "bad" : "warn"} /> : null}
           <IconButton icon={X} label={locale === "zh" ? "关闭工作台" : "Close workbench"} onClick={onClose} />
         </div>
       </header>

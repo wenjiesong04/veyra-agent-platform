@@ -21,7 +21,9 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.contracts.interaction import derive_interaction_mode
 from veyra_agent_platform.contracts.resource_plan import PlannedResource, ResourcePlan
 from veyra_agent_platform.contracts.semantic_plan import SemanticField
+from veyra_agent_platform.contracts.task_structure import StateRequirement
 from veyra_agent_platform.contracts.typed_io import ARTIFACT_KINDS, TypedField
+from veyra_agent_platform.local.builder.agent_state import state_instructions
 from veyra_agent_platform.local.builder.knowledge_binding import bind_knowledge
 from veyra_agent_platform.local.projects.layout import attach_default_canvas_note
 
@@ -42,6 +44,7 @@ def compose_loop_agent(
     *,
     requirement: str = "",
     agent_id: str | None = None,
+    state: StateRequirement | None = None,
 ) -> AgentSource:
     """Build AgentSource from a server ResourcePlan. Never invents resource IDs."""
 
@@ -49,6 +52,8 @@ def compose_loop_agent(
 
     display, slug = agent_candidate_identity(specification.suggested_name or "Agent")
     instructions = _instructions(specification, requirement)
+    if state is not None:
+        instructions += "\n\n" + state_instructions(state)
     outputs = {
         _portable_field_name(item.name): _field_wire(item)
         for item in specification.outputs
@@ -57,6 +62,10 @@ def compose_loop_agent(
         _portable_field_name(item.name): _field_wire(item)
         for item in specification.inputs
     } or {"request": "string"}
+    if len(inputs) != len(specification.inputs) and specification.inputs:
+        raise ValueError("Agent input field names collide after normalization")
+    if len(outputs) != len(specification.outputs) and specification.outputs:
+        raise ValueError("Agent output field names collide after normalization")
     primary_output = next(iter(outputs))
     ready: list[PlannedResource] = []
     seen: set[str] = set()
@@ -144,6 +153,7 @@ def compose_loop_agent(
                 "instructions": instructions,
                 "max_turns": max_turns,
                 "handoff_agent_refs": [],
+                **({"state_contract": state.to_dict()} if state is not None else {}),
             }
         },
         "ui": attach_default_canvas_note(
@@ -205,11 +215,23 @@ def _secret_refs(resource: PlannedResource | None) -> list[str]:
 
 
 def _instructions(specification: AgentSpecification, requirement: str) -> str:
-    parts = [
-        specification.goal.strip() or requirement.strip(),
-        *specification.responsibilities,
-    ]
-    body = "\n".join(item for item in parts if item).strip()
+    sections = [specification.goal.strip()]
+    if requirement.strip():
+        sections.append("User's complete requirement:\n" + requirement.strip())
+    if specification.responsibilities:
+        sections.append(
+            "Your responsibilities:\n" + "\n".join(specification.responsibilities)
+        )
+    if specification.human_interactions:
+        sections.append(
+            "Human interaction constraints:\n"
+            + "\n".join(specification.human_interactions)
+        )
+    if specification.success_criteria:
+        sections.append(
+            "Success criteria:\n" + "\n".join(specification.success_criteria)
+        )
+    body = "\n\n".join(item for item in sections if item)
     outputs = (
         ", ".join(f"{item.name}:{item.type}" for item in specification.outputs)
         or "result:string"
@@ -217,7 +239,9 @@ def _instructions(specification: AgentSpecification, requirement: str) -> str:
     return (
         f"{body}\n\n"
         "You are an autonomous Agent. Decide whether to call a permitted tool. "
-        "Do not follow a fixed DAG. When finished, return the declared outputs: "
+        "Do not follow a fixed DAG. The complete requirement is context: perform "
+        "only your responsibilities and respect the declared human boundaries. "
+        "When finished, return the declared outputs: "
         f"{outputs}."
     )
 

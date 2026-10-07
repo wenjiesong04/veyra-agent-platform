@@ -22,6 +22,7 @@ from .test_runtime_routes import (
     _run_until_settled,
     _source,
 )
+from .verified_runtime_model import verified_client
 
 INPUT_SCHEMA = {
     "type": "object",
@@ -136,10 +137,8 @@ def test_nested_input_failure_never_calls_mcp(tmp_path: Path, query: dict) -> No
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(
-        create_app(
-            settings, runtime_transport=model, mcp_transport_factory=lambda *_: mcp
-        )
+    with verified_client(
+        settings, model, mcp_transport_factory=lambda *_: mcp
     ) as client:
         server = client.post(
             "/api/v1/mcp/servers",
@@ -202,10 +201,8 @@ def test_mcp_result_gates_model_and_started_event_precedes_call_return(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    with TestClient(
-        create_app(
-            settings, runtime_transport=model, mcp_transport_factory=lambda *_: mcp
-        )
+    with verified_client(
+        settings, model, mcp_transport_factory=lambda *_: mcp
     ) as client:
         server = client.post(
             "/api/v1/mcp/servers",

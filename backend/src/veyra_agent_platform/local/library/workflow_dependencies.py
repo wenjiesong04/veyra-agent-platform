@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
+from veyra_agent_platform.contracts.condition import TEMPLATE_TOKEN_RE
 from veyra_agent_platform.contracts.resource import AgentVersionRef
 from veyra_agent_platform.contracts.typed_io import compact_type_map
 from veyra_agent_platform.contracts.workflow import WorkflowSource
@@ -54,6 +55,12 @@ def resolve_workflow_calls(
             raise ProjectError(
                 f"AgentCall {node.id} requires a committed Agent version",
                 code="workflow_version_not_found",
+            )
+        if not bool(version["committed"]):
+            raise ProjectError(
+                f"AgentCall {node.id} references an Agent version that has not "
+                "been explicitly committed",
+                code="workflow_agent_version_not_committed",
             )
         if source.lock.get(reference.as_ref()) != version["source_hash"]:
             raise ProjectError(
@@ -130,8 +137,18 @@ def _validate_call_dataflow(
                     )
             for output, variable in (node.output_mapping or {}).items():
                 values[variable] = child_outputs[output]
+        elif (
+            node.component_type is ComponentType.HUMAN_APPROVAL
+            and node.review == "input"
+        ):
+            values.update(compact_type_map(node.inputs or {}))
         elif node.component_type is ComponentType.TRANSFORM:
-            values.update({key: "string" for key in (node.mapping or {})})
+            for key, template in (node.mapping or {}).items():
+                whole = TEMPLATE_TOKEN_RE.fullmatch(template.strip())
+                if whole and whole.group(1) in values:
+                    values[key] = values[whole.group(1)]
+                else:
+                    values[key] = "string"
         available[node_id] = values
         for child_id in children[node_id]:
             pending[child_id] -= 1

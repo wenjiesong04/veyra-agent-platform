@@ -23,7 +23,7 @@ import { BuilderTestRun, latestWorkspaceTestOperation } from "./BuilderTestRun";
 import { BuilderWorkspaceDock, type BuilderWorkspaceTab } from "./BuilderWorkspaceDock";
 import { RunExecutionCanvas } from "../studio/RunExecutionCanvas";
 import { builderValidationFailed, builderValidationIssues } from "./validation-feedback";
-import { openStageStartedAt, planFacts, workbenchPhase } from "./workbench-phase";
+import { isUnsupportedCreate, openStageStartedAt, planFacts, workbenchPhase } from "./workbench-phase";
 import "./builder.css";
 
 const CHAT_KINDS = new Set(["user", "assistant", "clarification", "failure", "result"]);
@@ -156,9 +156,15 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
   const pullSeq = React.useRef(0);
   const followSignature = React.useRef("");
   const [followLive, setFollowLive] = React.useState(false);
+  const mounted = React.useRef(true);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const refreshProject = async () => upsertProject(await api.getProject(project.project_id));
   const applySnapshot = React.useCallback((snapshot: BuilderConversationSnapshot, mode: "replace" | "follow" = "replace") => {
-    if (!snapshot?.conversation?.conversation_id) return;
+    if (!mounted.current) return;
+    if (!snapshot?.conversation?.conversation_id || snapshot.conversation.project_id !== project.project_id) return;
     const signature = snapshotSignature(snapshot);
     if (mode === "follow" && (signature === followSignature.current || !followIsCurrent(operationsRef.current, snapshot.operations))) return;
     followSignature.current = signature;
@@ -176,8 +182,9 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     if (mode === "replace") setDraftReply("");
     else setDraftReply((draft) => draftSuperseded(draft, snapshot.messages) ? "" : draft);
     notifyBuilderActivity();
-  }, []);
+  }, [project.project_id]);
   const rememberConversation = (nextId: string, nextTarget = target) => {
+    if (!mounted.current) return;
     window.history.replaceState(null, "", chatHref(project.project_id, nextId, nextTarget));
   };
   const persistRecord = async (kind: "proposal_reference" | "reject" | "confirm" | "apply_summary" | "validation_summary", text: string, extra: { proposal_id?: string; details?: Record<string, string>; operation_id?: string } = {}) => {
@@ -270,6 +277,8 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     }
   };
   const sendTurn = async (userContent: string, retryOf?: string) => {
+    const requestRoute = window.location.hash;
+    const currentPage = () => mounted.current && window.location.hash === requestRoute;
     const snapshot = await api.submitBuilderTurn!(project.project_id, {
       content: retryOf ? undefined : userContent,
       conversation_id: conversationRef.current || undefined,
@@ -278,22 +287,27 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       retry_of: retryOf,
     }, {
       onEvent: (event) => {
+        if (!currentPage()) return;
         setOperations((items) => {
           const next = mergeEvent(items, event);
           operationsRef.current = next;
           return next;
         });
       },
-      onPreview: (text) => setDraftReply(text),
+      onPreview: (text) => { if (currentPage()) setDraftReply(text); },
+      onSnapshot: (next) => { if (currentPage()) applySnapshot(next, "follow"); },
     });
+    if (!currentPage()) return;
     applySnapshot(snapshot);
     rememberConversation(snapshot.conversation.conversation_id);
     const next = snapshot.resolution;
     if (next) await adoptResolution(next, userContent, snapshot.conversation.conversation_id);
   };
   const sendLegacy = async (userContent: string) => {
+    const requestRoute = window.location.hash;
     const prior: BuilderResolveRequest["history"] = messages.filter((item) => item.kind === "user" || item.kind === "assistant" || item.kind === "clarification").slice(-18).map((item) => ({ role: item.role === "user" ? "user" as const : "assistant" as const, content: item.content }));
     const next = await api.resolveBuilderIntent!(project.project_id, { content: userContent, history: prior, focus: selected ? { kind: selected.kind, target_id: selected.id } : null, locale });
+    if (!mounted.current || window.location.hash !== requestRoute) return;
     setMessages((items) => [...items, { message_id: `assistant-${items.length}`, conversation_id: activeConversationId, sequence: items.length, role: "assistant", kind: next.status === "clarification" ? "clarification" : "assistant", content: next.message, operation_id: null, payload: {}, created_at: "" }, ...(next.plan.length ? [{ message_id: `plan-${items.length}`, conversation_id: activeConversationId, sequence: items.length + 1, role: "assistant" as const, kind: "plan" as const, content: next.plan.join("\n"), operation_id: null, payload: {}, created_at: "" }] : [])]);
     await adoptResolution(next, userContent, activeConversationId);
   };
@@ -338,7 +352,8 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
     });
     return () => { active = false; };
   }, [api, applySnapshot, conversationId, project.project_id]);
-  const operationLive = operations.some((item) => item.status === "in_progress" || (item.kind === "test_agent" && item.status === "waiting"));
+  const operationLive = operations.some((item) => item.status === "in_progress"
+    || (item.status === "waiting" && (item.kind === "test_agent" || (!item.proposal_id && !item.diagnostic.waiting_for))));
   const shouldFollow = busy || followLive || operationLive;
   React.useEffect(() => {
     if (!shouldFollow || !api.getBuilderConversation) return undefined;
@@ -468,11 +483,12 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
   const focusWorkspaceKey = selected ? `focus:${selected.id}` : null;
   const focusCovered = Boolean(selected && operations.some((operation) => isWorkspaceOperation(operation) && operationAgentId(operation, messages) === selected.id));
   const renderWorkspace = (workspaceId: string, operation?: BuilderConversationOperation) => {
-    if (collapsedWorkspaces[workspaceId]) {
+    const historical = operation && operation.operation_id !== latestOperation?.operation_id
+      && operation.status !== "in_progress"
+      && latestWorkspaceTestOperation(operations, workspaceId)?.operation_id !== latestOperation?.operation_id;
+    if (collapsedWorkspaces[workspaceId] || (historical && collapsedWorkspaces[workspaceId] !== false)) {
       return <FactoryCanvasCard key={`card-${workspaceId}`} title={zh ? "工作台" : "Workbench"} locale={locale} onOpen={() => setCollapsedWorkspaces((current) => {
-        const next = { ...current };
-        delete next[workspaceId];
-        return next;
+        return { ...current, [workspaceId]: false };
       })} />;
     }
     const agentId = operation ? operationAgentId(operation, messages) : selected?.id ?? createdAgentId;
@@ -491,10 +507,11 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       && !(ownsSession && session?.state === "review"),
     );
     const stageEvents = (operation ?? latestOperation)?.events ?? [];
-    const live = busy || operation?.status === "in_progress" || operation?.status === "waiting";
+    const live = !["blocked", "failed", "finished", "completed", "review", "missing"].includes(phase)
+      && (busy || operation?.status === "in_progress" || operation?.status === "waiting");
     const tab = workspaceTabs[workspaceId] ?? "workbench";
     const workspaceTest = agentId ? latestWorkspaceTestOperation(operations, workspaceId) : undefined;
-    const runtimeBindingPending = operation?.kind === "create_agent"
+    const runtimeBindingPending = (operation?.kind === "create_agent" || operation?.kind === "create_workflow")
       && (operation.diagnostic.waiting_for === "waiting_for_runtime_credential"
         || operation.diagnostic.waiting_for === "waiting_for_runtime_binding");
     const workbench = componentProposalPending && operation
@@ -552,7 +569,7 @@ export function ProjectBuilderConversation({ project, locale, scope, conversatio
       const embed = Boolean(operationId && lastWorkspaceIndex.get(operationId) === index);
       let row: React.ReactNode;
       if (item.type === "activity") {
-        row = <BuilderActivityBlock key={`op-${item.operation.operation_id}`} operation={item.operation} locale={locale} onRetry={retry?.operation_id === item.operation.operation_id && !busy ? () => void send("", retry.operation_id) : undefined} />;
+        row = <BuilderActivityBlock key={`op-${item.operation.operation_id}`} operation={item.operation} factorySession={session?.session_id === item.operation.factory_session_id ? session : null} locale={locale} onRetry={retry?.operation_id === item.operation.operation_id && !busy ? () => void send("", retry.operation_id) : undefined} />;
       } else {
         const activityHasRetry = Boolean(retry && transcript.some((entry) => entry.type === "activity" && entry.operation.operation_id === retry.operation_id));
         const messageRetry = !busy && !activityHasRetry && index === lastChatAbs && retry && (item.message.kind === "assistant" || item.message.kind === "clarification" || item.message.kind === "result") ? retry : undefined;
@@ -587,6 +604,8 @@ function isActivityOperation(operation: BuilderConversationOperation): boolean {
 }
 
 function isWorkspaceOperation(operation: BuilderConversationOperation): boolean {
+  if (isUnsupportedCreate(operation)) return false;
+  if (operation.status === "failed" && operation.error_code !== "factory_missing_capability") return false;
   if (operation.kind === "test_agent") return false;
   if (operation.kind === "create_agent" || operation.kind === "create_workflow" || operation.kind === "create_component" || operation.kind === "edit") return true;
   return operation.target_kind === "agent" || operation.target_kind === "workflow";

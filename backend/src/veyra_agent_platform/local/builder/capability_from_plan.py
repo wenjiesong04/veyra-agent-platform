@@ -19,6 +19,10 @@ _MODEL_ONLY = {
 
 def derive_plan_capabilities(plan: ExecutionPlan) -> tuple[CapabilityRequirement, ...]:
     names = list(plan.capabilities)
+    if plan.state is not None:
+        names.extend(("entity_query", "entity_read", "entity_write"))
+        if plan.state.revision:
+            names.append("entity_history")
     for actor in plan.actors:
         names.extend(actor.capabilities)
     unique = list(

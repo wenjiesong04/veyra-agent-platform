@@ -1,5 +1,39 @@
 # Veyra Agent Platform — 主开发文档
 
+## 生成质量参考评估与生成器方法修复（2026-10-08）
+
+已读取《提高Agent生成质量》两轮对话，作为不可信参考与当前代码对照；取舍见
+[GENERATOR_REFERENCE_REVIEW.md](GENERATOR_REFERENCE_REVIEW.md)。采用后半版的现有
+TaskStructure/编译/门禁主线，保留有界语义审查；不新增平行TaskSpec、多模型评分链或
+Factory真实副作用自动执行。静态通过、可启动与任务验收不能合并成“产品级”。
+
+本轮修改生成器自身：TaskStructure阶段方法/信息源进入自治loop指令；coverage包含
+Workflow Tool锁，读取选中Skill的准确hash正文并把方法提供给修复。只增加相关上下文，
+不增加固定模型调用。能力名字生成的Skill保持scaffold，Factory/Workshop批准与启用
+入口均不将其伪装ready；真实方法通过现有准确快照流程，幂等发布清除旧pending元数据。
+精确Skill选择的resolver接口已有基础，自然语言选择及完整生成路径仍需集成验收。
+
+当前切片相关8个pytest文件 **95 passed**；3源码mypy、相关Ruff、diff check及分析画布
+TypeScript检查通过。未新跑真实Provider/浏览器/打包验收，未重新启动服务来宣称本切片
+已加载，未commit/push。此前长任务的状态/表格/前端改动保留，不能据本切片测试声称
+整个脏工作树全部通过。
+
+## Generator Harness 与普通用户实测（2026-10-05）
+
+生成链已换为真实TaskStructure规划、完整closed schema验证、有界修复、资源能力与typed交接、独立覆盖审查；原生ask_user/reply可在同一固定版本Run暂停/恢复。实测继续修复了context、阻塞终态、registry前端兼容、原生Tool参数、Agent状态契约/安装/查询与并发scope。新增Entity Query和安全Arithmetic资源，不改变旧资源hash、依赖或迁移。结果阅读使用Veyra现有设计系统与指定Skills审查。
+
+真实多轮陈列案例已从浏览器完成生成/提交/运行/选择/改预算/刷新恢复/确认交付，保持一个Run与v1；status为unverified，不是独立语义校验通过。初版合计错误记录为质量问题，新算术工具的真实使用仍待验收。对账与周计划后续真实生成收到HTTP429，不能计为通过。当前产品级结论：尚未证明。代码门禁：后端1142、Desktop661通过；mypy241 sources、Ruff/format/diff、两web typecheck/build通过。最新微调另有schema/state13与reading38定向通过；Desktop构建仍有既有large chunk提示。详细案例、修复与证据边界在[GENERATOR_USER_ACCEPTANCE.md](GENERATOR_USER_ACCEPTANCE.md)，当前检查日志与继续点在HANDOFF。
+
+## Settings / Workflow 运行页与真实校验故障（2026-10-05，本地未提交）
+
+- Settings 改为 Veyra 既有视觉语言中的单内容工作区：我的 API、界面偏好、工具授权、创作助手。服务预设填写地址，自定义协议仍走通用 transport；阿里云专属业务空间地址提供明确引导。保存连接→发现/手动添加模型→显式测试→任务默认值在同一上下文内完成；大量模型支持搜索和分批展示。界面偏好具有实际主题、语言和减少动态效果设置。没有新依赖、React Bits 或 GSAP。
+- Workflow App 按 design-taste-frontend 的 preserve/audit 指导重构：紧凑标题与版本、完整说明弹窗、单一任务输入；运行后只显示提交摘要和真实节点状态，图片输入为缩略素材条；成功后结果只显示一次，已完成进度与技术证据按需展开；失败保留步骤和子 Agent 结果入口。历史错误可回到新任务，缺失旧版本不会冒用最新说明。committed version/hash/预检与收费运行授权边界保持。
+- 最终 web-design-guidelines 审查修复状态温和播报、焦点返回、重名字段覆盖、缺失版本说明、错误恢复及回链 run_id；真实浏览器另外发现全局标题段落样式截断弹窗全文，已修 CSS 优先级并复验390px/暗色全文与 Escape。隔离模拟验收准备、运行、完成、失败；临时源码/标签页/viewport已清理。
+- 真实历史故障：两个子 Agent 均完成，Renderer 的 PNG 与非空对象已经保存；shared required_fields 校验构造包含列表的集合，引发 TypeError，被压成 workflow_execution_failed。已修安全比较，Workflow Verifier仅检查声明输出，与 Agent graph一致，并记录 verifier.result。用真实已保存输出执行修复后的三项check均通过，PNG内容存在；没有重新调用收费模型，也没有改写历史失败记录。
+- 证据：Desktop全量630 tests通过；Backend运行/Artifact/Workflow/Agent相关91 tests通过（包含新校验11项和Workflow integration15项）；Ruff、format、两Runtime source mypy、Desktop/Community typecheck/build和diff check通过。Community全量23/24，已有account测试期待Name而页面已用Display name，隔离复跑同样失败，未扩大修改该模块。Earlier image protocol focused88 tests仍属于独立定向证据。
+- Live：用户此前重启的8771进程加载了图片API适配；用户主动测试Qwen图片生成成功，模型证据active_probe/supported。当前新Verifier修复尚未由该进程加载，5173后续停止；已请求本轮明确服务重启授权，不能从历史handoff推断。未stage/commit/push、未由代理新增真实图片/Workflow调用。
+- 生成质量的未完成边界：完整的三方案/用户选择/修改/状态保留需求，当前确定性生成器降为single_run的分析→出图→校验；companion执行说明只有通用角色brief，Renderer未消费Analyzer结果，生成validation不验证需求覆盖。修复执行校验不代表复杂自然语言生成已经可靠，也不代表用户原助手需求完整实现；后续必须修Planner与需求保真门禁，不能靠增加业务关键词或修改历史版本掩盖。
+
 > 当前实现状态、验收证据和模块优先级。
 > 产品边界以 [`PROJECT_DESIGN.md`](./PROJECT_DESIGN.md) 为准；长期 AI 职责见
 > [`AI_DEVELOPMENT_BRIEF.md`](./AI_DEVELOPMENT_BRIEF.md)。
@@ -16,6 +50,25 @@
 
 验收围绕 `Idea → Build → Run → Observe → Trust → Reuse → Share`。
 页面数量、静态演示数据和过期测试计数都不是完成依据。
+
+## 当前实现（2026-10-04，Model Capability Registry 与 Workflow 使用页）
+
+- Provider connection 与 Model Profile 分离；16 项 tri-state capability/evidence、目录发现、手动 ID、能力默认、确定性 ModelResolver 已落地。未知不满足 required，图片理解不等同图片生成。
+- Builder 按 actor/role 派生实际 Provider 协议需要的模型能力；模型缺口留在 Model Registry，Draft 可审核/Apply 并标 Needs Setup。当前平台 JSON-action loop 不强制要求 Provider 原生 tools/JSON mode。
+- Agent/Workflow preflight 与实际调用共用当前能力证据标准，检查连接、Profile 与 digest/revision；支持 metadata/adapter 和 active probe，错误显式绑定及 stale evidence fail closed。
+- Settings 和运行页可配置模型。原页配置窗口支持添加 API、手动模型、显式费用确认后的验证、绑定及自动检查；不丢失本次任务输入。当前主动探测覆盖 text generation / structured output / image input / image generation。
+- Workflow 使用页按 taste-skill 的既有项目审计收敛：紧凑配置条，主输入区单一边界，明确运行 CTA，流程/历史渐进展开；修复历史重试、预检过期响应、390px CTA 与版本控件裁切。
+- 门禁：Backend `env -u PYTHONPATH make check` **982 passed**（依赖/format/lint/mypy 通过）；Desktop **72 files / 574 passed**、typecheck/build 通过；`git diff --check` clean。真实登录态页面与只读明暗/390px 验收通过；未在浏览器启动 Workflow 或调用真实 Provider。
+- Live：用户在原启动环境重启后，8771 新进程加载最终代码；health `ok`、schema `local_0036_model_capabilities`、database_ready=true，Builder configured=true。真实 Workflow committed 预检 version/hash 匹配；当前只剩图片生成能力未验证，需要用户补配置。未 stage/commit/push，未由代理调用真实 Provider。
+- 详细 A–R 报告见 [Model Capability Registry V1](MODEL_CAPABILITY_REGISTRY_V1_REPORT.md)。以下日期条目保留历史证据，不覆盖本条当前边界。
+
+## 当前修复（2026-10-02，Builder 实时跟进与 Workflow 映射校验）
+
+- Builder 新对话在慢速解析前先通过 SSE 发送已持久化的初始快照；Desktop 收到每帧快照立即更新并取得 conversation ID，让 1 秒持久化轮询能在最终流结束前工作。进入 Runtime 模型绑定等待时，无需刷新才看到选择面板。中文等待提示也已本地化。
+- Desktop 的运行模型面板改为清晰的 Provider / 模型选择表单，使用可读的等待状态与本地密钥说明；`create_workflow` 的 Runtime 绑定等待也能显示该面板。项目切换时不再暂时展示上一项目的聊天。`unsupported` 与一般失败的创建请求不再保留假进度工作台，`unsupported` Activity 明确标为未创建。
+- Workflow Studio 的 AgentCall 校验现在按后端契约分别检查 Agent 字段 slug（允许连字符）和 Workflow 变量 ID（允许下划线）。用户示例中的合法 `model-known → model_known` 不再被误报；错误提示不再写死无关的 `request → prompt` 示例。
+- 验证：Builder Desktop 定向 4 文件 / 99 tests、Workflow Studio 定向 2 文件 / 51 tests；Backend Builder conversation 文件 34 tests；Desktop typecheck/build 与 `git diff --check` 通过。实际浏览器看到旧 `unsupported` 对话不再留假工作台、运行模型面板宽屏与窄屏布局、示例 Workflow 红条消失且测试入口恢复。获用户本轮授权后已重启 Local API `8771`，health `ok`、数据库就绪且 revision 为 `local_0034_project_entities`。没有对真实 Project 再发一次 Builder 请求做端到端流式复验。
+- Workflow App（`#/projects/:projectId/workflows/:workflowId/run`）是 Workflow 的独立使用窗口：只运行明确提交的 Workflow 版本（`source=committed` + `version_id`），预检结果必须与所选版本的 `version_id`、`source_hash` 一致才可启动。Studio 测试运行仍使用 Draft。迁移 `local_0035_workflow_versions` 新增 `workflow_versions.committed`，旧快照需重新提交才会出现在 App 中。需要审批的 Workflow Tool 在预检与运行时都会被拒绝，直到有经过验证的 Workflow Tool 审批关卡。
 
 ## 当前产品边界（2026-09-29，Builder Generation Architecture V2）
 

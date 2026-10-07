@@ -1,0 +1,39 @@
+# veyra.tool.math.calculate@1.0.0
+availability: ready
+description: Evaluate bounded numeric expressions using +, -, *, / and parentheses. Exact is a decimal or rational string; approximate marks numeric rounding. No code, names, calls or external effects are allowed.
+factory_selectable: true
+capabilities:
+- arithmetic
+kind: tool
+name: Arithmetic
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.math.calculate
+resource_id: veyra.tool.math.calculate
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.math.calculate
+  approval_required: false
+  input_schema:
+    expression:
+      type: string
+      required: true
+  output_schema:
+    expression: string
+    value: number
+    exact: string
+    approximate: boolean
+  tool_name: math.calculate
+  ui:
+    category: math
+    icon: calculator
+    title: Arithmetic
+tags:
+- arithmetic
+- local
+- read-only
+version: 1.0.0

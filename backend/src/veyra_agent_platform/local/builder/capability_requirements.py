@@ -24,6 +24,11 @@ _SPEC_ALIASES = {
 }
 
 _PROFILES: dict[str, dict[str, object]] = {
+    "arithmetic": {
+        "input_types": ("string",),
+        "output_types": ("number",),
+        "side_effect": "none",
+    },
     "web_search": {
         "input_types": ("string",),
         "output_types": ("object",),
@@ -109,6 +114,16 @@ _PROFILES: dict[str, dict[str, object]] = {
     "entity_read": {
         "input_types": ("string",),
         "output_types": ("object",),
+        "side_effect": "read",
+    },
+    "entity_query": {
+        "input_types": ("string",),
+        "output_types": ("array",),
+        "side_effect": "read",
+    },
+    "entity_history": {
+        "input_types": ("string",),
+        "output_types": ("array",),
         "side_effect": "read",
     },
     "entity_write": {

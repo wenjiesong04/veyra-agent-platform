@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectSummaryResponse, ProviderCapabilityProfile, ResourceDescriptor } from "@veyra/api-contracts";
+import { MODEL_CAPABILITY_NAMES, type ProjectSummaryResponse, type ProviderCapabilityProfile, type ResourceDescriptor } from "@veyra/api-contracts";
 import { LocalApiClient } from "./local-client";
 
 function summary(overrides: Partial<ProjectSummaryResponse> = {}) {
@@ -65,6 +65,53 @@ function response(payload: unknown, status = 200): Response {
 }
 
 describe("LocalApiClient Project requests", () => {
+  it("parses per-model capability evidence without accepting secret-like metadata", async () => {
+    const capabilities: Record<string, { status: string; evidence: { source: string; observed_at: string } | null }> = Object.fromEntries(MODEL_CAPABILITY_NAMES.map((name) => [name, { status: "unknown", evidence: null }]));
+    capabilities.image_generation = { status: "supported", evidence: { source: "provider_metadata", observed_at: "2026-10-03T00:00:00Z" } };
+    const model = {
+      model_profile_id: "profile-1", provider_connection_id: "credential-1", provider_type: "openai_compatible", provider_label: "Local test",
+      provider_model_id: "image-test", display_name: "Image test", enabled: true, listed: true,
+      metadata: { context_window: 8192, api_key: "must-not-leak" }, capabilities,
+      verification: { state: "verified", source: "provider_metadata", verified_at: "2026-10-03T00:00:00Z", last_checked_at: "2026-10-03T00:00:00Z", stale_reason: null, error_code: null },
+      capability_revision: 1, capability_digest: "a".repeat(64), discovered_at: "2026-10-03T00:00:00Z", created_at: "2026-10-03T00:00:00Z", updated_at: "2026-10-03T00:00:00Z", connection_readiness: "ready", registry_ready: true,
+    };
+    const fetcher = vi.fn().mockResolvedValue(response({ schema_version: "1.0", models: [model] }));
+    const client = new LocalApiClient({ fetcher });
+    const listed = await client.listRuntimeModels();
+    expect(listed.models[0]).toMatchObject({ provider_model_id: "image-test", capabilities: { image_generation: { status: "supported", evidence: { source: "provider_metadata" } }, image_input: { status: "unknown" } } });
+    expect(listed.models[0]?.metadata).not.toHaveProperty("api_key");
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/runtime-models");
+  });
+
+  it("preserves committed Workflow versions and targets readiness and runs by exact version", async () => {
+    const workflowId = "01900000-0000-7000-8000-000000000001";
+    const versionId = "01900000-0000-7000-8000-000000000002";
+    const workflow = {
+      schema_version: "1.0", component_type: "Workflow", workflow_id: workflowId, slug: "review", name: "Review", description: "", version: "1.0.0",
+      inputs: { prompt: "string" }, outputs: { result: "string" },
+      nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }],
+      transitions: [{ from: "start", port: "next", to: "out" }],
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: { positions: {} }, lock: {},
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ schema_version: "1.0", versions: [{ version_id: versionId, workflow_id: workflowId, source_hash: "a".repeat(64), behavior_hash: "b".repeat(64), created_at: "2026-10-02T00:00:00Z", source: workflow, committed: true }] }))
+      .mockResolvedValueOnce(response({ schema_version: "1.0", project_id: "project-1", workflow_id: workflowId, source_kind: "committed", version_id: versionId, source_hash: "a".repeat(64), ready: true, calls: [], checks: [{ id: "tools", ready: true, code: "ready", detail: "" }] }))
+      .mockResolvedValueOnce(response({ schema_version: "1.0", run_id: "run-1", project_id: "project-1", workflow_id: workflowId, version_id: versionId, status: "running", result: null, error: null, created_at: "2026-10-02T00:00:00Z", finished_at: null, waiting: null, children: [], events: [] }));
+    const client = new LocalApiClient({ fetcher });
+    await expect(client.listWorkflowVersions("project-1", workflowId)).resolves.toMatchObject({ versions: [{ committed: true }] });
+    await expect(client.workflowRuntimeReadiness("project-1", workflowId, versionId)).resolves.toMatchObject({ source_kind: "committed", version_id: versionId, source_hash: "a".repeat(64), ready: true, checks: [{ id: "tools", ready: true }] });
+    await expect(client.runWorkflow("project-1", workflowId, { inputs: { prompt: "hello" }, source: "committed", version_id: versionId })).resolves.toMatchObject({ version_id: versionId, status: "running" });
+    expect(fetcher.mock.calls[1]?.[0]).toBe(`/api/v1/projects/project-1/workflows/${workflowId}/runtime-readiness?version_id=${versionId}`);
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({ inputs: { prompt: "hello" }, source: "committed", version_id: versionId });
+  });
+
+  it("keeps declared HumanInput fields when reading a waiting Workflow run", async () => {
+    const payload = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", workflow_id: "workflow-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: "2026-10-02T00:00:00Z", finished_at: null, waiting: { kind: "input", node_id: "collect", prompt: "Which model?", expected_fields: ["model"] }, children: [], events: [] };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(payload)) });
+    await expect(client.getWorkflowRun("project-1", "workflow-1", "run-1")).resolves.toMatchObject({ waiting: { kind: "input", expected_fields: ["model"] } });
+  });
+
   it.each(["resource_unbound", "project_binding_stale", "configuration_required"])("preserves %s Agent dependency evidence", async (status) => {
     const dependency = { reference: "veyra.tool.filesystem.read@1.0.0", kind: "tool", name: "Read File", status, detail: "Check the Project binding", locked_hash: "a".repeat(64), bound_content_hash: "a".repeat(64), content_hash: "b".repeat(64), blocking_reasons: [{ code: "secret_not_configured", message: "Configure host credential." }], used_by: ["read"], bound_by: [] };
     const payload = { schema_version: "1.0", valid: true, source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file", runtime_ready: false, runtime_ready_scope: "agent_dependencies", dependency_summary: { total: 1, ready: 0, attention: 1 }, dependencies: [dependency] };
@@ -406,6 +453,19 @@ describe("LocalApiClient Project requests", () => {
     await expect(client.getAgentRun("project-1", "agent-1", "run-1")).rejects.toMatchObject({ code: "invalid_response" });
   });
 
+  it.each(["model.output_rejected", "tool.input_rejected"])("accepts the pre-effect repair event %s and preserves the actual terminal error", async (kind) => {
+    const detail = {
+      schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1",
+      version_id: "version-1", status: "failed", result: null,
+      error: { code: "runtime_invalid_response", message: "Runtime model service returned an invalid completion" },
+      created_at: "2026-08-28T10:00:00Z", finished_at: "2026-08-28T10:00:01Z",
+      events: [{ schema_version: "1.0", event_id: "event-1", run_id: "run-1", sequence: 2, kind,
+        node_id: "model", timestamp: "2026-08-28T10:00:01Z", payload: { effect_started: false } }],
+    };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(detail)) });
+    await expect(client.getAgentRun("project-1", "agent-1", "run-1")).resolves.toEqual(detail);
+  });
+
   it("posts a durable run command with an idempotency key", async () => {
     const run = {
       schema_version: "1.0",
@@ -732,6 +792,33 @@ describe("LocalApiClient Project requests", () => {
     });
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/projects/project-1/builder/turns");
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ content: "Wrap a gift", focus: null, locale: "en" });
+  });
+
+  it("delivers Builder snapshots before the SSE stream closes", async () => {
+    const conversation = {
+      conversation_id: "conv-1", project_id: "project-1", title: "Wrap a gift", status: "active",
+      created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:00Z",
+      last_activity_at: "2026-09-18T00:00:00Z", last_operation_status: "in_progress",
+    };
+    const initial = { schema_version: "1.0", conversation, messages: [], operations: [], resolution: null, factory_session: null };
+    const waiting = { ...initial, conversation: { ...conversation, last_operation_status: "waiting" } };
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(next) { controller = next; } });
+    const fetcher = vi.fn().mockResolvedValue(new Response(body, { headers: { "content-type": "text/event-stream" } }));
+    const client = new LocalApiClient({ fetcher });
+    const onSnapshot = vi.fn();
+    const result = client.submitBuilderTurn("project-1", { content: "Wrap a gift", focus: null, locale: "en" }, { onSnapshot });
+    let settled = false;
+    void result.then(() => { settled = true; });
+    const emit = (snapshot: typeof initial) => controller.enqueue(new TextEncoder().encode(`event: builder.snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`));
+    emit(initial);
+    await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalledTimes(1));
+    expect(onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ conversation: expect.objectContaining({ conversation_id: "conv-1", last_operation_status: "in_progress" }) }));
+    expect(settled).toBe(false);
+    emit(waiting);
+    await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalledTimes(2));
+    controller.close();
+    await expect(result).resolves.toMatchObject({ conversation: { last_operation_status: "waiting" } });
   });
 
   it("parses Builder harness receipts on operations and defaults missing receipts", async () => {
@@ -1196,12 +1283,12 @@ describe("LocalApiClient Project requests", () => {
     expect(String(fetcher.mock.calls[1]?.[0])).toContain("/api/v1/projects/project-1/artifacts");
   });
 
-  it("accepts account-default Runtime readiness without video_input fields", async () => {
+  it.each(["static_profile", "registry"])("accepts account-default Runtime readiness from %s and a missing image model check", async (source) => {
     const fetcher = vi.fn().mockResolvedValue(response({
       schema_version: "1.0",
       project_id: "project-1",
       agent_id: "agent-1",
-      ready: true,
+      ready: false,
       profile_source: "user_default",
       model: {
         required: true,
@@ -1215,7 +1302,7 @@ describe("LocalApiClient Project requests", () => {
           text_input: "supported",
           image_input: "supported",
           structured_json_output: "supported",
-          source: "static_profile",
+          source,
         },
       },
       dependency_summary: { total: 0, ready: 0, attention: 0 },
@@ -1226,16 +1313,19 @@ describe("LocalApiClient Project requests", () => {
         { id: "model", ready: true, code: "ready", detail: "ok" },
         { id: "modalities", ready: true, code: "ready", detail: "ok" },
         { id: "tools", ready: true, code: "ready", detail: "ok" },
+        { id: "image_model", ready: false, code: "image_model_not_configured", detail: "Bind an image generation model" },
       ],
     }));
     const client = new LocalApiClient({ fetcher });
-    await expect(client.runtimeReadiness("project-1", "agent-1")).resolves.toMatchObject({
+    const readiness = await client.runtimeReadiness("project-1", "agent-1");
+    expect(readiness).toMatchObject({
       profile_source: "default",
       model: {
         configured: true,
         modalities: { image_input: "supported", video_input: "unsupported", audio_input: "unsupported" },
       },
     });
+    expect(readiness.checks).toContainEqual({ id: "image_model", ready: false, code: "image_model_not_configured", detail: "Bind an image generation model" });
   });
 
   it("sends commit compare-and-swap headers and revision body", async () => {

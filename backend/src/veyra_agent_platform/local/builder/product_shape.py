@@ -23,8 +23,10 @@ def decide_product_shape(structure: TaskStructure) -> ProductShapeDecision:
         item.kind == "human_approval" and item.approval_class != "tool"
         for item in structure.execution_boundaries
     )
-    structural = bool(kinds & _STRUCTURAL) or business_approval
-    reasoning = "reasoning" in kinds
+    structural = bool(kinds & (_STRUCTURAL - {"human_input"})) or business_approval
+    if "human_input" in kinds and len(structure.actors) > 1:
+        structural = True
+    reasoning = "reasoning" in kinds or any(stage.actor for stage in structure.stages)
     distinct_agents = _distinct_agent_roles(structure)
     warnings: list[str] = []
 

@@ -5,7 +5,7 @@ import type { NavigationGroup } from "@veyra/ui";
 
 export type AgentContextRouteKind = "agent-detail" | "agent-design" | "agent-analysis" | "agent-run" | "agent-version";
 export type AgentContextRoute = { kind: AgentContextRouteKind; path: string; projectId: string; agentId: string; versionId?: string };
-export type ProjectContextRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "factory";
+export type ProjectContextRouteKind = "project" | "project-chat" | "project-analysis" | "project-resources" | "project-agents" | "project-workflows" | "project-workflow" | "project-workflow-run" | "project-knowledge" | "project-knowledge-item" | "project-files" | "project-runs" | "factory";
 export type ProjectContextRoute = { kind: ProjectContextRouteKind; path: string; projectId: string; workflowId?: string; knowledgeId?: string; conversationId?: string };
 export type DesktopLocale = "zh" | "en";
 
@@ -14,7 +14,7 @@ export function isAgentContextRoute(route: DesktopRouteLocation): route is Agent
 }
 
 export function isProjectContextRoute(route: DesktopRouteLocation): route is ProjectContextRoute {
-  return route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "project-resources" || route.kind === "project-agents" || route.kind === "project-workflows" || route.kind === "project-workflow" || route.kind === "project-knowledge" || route.kind === "project-knowledge-item" || route.kind === "project-files" || route.kind === "project-runs" || route.kind === "factory";
+  return route.kind === "project" || route.kind === "project-chat" || route.kind === "project-analysis" || route.kind === "project-resources" || route.kind === "project-agents" || route.kind === "project-workflows" || route.kind === "project-workflow" || route.kind === "project-workflow-run" || route.kind === "project-knowledge" || route.kind === "project-knowledge-item" || route.kind === "project-files" || route.kind === "project-runs" || route.kind === "factory";
 }
 
 export function isWorkspaceContextRoute(route: DesktopRouteLocation): route is AgentContextRoute | ProjectContextRoute {
@@ -60,7 +60,7 @@ export function projectTreeSelection(route: DesktopRouteLocation): ProjectTreeSe
   if (isAgentContextRoute(route)) return { projectId, agentId: route.agentId, resourceKind: "agents" };
   if (route.kind === "project-agents") return { projectId, resourceKind: "agents" };
   if (route.kind === "project-workflows") return { projectId, resourceKind: "workflows" };
-  if (route.kind === "project-workflow") return { projectId, workflowId: route.workflowId, resourceKind: "workflows" };
+  if (route.kind === "project-workflow" || route.kind === "project-workflow-run") return { projectId, workflowId: route.workflowId, resourceKind: "workflows" };
   if (route.kind === "project-knowledge") return { projectId, resourceKind: "knowledge" };
   if (route.kind === "project-knowledge-item") return { projectId, knowledgeId: route.knowledgeId, resourceKind: "knowledge" };
   if (route.kind === "project-files") return { projectId, resourceKind: "files" };

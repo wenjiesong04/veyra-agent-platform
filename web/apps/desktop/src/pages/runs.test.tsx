@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResponse, ProjectSummaryResponse } from "@veyra/api-contracts";
+import { projectRoutePaths } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { ProjectWorkspaceProvider } from "../api/project-workspace";
 import type { LocalProjectApi } from "../api/local-client";
@@ -79,5 +80,19 @@ describe("RunsPage", () => {
     renderPage(api, "project-1");
     expect(await screen.findByText("No runs yet")).toBeInTheDocument();
     expect(screen.queryByText("Release Room")).not.toBeInTheDocument();
+  });
+
+  it("opens Workflow history in the dedicated Workflow App", async () => {
+    const summary = { ...project(), workflows: [{ workflow_id: "workflow-1", slug: "review-flow", name: "Review Workflow", description: "", source_path: "workflows/review-flow/workflow.vworkflow.yaml", source_file_hash: "hash" }] };
+    const { agent_id: _, ...base } = run();
+    const workflowRun = { ...base, workflow_id: "workflow-1", waiting: null, children: [] };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [summary] }),
+      listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [] }),
+      listWorkflowRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [workflowRun] }),
+    } as unknown as LocalProjectApi;
+    renderPage(api, "project-1");
+    expect(await screen.findByText("Review Workflow")).toBeInTheDocument();
+    expect(screen.getByText("Review Workflow").closest("a")).toHaveAttribute("href", `${projectRoutePaths.workflowRun("project-1", "workflow-1")}?run_id=run-live-1`);
   });
 });

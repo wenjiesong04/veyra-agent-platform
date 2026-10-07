@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -97,6 +98,30 @@ class ScriptedKimiTransport:
         self, messages: object, *, response_format: object = None
     ) -> KimiCompletion:
         self.calls.append((messages, response_format))
+        # Lifecycle/Apply tests use a deterministic semantic Provider fixture.
+        # The dedicated planner suite scripts malformed plans and repair failures.
+        if isinstance(messages, list) and any(
+            "TaskStructureV1 JSON matching" in str(message.get("content", ""))
+            for message in messages
+            if isinstance(message, dict)
+        ):
+            from veyra_agent_platform.local.builder.task_planner import (
+                plan_task_structure,
+            )
+
+            requirement = str(messages[-1].get("content", ""))
+            planned = plan_task_structure(requirement)
+            assert planned.structure is not None, planned.diagnostics
+            return _completion(
+                json.dumps(_provider_projection(planned.structure.to_dict()))
+            )
+        if (
+            isinstance(messages, list)
+            and messages
+            and "Review whether this compiled Veyra"
+            in str(messages[0].get("content", ""))
+        ):
+            return _completion(json.dumps({"verdict": "covered", "gaps": []}))
         if not self.completions:
             raise FactoryProviderError(
                 "factory_invalid_response", "no scripted completion remains"
@@ -110,6 +135,52 @@ def _completion(content: str) -> KimiCompletion:
         assistant_message={"role": "assistant", "content": content},
         finish_reason="stop",
     )
+
+
+def _provider_projection(payload: dict[str, object]) -> dict[str, object]:
+    """Serialize the server fixture into the complete closed Provider schema."""
+    from veyra_agent_platform.local.builder.task_structure_schema import (
+        task_structure_schema,
+    )
+
+    value = deepcopy(payload)
+    for stage in value.get("stages", []):
+        if isinstance(stage.get("input_sources"), dict):
+            stage["input_sources"] = [
+                {"input": name, "source": source}
+                for name, source in stage["input_sources"].items()
+            ]
+    for boundary in value.get("execution_boundaries", []):
+        if isinstance(boundary.get("expected_schema"), dict):
+            boundary["expected_schema"] = [
+                {"name": name, "type": kind}
+                for name, kind in boundary["expected_schema"].items()
+            ]
+    state = value.get("state")
+    if isinstance(state, dict) and isinstance(state.get("fields"), dict):
+        state["fields"] = [
+            {"name": name, "type": kind} for name, kind in state["fields"].items()
+        ]
+
+    def complete(item: object, schema: dict[str, object]) -> object:
+        if "anyOf" in schema:
+            return None if item is None else complete(item, schema["anyOf"][0])
+        kind = schema.get("type")
+        if isinstance(kind, list):
+            if item is None and "null" in kind:
+                return None
+            kind = next(name for name in kind if name != "null")
+        if kind == "object":
+            data = item if isinstance(item, dict) else {}
+            return {
+                name: complete(data.get(name), child)
+                for name, child in schema["properties"].items()
+            }
+        if kind == "array":
+            return [complete(child, schema["items"]) for child in (item or [])]
+        return item if item is not None else {"string": "", "boolean": False}.get(kind)
+
+    return complete(value, task_structure_schema())
 
 
 def _client(
@@ -427,7 +498,9 @@ def test_generate_uploaded_item_agent_does_not_require_filesystem(
         assert permissions["filesystem_write_roots"] == []
 
 
-def test_generate_does_not_request_semantic_plan_json(tmp_path: Path) -> None:
+def test_generate_requests_task_planning_and_coverage_without_writes(
+    tmp_path: Path,
+) -> None:
     transport = ScriptedKimiTransport([_completion("What should success look like?")])
     with _client(tmp_path, transport) as client:
         project_id = _project(client)
@@ -447,7 +520,7 @@ def test_generate_does_not_request_semantic_plan_json(tmp_path: Path) -> None:
         after_generate = client.get(f"/api/v1/projects/{project_id}").json()["agents"]
         assert after_generate == before
         formats = [item[1] for item in transport.calls]
-        assert not any(
+        assert any(
             isinstance(item, dict) and item.get("type") == "json_schema"
             for item in formats
         )
@@ -490,12 +563,27 @@ def test_generate_packaging_pipeline_is_a_workflow(tmp_path: Path) -> None:
         assert types.count("AgentCall") >= 3
         assert "HumanApproval" in types
         assert types[-1] == "Output"
+        image_model = next(
+            item
+            for item in session["proposal_preview"]["models"]
+            if item["slot"] == "image"
+        )
+        assert image_model["required"] == ["image_generation"]
+        assert image_model["status"] == "needs_setup"
+        assert image_model["issue"]["missing"] == ["image_generation"]
+        assert all(
+            item.get("capability") != "image_generation"
+            for item in session.get("resource_factory_plans") or []
+        )
         applied = client.post(
             f"/api/v1/projects/{project_id}/factory/sessions/{session_id}/apply-draft",
             json={"confirm": True},
         )
-        assert applied.status_code == 422
-        assert applied.json()["code"] == "factory_generation_blocked"
+        assert applied.status_code == 200, applied.text
+        payload = applied.json()
+        assert payload["session"]["state"] == "completed"
+        assert payload["workflow"]["workflow_id"]
+        assert client.get(f"/api/v1/projects/{project_id}").json()["workflows"]
 
 
 def test_generate_does_not_silently_compile_a_dag_for_simple_intents(
@@ -521,8 +609,9 @@ def test_generate_does_not_silently_compile_a_dag_for_simple_intents(
 
 
 def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> None:
-    class RecordingTransport:
+    class RecordingTransport(ScriptedKimiTransport):
         def __init__(self) -> None:
+            super().__init__([_completion("What should success look like?")])
             self.formats: list[object] = []
             self.prompts: list[str] = []
 
@@ -537,7 +626,7 @@ def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> 
         ) -> KimiCompletion:
             self.formats.append(response_format)
             self.prompts.append(json.dumps(messages))
-            return _completion("What should success look like?")
+            return super().complete(messages, response_format=response_format)
 
     transport = RecordingTransport()
     with _client(tmp_path, transport) as client:
@@ -566,7 +655,7 @@ def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> 
             f"{created.json()['session_id']}/generate"
         )
         assert generated.status_code == 200, generated.text
-        assert not any(
+        assert any(
             isinstance(item, dict) and item.get("type") == "json_schema"
             for item in transport.formats
         )
@@ -576,8 +665,9 @@ def test_generate_uses_cached_strict_profile_without_probing(tmp_path: Path) -> 
 def test_openai_compatible_host_does_not_need_json_schema_for_generate(
     tmp_path: Path,
 ) -> None:
-    class RecordingTransport:
+    class RecordingTransport(ScriptedKimiTransport):
         def __init__(self) -> None:
+            super().__init__([_completion("What should success look like?")])
             self.formats: list[object] = []
 
         def models(self) -> tuple[str, ...]:
@@ -589,9 +679,8 @@ def test_openai_compatible_host_does_not_need_json_schema_for_generate(
             *,
             response_format: object = None,
         ) -> KimiCompletion:
-            del messages
             self.formats.append(response_format)
-            return _completion("What should success look like?")
+            return super().complete(messages, response_format=response_format)
 
     transport = RecordingTransport()
     with _client(

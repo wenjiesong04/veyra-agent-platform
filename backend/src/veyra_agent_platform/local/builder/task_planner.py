@@ -25,6 +25,8 @@ from veyra_agent_platform.contracts.task_structure import (
     TaskStructure,
 )
 
+from .task_structure_schema import task_structure_payload, task_structure_schema
+
 MAX_PLANNER_REPAIRS = 3
 
 _MULTI_IMAGE = re.compile(
@@ -227,7 +229,7 @@ def plan_task_structure(
                 payload = repair(json.dumps(payload, ensure_ascii=False), last_error)
             else:
                 break
-            structure = TaskStructure.from_dict(payload)
+            structure = TaskStructure.from_dict(task_structure_payload(payload))
             structure = normalize_task_structure(structure)
             validate_task_structure(structure)
             return PlannerResult("ok", structure, repairs=attempt)
@@ -292,6 +294,8 @@ def normalize_task_structure(structure: TaskStructure) -> TaskStructure:
         state=structure.state,
         user_requested_surface=structure.user_requested_surface,
         user_shape_override=structure.user_shape_override,
+        constraints=structure.constraints,
+        success_criteria=structure.success_criteria,
     )
 
 
@@ -300,6 +304,28 @@ def validate_task_structure(structure: TaskStructure) -> None:
         raise ContractValidationError("task structure needs a goal")
     if not structure.outputs:
         raise ContractValidationError("task structure needs outputs")
+    if structure.state is not None and structure.lifecycle.persistent:
+        state = structure.state
+        if state.identity not in state.fields and state.identity != "entity_id":
+            raise ContractValidationError(
+                "state.identity must name a declared field or the platform entity_id; do not invent an undeclared identity"
+            )
+        if len(state.fields) > 24:
+            raise ContractValidationError("state.fields exceed the platform limit")
+        from veyra_agent_platform.contracts.typed_io import parse_typed_field
+
+        for kind in state.fields.values():
+            if kind != "artifact":
+                parse_typed_field(kind, "state.field")
+    if any(
+        cap in {"ask_user", "conversation_state_tracking"}
+        for actor in structure.actors
+        for cap in actor.capabilities
+    ):
+        raise ContractValidationError(
+            "ask_user and conversation context are native runtime actions, not "
+            "Tool capabilities; use text_generation and human_input boundaries"
+        )
     for boundary in structure.execution_boundaries:
         if boundary.kind == "condition":
             if not boundary.expression or len(boundary.branches) < 2:
@@ -830,7 +856,7 @@ def _infer_state(text: str) -> StateRequirement | None:
     if not _PERSIST.search(text):
         return None
     entity = _entity_name(text)
-    identity = "item_id" if entity.endswith("Item") else "record_id"
+    identity = "entity_id"
     fields = {
         "title": "string",
         "status": "string",
@@ -1078,7 +1104,4 @@ def _complexity(
     return "single"
 
 
-_PLANNER_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "required": ["schema_version", "goal", "summary", "lifecycle"],
-}
+_PLANNER_SCHEMA: dict[str, Any] = task_structure_schema()

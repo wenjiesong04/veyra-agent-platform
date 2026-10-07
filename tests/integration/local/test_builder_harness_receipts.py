@@ -24,6 +24,7 @@ from veyra_agent_platform.local.factory.client import (
     FactoryProviderError,
     KimiCompletion,
 )
+from veyra_agent_platform.local.factory.config import FactorySettings
 
 
 @pytest.fixture(autouse=True)
@@ -119,8 +120,13 @@ def test_success_finalizes_resolve_and_interview(tmp_path: Path) -> None:
         project, _, _ = _target(client, "agent")
         payload = _turn(client, project, content="帮我生成礼物包装 Agent").json()
         receipts = _receipts(payload)
-        assert _kinds(payload) == ["resolve_intent", "interview"]
-        assert [item["sequence"] for item in receipts] == [0, 1]
+        assert _kinds(payload) == [
+            "resolve_intent",
+            "interview",
+            "semantic_plan",
+            "semantic_plan",
+        ]
+        assert [item["sequence"] for item in receipts] == [0, 1, 2, 3]
         assert {item["status"] for item in receipts} == {"success"}
         assert receipts[1]["output_contract"] != "AgentSemanticPlanV1"
         assert receipts[0]["provider_id"] == "moonshot"
@@ -191,7 +197,7 @@ def test_provider_failure_preserves_safe_receipt(
         assert nested["receipts"] == receipts
 
 
-def test_generate_does_not_record_semantic_plan_receipts(tmp_path: Path) -> None:
+def test_generate_records_planning_and_coverage_receipts(tmp_path: Path) -> None:
     transport = ScriptedKimiTransport(
         [
             _completion(json.dumps(intent(intent="create", create_kind="agent"))),
@@ -205,10 +211,15 @@ def test_generate_does_not_record_semantic_plan_receipts(tmp_path: Path) -> None
         assert [item["invocation_kind"] for item in receipts] == [
             "resolve_intent",
             "interview",
+            "semantic_plan",
+            "semantic_plan",
         ]
         assert all(item["status"] == "success" for item in receipts)
         assert payload["operations"][0]["status"] == "waiting"
-        assert not any(item["invocation_kind"] == "semantic_plan" for item in receipts)
+        assert [item["output_contract"] for item in receipts[-2:]] == [
+            "TaskStructureV1",
+            "TaskCoverageV1",
+        ]
 
 
 def test_snapshot_hash_is_stable_until_project_metadata_changes(tmp_path: Path) -> None:
@@ -338,3 +349,114 @@ def test_retry_creates_new_receipts_and_preserves_failed_history(
         retried_id = retried["operations"][1]["receipts"][0]["receipt_id"]
         assert retried_id != failed_receipts[0]["receipt_id"]
         assert retried["operations"][1]["receipts"][-1]["status"] == "success"
+
+
+def test_task_planning_receives_real_capability_names_without_graph_descriptors(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport([])
+    with _client(tmp_path, transport) as client:
+        project_id = _project(client)
+        catalog = client.get("/api/v1/resources").json()["resources"]
+        allowed_kinds = {"tool", "mcp_tool", "skill", "policy"}
+        expected = {
+            item["reference"]: item
+            for item in catalog
+            if item["factory_selectable"] and item["kind"] in allowed_kinds
+        }
+        graph_references = {
+            item["reference"] for item in catalog if item["kind"] == "component"
+        }
+        assert "veyra.component.model@1.0.0" in graph_references
+        assert "veyra.component.transform@1.0.0" in graph_references
+
+        messages = client.app.state.factory.harness.messages(
+            project_id, "plan_task", schema={"type": "object"}
+        )
+        context = json.loads(messages[1]["content"])
+        received = {item["reference"]: item for item in context["resources"]}
+        assert received.keys() == expected.keys()
+        assert graph_references.isdisjoint(received)
+        for reference, resource in received.items():
+            assert resource["capabilities"] == expected[reference].get(
+                "capabilities", []
+            )
+            assert resource["content_hash"] == expected[reference]["content_hash"]
+            assert resource["factory_selectable"] is True
+        assert received["veyra.tool.web.search@1.0.0"]["capabilities"] == ["web_search"]
+        assert received["veyra.skill.research-brief@1.0.0"]["capabilities"] == [
+            "research_planning"
+        ]
+        assert transport.calls == []
+
+
+def test_task_planning_keeps_metadata_boundary_and_other_harness_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credential_marker = "TEST_ONLY_CREDENTIAL_NOT_FOR_BUILDER_CONTEXT"
+    knowledge_marker = "TEST_KNOWLEDGE_CONTENT_NOT_FOR_BUILDER_CONTEXT"
+    file_marker = "TEST_FILE_CONTENT_NOT_FOR_BUILDER_CONTEXT"
+    monkeypatch.setenv("VEYRA_TEST_HARNESS_CREDENTIAL", credential_marker)
+    transport = ScriptedKimiTransport([])
+    with _client(
+        tmp_path,
+        transport,
+        factory_settings=FactorySettings(
+            model_api_key_env="VEYRA_TEST_HARNESS_CREDENTIAL"
+        ),
+    ) as client:
+        project_id = _project(client)
+        knowledge = client.post(
+            f"/api/v1/projects/{project_id}/knowledge",
+            json={"name": "Fixture brief", "text": knowledge_marker},
+        )
+        assert knowledge.status_code == 201, knowledge.text
+        uploaded = client.post(
+            f"/api/v1/projects/{project_id}/files/materialize",
+            data={"relative_path": "assets/fixture.txt"},
+            files={"file": ("fixture.txt", file_marker.encode(), "text/plain")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        harness = client.app.state.factory.harness
+        plan = json.loads(
+            harness.messages(project_id, "plan_task", schema={"type": "object"})[1][
+                "content"
+            ]
+        )
+        assert plan["inventory"]["knowledge"][0]["name"] == "Fixture brief"
+        assert "assets/fixture.txt" in {item["path"] for item in plan["files"]}
+        assert plan["authority"]["file_contents"] == "not_loaded"
+        assert plan["authority"]["runtime_execution"] == "not_performed"
+        original_resources = {
+            item["reference"]: item
+            for item in client.app.state.factory.catalog.factory_snapshot()
+        }
+        other_contexts = [
+            harness.context_document(project_id, mode)
+            for mode in ("interview", "create_agent", "edit_source", "resolve_intent")
+        ]
+        for context in other_contexts:
+            received = {item["reference"]: item for item in context["resources"]}
+            assert received.keys() == original_resources.keys()
+            assert "veyra.component.model@1.0.0" in received
+            assert "veyra.component.transform@1.0.0" in received
+            for reference, resource in received.items():
+                assert resource["spec"] == original_resources[reference]["spec"]
+                assert (
+                    resource["required_permissions"]
+                    == original_resources[reference]["required_permissions"]
+                )
+            for key in (
+                "project",
+                "inventory",
+                "files",
+                "project_bindings",
+                "authority",
+            ):
+                assert context[key] == plan[key]
+        for context in [plan, *other_contexts]:
+            encoded = json.dumps(context, ensure_ascii=False)
+            for excluded in (credential_marker, knowledge_marker, file_marker):
+                assert excluded not in encoded
+            assert str(tmp_path) not in encoded
+        assert transport.calls == []

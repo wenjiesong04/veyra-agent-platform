@@ -172,7 +172,7 @@ export function useProjectNavigation({ scopedProjectId, activeAgentId, selection
       tone: "instance",
       resourceKind: "workflow",
       active: workflow.workflow_id === currentWorkflowId,
-      trailingAction: <span className="agent-row-actions"><button type="button" className="sidebar-more-chip" aria-label={`${t("workflowActions")}: ${workflow.name || workflow.slug}`} title={t("workflowActions")} aria-haspopup="menu" aria-expanded={isWorkflowPopoverOpen(workflow.workflow_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleWorkflowPopover(workflow, event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
+      trailingAction: <span className="agent-row-actions"><a href={projectRoutePaths.workflowRun(project.project_id, workflow.workflow_id)} aria-label={`${t("openApp")}: ${workflow.name || workflow.slug}`} title={t("openApp")} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}><Play size={15} aria-hidden="true" /></a><button type="button" className="sidebar-more-chip" aria-label={`${t("workflowActions")}: ${workflow.name || workflow.slug}`} title={t("workflowActions")} aria-haspopup="menu" aria-expanded={isWorkflowPopoverOpen(workflow.workflow_id)} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => toggleWorkflowPopover(workflow, event)}><MoreHorizontal size={15} aria-hidden="true" /></button></span>,
     });
     const knowledgeItem = (knowledge: ProjectKnowledgeRecord): NavigationItem => ({
       href: projectRoutePaths.knowledgeItem(project.project_id, knowledge.knowledge_id),

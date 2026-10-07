@@ -15,6 +15,7 @@ from .test_runtime_routes import (
     _agent_source,
     _run_until_settled,
 )
+from .verified_runtime_model import verified_client
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +58,7 @@ def test_runtime_bound_only_top_chunks_and_empty(tmp_path, filename, fact, query
         project_storage_root=tmp_path / "projects",
     )
     transport = ScriptedRuntimeTransport("Answer from retrieved context")
-    app = create_app(settings, runtime_transport=transport)
-    with TestClient(app) as client:
+    with verified_client(settings, transport) as client:
         project = client.post(
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
@@ -95,7 +95,7 @@ def test_runtime_bound_only_top_chunks_and_empty(tmp_path, filename, fact, query
         context = transport.calls[-1][-1]["content"].split("Project knowledge", 1)[1]
         assert context.count("Document ") == 2
         assert len(context.encode()) < 65_536
-        snapshot = dict(app.state.repository.version(result["version_id"]))
+        snapshot = dict(client.app.state.repository.version(result["version_id"]))
         assert json.loads(snapshot["source_json"])["lock"] == saved["source"]["lock"]
         evidence = next(
             event["payload"]
@@ -179,8 +179,7 @@ def test_resolution_fails_before_model_without_fallback(tmp_path, state, code):
         project_storage_root=tmp_path / "projects",
     )
     transport = ScriptedRuntimeTransport("must not run")
-    app = create_app(settings, runtime_transport=transport)
-    with TestClient(app) as client:
+    with verified_client(settings, transport) as client:
         project = client.post(
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
@@ -216,5 +215,5 @@ def test_resolution_fails_before_model_without_fallback(tmp_path, state, code):
         assert transport.calls == []
         assert not any(event["kind"] == "tool.completed" for event in result["events"])
         assert (artifact.read_bytes() if artifact.exists() else None) == before
-        snapshot = app.state.repository.version(result["version_id"])
+        snapshot = client.app.state.repository.version(result["version_id"])
         assert json.loads(snapshot["source_json"])["lock"] == saved["source"]["lock"]

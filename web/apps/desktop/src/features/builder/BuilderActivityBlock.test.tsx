@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BuilderConversationOperation, BuilderHarnessReceipt } from "@veyra/api-contracts";
+import type { BuilderConversationOperation, BuilderHarnessReceipt, FactorySession } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { BuilderActivityBlock } from "./BuilderActivityBlock";
 
@@ -29,6 +29,57 @@ function operation(overrides: Partial<BuilderConversationOperation> = {}): Build
 }
 
 describe("BuilderActivityBlock", () => {
+  it.each(["succeeded", "failed"] as const)("labels a %s but blocked generation truthfully and stops its stale plan stage", (status) => {
+    const onRetry = vi.fn();
+    render(
+      <ThemeProvider>
+        <BuilderActivityBlock
+          operation={operation({
+            status,
+            error_code: status === "failed" ? "factory_generation_blocked" : null,
+            events: [
+              { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.semantic_plan.started", label: "Planning", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+              { event_id: "e2", operation_id: "op-1", sequence: 1, kind: status === "failed" ? "builder.operation.failed" : "builder.operation.completed", label: "Ended", summary: "", facts: {}, created_at: "2026-09-18T00:00:18Z" },
+            ],
+          })}
+          factorySession={status === "succeeded" ? { blocked_reason: "Invalid output mapping" } as FactorySession : null}
+          locale="zh"
+          onRetry={onRetry}
+        />
+      </ThemeProvider>,
+    );
+    const toggle = screen.getByRole("button", { name: "构建 Agent · 已阻塞" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("已阻塞")).toBeInTheDocument();
+    expect(screen.getByText(/请调整任务要求后，在消息框重新发送/)).toBeInTheDocument();
+    expect(screen.queryByText("已完成")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText("整理规格").closest("li")).toHaveAttribute("data-state", "failed");
+    expect(screen.queryByText("验证通过")).not.toBeInTheDocument();
+    expect(document.querySelector(".builder-activity-pulse")).toBeNull();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("does not pulse an unfinished stage after a terminal failure", () => {
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", events: [
+      { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.compile.started", label: "Compiling", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+    ] })} locale="zh" /></ThemeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "构建 Agent · 失败" }));
+    expect(document.querySelector(".builder-activity-pulse")).toBeNull();
+  });
+
+  it("keeps a historical blocked operation blocked without its previous Factory session", () => {
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "succeeded", events: [
+      { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.semantic_plan.started", label: "Planning", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
+      { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.specification.completed", label: "Resolved", summary: "", facts: { target_kind: "blocked", blocked_reason: "State requirement cannot be represented" }, created_at: "2026-09-18T00:00:18Z" },
+      { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.operation.completed", label: "Ended", summary: "", facts: {}, created_at: "2026-09-18T00:00:18Z" },
+    ] })} locale="zh" /></ThemeProvider>);
+    expect(screen.getByRole("button", { name: "构建 Agent · 已阻塞" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("已完成")).not.toBeInTheDocument();
+    expect(document.querySelector(".builder-activity-pulse")).toBeNull();
+  });
+
   it("collapses completed operations and hides failure retry", () => {
     render(
       <ThemeProvider>
@@ -52,6 +103,23 @@ describe("BuilderActivityBlock", () => {
     expect(screen.getByText("已完成")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
     expect(screen.queryByText("理解需求")).not.toBeInTheDocument();
+  });
+
+  it("labels an unsupported create as not created rather than a completed build", () => {
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({
+      kind: "create_workflow",
+      target_kind: "workflow",
+      status: "succeeded",
+      events: [
+        { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.intent.resolved", label: "Understanding request", summary: "", facts: { status: "unsupported", create_kind: "workflow" }, created_at: "2026-09-18T00:00:01Z" },
+        { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.operation.completed", label: "Completed", summary: "", facts: {}, created_at: "2026-09-18T00:00:02Z" },
+      ],
+    })} locale="zh" /></ThemeProvider>);
+    const toggle = screen.getByRole("button", { name: "构建 Workflow · 未创建" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(screen.getByText("未生成方案")).toBeInTheDocument();
+    expect(screen.queryByText("验证通过")).not.toBeInTheDocument();
   });
 
   it("keeps a running operation expanded on the current server stage", () => {
@@ -95,7 +163,7 @@ describe("BuilderActivityBlock", () => {
       </ThemeProvider>,
     );
     expect(screen.getByRole("button", { name: /构建 Agent · 失败/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByText("Rate limited")).toBeInTheDocument();
+    expect(screen.getByText("服务商暂时限流")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeEnabled();
   });
 
@@ -237,7 +305,7 @@ describe("BuilderActivityBlock Build details", () => {
     fireEvent.click(screen.getByRole("button", { name: /构建 Agent · 失败/ }));
     fireEvent.click(screen.getByRole("button", { name: /构建详情/ }));
     expect(screen.getByText("Provider 请求")).toBeInTheDocument();
-    expect(screen.getAllByText("Rate limited").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("服务商暂时限流").length).toBeGreaterThan(0);
     expect(screen.getAllByText("JSON Object").length).toBeGreaterThan(0);
     expect(screen.queryByText(/choices/)).not.toBeInTheDocument();
     expect(screen.queryByText(/moonshot flavored/)).not.toBeInTheDocument();

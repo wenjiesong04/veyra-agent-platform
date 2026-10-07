@@ -1,31 +1,22 @@
-"""Runtime model modality profile. Separate from Builder ProviderCapabilityProfile.
+"""Runtime modality view backed only by a verified Model Registry profile.
 
-Exact model ids only. Substring guessing is forbidden.
-Known text-only models stay closed for image input. Vision models and any
-other user-bound Runtime model stay open so the Provider can accept or reject.
-Audio/video adapters are a separate Runtime gap, not a model-id guess.
+RuntimeSettings describe a connection target, not model capabilities. Unknown
+or missing Registry evidence therefore remains unknown; model names and host
+names are never used to infer support.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
-from urllib.parse import urlsplit
+from typing import Any, Literal
 
 from veyra_agent_platform.local.runtime.config import RuntimeSettings
 
 CapabilityState = Literal["supported", "unsupported", "unknown"]
-ProfileSource = Literal["static_profile", "unknown"]
-
-_MOONSHOT_HOSTS = frozenset({"api.moonshot.cn", "api.moonshot.ai"})
-_TEXT_ONLY_MODELS = frozenset({"kimi-k2", "moonshot-v1-8k", "moonshot-v1-32k"})
-_VISION_MODELS = frozenset(
-    {
-        "kimi-k3",
-        "kimi-k2.6",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-    }
+ProfileSource = Literal["registry", "unknown", "static_profile"]
+_VERIFIED_EVIDENCE = frozenset(
+    {"provider_metadata", "provider_adapter", "active_probe"}
 )
 
 
@@ -53,39 +44,69 @@ class RuntimeModelCapabilities:
         }
 
 
-def runtime_model_capabilities(settings: RuntimeSettings) -> RuntimeModelCapabilities:
-    host = (urlsplit(settings.model_base_url).hostname or "").casefold()
-    model_id = settings.model_id.strip()
-    key = model_id.casefold()
-    moonshot = host in _MOONSHOT_HOSTS
-    provider = "moonshot" if moonshot else "unknown"
-    if key in _TEXT_ONLY_MODELS and moonshot:
-        return RuntimeModelCapabilities(
-            provider=provider,
-            model_id=model_id,
-            text_input="supported",
-            image_input="unsupported",
-            video_input="unsupported",
-            audio_input="unsupported",
-            structured_json_output="supported",
-            source="static_profile",
+def runtime_model_capabilities(
+    settings: RuntimeSettings, profile: Any | None = None
+) -> RuntimeModelCapabilities:
+    """Adapt a verified Registry profile for the legacy Runtime content helper.
+
+    The helper still uses ``unsupported`` to avoid serializing a declared image
+    into a model request. All run/readiness authorization is performed by the
+    Registry-backed preflight in RuntimeService.
+    """
+
+    if profile is not None:
+        ready = (
+            getattr(profile, "registry_ready", False) is True
+            and getattr(profile, "enabled", False) is True
         )
-    if key in _VISION_MODELS and moonshot:
+        capability_map = getattr(profile, "capabilities", {})
+
+        def value(name: str) -> CapabilityState:
+            if not ready or not isinstance(capability_map, Mapping):
+                return "unknown"
+            record = capability_map.get(name)
+            status = (
+                record.get("status")
+                if isinstance(record, Mapping)
+                else getattr(record, "status", None)
+            )
+            status = getattr(status, "value", status)
+            evidence = (
+                record.get("evidence")
+                if isinstance(record, Mapping)
+                else getattr(record, "evidence", None)
+            )
+            if status not in {"supported", "unsupported", "unknown"}:
+                return "unknown"
+            evidence_source = (
+                evidence.get("source")
+                if isinstance(evidence, Mapping)
+                else getattr(evidence, "source", None)
+            )
+            evidence_source = getattr(evidence_source, "value", evidence_source)
+            if evidence_source not in _VERIFIED_EVIDENCE:
+                return "unknown"
+            if status == "supported":
+                return "supported"
+            if status == "unsupported":
+                return "unsupported"
+            return "unknown"
+
         return RuntimeModelCapabilities(
-            provider=provider,
-            model_id=model_id,
-            text_input="supported",
-            image_input="supported",
-            video_input="unsupported",
-            audio_input="unsupported",
-            structured_json_output="supported",
-            source="static_profile",
+            provider=str(getattr(profile, "provider_type", "registry")),
+            model_id=str(getattr(profile, "provider_model_id", settings.model_id)),
+            text_input=value("text_input"),
+            image_input=value("image_input"),
+            video_input=value("video_input"),
+            audio_input=value("audio_input"),
+            structured_json_output=value("structured_output"),
+            source="registry" if ready else "unknown",
         )
     return RuntimeModelCapabilities(
-        provider=provider,
-        model_id=model_id,
-        text_input="supported",
-        image_input="supported",
+        provider="unknown",
+        model_id=settings.model_id.strip(),
+        text_input="unknown",
+        image_input="unknown",
         video_input="unsupported",
         audio_input="unsupported",
         structured_json_output="unknown",

@@ -1,6 +1,7 @@
 import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersionsResponse } from "@veyra/api-contracts";
 import {
   LOCAL_API_SCHEMA_VERSION,
+  MODEL_CAPABILITY_NAMES,
   isTypedFieldSpec,
   type AgentSource,
   type CreateEditProposalRequest,
@@ -94,12 +95,19 @@ import {
   type ProviderCredential,
   type ProviderCredentialListResponse,
   type ProviderCredentialValidationResponse,
+  type ModelCapabilityName,
+  type ModelCapabilityRecord,
+  type ModelProfile,
+  type ModelRegistryResponse,
+  type ModelDiscoveryResponse,
+  type ModelDefaultsResponse,
   type CreateProviderCredentialRequest,
   type RuntimeBindingResponse,
   type RuntimeBinding,
   type RuntimeProfileValidation,
   type RuntimeReadiness,
   type RuntimeReadinessCheck,
+  type RuntimeSetupIssue,
   type RuntimeToolReadiness,
   type WorkflowRuntimeReadiness,
   type WorkflowRuntimeReadinessCheck,
@@ -289,7 +297,7 @@ export type LocalProjectApi = {
   saveWorkflowDraft?(projectId: string, workflowId: string, input: SaveWorkflowDraftRequest, options: { etag: string; idempotencyKey?: string }): Promise<SaveWorkflowDraftResponse>;
   reloadWorkflowDraft?(projectId: string, workflowId: string): Promise<WorkflowDraftResponse>;
   validateWorkflow?(projectId: string, workflowId: string): Promise<ValidateResponse>;
-  workflowRuntimeReadiness?(projectId: string, workflowId: string): Promise<WorkflowRuntimeReadiness>;
+  workflowRuntimeReadiness?(projectId: string, workflowId: string, versionId?: string): Promise<WorkflowRuntimeReadiness>;
   commitWorkflow?(projectId: string, workflowId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
   validate?(projectId: string, agentId: string): Promise<ValidateResponse>;
   commit?(projectId: string, agentId: string, options: { expectedRevision: number; etag: string; idempotencyKey?: string }): Promise<CommitResponse>;
@@ -302,6 +310,13 @@ export type LocalProjectApi = {
   validateRuntimeProfile?(profile: RuntimeApiProfileInput): Promise<RuntimeProfileValidation>;
   runtimeReadiness?(projectId: string, agentId: string, options?: { versionId?: string }): Promise<RuntimeReadiness>;
   listRuntimeCredentials?(): Promise<ProviderCredentialListResponse>;
+  listRuntimeModels?(): Promise<ModelRegistryResponse>;
+  discoverRuntimeModels?(credentialId: string): Promise<ModelDiscoveryResponse>;
+  addRuntimeModel?(credentialId: string, input: { provider_model_id: string; display_name?: string }): Promise<ModelProfile>;
+  listRuntimeModelDefaults?(): Promise<ModelDefaultsResponse>;
+  setRuntimeModelDefault?(role: string, modelProfileId: string): Promise<void>;
+  clearRuntimeModelDefault?(role: string): Promise<void>;
+  probeRuntimeModelCapability?(modelProfileId: string, capability: ModelCapabilityName, acknowledgeCost: boolean): Promise<ModelProfile>;
   createRuntimeCredential?(input: CreateProviderCredentialRequest): Promise<ProviderCredentialValidationResponse>;
   validateRuntimeCredential?(credentialId: string): Promise<ProviderCredentialValidationResponse>;
   replaceRuntimeCredential?(credentialId: string, apiKey: string): Promise<ProviderCredentialValidationResponse>;
@@ -322,7 +337,7 @@ export type LocalProjectApi = {
   getAgentRuntimeProfile?(projectId: string, agentId: string): Promise<RuntimeProfileResponse>;
   setAgentRuntimeProfile?(projectId: string, agentId: string, profile: RuntimeApiProfileInput | null): Promise<RuntimeProfileResponse>;
   resolveBuilderIntent?(projectId: string, input: BuilderResolveRequest): Promise<BuilderResolution>;
-  submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void; onPreview?: (text: string) => void }): Promise<BuilderConversationSnapshot>;
+  submitBuilderTurn?(projectId: string, input: BuilderTurnRequest, options?: { onEvent?: (event: BuilderOperationEvent) => void; onPreview?: (text: string) => void; onSnapshot?: (snapshot: BuilderConversationSnapshot) => void }): Promise<BuilderConversationSnapshot>;
   getBuilderConversation?(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot>;
   getBuilderComponentProposal?(projectId: string, proposalId: string): Promise<CustomComponentProposal>;
   commandBuilderComponentProposal?(projectId: string, conversationId: string, operationId: string, proposalId: string, input: ComponentProposalCommandRequest): Promise<BuilderConversationSnapshot>;
@@ -381,7 +396,7 @@ export type LocalProjectApi = {
   runWorkflow?(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse>;
   getWorkflowRun?(projectId: string, workflowId: string, runId: string): Promise<WorkflowRunResponse>;
   listWorkflowRuns?(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }>;
-  commandWorkflowRun?(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" }): Promise<WorkflowRunResponse>;
+  commandWorkflowRun?(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" | "reply"; inputs?: Record<string, JsonValue> }): Promise<WorkflowRunResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
@@ -571,6 +586,8 @@ function providerCredential(value: unknown, status = 502): ProviderCredential {
   if (!["ready", "needs_reentry", "unavailable", "disabled", "invalid", "unverified"].includes(readiness)) {
     throw new LocalApiClientError("The local service returned an invalid credential readiness.", { status, code: "invalid_response" });
   }
+  const discoveryState = record.discovery_state === undefined ? undefined : asString(record.discovery_state, "credential.discovery_state", status);
+  if (discoveryState !== undefined && !["unknown", "ready", "failed", "stale"].includes(discoveryState)) throw new LocalApiClientError("The local service returned an invalid model discovery state.", { status, code: "invalid_response" });
   return {
     credential_id: asString(record.credential_id, "credential.credential_id", status),
     owner_id: asString(record.owner_id, "credential.owner_id", status),
@@ -587,6 +604,10 @@ function providerCredential(value: unknown, status = 502): ProviderCredential {
     updated_at: asString(record.updated_at, "credential.updated_at", status),
     validated_at: record.validated_at === null ? null : asString(record.validated_at, "credential.validated_at", status),
     last_used_at: record.last_used_at === null ? null : asString(record.last_used_at, "credential.last_used_at", status),
+    ...(discoveryState === undefined ? {} : { discovery_state: discoveryState as ProviderCredential["discovery_state"] }),
+    ...(record.discovery_checked_at === undefined ? {} : { discovery_checked_at: record.discovery_checked_at === null ? null : asString(record.discovery_checked_at, "credential.discovery_checked_at", status) }),
+    ...(record.discovered_at === undefined ? {} : { discovered_at: record.discovered_at === null ? null : asString(record.discovered_at, "credential.discovered_at", status) }),
+    ...(record.discovery_error_code === undefined ? {} : { discovery_error_code: record.discovery_error_code === null ? null : asString(record.discovery_error_code, "credential.discovery_error_code", status) }),
     secret_state: secretState as ProviderCredential["secret_state"],
     readiness: readiness as ProviderCredential["readiness"],
   };
@@ -602,12 +623,110 @@ function providerCredentialList(value: unknown, status = 502): ProviderCredentia
 
 function providerCredentialValidation(value: unknown, status = 502): ProviderCredentialValidationResponse {
   const record = asRecord(value, status);
+  const selection = record.model_selection === undefined ? null : asRecord(record.model_selection, status);
+  const selectionState = selection ? asString(selection.state, "credential_validation.model_selection.state", status) : null;
+  if (selectionState && !["ready", "needs_setup", "unconfigured"].includes(selectionState)) throw new LocalApiClientError("Invalid model selection state.", { status, code: "invalid_response" });
   return {
     valid: asBoolean(record.valid, "credential_validation.valid", status),
     code: asString(record.code, "credential_validation.code", status),
     message: asText(record.message, "credential_validation.message", status),
     credential: providerCredential(record.credential, status),
+    ...(record.discovery === undefined ? {} : { discovery: modelDiscoveryState(record.discovery, status) }),
+    ...(record.models === undefined ? {} : { models: asArray(record.models, "credential_validation.models", status).map((item) => modelProfile(item, status)) }),
+    ...(selection ? { model_selection: {
+      provider_model_id: selection.provider_model_id === null ? null : asString(selection.provider_model_id, "credential_validation.model_selection.provider_model_id", status),
+      state: selectionState as "ready" | "needs_setup" | "unconfigured",
+    } } : {}),
   };
+}
+
+const modelEvidenceSources = new Set(["provider_metadata", "provider_adapter", "active_probe", "user_declared", "inferred"]);
+const modelVerificationStates = new Set(["unknown", "declared", "verified", "failed", "stale"]);
+
+function modelCapability(value: unknown, name: ModelCapabilityName, status: number): ModelCapabilityRecord {
+  const record = asRecord(value, status);
+  const capabilityStatus = asString(record.status, `${name}.status`, status);
+  if (capabilityStatus !== "supported" && capabilityStatus !== "unsupported" && capabilityStatus !== "unknown") throw new LocalApiClientError("Invalid model capability status.", { status, code: "invalid_response" });
+  const evidence = record.evidence === null ? null : asRecord(record.evidence, status);
+  const source = evidence ? asString(evidence.source, `${name}.evidence.source`, status) : null;
+  if (source && !modelEvidenceSources.has(source)) throw new LocalApiClientError("Invalid model capability evidence.", { status, code: "invalid_response" });
+  if (capabilityStatus !== "unknown" && !evidence) throw new LocalApiClientError("Model capability evidence is missing.", { status, code: "invalid_response" });
+  return {
+    status: capabilityStatus,
+    evidence: evidence ? { source: source as NonNullable<ModelCapabilityRecord["evidence"]>["source"], observed_at: asString(evidence.observed_at, `${name}.evidence.observed_at`, status), ...(evidence.detail === undefined ? {} : { detail: asText(evidence.detail, `${name}.evidence.detail`, status) }) } : null,
+  };
+}
+
+function modelProfile(value: unknown, status = 502): ModelProfile {
+  const record = asRecord(value, status);
+  const rawCapabilities = asRecord(record.capabilities, status);
+  const capabilities = Object.fromEntries(MODEL_CAPABILITY_NAMES.map((name) => [name, modelCapability(rawCapabilities[name], name, status)])) as ModelProfile["capabilities"];
+  const rawMetadata = asRecord(record.metadata, status);
+  const metadata: ModelProfile["metadata"] = {};
+  for (const key of ["context_window", "max_output_tokens", "modalities", "provider_family"]) {
+    if (rawMetadata[key] !== undefined) metadata[key] = asJsonValue(rawMetadata[key], `model.metadata.${key}`, status);
+  }
+  const verification = asRecord(record.verification, status);
+  const verificationState = asString(verification.state, "model.verification.state", status);
+  if (!modelVerificationStates.has(verificationState)) throw new LocalApiClientError("Invalid model verification state.", { status, code: "invalid_response" });
+  const verificationSource = verification.source === null ? null : asString(verification.source, "model.verification.source", status);
+  if (verificationSource && !modelEvidenceSources.has(verificationSource)) throw new LocalApiClientError("Invalid model verification source.", { status, code: "invalid_response" });
+  const readiness = asString(record.connection_readiness, "model.connection_readiness", status);
+  if (!["ready", "needs_reentry", "unavailable", "disabled", "invalid", "unverified"].includes(readiness)) throw new LocalApiClientError("Invalid model connection readiness.", { status, code: "invalid_response" });
+  const digest = asString(record.capability_digest, "model.capability_digest", status);
+  if (!/^[0-9a-f]{64}$/.test(digest)) throw new LocalApiClientError("Invalid model capability digest.", { status, code: "invalid_response" });
+  return {
+    model_profile_id: asString(record.model_profile_id, "model.model_profile_id", status),
+    provider_connection_id: asString(record.provider_connection_id, "model.provider_connection_id", status),
+    provider_type: asString(record.provider_type, "model.provider_type", status),
+    provider_label: asString(record.provider_label, "model.provider_label", status),
+    provider_model_id: asString(record.provider_model_id, "model.provider_model_id", status),
+    display_name: asString(record.display_name, "model.display_name", status),
+    enabled: asBoolean(record.enabled, "model.enabled", status),
+    listed: asBoolean(record.listed, "model.listed", status),
+    metadata,
+    capabilities,
+    verification: {
+      state: verificationState as ModelProfile["verification"]["state"],
+      source: verificationSource as ModelProfile["verification"]["source"],
+      verified_at: verification.verified_at === null ? null : asString(verification.verified_at, "model.verification.verified_at", status),
+      last_checked_at: verification.last_checked_at === null ? null : asString(verification.last_checked_at, "model.verification.last_checked_at", status),
+      stale_reason: verification.stale_reason === null ? null : asText(verification.stale_reason, "model.verification.stale_reason", status),
+      error_code: verification.error_code === null ? null : asString(verification.error_code, "model.verification.error_code", status),
+    },
+    capability_revision: asNumber(record.capability_revision, "model.capability_revision", status),
+    capability_digest: digest,
+    discovered_at: record.discovered_at === null ? null : asString(record.discovered_at, "model.discovered_at", status),
+    created_at: asString(record.created_at, "model.created_at", status),
+    updated_at: asString(record.updated_at, "model.updated_at", status),
+    connection_readiness: readiness as ModelProfile["connection_readiness"],
+    registry_ready: asBoolean(record.registry_ready, "model.registry_ready", status),
+  };
+}
+
+function modelRegistryResponse(value: unknown, status = 502): ModelRegistryResponse {
+  const record = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, models: asArray(record.models, "models", status).map((item) => modelProfile(item, status)) };
+}
+
+function modelDiscoveryState(value: unknown, status: number): ModelDiscoveryResponse["discovery"] {
+  const record = asRecord(value, status);
+  const state = asString(record.state, "discovery.state", status);
+  if (state !== "ready" && state !== "failed" && state !== "stale") throw new LocalApiClientError("Invalid model discovery state.", { status, code: "invalid_response" });
+  return { state, discovered_at: record.discovered_at === null ? null : asString(record.discovered_at, "discovery.discovered_at", status), models_found: asNumber(record.models_found, "discovery.models_found", status), ...(record.error_code === undefined || record.error_code === null ? {} : { error_code: asString(record.error_code, "discovery.error_code", status) }) };
+}
+
+function modelDiscoveryResponse(value: unknown, status = 502): ModelDiscoveryResponse {
+  const record = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, discovery: modelDiscoveryState(record.discovery, status), models: asArray(record.models, "discovery.models", status).map((item) => modelProfile(item, status)) };
+}
+
+function modelDefaultsResponse(value: unknown, status = 502): ModelDefaultsResponse {
+  const record = schemaRecord(value, status);
+  return { schema_version: LOCAL_API_SCHEMA_VERSION, defaults: asArray(record.defaults, "defaults", status).map((item) => {
+    const entry = asRecord(item, status);
+    return { role: asString(entry.role, "default.role", status), model_profile_id: asString(entry.model_profile_id, "default.model_profile_id", status), provider_connection_id: asString(entry.provider_connection_id, "default.provider_connection_id", status), provider_model_id: asString(entry.provider_model_id, "default.provider_model_id", status), capability_digest: asString(entry.capability_digest, "default.capability_digest", status), capability_revision: asNumber(entry.capability_revision, "default.capability_revision", status), updated_at: asString(entry.updated_at, "default.updated_at", status) };
+  }) };
 }
 
 function runtimeBinding(value: unknown, status = 502): RuntimeBinding {
@@ -1069,7 +1188,7 @@ function workflowVersions(value: unknown, status = 502): ListWorkflowVersionsRes
     const workflowId = asString(record.workflow_id, "workflow_id", status);
     const snapshot = workflowSource(record.source, status);
     if (snapshot.workflow_id !== workflowId) throw new LocalApiClientError("Workflow version identity mismatch.", { status, code: "invalid_response" });
-    return { ...identity, workflow_id: workflowId, source: snapshot };
+    return { ...identity, workflow_id: workflowId, source: snapshot, ...(record.committed === undefined ? {} : { committed: asBoolean(record.committed, "version.committed", status) }) };
   }) };
 }
 
@@ -1871,6 +1990,7 @@ const runtimeEventKinds = new Set<NonNullable<AgentRunResponse["events"]>[number
   "run.created", "run.state_changed", "run.started", "run.completed", "run.interrupted", "run.failed", "run.cancelled",
   "node.queued", "node.state_changed", "node.started", "node.output", "node.waiting", "node.completed", "node.failed", "node.skipped", "node.cancelled",
   "tool.requested", "tool.started", "tool.completed", "tool.failed", "model.delta", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
+  "tool.input_rejected", "model.output_rejected",
   "artifact.created", "checkpoint.created", "verification.completed", "verifier.result",
   "skill.loaded", "knowledge.retrieved", "policy.partial",
 ]);
@@ -2906,14 +3026,34 @@ function runtimeReadiness(value: unknown, status = 502): RuntimeReadiness {
     dependencies: asArray(record.dependencies, "runtime readiness dependencies", status).map((item) => validationDependency(item, status)),
     tool_checks: toolChecks,
     checks,
+    ...(record.setup_issues === undefined ? {} : { setup_issues: asArray(record.setup_issues, "runtime setup issues", status).map((item) => runtimeSetupIssue(item, status)) }),
     ...(record.version_id === undefined || record.version_id === null ? {} : { version_id: asString(record.version_id, "runtime readiness version_id", status) }),
+  };
+}
+
+function runtimeSetupIssue(value: unknown, status = 502): RuntimeSetupIssue {
+  const record = asRecord(value, status);
+  const action = asString(record.action, "setup.action", status);
+  if (action !== "configure_model" && action !== "verify_model" && action !== "rebind_model") throw new LocalApiClientError("Invalid Runtime setup action.", { status, code: "invalid_response" });
+  const requirement = asArray(record.requirement, "setup.requirement", status).map((item) => asString(item, "setup.capability", status));
+  if (requirement.some((name) => !(MODEL_CAPABILITY_NAMES as readonly string[]).includes(name))) throw new LocalApiClientError("Invalid Runtime setup capability.", { status, code: "invalid_response" });
+  return {
+    code: asString(record.code, "setup.code", status),
+    scope: asString(record.scope, "setup.scope", status),
+    resource_type: asString(record.resource_type, "setup.resource_type", status),
+    requirement: requirement as ModelCapabilityName[],
+    message: asText(record.message, "setup.message", status),
+    action,
+    ...(record.agent_id === undefined ? {} : { agent_id: asString(record.agent_id, "setup.agent_id", status) }),
+    ...(record.node_id === undefined ? {} : { node_id: asString(record.node_id, "setup.node_id", status) }),
+    ...(record.model_profile_id === undefined ? {} : { model_profile_id: asString(record.model_profile_id, "setup.model_profile_id", status) }),
   };
 }
 
 function runtimeReadinessCheck(value: unknown, status = 502): RuntimeReadinessCheck {
   const record = asRecord(value, status);
   const id = asString(record.id, "runtime readiness check id", status);
-  if (id !== "dependencies" && id !== "model" && id !== "modalities" && id !== "tools") {
+  if (id !== "dependencies" && id !== "model" && id !== "modalities" && id !== "tools" && id !== "image_model") {
     throw new LocalApiClientError("The local service returned an invalid Runtime readiness check.", { status, code: "invalid_response" });
   }
   return {
@@ -2926,6 +3066,8 @@ function runtimeReadinessCheck(value: unknown, status = 502): RuntimeReadinessCh
 
 function workflowRuntimeReadiness(value: unknown, status = 502): WorkflowRuntimeReadiness {
   const record = schemaRecord(value, status);
+  const sourceKind = record.source_kind === undefined ? undefined : asString(record.source_kind, "workflow runtime readiness source_kind", status);
+  if (sourceKind !== undefined && sourceKind !== "draft" && sourceKind !== "committed") throw new LocalApiClientError("Invalid Workflow Runtime source kind.", { status, code: "invalid_response" });
   const checks = asArray(record.checks, "workflow runtime readiness checks", status).map((item) => workflowRuntimeReadinessCheck(item, status));
   const calls = asArray(record.calls, "workflow runtime readiness calls", status).map((value) => {
     const call = asRecord(value, status);
@@ -2955,22 +3097,27 @@ function workflowRuntimeReadiness(value: unknown, status = 502): WorkflowRuntime
       dependency_summary: validationDependencySummary(call.dependency_summary, status),
       checks: asArray(call.checks, "workflow runtime call checks", status).map((item) => runtimeReadinessCheck(item, status)),
       tool_checks: asArray(call.tool_checks, "workflow runtime call tool_checks", status).map((item) => runtimeToolReadiness(item, status)),
+      ...(call.setup_issues === undefined ? {} : { setup_issues: asArray(call.setup_issues, "workflow call setup issues", status).map((item) => runtimeSetupIssue(item, status)) }),
     };
   });
   return {
     schema_version: LOCAL_API_SCHEMA_VERSION,
     project_id: asString(record.project_id, "workflow runtime readiness project_id", status),
     workflow_id: asString(record.workflow_id, "workflow runtime readiness workflow_id", status),
+    ...(sourceKind === undefined ? {} : { source_kind: sourceKind }),
+    ...(record.version_id === undefined ? {} : { version_id: record.version_id === null ? null : asString(record.version_id, "workflow runtime readiness version_id", status) }),
+    ...(record.source_hash === undefined ? {} : { source_hash: asString(record.source_hash, "workflow runtime readiness source_hash", status) }),
     ready: asBoolean(record.ready, "workflow runtime readiness ready", status),
     calls,
     checks,
+    ...(record.setup_issues === undefined ? {} : { setup_issues: asArray(record.setup_issues, "workflow setup issues", status).map((item) => runtimeSetupIssue(item, status)) }),
   };
 }
 
 function workflowRuntimeReadinessCheck(value: unknown, status = 502): WorkflowRuntimeReadinessCheck {
   const record = asRecord(value, status);
   const id = asString(record.id, "workflow runtime readiness check id", status);
-  if (id !== "agent_calls" && id !== "permissions" && id !== "limits") {
+  if (id !== "agent_calls" && id !== "permissions" && id !== "limits" && id !== "tools") {
     throw new LocalApiClientError("The local service returned an invalid Workflow Runtime readiness check.", { status, code: "invalid_response" });
   }
   return {
@@ -3013,7 +3160,7 @@ function optionalCapabilityState(
 function runtimeModelCapabilities(value: unknown, status = 502): RuntimeModelCapabilities {
   const record = asRecord(value, status);
   const source = asString(record.source, "runtime.modalities.source", status);
-  if (source !== "static_profile" && source !== "unknown") {
+  if (source !== "static_profile" && source !== "registry" && source !== "unknown") {
     throw new LocalApiClientError("The local service returned an invalid Runtime modality source.", { status, code: "invalid_response" });
   }
   return {
@@ -3138,7 +3285,14 @@ function workflowRun(value: unknown, status = 502): WorkflowRunResponse {
   const common = commonRun(record, status);
   const waiting = record.waiting === null ? null : asRecord(record.waiting, status);
   return { ...common, workflow_id: workflowId,
-    waiting: waiting ? { kind: asString(waiting.kind, "waiting.kind", status), node_id: asString(waiting.node_id, "waiting.node_id", status), prompt: asText(waiting.prompt, "waiting.prompt", status) } : null,
+    waiting: waiting ? {
+      kind: asString(waiting.kind, "waiting.kind", status),
+      node_id: asString(waiting.node_id, "waiting.node_id", status),
+      prompt: asText(waiting.prompt, "waiting.prompt", status),
+      ...(waiting.expected_fields === undefined ? {} : { expected_fields: asArray(waiting.expected_fields, "waiting.expected_fields", status).map((field) => asString(field, "waiting field", status)) }),
+      ...(waiting.agent_id === undefined ? {} : { agent_id: asString(waiting.agent_id, "waiting.agent_id", status) }),
+      ...(waiting.child_run_id === undefined ? {} : { child_run_id: asString(waiting.child_run_id, "waiting.child_run_id", status) }),
+    } : null,
     children: asArray(record.children, "children", status).map((value) => {
       const child = asRecord(value, status);
       const childStatus = child.status === null ? null : asString(child.status, "child.status", status);
@@ -3342,6 +3496,7 @@ async function readBuilderTurnStream(
   response: Response,
   onEvent?: (event: BuilderOperationEvent) => void,
   onPreview?: (text: string) => void,
+  onSnapshot?: (snapshot: BuilderConversationSnapshot) => void,
 ): Promise<BuilderConversationSnapshot> {
   const reader = response.body?.getReader();
   if (!reader) {
@@ -3366,6 +3521,7 @@ async function readBuilderTurnStream(
         if (typeof record.text === "string") onPreview?.(record.text);
       } else if (parsed.event === "builder.snapshot") {
         snapshot = builderConversationSnapshot(parsed.data, 200);
+        onSnapshot?.(snapshot);
       } else if (parsed.event === "builder.error") {
         const record = parsed.data as Record<string, unknown>;
         const status = typeof record.status === "number" ? record.status : 502;
@@ -3965,6 +4121,34 @@ export class LocalApiClient {
     return this.request("runtime-credentials", providerCredentialList);
   }
 
+  listRuntimeModels(): Promise<ModelRegistryResponse> {
+    return this.request("runtime-models", modelRegistryResponse);
+  }
+
+  discoverRuntimeModels(credentialId: string): Promise<ModelDiscoveryResponse> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}/models/discover`, modelDiscoveryResponse, { method: "POST" });
+  }
+
+  addRuntimeModel(credentialId: string, input: { provider_model_id: string; display_name?: string }): Promise<ModelProfile> {
+    return this.request(`runtime-credentials/${encodeURIComponent(credentialId)}/models`, (value, status) => modelProfile(asRecord(value, status).model, status), { method: "POST", body: input });
+  }
+
+  listRuntimeModelDefaults(): Promise<ModelDefaultsResponse> {
+    return this.request("runtime-models/defaults", modelDefaultsResponse);
+  }
+
+  async setRuntimeModelDefault(role: string, modelProfileId: string): Promise<void> {
+    await this.request(`runtime-models/defaults/${encodeURIComponent(role)}`, () => undefined, { method: "PUT", body: { model_profile_id: modelProfileId } });
+  }
+
+  async clearRuntimeModelDefault(role: string): Promise<void> {
+    await this.request(`runtime-models/defaults/${encodeURIComponent(role)}`, () => undefined, { method: "DELETE" });
+  }
+
+  probeRuntimeModelCapability(modelProfileId: string, capability: ModelCapabilityName, acknowledgeCost: boolean): Promise<ModelProfile> {
+    return this.request(`runtime-models/${encodeURIComponent(modelProfileId)}/capabilities/probe`, (value, status) => modelProfile(asRecord(value, status).model, status), { method: "POST", body: { capability, acknowledge_cost: acknowledgeCost } });
+  }
+
   createRuntimeCredential(input: CreateProviderCredentialRequest): Promise<ProviderCredentialValidationResponse> {
     return this.request("runtime-credentials", providerCredentialValidation, { method: "POST", body: input });
   }
@@ -4040,8 +4224,9 @@ export class LocalApiClient {
     );
   }
 
-  workflowRuntimeReadiness(projectId: string, workflowId: string): Promise<WorkflowRuntimeReadiness> {
-    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runtime-readiness`, workflowRuntimeReadiness);
+  workflowRuntimeReadiness(projectId: string, workflowId: string, versionId?: string): Promise<WorkflowRuntimeReadiness> {
+    const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runtime-readiness${query}`, workflowRuntimeReadiness);
   }
 
   getSecretStatus(secretRef: string): Promise<SecretStatus> {
@@ -4109,9 +4294,9 @@ export class LocalApiClient {
   submitBuilderTurn(
     projectId: string,
     input: BuilderTurnRequest,
-    options: { onEvent?: (event: BuilderOperationEvent) => void; onPreview?: (text: string) => void } = {},
+    options: { onEvent?: (event: BuilderOperationEvent) => void; onPreview?: (text: string) => void; onSnapshot?: (snapshot: BuilderConversationSnapshot) => void } = {},
   ): Promise<BuilderConversationSnapshot> {
-    return this.submitBuilderTurnStream(projectId, input, options.onEvent, options.onPreview);
+    return this.submitBuilderTurnStream(projectId, input, options.onEvent, options.onPreview, options.onSnapshot);
   }
 
   getBuilderConversation(projectId: string, conversationId: string): Promise<BuilderConversationSnapshot> {
@@ -4444,7 +4629,7 @@ export class LocalApiClient {
   listWorkflowRuns(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }> {
     return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs`, (value, status) => { const record = schemaRecord(value, status); return { schema_version: "1.0", runs: asArray(record.runs, "runs", status).map((item) => workflowRun(item, status)) }; });
   }
-  commandWorkflowRun(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" }): Promise<WorkflowRunResponse> {
+  commandWorkflowRun(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" | "reply"; inputs?: Record<string, JsonValue> }): Promise<WorkflowRunResponse> {
     return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/commands`, workflowRun, { method: "POST", body: input, requireIdempotencyKey: true });
   }
 
@@ -4584,6 +4769,7 @@ export class LocalApiClient {
     input: BuilderTurnRequest,
     onEvent?: (event: BuilderOperationEvent) => void,
     onPreview?: (text: string) => void,
+    onSnapshot?: (snapshot: BuilderConversationSnapshot) => void,
   ): Promise<BuilderConversationSnapshot> {
     const path = `projects/${encodeURIComponent(projectId)}/builder/turns`;
     let response: Response;
@@ -4605,7 +4791,7 @@ export class LocalApiClient {
     }
     const type = response.headers.get("content-type") ?? "";
     if (type.includes("text/event-stream") && response.body) {
-      return readBuilderTurnStream(response, onEvent, onPreview);
+      return readBuilderTurnStream(response, onEvent, onPreview, onSnapshot);
     }
     const payload = await response.json().catch(() => undefined);
     if (!response.ok) throw errorEnvelope(payload, response.status);

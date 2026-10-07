@@ -301,6 +301,60 @@
   font-size: 12px;
 }
 
+.runtime-artifact-card strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-artifact-card button,
+.runtime-artifact-list li > button {
+  justify-self: start;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.runtime-artifact-card button:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent-strong);
+}
+
+.runtime-artifact-list li > button:hover {
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+  color: var(--bad);
+}
+
+.runtime-artifact-input input[type="file"] {
+  max-width: 100%;
+  color: var(--subtle);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.runtime-artifact-input input[type="file"]::file-selector-button {
+  margin-right: 8px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
+.runtime-artifact-input input[type="file"]:hover::file-selector-button {
+  border-style: solid;
+}
+
 .runtime-artifact-card small,
 .runtime-io-error {
   color: var(--muted);

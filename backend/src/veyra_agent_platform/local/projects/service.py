@@ -1424,6 +1424,9 @@ class ProjectService:
                             "lock_hash": snapshot.source.lock_hash,
                             "file_hash": file_hash(text),
                             "created_at": now,
+                            # Packages carry only Workflow-pinned versions,
+                            # which the exporting Project had to commit.
+                            "committed": True,
                         },
                     )
             self._index_workflows(connection, root, manifest, now)

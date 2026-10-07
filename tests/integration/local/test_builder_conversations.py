@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+import pytest
+from starlette.requests import Request
 
 from tests.integration.local.test_builder_resolution import intent
 from tests.integration.local.test_edit_proposal_routes import _target
@@ -14,6 +19,8 @@ from tests.integration.local.test_factory_routes import (
     _completion,
 )
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.local.api.factory.builder_routes import _turn_stream
+from veyra_agent_platform.local.builder.conversation_service import TurnRequest
 from veyra_agent_platform.local.builder.prompt import BUILDER_SYSTEM_PROMPT
 from veyra_agent_platform.local.factory.client import (
     FactoryProviderError,
@@ -262,6 +269,51 @@ def test_user_message_persists_before_model_call(tmp_path: Path) -> None:
         assert payload["conversation"]["title"] != "Chat"
         assert "builder.operation.failed" in _event_kinds(payload)
         _assert_chat_kinds(payload)
+
+
+def test_blocked_task_plan_is_a_failed_operation_not_completed_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport = ScriptedKimiTransport(
+        [
+            _completion(json.dumps(intent(intent="create", create_kind="agent"))),
+            _completion("Ready for planning."),
+        ]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        factory = client.app.state.factory
+
+        def block(project_id: str, session_id: str, **options: Any) -> dict[str, Any]:
+            options["on_stage"]("builder.specification.started", {})
+            factory._set_state(
+                session_id,
+                "ready",
+                ready=True,
+                next_prompt="BLOCKED — Unsupported lifecycle",
+                diagnostics=["unsupported_lifecycle"],
+                missing_capabilities=[],
+                resource_plan=[],
+                specification={
+                    "status": "blocked",
+                    "missing": ["Unsupported lifecycle"],
+                    "blocked_reason": "Unsupported lifecycle",
+                },
+            )
+            return factory.get_session(project_id, session_id)
+
+        monkeypatch.setattr(factory, "generate", block)
+        payload = _turn(client, project, content="创建一个多轮助手", locale="zh").json()
+        operation = payload["operations"][0]
+        assert operation["status"] == "failed"
+        assert operation["error_code"] == "factory_generation_blocked"
+        assert operation["events"][-1]["kind"] == "builder.operation.failed"
+        assert "builder.operation.completed" not in _event_kinds(payload)
+        assert payload["factory_session"]["blocked_reason"] == "Unsupported lifecycle"
+        failure = next(
+            item for item in payload["messages"] if item["kind"] == "failure"
+        )
+        assert "未创建 Agent" in failure["content"]
         _assert_no_secrets(payload)
 
 
@@ -573,6 +625,19 @@ def test_canonical_agent_proposal_apply_is_snapshot_bound_and_idempotent(
             f"/api/v1/projects/{project}/edit-proposals/{operation['proposal_id']}"
         ).json()
         expected_source = proposal["candidate_source"]
+        primary_model = next(
+            item
+            for item in proposal["proposal_preview"]["models"]
+            if item["slot"] == "primary"
+        )
+        assert primary_model["required"] == ["text_generation"]
+        assert primary_model["status"] == "needs_setup"
+        assert primary_model["issue"]["missing"] == ["text_generation"]
+        assert proposal["validation"]["run_availability"] == "requires_configuration"
+        model_preview = json.dumps(proposal["proposal_preview"], ensure_ascii=False)
+        assert "provider_connection_id" not in model_preview
+        assert "secret_ref" not in model_preview
+        assert "provider_model_id" not in model_preview
 
         drifted_blueprint = deepcopy(proposed["factory_session"]["blueprint"])
         drifted_blueprint["goal"] = "This mutable Factory session must not win."
@@ -958,7 +1023,7 @@ def test_create_agent_stays_a_loop_instead_of_repairing_a_branch_graph(
             locale="en",
         ).json()
 
-        assert len(transport.calls) == 2
+        assert len(transport.calls) == 4
         assert payload["operations"][0]["status"] == "waiting"
         assert payload["factory_session"]["state"] == "review"
         types = [
@@ -999,7 +1064,7 @@ def test_loop_generate_does_not_exhaust_semantic_plan_repairs(
         assert payload["operations"][0]["status"] == "waiting"
         assert "builder.proposal.ready" in _event_kinds(payload)
         assert payload["factory_session"]["state"] == "review"
-        assert len(transport.calls) == 2
+        assert len(transport.calls) == 4
 
 
 def test_turn_sse_emits_real_operation_events(tmp_path: Path) -> None:
@@ -1025,6 +1090,87 @@ def test_turn_sse_emits_real_operation_events(tmp_path: Path) -> None:
         assert "event: builder.snapshot" in body
         assert "chain-of-thought" not in body.casefold()
         assert "reasoning_content" not in body
+
+
+def test_turn_sse_publishes_initial_snapshot_before_slow_resolution(
+    tmp_path: Path,
+) -> None:
+    transport = ScriptedKimiTransport(
+        [_completion(json.dumps(intent(intent="create", create_kind="agent")))]
+    )
+    with _client(tmp_path, transport) as client:
+        project, _, _ = _target(client, "agent")
+        service = client.app.state.builder_conversations
+        service.runtime_preflight = True
+        service.runtime.builder_runtime_preflight = lambda _project_id: {
+            "status": "waiting_for_runtime_binding",
+            "binding_slot": "primary_model",
+            "credentials": [],
+        }
+        resolution_started = threading.Event()
+        release_resolution = threading.Event()
+        resolution_finished = threading.Event()
+        original_resolve = service.resolution.resolve
+
+        def slow_resolve(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            resolution_started.set()
+            assert release_resolution.wait(timeout=5)
+            result = original_resolve(*args, **kwargs)
+            resolution_finished.set()
+            return result
+
+        service.resolution.resolve = slow_resolve  # type: ignore[method-assign]
+        request = Request({"type": "http", "app": client.app, "headers": []})
+        response = _turn_stream(
+            request,
+            project,
+            TurnRequest(content="创建一个翻译 Agent。", locale="zh"),
+        )
+
+        async def consume_stream() -> list[str]:
+            iterator = response.body_iterator
+            first = await anext(iterator)
+            initial_frame = await anext(iterator)
+            assert "\nevent: builder.event\n" in first
+            assert "event: builder.snapshot\n" in initial_frame
+            assert await asyncio.to_thread(resolution_started.wait, 2)
+            assert not resolution_finished.is_set()
+            release_resolution.set()
+            frames = [first, initial_frame]
+            async for frame in iterator:
+                frames.append(frame)
+            return frames
+
+        try:
+            frames = asyncio.run(consume_stream())
+        finally:
+            release_resolution.set()
+
+        def snapshot_from_frame(frame: str) -> dict[str, Any]:
+            payload = next(
+                line.removeprefix("data: ")
+                for line in frame.splitlines()
+                if line.startswith("data: ")
+            )
+            return json.loads(payload)
+
+        snapshots = [
+            snapshot_from_frame(frame)
+            for frame in frames
+            if "event: builder.snapshot\n" in frame
+        ]
+        assert len(snapshots) == 2
+        initial, final = snapshots
+        conversation_id = initial["conversation"]["conversation_id"]
+        assert initial["resolution"] is None
+        assert len(initial["messages"]) == 1
+        assert final["conversation"]["conversation_id"] == conversation_id
+        assert final["resolution"]["status"] == "resolved"
+        assert final["operations"][0]["status"] == "waiting"
+        assert final["messages"][-1]["content"] == (
+            "请先为这个 Agent 选择运行时服务商和模型，然后继续。"
+        )
+        assert resolution_finished.is_set()
 
 
 def test_failed_operation_keeps_events_and_retry_is_a_new_row(

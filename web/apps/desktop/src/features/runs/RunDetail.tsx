@@ -1,3 +1,4 @@
+import { AgentInputReply } from "../agents/chat/AgentInputReply";
 import { useEffect, useRef, useState } from "react";
 import type { AgentRunResponse, WorkflowRunResponse } from "@veyra/api-contracts";
 import { projectRoutePaths } from "@veyra/api-contracts";
@@ -11,13 +12,13 @@ import { RuntimeOutputView } from "../runtime/RuntimeOutputView";
 import { runDetailHref, runMonitorHref, runStudioHref, type RunIdentity } from "./run-location";
 import { KnowledgeEvidence } from "./KnowledgeEvidence";
 
-export function RunEvidence({ run, locale, api }: { run: AgentRunResponse | WorkflowRunResponse; locale: "zh" | "en"; api?: LocalProjectApi }) {
+export function RunEvidence({ run, locale, api, showResult = true }: { run: AgentRunResponse | WorkflowRunResponse; locale: "zh" | "en"; api?: LocalProjectApi; showResult?: boolean }) {
   const identity: RunIdentity = { projectId: run.project_id, runId: run.run_id, ...("agent_id" in run ? { agentId: run.agent_id } : { workflowId: run.workflow_id }) };
   const lineage = run.events?.find((event) => event.kind === "run.created")?.payload;
   const origin = lineage?.retry_of_run_id ?? lineage?.resume_of_run_id;
   return <>
     <div className="button-row">
-      {"agent_id" in run ? <LinkButton href={projectRoutePaths.agent(run.project_id, run.agent_id)}>{locale === "zh" ? "返回应用" : "Back to Agent"}</LinkButton> : null}
+      {"agent_id" in run ? <LinkButton href={projectRoutePaths.agent(run.project_id, run.agent_id)}>{locale === "zh" ? "返回应用" : "Back to Agent"}</LinkButton> : <LinkButton href={runDetailHref(identity)}>{locale === "zh" ? "返回工作流应用" : "Back to Workflow App"}</LinkButton>}
     </div>
     <h3>{run.run_id}</h3>
     <StatusBadge label={runStatusLabel(run.status, locale)} tone={runTone(run.status)} />
@@ -33,7 +34,7 @@ export function RunEvidence({ run, locale, api }: { run: AgentRunResponse | Work
       <LinkButton href={runMonitorHref(identity)}>Monitor</LinkButton>
     </div>
     {run.error ? <Alert type="error" title={run.error.message} description={run.error.code} /> : null}
-    {run.result ? <RuntimeOutputView result={run.result} locale={locale} api={api} projectId={run.project_id} /> : null}
+    {showResult && run.result != null ? <RuntimeOutputView result={run.result} locale={locale} api={api} projectId={run.project_id} /> : null}
     <KnowledgeEvidence key={run.run_id} events={run.events ?? []} api={api} projectId={run.project_id} locale={locale} />
     {run.events ? <RunEventList events={run.events} locale={locale} /> : null}
   </>;
@@ -52,7 +53,7 @@ export function RunDetail({ api, projectId, agentId, workflowId, runId, locale }
   const checkpoint = run?.events?.filter((event) => event.kind === "checkpoint.created").at(-1);
   const checkpointId = checkpoint?.payload.waiting_kind === "execution" && typeof checkpoint.payload.checkpoint_id === "string" ? checkpoint.payload.checkpoint_id : undefined;
   const dispatchedAfterCheckpoint = checkpoint && run?.events?.some((event) => event.kind === "tool.started" && event.sequence > checkpoint.sequence);
-  const command = async (value: "approve" | "reject" | "stop" | "retry" | "resume") => {
+  const command = async (value: "approve" | "reject" | "stop" | "retry" | "resume" | "reply", inputs?: Record<string, import("@veyra/api-contracts").JsonValue>) => {
     if (pendingCommand.current === identity) return;
     pendingCommand.current = identity;
     setBusy(true);
@@ -65,8 +66,8 @@ export function RunDetail({ api, projectId, agentId, workflowId, runId, locale }
         if (child.project_id !== projectId || child.agent_id !== agentId || child.run_id === runId) throw new Error("Runtime recovery identity mismatch");
         if (activeIdentity.current === identity) window.location.hash = runDetailHref({ projectId, agentId, runId: child.run_id });
       }
-      else if (workflowId) await api.commandWorkflowRun!(projectId, workflowId, runId, { command: value });
-      else await api.commandAgentRun!(projectId, agentId!, runId, { command: value });
+      else if (workflowId) await api.commandWorkflowRun!(projectId, workflowId, runId, { command: value, ...(inputs ? { inputs } : {}) });
+      else await api.commandAgentRun!(projectId, agentId!, runId, { command: value, ...(inputs ? { inputs } : {}) });
       if (activeIdentity.current === identity) setRefresh((value) => value + 1);
     } catch (cause) {
       if (activeIdentity.current === identity) setError(cause instanceof Error ? cause.message : "Run command failed");
@@ -104,9 +105,13 @@ export function RunDetail({ api, projectId, agentId, workflowId, runId, locale }
   if (error && !run) return <ErrorState message={error} onRetry={() => setRefresh((value) => value + 1)} />;
   if (!run) return <LoadingState label={locale === "zh" ? "正在读取运行详情…" : "Loading run detail…"} />;
   const canCommand = Boolean(workflowId ? api.commandWorkflowRun : api.commandAgentRun);
+  const inputEvent = run.status === "waiting" && "agent_id" in run ? run.events?.filter((event) => event.kind === "approval.requested").at(-1) : undefined;
+  const inputPrompt = inputEvent?.payload.kind === "input" && typeof inputEvent.payload.prompt === "string" ? inputEvent.payload : undefined;
   return <>
     {error ? <Alert type="error" title={error} /> : null}
-    <RunApprovalBar run={"workflow_id" in run ? workflowRunAsAgentRun(run) : run} locale={locale} disabled={busy || !canCommand} onCommand={(value) => void command(value)} />
+    {inputPrompt ? <AgentInputReply key={inputEvent?.event_id} question={String(inputPrompt.prompt)} context={inputPrompt.context}
+      locale={locale} busy={busy || !canCommand} projectId={projectId} api={api}
+      onReply={(reply) => command("reply", { reply })} onStop={() => void command("stop")} /> : "workflow_id" in run && run.waiting?.kind === "input" ? <Alert type="info" title={locale === "zh" ? "工作流正在等待补充输入" : "Workflow is waiting for input"} description={locale === "zh" ? "请在工作流应用中按字段补充信息，再继续这次运行。" : "Open the Workflow App to provide typed input and continue this run."} /> : <RunApprovalBar run={"workflow_id" in run ? workflowRunAsAgentRun(run) : run} locale={locale} disabled={busy || !canCommand} onCommand={(value) => void command(value)} />}
     {run.status === "running" && canCommand ? <Button disabled={busy} onClick={() => void command("stop")}>{locale === "zh" ? "停止" : "Stop"}</Button> : null}
     {!workflowId && canCommand && ["failed", "interrupted", "cancelled"].includes(run.status) ? <Button disabled={busy} onClick={() => void command("retry")}>{locale === "zh" ? "安全重试" : "Retry safely"}</Button> : null}
     {!workflowId && canCommand && ["failed", "interrupted"].includes(run.status) && checkpointId && !dispatchedAfterCheckpoint ? <Button disabled={busy} onClick={() => void command("resume")}>{locale === "zh" ? "从检查点恢复" : "Resume from checkpoint"}</Button> : null}

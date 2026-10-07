@@ -8,9 +8,11 @@ from fastapi.testclient import TestClient
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
+from veyra_agent_platform.local.models.contracts import CapabilityStatus
 from veyra_agent_platform.local.runtime.tools import ProducedArtifact, ToolExecution
 from veyra_agent_platform.local.secrets import MacOSKeychainSecretStore
 
+from .test_provider_credentials import MemorySecretStore
 from .test_runtime_routes import (
     ScriptedRuntimeTransport,
     _agent_source,
@@ -36,7 +38,41 @@ def _client(tmp_path: Path, **kwargs: object) -> TestClient:
         database_url=f"sqlite:///{tmp_path / 'db' / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
+    kwargs.setdefault("secret_store", MemorySecretStore())
     return TestClient(create_app(settings, **kwargs))
+
+
+def _bind_test_model(
+    client: TestClient,
+    project_id: str,
+    agent_id: str,
+    capabilities: tuple[str, ...],
+) -> None:
+    created = client.post(
+        "/api/v1/runtime-credentials",
+        json={
+            "provider_type": "moonshot",
+            "label": "Scripted Runtime",
+            "api_key": "test-only-runtime-key",
+            "default_model_id": "kimi-k3",
+        },
+    )
+    assert created.status_code == 201, created.text
+    credential_id = created.json()["credential"]["credential_id"]
+    registry = client.app.state.model_registry
+    profile = registry.list_profiles_for_connection(credential_id)[0]
+    for capability in capabilities:
+        registry.record_capability_probe(
+            profile.model_profile_id,
+            capability,
+            CapabilityStatus.SUPPORTED,
+            detail="Scripted test transport capability; no Provider request was made.",
+        )
+    bound = client.patch(
+        f"/api/v1/projects/{project_id}/agents/{agent_id}/runtime-binding",
+        json={"credential_id": credential_id, "model_id": "kimi-k3"},
+    )
+    assert bound.status_code == 200, bound.text
 
 
 def _image_agent() -> dict[str, object]:
@@ -333,6 +369,12 @@ def test_image_model_run_sends_data_url_not_host_path(
     with _client(tmp_path, runtime_transport=transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
+        _bind_test_model(
+            client,
+            project["project_id"],
+            agent["agent_id"],
+            ("text_generation", "image_input"),
+        )
         uploaded = _upload(
             client, project["project_id"], "product.png", _PNG, "image/png"
         ).json()
@@ -378,6 +420,12 @@ def test_pdf_model_run_sends_extracted_text_not_bytes(
     with _client(tmp_path, runtime_transport=transport) as client:
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
+        _bind_test_model(
+            client,
+            project["project_id"],
+            agent["agent_id"],
+            ("text_generation",),
+        )
         uploaded = _upload(
             client, project["project_id"], "brief.pdf", pdf, "application/pdf"
         ).json()

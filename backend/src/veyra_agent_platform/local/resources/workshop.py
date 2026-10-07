@@ -173,6 +173,46 @@ class ResourceWorkshop:
             raise ResourceWorkshopError(
                 "workshop_instruction_invalid", "Skill instruction is too large"
             )
+        if spec.get("origin") == "factory":
+            from .factory_validation import (
+                ResourceFactoryValidationError,
+                validate_skill_draft,
+            )
+            from .resource_factory import skill_draft_needs_method
+
+            if resource.get("availability") == "ready":
+                if clean_instruction == str(spec.get("instruction") or "").strip():
+                    return {"schema_version": "1.0", "resource": resource}
+                raise ResourceWorkshopError(
+                    "workshop_skill_revision_required",
+                    "Different instructions require a new published Skill version",
+                )
+            candidate = {
+                **payload,
+                "spec": {
+                    **spec,
+                    "instruction": clean_instruction,
+                    "instruction_status": "provided"
+                    if instruction and instruction.strip()
+                    else spec.get("instruction_status"),
+                },
+            }
+            if skill_draft_needs_method(candidate):
+                raise ResourceWorkshopError(
+                    "workshop_instruction_required",
+                    "This Skill is a scaffold. Supply its method before approval",
+                )
+            try:
+                validate_skill_draft(
+                    instruction=clean_instruction,
+                    capabilities=list(payload.get("capabilities") or []),
+                    name=str(payload.get("name") or ""),
+                    description=str(payload.get("description") or ""),
+                )
+            except ResourceFactoryValidationError as exc:
+                raise ResourceWorkshopError(exc.code, str(exc)) from exc
+            spec["instruction_status"] = "provided"
+            spec["validation_passed"] = True
         spec["instruction"] = clean_instruction
         payload["availability"] = "ready"
         payload["factory_selectable"] = True
@@ -225,6 +265,14 @@ class ResourceWorkshop:
             raise ResourceWorkshopError(
                 "workshop_draft_invalid", "Skill draft is invalid"
             )
+        if enabled and payload["spec"].get("origin") == "factory":
+            from .resource_factory import skill_draft_needs_method
+
+            if skill_draft_needs_method(payload):
+                raise ResourceWorkshopError(
+                    "workshop_instruction_required",
+                    "This Skill is a scaffold. Supply its method before enabling",
+                )
         payload["availability"] = "ready" if enabled else "disabled"
         payload["factory_selectable"] = enabled
         payload["runtime_status"] = "runtime_not_configured"

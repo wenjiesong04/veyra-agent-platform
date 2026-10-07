@@ -275,6 +275,7 @@ def build_router() -> APIRouter:
                 payload.command,
                 idempotency_key,
                 checkpoint_id=payload.checkpoint_id,
+                inputs=payload.inputs,
             )
         )
 

@@ -16,7 +16,8 @@ export type LiveRunSession = {
   error: string;
   busy: boolean;
   start: (inputs: Record<string, JsonValue>, options?: StartLiveRunOptions) => Promise<void>;
-  sendCommand: (command: "approve" | "reject" | "stop") => Promise<void>;
+  sendCommand: (command: "approve" | "reject" | "stop" | "reply", inputs?: Record<string, JsonValue>) => Promise<void>;
+  restore: (runId: string) => Promise<void>;
   clear: () => void;
 };
 
@@ -132,12 +133,12 @@ function useLiveRunSession({
     }
   }, [inactive, api, projectId, agentId, busy, adopt, locale]);
 
-  const sendCommand = React.useCallback(async (command: "approve" | "reject" | "stop") => {
+  const sendCommand = React.useCallback(async (command: "approve" | "reject" | "stop" | "reply", inputs?: Record<string, JsonValue>) => {
     if (inactive || !run || !api.commandAgentRun || busy) return;
     setBusy(true);
     setError("");
     try {
-      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command });
+      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command, ...(inputs ? { inputs } : {}) });
       const detailed = api.getAgentRun
         ? await api.getAgentRun(projectId, agentId, updated.run_id)
         : updated;
@@ -148,6 +149,17 @@ function useLiveRunSession({
       setBusy(false);
     }
   }, [inactive, run, api, projectId, agentId, busy, adopt, locale]);
+
+  const restore = React.useCallback(async (runId: string) => {
+    if (inactive || !api.getAgentRun) return;
+    try {
+      const detailed = await api.getAgentRun(projectId, agentId, runId);
+      if (detailed.run_id !== runId || detailed.project_id !== projectId || detailed.agent_id !== agentId) throw new Error("Runtime run identity mismatch");
+      setRun((current) => adopt(detailed, current?.run_id === runId ? current : null));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not restore the active run");
+    }
+  }, [inactive, api, projectId, agentId, adopt]);
 
   const clear = React.useCallback(() => {
     setRun(null);
@@ -181,7 +193,7 @@ function useLiveRunSession({
     );
   }, [inactive, api, projectId, agentId, run?.run_id, run?.status, adopt]);
 
-  return { run, error, busy, start, sendCommand, clear };
+  return { run, error, busy, start, sendCommand, restore, clear };
 }
 
 export function LiveRunProvider({

@@ -416,7 +416,7 @@ describe("desktop Project workspace", () => {
   });
 
   it("expands a Project tree into selected Agent links and keeps the per-Project menu to four actions", async () => {
-    const tree = project({ project_id: "tree", name: "Tree Project", agents: [{ agent_id: "agent-tree", slug: "tree-agent", name: "Tree Agent", description: "", pinned: false, source_path: "agents/tree/agent.vagent.yaml", source_file_hash: "tree-hash" }], agent_count: 1 });
+    const tree = project({ project_id: "tree", name: "Tree Project", agents: [{ agent_id: "agent-tree", slug: "tree-agent", name: "Tree Agent", description: "", pinned: false, source_path: "agents/tree/agent.vagent.yaml", source_file_hash: "tree-hash" }], agent_count: 1, workflows: [{ workflow_id: "workflow-tree", slug: "tree-workflow", name: "Tree Workflow", description: "", source_path: "workflows/tree/workflow.vworkflow.yaml", source_file_hash: "workflow-hash" }] });
     const user = userEvent.setup();
     const api = apiFor([tree]);
     api.updateAgent.mockResolvedValue(tree);
@@ -426,6 +426,7 @@ describe("desktop Project workspace", () => {
     const agentLink = screen.getByRole("link", { name: "Tree Agent" });
     expect(agentLink).toHaveAttribute("href", projectRoutePaths.agentDesign("tree", "agent-tree"));
     expect(screen.getByRole("link", { name: "Open App: Tree Agent" })).toHaveAttribute("href", projectRoutePaths.agent("tree", "agent-tree"));
+    expect(screen.getByRole("link", { name: "Open App: Tree Workflow" })).toHaveAttribute("href", projectRoutePaths.workflowRun("tree", "workflow-tree"));
     expect(agentLink).toHaveClass("tone-instance", "kind-agent");
     expect(screen.getByRole("link", { name: "Agents" })).toHaveAttribute("href", projectRoutePaths.agents("tree"));
     expect(screen.getByRole("link", { name: "Agents" })).toHaveClass("tone-kind", "kind-agent");
@@ -1712,6 +1713,7 @@ describe("desktop route parser", () => {
     expect(parseDesktopRoute("#/nowhere").kind).toBe("not-found");
     expect(parseDesktopRoute(projectRoutePaths.workflows("p")).kind).toBe("project-workflows");
     expect(parseDesktopRoute(projectRoutePaths.workflow("p", "w")).kind).toBe("project-workflow");
+    expect(parseDesktopRoute(projectRoutePaths.workflowRun("p", "w"))).toMatchObject({ kind: "project-workflow-run", projectId: "p", workflowId: "w" });
     expect(parseDesktopRoute(projectRoutePaths.knowledge("p")).kind).toBe("project-knowledge");
     expect(parseDesktopRoute(projectRoutePaths.knowledgeItem("p", "k")).kind).toBe("project-knowledge-item");
     expect(parseDesktopRoute(projectRoutePaths.files("p")).kind).toBe("project-files");

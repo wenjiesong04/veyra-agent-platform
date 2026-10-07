@@ -3,9 +3,57 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@veyra/ui";
 import { BuilderWorkspaceDock } from "./BuilderWorkspaceDock";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+function canvasContext(): CanvasRenderingContext2D {
+  return {
+    setTransform: vi.fn(), clearRect: vi.fn(), beginPath: vi.fn(), arc: vi.fn(),
+    fill: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+  } as unknown as CanvasRenderingContext2D;
+}
 
 describe("BuilderWorkspaceDock", () => {
+  it("stops animation frames when a running workbench becomes static", () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(canvasContext());
+    const schedule = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(7);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const dock = (live: boolean) => (
+      <ThemeProvider storageKey="builder-dock-animation">
+        <BuilderWorkspaceDock locale="en" live={live} tab="workbench" onTabChange={() => undefined} expanded={false} onToggleExpand={() => undefined} onClose={() => undefined} workbench={<p>Plan</p>} test={null} />
+      </ThemeProvider>
+    );
+    const { rerender } = render(dock(true));
+    expect(schedule).toHaveBeenCalledTimes(1);
+    schedule.mockClear();
+    rerender(dock(false));
+    expect(cancel).toHaveBeenCalledWith(7);
+    expect(schedule).not.toHaveBeenCalled();
+    expect(document.querySelector(".builder-workspace-dock")).not.toHaveClass("is-live");
+  });
+
+  it("renders a static workbench when the system requests reduced motion", () => {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })));
+    const context = canvasContext();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context);
+    const schedule = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(7);
+    render(
+      <ThemeProvider storageKey="builder-dock-reduced-motion">
+        <BuilderWorkspaceDock locale="en" live tab="workbench" onTabChange={() => undefined} expanded={false} onToggleExpand={() => undefined} onClose={() => undefined} workbench={<p>Plan</p>} test={null} />
+      </ThemeProvider>,
+    );
+    expect(context.clearRect).toHaveBeenCalled();
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
   it("switches Workbench and Test pages without mounting Test until selected", () => {
     const { rerender } = render(
       <ThemeProvider storageKey="builder-dock-test">

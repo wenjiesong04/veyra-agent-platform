@@ -13,6 +13,11 @@ from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import ContractValidationError, new_uuid7
 from veyra_agent_platform.contracts.custom_component import CustomComponentDefinition
 from veyra_agent_platform.contracts.workflow import WorkflowSource
+from veyra_agent_platform.local.builder.agent_state import (
+    check_agent_state,
+    register_agent_state,
+    source_state_schema,
+)
 from veyra_agent_platform.local.builder.component_planning import (
     matching_existing_component,
 )
@@ -146,6 +151,15 @@ class EditProposalService:
                 "agent_proposal_invalid", "The Factory candidate source is missing"
             )
         source_model = AgentSource.from_dict(raw_source)
+        expected_state = (candidate.get("execution_plan") or {}).get("state")
+        if (
+            expected_state is not None
+            and source_state_schema(source_model) != expected_state
+        ):
+            raise FactoryError(
+                "agent_state_contract_incomplete",
+                "Regenerate the Agent to compile its persistent state contract",
+            )
         source = source_model.to_dict()
         proposal_id = new_uuid7()
         proposal: dict[str, Any] = {
@@ -165,6 +179,9 @@ class EditProposalService:
             },
             "candidate_blueprint": deepcopy(candidate.get("blueprint") or {}),
             "resource_plan": deepcopy(candidate.get("resource_plan") or []),
+            "execution_plan": deepcopy(candidate.get("execution_plan") or {}),
+            "entity_schema": source_state_schema(source_model),
+            "proposal_preview": deepcopy(candidate.get("proposal_preview") or {}),
             "required_project_resources": deepcopy(
                 candidate.get("required_project_resources") or []
             ),
@@ -241,6 +258,16 @@ class EditProposalService:
                 "agent_proposal_snapshot_invalid",
                 "The persisted Agent Proposal snapshot hash does not match",
             )
+        expected_state = (proposal.get("execution_plan") or {}).get("state")
+        if expected_state is not None and source_state_schema(source) != expected_state:
+            raise FactoryError(
+                "agent_state_contract_incomplete",
+                "Regenerate the Agent to compile its persistent state contract",
+            )
+        try:
+            check_agent_state(project_id, source, self.entity_store)
+        except ValueError as exc:
+            raise FactoryError("agent_state_contract_invalid", str(exc)) from exc
         try:
             pin_catalog_locks(self.project_resources, self.catalog, project_id, source)
         except ProjectResourceError as exc:
@@ -286,6 +313,12 @@ class EditProposalService:
             )
         except ProjectError as exc:
             raise FactoryError("agent_proposal_apply_failed", str(exc)) from exc
+        try:
+            register_agent_state(project_id, source, self.entity_store)
+        except Exception as exc:
+            with suppress(ProjectError, OSError):
+                self.library.projects.remove_agent(project_id, source.agent_id)
+            raise FactoryError("agent_state_registration_failed", str(exc)) from exc
         self.store.mark_applied(proposal_id, source.agent_id, installed)
         return self.get(project_id, proposal_id)
 
@@ -326,6 +359,7 @@ class EditProposalService:
             "identity": deepcopy(candidate.get("identity") or {}),
             "entity_schema": deepcopy(candidate.get("entity_schema") or {}),
             "execution_plan": deepcopy(candidate.get("execution_plan") or {}),
+            "proposal_preview": deepcopy(candidate.get("proposal_preview") or {}),
             "conversation_id": conversation_id,
             "operation_id": operation_id,
             "builder_creation_operation_id": operation_id,

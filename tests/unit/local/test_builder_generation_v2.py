@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
 from veyra_agent_platform.contracts.task_structure import (
     ExecutionBoundary,
@@ -12,12 +14,19 @@ from veyra_agent_platform.contracts.task_structure import (
     TaskStructure,
 )
 from veyra_agent_platform.local.builder.execution_planner import compile_execution_plan
-from veyra_agent_platform.local.builder.generate_product import generate_builder_product
+from veyra_agent_platform.local.builder.generate_product import (
+    generate_builder_product,
+    proposal_preview,
+)
+from veyra_agent_platform.local.builder.model_requirements import (
+    derive_model_requirements,
+)
 from veyra_agent_platform.local.builder.product_shape import decide_product_shape
 from veyra_agent_platform.local.builder.task_planner import plan_task_structure
 from veyra_agent_platform.local.builder.workflow_orchestration import (
     materialize_workflow_source,
 )
+from veyra_agent_platform.local.factory.service import _model_setup_required
 from veyra_agent_platform.local.resources import ResourceCatalog
 
 TRANSLATION = "帮我做一个中英翻译 Agent"
@@ -81,6 +90,10 @@ def test_research_stays_a_single_agent() -> None:
     )
     assert "condition" not in _kinds(structure)
     assert "state" not in _kinds(structure)
+    model_requirements = derive_model_requirements(
+        structure, compile_execution_plan(structure)
+    )
+    assert model_requirements[0].required == ("text_generation",)
 
 
 def test_workspace_editor_uses_tool_approval_not_business_approval() -> None:
@@ -134,9 +147,81 @@ def test_gift_packaging_requires_image_generation() -> None:
     assert decision.shape == "AGENT_WORKFLOW"
     product = generate_builder_product(GIFT, ResourceCatalog())
     assert product.resolved is not None
-    missing = {item.capability for item in product.resolved.missing_required}
-    assert "image_generation" in missing
-    assert product.blocked_reason == "missing_required:image_generation"
+    missing_resources = {item.capability for item in product.resolved.missing_required}
+    assert "image_generation" not in missing_resources
+    assert product.status == "review"
+    assert product.blocked_reason == ""
+    image_requirement = next(
+        item for item in product.model_requirements if item.slot == "image"
+    )
+    assert "image_generation" in image_requirement.required
+    assert "Producing images requires image_generation" in image_requirement.reason
+    assert "image generation language" in image_requirement.source
+    image_resolution = next(
+        item for item in product.model_resolutions if item.slot == "image"
+    )
+    assert image_resolution.status.value == "needs_setup"
+    preview = proposal_preview(product)
+    assert preview["models"][-1]["slot"] == "image"
+    assert preview["models"][-1]["issue"]["missing"] == ["image_generation"]
+
+
+def test_optional_model_capability_remains_optional_through_planning() -> None:
+    structure = _plan(GIFT)
+    structure = replace(
+        structure,
+        execution_boundaries=tuple(
+            replace(item, required=False)
+            if item.capability == "image_generation"
+            else item
+            for item in structure.execution_boundaries
+        ),
+        outputs=tuple(
+            replace(item, required=False) if item.type == "image" else item
+            for item in structure.outputs
+        ),
+    )
+    plan = compile_execution_plan(structure)
+
+    image_requirement = next(
+        item
+        for item in derive_model_requirements(structure, plan)
+        if item.slot == "image"
+    )
+
+    assert image_requirement.required == ()
+    assert image_requirement.optional == ("image_generation",)
+    assert image_requirement.required_for_run is False
+
+
+def test_optional_model_execution_needs_setup_until_fallback_is_compiled() -> None:
+    preview = {
+        "models": [
+            {
+                "slot": "image",
+                "required": [],
+                "optional": ["image_generation"],
+                "status": "needs_setup",
+                "issue": {
+                    "code": "optional_model_capability_unavailable",
+                },
+            }
+        ]
+    }
+
+    assert _model_setup_required(preview)
+
+
+def test_missing_non_model_capability_still_uses_resource_resolver() -> None:
+    product = generate_builder_product(
+        "创建一个 Agent，需要 capability: unregistered_domain_tool。",
+        ResourceCatalog(),
+    )
+
+    assert product.resolved is not None
+    assert "unregistered_domain_tool" in {
+        item.capability for item in product.resolved.missing_required
+    }
 
 
 def test_document_approval_has_condition_and_business_approval() -> None:
@@ -345,6 +430,14 @@ def test_independent_capability_roles_become_multi_agent_workflow() -> None:
     plan = compile_execution_plan(structure, decision=decision)
     assert plan.product_shape == "MULTI_AGENT_WORKFLOW"
     assert len(plan.actors) >= 4
+    primary_requirements = {
+        item.actor_id: item
+        for item in derive_model_requirements(structure, plan)
+        if item.slot == "primary"
+    }
+    assert "image_input" in primary_requirements["analyst"].required
+    assert "image_input" not in primary_requirements["writer"].required
+    assert "text_generation" in primary_requirements["writer"].required
 
 
 def test_golden_normalized_shapes() -> None:

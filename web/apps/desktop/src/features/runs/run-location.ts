@@ -9,7 +9,7 @@ export function withRunId(href: string, runId: string): string {
 
 export function runDetailHref(identity: RunIdentity): string {
   return withRunId(identity.workflowId
-    ? projectRoutePaths.workflow(identity.projectId, identity.workflowId)
+    ? projectRoutePaths.workflowRun(identity.projectId, identity.workflowId)
     : projectRoutePaths.agentRun(identity.projectId, identity.agentId!), identity.runId);
 }
 

@@ -49,6 +49,7 @@ function loopCoreNode(source: AgentSource): FlowNode | undefined {
 }
 
 export const FLOW_NODE_ID_RE = /^[a-z][a-z0-9_]{0,62}$/;
+const AGENT_FIELD_SLUG_RE = /^[a-z][a-z0-9-]{0,62}$/;
 
 export function newFlowNodeId(componentType: string): string {
   const prefix = componentType.toLowerCase().replace(/[^a-z0-9]/g, "") || "node";
@@ -618,8 +619,8 @@ export function graphDiagnostics(source: StudioSource, catalog: ResourceDescript
         if (version && version.source_hash !== source.lock[ref]) problems.push({ code: "agent_lock_mismatch", params });
         const inputs = node.input_mapping;
         const outputs = node.output_mapping;
-        const name = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-        const malformed = !inputs || !outputs || Object.entries({ ...inputs, ...outputs }).some(([key, value]) => !name.test(key) || !name.test(value));
+        const mappings = [...Object.entries(inputs ?? {}), ...Object.entries(outputs ?? {})];
+        const malformed = !inputs || !outputs || mappings.some(([field, workflowValue]) => !AGENT_FIELD_SLUG_RE.test(field) || !FLOW_NODE_ID_RE.test(workflowValue));
         const wrongFields = version && (Object.keys(inputs ?? {}).sort().join(",") !== Object.keys(version.source.inputs).sort().join(",") || Object.keys(outputs ?? {}).sort().join(",") !== Object.keys(version.source.outputs).sort().join(","));
         const unknownInput = Object.values(inputs ?? {}).some((value) => !workflowValues.has(value));
         const duplicateOutput = new Set(Object.values(outputs ?? {})).size !== Object.values(outputs ?? {}).length;

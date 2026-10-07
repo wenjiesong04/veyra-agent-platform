@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import AbstractContextManager
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from veyra_agent_platform.contracts.common import new_uuid7
-from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.builder.agent_loop_compiler import compile_loop_agent
 from veyra_agent_platform.local.builder.specification import infer_agent_specification
 from veyra_agent_platform.local.config import LocalSettings
@@ -22,6 +22,7 @@ from .test_runtime_routes import (
     _command_until_settled,
     _run_until_settled,
 )
+from .verified_runtime_model import verified_client
 
 _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -42,12 +43,12 @@ def isolate_runtime_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _client(
     tmp_path: Path, transport: ScriptedRuntimeTransport, **kwargs: Any
-) -> TestClient:
+) -> AbstractContextManager[TestClient]:
     settings = LocalSettings(
         database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
         project_storage_root=tmp_path / "projects",
     )
-    return TestClient(create_app(settings, runtime_transport=transport, **kwargs))
+    return verified_client(settings, transport, **kwargs)
 
 
 def _set_io(

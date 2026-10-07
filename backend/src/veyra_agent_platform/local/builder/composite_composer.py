@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.agent_spec import AgentSpecification
+from veyra_agent_platform.contracts.canonical import source_hash
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
+from veyra_agent_platform.contracts.dataflow import types_compatible
 from veyra_agent_platform.contracts.execution_plan import (
     ExecutionPlan,
     PlanActor,
@@ -16,6 +20,11 @@ from veyra_agent_platform.contracts.execution_plan import (
 from veyra_agent_platform.contracts.resource_plan import ResourcePlan
 from veyra_agent_platform.contracts.semantic_plan import SemanticField
 from veyra_agent_platform.contracts.task_structure import TaskIOField
+from veyra_agent_platform.contracts.typed_io import (
+    ARTIFACT_KINDS,
+    TypedField,
+    parse_typed_fields,
+)
 from veyra_agent_platform.local.builder.agent_composer import compose_loop_agent
 from veyra_agent_platform.local.builder.workflow_orchestration import (
     WorkflowOrchestration,
@@ -57,7 +66,14 @@ def specification_from_plan(
 ) -> AgentSpecification:
     role = actor or (plan.actors[0] if plan.actors else None)
     name = role.name if role is not None else "Agent"
-    if requirement and (role is None or role.id in {"main", "editor"}):
+    if requirement and (
+        role is None
+        or (
+            role.id in {"main", "editor"}
+            and role.name.casefold()
+            in {"assistant", "agent", "main", "advisor", "editor"}
+        )
+    ):
         from veyra_agent_platform.local.builder.specification import (
             infer_agent_specification,
         )
@@ -66,7 +82,7 @@ def specification_from_plan(
         if legacy:
             name = legacy
     caps = tuple(role.capabilities) if role is not None else plan.capabilities
-    inputs = plan.inputs or (TaskIOField(name="request", type="string"),)
+    inputs = _actor_inputs(plan, role)
     outputs = _actor_outputs(plan, role)
     return AgentSpecification(
         schema_version=SCHEMA_VERSION,
@@ -76,8 +92,12 @@ def specification_from_plan(
         description=requirement[:400] or plan.shape.reason,
         inputs=tuple(_semantic(item) for item in inputs),
         outputs=tuple(_semantic(item) for item in outputs),
-        responsibilities=(role.brief,) if role is not None and role.brief else (),
-        human_interactions=(),
+        responsibilities=_responsibilities(plan, role),
+        human_interactions=tuple(
+            step.question or step.prompt or step.why
+            for step in plan.steps
+            if step.kind in {"human_input", "human_approval"}
+        ),
         required_capabilities=tuple(
             cap
             for cap in caps
@@ -90,7 +110,21 @@ def specification_from_plan(
                 "tool_calling",
             }
         ),
-        success_criteria=(),
+        success_criteria=tuple(
+            dict.fromkeys(
+                [
+                    *plan.task.get("constraints", ()),
+                    *plan.task.get("success_criteria", ()),
+                    *(
+                        item
+                        for step in plan.steps
+                        if step.kind == "verifier"
+                        for item in (step.why, *step.checks)
+                        if item
+                    ),
+                ]
+            )
+        ),
     )
 
 
@@ -108,12 +142,17 @@ def compose_execution_product(
         return None, None
     if shape == "PURE_AGENT":
         spec = specification_from_plan(plan, requirement=requirement)
-        return compose_loop_agent(spec, resolved, requirement=requirement), None
+        return compose_loop_agent(
+            spec, resolved, requirement=requirement, state=plan.state
+        ), None
+    _validate_plan(plan)
     companions: list[AgentSource] = []
     by_id: dict[str, AgentSource] = {}
     for actor in plan.actors:
         spec = specification_from_plan(plan, actor=actor, requirement=requirement)
-        source = compose_loop_agent(spec, resolved, requirement=actor.brief)
+        source = compose_loop_agent(
+            spec, _actor_resources(resolved, actor), requirement=requirement
+        )
         payload = source.to_dict()
         payload["name"] = actor.name
         source = AgentSource.from_dict(payload)
@@ -126,6 +165,135 @@ def compose_execution_product(
         companions=tuple(companions),
         flow=flow,
     )
+
+
+def _responsibilities(plan: ExecutionPlan, actor: PlanActor | None) -> tuple[str, ...]:
+    parts = [actor.brief] if actor and actor.brief else []
+    parts.extend(
+        f"Stage {step.id}: {step.why}"
+        for step in plan.steps
+        if step.kind == "agent_call" and (actor is None or step.agent == actor.id)
+    )
+    summary = plan.task.get("summary")
+    if isinstance(summary, str) and summary:
+        parts.append("Task context: " + summary)
+    # A single loop remains autonomous, but must retain the planned method;
+    # start/reason/output are the execution shell, not the task procedure.
+    task_actors = plan.task.get("actors", ())
+    actor_ids = {
+        item.get("id")
+        for item in task_actors
+        if isinstance(item, Mapping)
+        and actor is not None
+        and (item.get("id") == actor.id or item.get("role") == actor.name)
+    }
+    for stage in plan.task.get("stages", ()):
+        if not isinstance(stage, Mapping):
+            continue
+        if plan.product_shape != "PURE_AGENT" and stage.get("actor") not in actor_ids:
+            continue
+        method = str(stage.get("summary") or "").strip()
+        if method:
+            parts.append(f"Task procedure {stage.get('id')}: {method}")
+            if stage.get("source"):
+                parts.append("Information source: " + str(stage["source"]))
+    return tuple(dict.fromkeys(parts))
+
+
+def _actor_inputs(
+    plan: ExecutionPlan, actor: PlanActor | None
+) -> tuple[TaskIOField, ...]:
+    if actor is not None and actor.inputs:
+        return actor.inputs
+    fields = plan.inputs or (TaskIOField(name="request", type="string"),)
+    if actor is None or plan.product_shape == "PURE_AGENT":
+        return fields
+    previous: PlanActor | None = None
+    by_id = {item.id: item for item in plan.actors}
+    for step in plan.steps:
+        if step.kind != "agent_call":
+            continue
+        if step.agent == actor.id:
+            break
+        previous = by_id.get(step.agent)
+    if previous is None or any(item.name == "context" for item in fields):
+        return fields
+    outputs = _actor_outputs(plan, previous)
+    context = next((item for item in outputs if item.name == "result"), outputs[0])
+    return (
+        *fields,
+        replace(
+            context,
+            name="context",
+            required=False,
+            description="Structured output from the preceding Agent stage",
+        ),
+    )
+
+
+def _actor_resources(plan: ResourcePlan, actor: PlanActor) -> ResourcePlan:
+    """A Workflow's capability union must not grant every child every tool."""
+    wanted = set(actor.capabilities)
+
+    def allowed(resource: Any) -> bool:
+        if resource.kind in {"tool", "mcp_tool", "skill"}:
+            return bool(wanted.intersection(resource.capabilities))
+        return True
+
+    return replace(
+        plan,
+        selected=tuple(item for item in plan.selected if allowed(item)),
+        already_bound=tuple(item for item in plan.already_bound if allowed(item)),
+        will_bind=tuple(item for item in plan.will_bind if allowed(item)),
+        needs_configuration=tuple(
+            item for item in plan.needs_configuration if allowed(item)
+        ),
+    )
+
+
+def _validate_plan(plan: ExecutionPlan) -> None:
+    actors = {item.id for item in plan.actors}
+    if len(actors) != len(plan.actors):
+        raise ValueError("duplicate execution actor id")
+    ids = [_flow_id(step.id) for step in plan.steps]
+    if len(set(ids)) != len(ids):
+        raise ValueError("execution step ids collide after normalization")
+    edges: dict[str, list[str]] = {node_id: [] for node_id in ids}
+    for step in plan.steps:
+        if step.kind == "agent_call" and step.agent not in actors:
+            raise ValueError(f"unknown execution actor: {step.agent}")
+        targets = (
+            (step.on_true, step.on_false)
+            if step.kind in {"condition", "verifier"}
+            else (step.on_approved, step.on_rejected)
+            if step.kind in {"human_input", "human_approval"}
+            else (step.on_next,)
+            if step.kind != "output"
+            else ()
+        )
+        for target in targets:
+            if not target:
+                continue
+            target_id = _flow_id(target)
+            if target_id not in edges:
+                raise ValueError(f"unknown execution target: {target}")
+            edges[_flow_id(step.id)].append(target_id)
+    active: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in active:
+            raise ValueError("Workflow execution plan must be a DAG")
+        if node_id in visited:
+            return
+        active.add(node_id)
+        for target in edges[node_id]:
+            visit(target)
+        active.remove(node_id)
+        visited.add(node_id)
+
+    for node_id in edges:
+        visit(node_id)
 
 
 def _semantic(item: TaskIOField) -> SemanticField:
@@ -142,6 +310,8 @@ def _semantic(item: TaskIOField) -> SemanticField:
 def _actor_outputs(
     plan: ExecutionPlan, role: PlanActor | None
 ) -> tuple[TaskIOField, ...]:
+    if role is not None and role.outputs:
+        return role.outputs
     if plan.product_shape == "PURE_AGENT":
         return plan.outputs or (TaskIOField(name="result", type="string"),)
     fields = list(plan.outputs)
@@ -162,6 +332,176 @@ def _actor_outputs(
     return tuple(fields)
 
 
+def _field_name(value: str) -> str:
+    text = re.sub(r"[^a-z0-9-]", "", value.casefold().replace("_", "-"))
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return text[:63] if text and text[0].isalpha() else "field"
+
+
+def _output_value(stage_id: str, port: str) -> str:
+    return _flow_id(stage_id + "_" + port)
+
+
+def _value_mappings(
+    plan: ExecutionPlan, agents: dict[str, AgentSource]
+) -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, dict[str, str]],
+    dict[str, dict[str, str]],
+    dict[str, dict[str, Any]],
+]:
+    """Resolve semantic sources to real values without serializing typed payloads."""
+    top_fields = parse_typed_fields(
+        _io_wire(plan.inputs) or {"request": "string"}, "inputs"
+    )
+    input_refs = {item.name: _port_name(item.name) for item in plan.inputs}
+    if not input_refs:
+        input_refs = {"request": "request"}
+    if len(set(input_refs.values())) != len(input_refs):
+        raise ValueError("Workflow input field names collide after normalization")
+    semantic: dict[str, tuple[str, TypedField]] = {}
+    occupied: set[str] = set(top_fields)
+    call_inputs: dict[str, dict[str, str]] = {}
+    call_outputs: dict[str, dict[str, str]] = {}
+    aliases: dict[str, dict[str, str]] = {}
+    humans: dict[str, dict[str, Any]] = {}
+    actor_by_id = {actor.id: actor for actor in plan.actors}
+    legacy = not any(
+        actor.inputs or actor.outputs for actor in plan.actors
+    ) and not any(step.input_sources for step in plan.steps)
+    final_fields = parse_typed_fields(
+        _io_wire(plan.outputs) or {"result": "object"}, "outputs"
+    )
+    final_sources: dict[str, str] = {}
+    for item in plan.outputs:
+        target = _port_name(item.name)
+        if "." in item.source and re.fullmatch(
+            r"[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", item.source
+        ):
+            stage, port = item.source.split(".", 1)
+            final_sources[target] = f"{_flow_id(stage)}.{_field_name(port)}"
+        else:
+            matching = [
+                (step.id, name)
+                for step in plan.steps
+                if step.kind == "agent_call"
+                for name, field in agents[step.agent].outputs.items()
+                if _field_name(item.name) == name
+                and types_compatible(field, final_fields[target])
+            ]
+            if matching:
+                stage, name = matching[-1]
+                final_sources[target] = f"{stage}.{name}"
+    previous: tuple[str, AgentSource] | None = None
+    for step in plan.steps:
+        if step.kind == "human_input":
+            fields: dict[str, Any] = {}
+            for name, kind in (step.expected_schema or {"reply": "string"}).items():
+                value = _port_name(step.id + name)
+                if value in occupied:
+                    raise ValueError("HumanInput value id collides with existing value")
+                occupied.add(value)
+                descriptor = _io_wire(
+                    (TaskIOField(name=value, type=kind, description=name),)
+                )[value]
+                fields[value] = descriptor
+                field = parse_typed_fields({value: descriptor}, "human inputs")[value]
+                semantic[f"{step.id}.{name}"] = (value, field)
+                semantic[f"{step.id}.{_field_name(name)}"] = (value, field)
+            humans[step.id] = fields
+            continue
+        if step.kind != "agent_call":
+            continue
+        source = agents[step.agent]
+        explicit = {
+            _field_name(key): value for key, value in (step.input_sources or {}).items()
+        }
+        if len(explicit) != len(step.input_sources or {}):
+            raise ValueError("input source target names collide")
+        if set(explicit) - set(source.inputs):
+            raise ValueError("input source references an unknown actor input port")
+        inputs: dict[str, str] = {}
+        for name, field in source.inputs.items():
+            requested_source = explicit.get(name)
+            found: tuple[str, TypedField] | None = None
+            if requested_source:
+                if requested_source.startswith("input."):
+                    raw = requested_source.removeprefix("input.")
+                    input_value = input_refs.get(raw)
+                    if input_value:
+                        found = (input_value, top_fields[input_value])
+                else:
+                    found = semantic.get(requested_source)
+                    if found is None and "." in requested_source:
+                        stage, port = requested_source.split(".", 1)
+                        found = semantic.get(f"{_flow_id(stage)}.{_field_name(port)}")
+                if found is None:
+                    raise ValueError(
+                        "unknown or unavailable semantic input source: "
+                        f"{requested_source}"
+                    )
+            else:
+                top_name = next(
+                    (
+                        value
+                        for raw, value in input_refs.items()
+                        if _field_name(raw) == name
+                    ),
+                    None,
+                )
+                if top_name:
+                    found = (top_name, top_fields[top_name])
+                elif legacy and name == "context" and previous:
+                    prior_step, prior_source = previous
+                    port = (
+                        "result"
+                        if "result" in prior_source.outputs
+                        else next(iter(prior_source.outputs))
+                    )
+                    found = semantic[f"{prior_step}.{port}"]
+                elif field.required:
+                    raise ValueError(
+                        f"required actor input has no source: {step.id}.{name}"
+                    )
+            if found:
+                value, provided = found
+                if not types_compatible(provided, field):
+                    raise ValueError(
+                        f"incompatible semantic input source: {step.id}.{name}"
+                    )
+                inputs[name] = value
+        outputs: dict[str, str] = {}
+        raw_outputs = {
+            _field_name(item.name): item.name
+            for item in actor_by_id[step.agent].outputs
+        }
+        for name, field in source.outputs.items():
+            value = _output_value(step.id, name)
+            if value in occupied:
+                raise ValueError("Agent output value id collides after normalization")
+            occupied.add(value)
+            outputs[name] = value
+            semantic[f"{step.id}.{name}"] = (value, field)
+            semantic[f"{step.id}.{raw_outputs.get(name, name)}"] = (value, field)
+            if legacy:
+                aliases.setdefault(step.id, {})[_flow_id(name)] = value
+            for target, reference in final_sources.items():
+                if (
+                    reference == f"{step.id}.{name}"
+                    or reference == f"{step.id}.{raw_outputs.get(name, name)}"
+                ):
+                    if not types_compatible(field, final_fields[target]):
+                        raise ValueError("incompatible final Workflow output source")
+                    aliases.setdefault(step.id, {})[target] = value
+        call_inputs[step.id] = inputs
+        call_outputs[step.id] = outputs
+        previous = (step.id, source)
+    for reference in final_sources.values():
+        if reference not in semantic and not reference.startswith("input."):
+            raise ValueError(f"unknown final Workflow output source: {reference}")
+    return call_inputs, call_outputs, aliases, humans
+
+
 def _workflow_payload(
     plan: ExecutionPlan,
     agents: dict[str, AgentSource],
@@ -174,14 +514,40 @@ def _workflow_payload(
     positions: dict[str, dict[str, int]] = {}
     labels: dict[str, str] = {}
     checks: list[str] = []
+    call_inputs, call_outputs, aliases, human_fields = _value_mappings(plan, agents)
     for column, step in enumerate(plan.steps):
-        nodes.append(_node(step, agents, plan, entity_tool=entity_tool))
+        node = _node(step, agents, plan, entity_tool=entity_tool)
+        if step.kind == "agent_call":
+            node["input_mapping"] = call_inputs[step.id]
+            node["output_mapping"] = call_outputs[step.id]
+        if step.kind == "human_input":
+            node["inputs"] = human_fields[step.id]
+        nodes.append(node)
         node_id = _flow_id(step.id)
         positions[node_id] = {"x": 80 + column * 220, "y": 80}
         labels[node_id] = step.id.replace("-", " ").replace("_", " ")
         if step.kind == "verifier":
             checks = list(step.checks)
         _emit_edges(step, transitions)
+        if step.id in aliases:
+            alias_id = _flow_id(step.id + "_outputs")
+            if alias_id in {_flow_id(item.id) for item in plan.steps}:
+                raise ValueError("output alias node id collides with task stage")
+            for edge in transitions:
+                if edge["from"] == node_id:
+                    edge["from"] = alias_id
+            transitions.append({"from": node_id, "port": "next", "to": alias_id})
+            nodes.append(
+                {
+                    "id": alias_id,
+                    "component_type": "Transform",
+                    "mapping": {
+                        name: "{{" + value + "}}"
+                        for name, value in aliases[step.id].items()
+                    },
+                }
+            )
+            positions[alias_id] = {"x": 80 + column * 220 + 110, "y": 220}
     inputs = _io_wire(plan.inputs) or {"request": "string"}
     outputs = _io_wire(plan.outputs) or {"result": "object"}
     output_name = next(iter(outputs))
@@ -221,7 +587,12 @@ def _workflow_payload(
             dict.fromkeys([*permissions["tools"], entity_tool["resource_id"]])
         )
     slug = "generated-workflow"
-    lock: dict[str, str] = {}
+    # Review pins protect the candidate contents. Apply remaps these placeholders
+    # to newly committed version IDs and revalidates the actual immutable pins.
+    lock: dict[str, str] = {
+        f"{source.agent_id}@{source.agent_id}": source_hash(source.to_dict())
+        for source in agents.values()
+    }
     if entity_tool and entity_tool.get("content_hash"):
         lock[entity_tool["reference"]] = str(entity_tool["content_hash"])
     return {
@@ -284,7 +655,7 @@ def _io_wire(fields: tuple[TaskIOField, ...]) -> dict[str, Any]:
             item.required
             and not item.multiple
             and not item.description
-            and item.type not in {"image", "pdf", "document", "file", "collection"}
+            and item.type not in ARTIFACT_KINDS
         ):
             result[name] = item.type
         else:
@@ -309,7 +680,7 @@ def _node(
             "output_name": "result",
         }
     if step.kind == "agent_call":
-        source = agents.get(step.agent) or next(iter(agents.values()), None)
+        source = agents.get(step.agent)
         if source is None:
             raise ValueError("agent_call requires a companion Agent")
         inputs = {name: _port_name(name) for name in source.inputs} or {

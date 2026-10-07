@@ -540,6 +540,16 @@
 .factory-proposal-readiness > strong { color: var(--ink); }
 .factory-proposal-readiness.is-requires_configuration { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
 .factory-proposal-readiness.is-unavailable { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: var(--bad-soft); }
+.factory-proposal-models { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.factory-model-requirement { display: grid; gap: 8px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+.factory-model-requirement[data-status="needs_setup"], .factory-model-requirement[data-status="missing_capability"], .factory-model-requirement[data-status="unsupported"] { border-color: color-mix(in srgb, var(--warn) 36%, var(--line)); background: color-mix(in srgb, var(--warn) 5%, var(--surface)); }
+.factory-model-requirement > div { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; }
+.factory-model-slot { color: var(--subtle); font-size: 11px; font-weight: 700; }
+.factory-model-requirement strong { font-size: 13px; }
+.factory-model-state { margin-left: auto; color: var(--accent-strong); font-size: 11px; font-weight: 750; }
+.factory-model-requirement[data-status="needs_setup"] .factory-model-state, .factory-model-requirement[data-status="missing_capability"] .factory-model-state, .factory-model-requirement[data-status="unsupported"] .factory-model-state { color: var(--warn); }
+.factory-model-requirement p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.factory-model-requirement a { justify-self: start; color: var(--accent-strong); font-size: 12px; font-weight: 750; }
 
 .factory-proposal-resources > strong,
 .factory-proposal-gaps > strong {
@@ -641,6 +651,16 @@
 .factory-canvas-assembling {
   color: var(--accent-strong);
 }
+
+.factory-canvas-terminal {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.factory-canvas-terminal p { margin: 0 0 8px; }
+.factory-canvas-terminal summary { color: var(--ink); cursor: pointer; touch-action: manipulation; }
 
 .factory-review-canvas.studio-canvas {
   flex: none;

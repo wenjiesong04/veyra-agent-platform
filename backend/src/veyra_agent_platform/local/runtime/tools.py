@@ -6,8 +6,10 @@ import json
 import os
 import signal
 import subprocess
+import unicodedata
 from collections.abc import Mapping
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -24,6 +26,10 @@ from veyra_agent_platform.local.mcp.service import McpService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
 from veyra_agent_platform.local.secrets import SecretStore, resolve_secret
 from veyra_agent_platform.local.state import EntityStoreError
+from veyra_agent_platform.local.state.entity_store import ENTITY_HISTORY_MAX_RECORDS
+
+from .arithmetic import ArithmeticError, calculate
+from .tabular import TABULAR_MAX_FILE_BYTES, TabularError, compare_csv
 
 _MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
@@ -38,7 +44,11 @@ _HTTP_ADAPTER = "veyra.runtime.http.request"
 _BROWSER_ADAPTER = "veyra.runtime.browser.navigate"
 _SEARCH_ADAPTER = "veyra.runtime.web.search"
 _ENTITY_READ_ADAPTER = "veyra.runtime.entity.read"
+_ENTITY_QUERY_ADAPTER = "veyra.runtime.entity.query"
+_ENTITY_HISTORY_ADAPTER = "veyra.runtime.entity.history"
 _ENTITY_WRITE_ADAPTER = "veyra.runtime.entity.write"
+_ARITHMETIC_ADAPTER = "veyra.runtime.math.calculate"
+_TABULAR_COMPARE_ADAPTER = "veyra.runtime.tabular.compare"
 _GITHUB_READ_ADAPTER = "veyra.runtime.github.read"
 _GITHUB_WRITE_ADAPTER = "veyra.runtime.github.write"
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
@@ -128,7 +138,9 @@ class ToolRuntime:
         )
         self._secret_store = secret_store
         self._entity_store = entity_store
-        self._call_project_id: str | None = None
+        self._call_project_id: ContextVar[str | None] = ContextVar(
+            "veyra_tool_project_id", default=None
+        )
         self._adapters: dict[str, ToolAdapter] = {
             _READ_ADAPTER: self._execute_read,
             _LIST_ADAPTER: self._execute_list,
@@ -140,7 +152,11 @@ class ToolRuntime:
             _BROWSER_ADAPTER: self._execute_browser_navigate,
             _SEARCH_ADAPTER: self._execute_web_search,
             _ENTITY_READ_ADAPTER: self._execute_entity_read,
+            _ENTITY_QUERY_ADAPTER: self._execute_entity_query,
+            _ENTITY_HISTORY_ADAPTER: self._execute_entity_history,
             _ENTITY_WRITE_ADAPTER: self._execute_entity_write,
+            _ARITHMETIC_ADAPTER: self._execute_arithmetic,
+            _TABULAR_COMPARE_ADAPTER: self._execute_tabular_compare,
             _GITHUB_READ_ADAPTER: self._execute_github_read,
             _GITHUB_WRITE_ADAPTER: self._execute_github_write,
         }
@@ -301,7 +317,7 @@ class ToolRuntime:
         approved: bool,
         project_id: str | None = None,
     ) -> ToolExecution:
-        self._call_project_id = project_id
+        token = self._call_project_id.set(project_id)
         try:
             return self._execute_authorized(
                 project_root=project_root,
@@ -312,7 +328,7 @@ class ToolRuntime:
                 approved=approved,
             )
         finally:
-            self._call_project_id = None
+            self._call_project_id.reset(token)
 
     def _execute_authorized(
         self,
@@ -400,9 +416,9 @@ class ToolRuntime:
         authorization: ToolAuthorization,
         approved: bool,
     ) -> ToolExecution:
-        del project_root, source, node, approved
+        del project_root, node, approved
         store = self._entity_store
-        project_id = self._call_project_id or str(values.get("project_id") or "")
+        project_id = self._call_project_id.get() or str(values.get("project_id") or "")
         entity_id = values.get("entity_id")
         if store is None or not project_id or not isinstance(entity_id, str):
             raise ToolRuntimeError(
@@ -411,6 +427,14 @@ class ToolRuntime:
         record = store.read(project_id, entity_id)
         if record is None:
             raise ToolRuntimeError("tool_failed", "Entity was not found")
+        state_contract = getattr(source, "state_contract", None)
+        if (
+            state_contract is not None
+            and record["entity_type"] != state_contract.entity
+        ):
+            raise ToolRuntimeError(
+                "tool_scope_denied", "Entity type is outside the Agent state contract"
+            )
         return self._receipt_execution(authorization, record, 0, "")
 
     def _execute_entity_write(
@@ -425,7 +449,7 @@ class ToolRuntime:
     ) -> ToolExecution:
         del project_root, source, node, approved
         store = self._entity_store
-        project_id = self._call_project_id or str(values.get("project_id") or "")
+        project_id = self._call_project_id.get() or str(values.get("project_id") or "")
         entity_type = str(values.get("entity_type") or "ProjectEntity")
         payload = values.get("payload")
         status = str(values.get("status") or "active")
@@ -448,6 +472,159 @@ class ToolRuntime:
         except EntityStoreError as exc:
             raise ToolRuntimeError("tool_input_invalid", str(exc)) from exc
         return self._receipt_execution(authorization, record, 0, "")
+
+    def _execute_entity_query(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        store = self._entity_store
+        # A model argument cannot select another Project or infer host scope.
+        project_id = self._call_project_id.get()
+        if store is None or not project_id:
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Entity Query requires the current Project"
+            )
+        try:
+            result = store.query(
+                project_id=project_id,
+                entity_type=values.get("entity_type"),
+                filters=values.get("filters"),
+                limit=values.get("limit", 20),
+            )
+        except EntityStoreError as exc:
+            raise ToolRuntimeError("tool_input_invalid", str(exc)) from exc
+        byte_length = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        return self._receipt_execution(authorization, result, byte_length, "")
+
+    def _execute_entity_history(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, node, approved
+        store = self._entity_store
+        project_id = self._call_project_id.get()
+        if store is None or not project_id:
+            raise ToolRuntimeError(
+                "tool_input_invalid", "Entity History requires the current Project"
+            )
+        entity_type = values.get("entity_type")
+        state_contract = getattr(source, "state_contract", None)
+        if state_contract is not None and entity_type != state_contract.entity:
+            raise ToolRuntimeError(
+                "tool_scope_denied", "Entity type is outside the Agent state contract"
+            )
+        try:
+            result = store.history(
+                project_id=project_id,
+                entity_type=entity_type,
+                entity_id=values.get("entity_id"),
+                limit=values.get("limit", ENTITY_HISTORY_MAX_RECORDS),
+                before_revision=values.get("before_revision"),
+            )
+        except EntityStoreError as exc:
+            raise ToolRuntimeError("tool_input_invalid", str(exc)) from exc
+        if result is None:
+            raise ToolRuntimeError("tool_failed", "Entity history was not found")
+        byte_length = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        return self._receipt_execution(authorization, result, byte_length, "")
+
+    def _execute_arithmetic(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del project_root, source, node, approved
+        try:
+            output = calculate(values.get("expression"))
+        except ArithmeticError as exc:
+            raise ToolRuntimeError("tool_input_invalid", str(exc)) from exc
+        return self._receipt_execution(
+            authorization, output, len(json.dumps(output).encode("utf-8")), ""
+        )
+
+    def _execute_tabular_compare(
+        self,
+        *,
+        project_root: Path,
+        source: AgentSource,
+        node: FlowNode,
+        values: dict[str, Any],
+        authorization: ToolAuthorization,
+        approved: bool,
+    ) -> ToolExecution:
+        del source, node, approved
+        materials: list[tuple[bytes, str]] = []
+        for field in ("left_path", "right_path"):
+            raw_path = values.get(field)
+            if not isinstance(raw_path, str) or len(raw_path) > 4096:
+                raise ToolRuntimeError(
+                    "tool_input_invalid",
+                    "CSV comparison requires relative Project paths",
+                )
+            path = unicodedata.normalize("NFKC", raw_path)
+            if "\\" in path or any(
+                ord(character) < 32 or ord(character) == 127 for character in path
+            ):
+                raise ToolRuntimeError(
+                    "tool_path_denied", "CSV paths must be safe relative Project paths"
+                )
+            target, relative_path = self._project_target(
+                project_root, path, create_parents=False
+            )
+            if not target.is_file():
+                raise ToolRuntimeError(
+                    "tool_input_invalid", "CSV path is not a regular Project file"
+                )
+            try:
+                with target.open("rb") as stream:
+                    content = stream.read(TABULAR_MAX_FILE_BYTES + 1)
+            except OSError as exc:
+                raise ToolRuntimeError(
+                    "tool_failed", "CSV Project file could not be read"
+                ) from exc
+            if len(content) > TABULAR_MAX_FILE_BYTES:
+                raise ToolRuntimeError(
+                    "tool_output_too_large", "CSV file exceeds the 1 MB limit"
+                )
+            materials.append((content, relative_path))
+        try:
+            output = compare_csv(
+                materials[0][0],
+                materials[1][0],
+                left_path=materials[0][1],
+                right_path=materials[1][1],
+                left_key=values.get("left_key"),
+                right_key=values.get("right_key"),
+                left_amount=values.get("left_amount"),
+                right_amount=values.get("right_amount"),
+                include_all_groups=values.get("include_all_groups", False),
+            )
+        except TabularError as exc:
+            raise ToolRuntimeError(exc.code, str(exc)) from exc
+        return self._receipt_execution(
+            authorization,
+            output,
+            sum(len(content) for content, _ in materials),
+            f"{materials[0][1]} | {materials[1][1]}",
+        )
 
     def _execute_shell(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import AbstractContextManager
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from tests.integration.local.test_runtime_routes import (
     _source,
     _write_source,
 )
+from tests.integration.local.verified_runtime_model import verified_client
 from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.app import create_app
 from veyra_agent_platform.local.config import LocalSettings
@@ -31,16 +33,15 @@ def _client(
     *,
     factory_transport: Any | None = None,
     runtime_transport: Any | None = None,
-) -> TestClient:
-    return TestClient(
-        create_app(
-            LocalSettings(
-                database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
-                project_storage_root=tmp_path / "projects",
-            ),
-            factory_transport=factory_transport,
-            runtime_transport=runtime_transport,
-        )
+) -> AbstractContextManager[TestClient]:
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    if runtime_transport is None:
+        return TestClient(create_app(settings, factory_transport=factory_transport))
+    return verified_client(
+        settings, runtime_transport, factory_transport=factory_transport
     )
 
 

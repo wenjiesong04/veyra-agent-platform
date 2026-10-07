@@ -1,0 +1,40 @@
+.runtime-output-reading {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.runtime-output-reading p { margin: 0; }
+.runtime-reading-text { white-space: pre-wrap; }
+.runtime-reading-empty { color: var(--muted); }
+.runtime-reading-number { font-variant-numeric: tabular-nums; }
+.runtime-reading-fields { display: grid; gap: 12px; margin: 0; min-width: 0; }
+.runtime-reading-fields > div { display: grid; gap: 4px; min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 32px; }
+.runtime-reading-fields > .is-scalar { grid-template-columns: minmax(88px, 160px) minmax(0, 1fr); gap: 16px; }
+.runtime-reading-fields dt { color: var(--muted); font-size: 12px; font-weight: 500; }
+.runtime-reading-fields dd { margin: 0; min-width: 0; }
+.runtime-reading-fields > .is-complex > dt { color: var(--ink); font-size: 13px; font-weight: 600; }
+.runtime-reading-list { display: grid; gap: 8px; margin: 0; padding-left: 20px; }
+.runtime-reading-list > li { min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 40px; }
+.runtime-reading-list > li::marker { color: var(--muted); }
+.runtime-reading-list:has(.runtime-reading-fields) { gap: 16px; }
+.runtime-reading-list.is-artifacts { list-style: none; padding-left: 0; }
+.runtime-reading-deep { border-left: 1px solid var(--line); padding-left: 12px; min-width: 0; }
+.runtime-reading-deep > summary { cursor: pointer; color: var(--accent-strong); font-size: 12px; touch-action: manipulation; }
+.runtime-reading-deep[open] > summary { margin-bottom: 8px; }
+.runtime-reading-table-wrap { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+.runtime-reading-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.runtime-reading-table caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.runtime-reading-table th { color: var(--muted); font-size: 12px; font-weight: 500; text-align: left; }
+.runtime-reading-table th, .runtime-reading-table td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; min-width: 72px; max-width: 300px; }
+.runtime-reading-table td:last-child, .runtime-reading-table th:last-child { padding-right: 0; }
+.runtime-reading-table tbody > tr:last-child > td { border-bottom: 0; }
+.runtime-reading-more { margin-top: 10px; padding: 4px 0; border: 0; background: transparent; color: var(--accent-strong); font: inherit; font-size: 12px; cursor: pointer; touch-action: manipulation; }
+.runtime-reading-more:hover, .runtime-reading-deep > summary:hover { text-decoration: underline; }
+.runtime-reading-more:focus-visible, .runtime-reading-deep > summary:focus-visible, .runtime-reading-table-wrap:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
+@media (max-width: 640px) {
+  .runtime-reading-fields > .is-scalar { grid-template-columns: minmax(72px, 108px) minmax(0, 1fr); gap: 12px; }
+  .runtime-reading-table th, .runtime-reading-table td { min-width: 84px; }
+}

@@ -48,6 +48,8 @@ from veyra_agent_platform.local.library.dependencies import (
 )
 from veyra_agent_platform.local.library.knowledge_context import read_knowledge_context
 from veyra_agent_platform.local.library.service import LibraryService
+from veyra_agent_platform.local.models.contracts import ModelCapabilityRequirement
+from veyra_agent_platform.local.models.resolver import ModelResolver
 from veyra_agent_platform.local.projects.custom_components import (
     CustomComponentError,
     CustomComponentService,
@@ -62,7 +64,7 @@ from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 from veyra_agent_platform.local.runtime.dataflow import DataflowStore
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
-from .agent_loop import AgentLoopRuntime, loop_tool_references
+from .agent_loop import AgentLoopRuntime, loop_image_outputs, loop_tool_references
 from .client import GeneratedImage, RuntimeModelClient, RuntimeProviderError
 from .config import RuntimeSettings
 from .conversations import AgentConversationService
@@ -70,6 +72,7 @@ from .credentials import (
     IMAGE_BINDING_SLOT,
     RUNTIME_BINDING_SLOT,
     ProviderCredentialStore,
+    RuntimeBinding,
     node_binding_slot,
 )
 from .model_capabilities import (
@@ -152,6 +155,7 @@ class RuntimeService(AgentLoopRuntime):
         artifacts: ArtifactService | None = None,
         custom_components: CustomComponentService | None = None,
         credentials: ProviderCredentialStore | None = None,
+        model_registry: Any | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
         self.model = model or RuntimeModelClient(RuntimeSettings())
@@ -164,6 +168,7 @@ class RuntimeService(AgentLoopRuntime):
         )
         self.profiles = profiles or RuntimeProfileStore(repository)
         self.credentials = credentials
+        self.model_registry = model_registry
         self.resource_readiness = resource_readiness or ResourceReadiness(
             self.tools.catalog,
             self.model,
@@ -309,13 +314,46 @@ class RuntimeService(AgentLoopRuntime):
         dependencies = inspect_agent_dependencies(
             self.projects, self.tools.catalog, project_id, source
         )
-        model = self._model_for(project_id, agent_id)
-        model_status = model.status()
         requires_model = self._source_requires_model(project_id, source)
-        model_ready = not requires_model or bool(model_status["configured"])
+        model_requirements = self._runtime_model_requirements(project_id, source)
+        model_clients = {
+            slot: self._model_for(
+                project_id,
+                agent_id,
+                slot,
+                required_capabilities=required,
+            )
+            for slot, required in model_requirements.items()
+        }
+        primary_requirements = model_requirements.get(RUNTIME_BINDING_SLOT)
+        model = model_clients.get(RUNTIME_BINDING_SLOT) or self._model_for(
+            project_id, agent_id, required_capabilities=primary_requirements
+        )
+        model_status = model.status()
+        setup_issues, model_profiles = self._runtime_model_setup_issues(
+            project_id,
+            agent_id,
+            model_requirements,
+            expected_clients=model_clients,
+        )
+        text_slots = [slot for slot in model_requirements if slot != IMAGE_BINDING_SLOT]
+        model_configured = (
+            all(model_clients[slot].configured for slot in text_slots)
+            if text_slots
+            else not requires_model
+        )
+        model_issues = [
+            item for item in setup_issues if item["scope"] != IMAGE_BINDING_SLOT
+        ]
+        image_issues = [
+            item for item in setup_issues if item["scope"] == IMAGE_BINDING_SLOT
+        ]
+        model_ready = not requires_model or model_configured and not model_issues
         model_detail = (
             "No model node is present in this Agent."
             if not requires_model
+            else model_issues[0]["message"]
+            if model_issues
             else (
                 "Effective Runtime model credentials are available."
                 if model_ready
@@ -351,8 +389,32 @@ class RuntimeService(AgentLoopRuntime):
                 else "One or more Tools cannot pass Runtime authorization."
             )
         )
-        modalities = runtime_model_capabilities(model.settings)
-        modality_check = _runtime_modality_readiness(source, requires_model, modalities)
+        image_input_issue = next(
+            (item for item in setup_issues if "image_input" in item["requirement"]),
+            None,
+        )
+        image_input_slot = next(
+            (
+                slot
+                for slot, required in model_requirements.items()
+                if "image_input" in required
+            ),
+            RUNTIME_BINDING_SLOT,
+        )
+        modality_model = model_clients.get(image_input_slot) or model
+        modalities = runtime_model_capabilities(
+            modality_model.settings, profile=model_profiles.get(image_input_slot)
+        )
+        if image_input_issue is not None:
+            modality_check = {
+                "ready": False,
+                "code": image_input_issue["code"],
+                "detail": image_input_issue["message"],
+            }
+        else:
+            modality_check = _runtime_modality_readiness(
+                source, requires_model, modalities
+            )
         checks = [
             {
                 "id": "dependencies",
@@ -369,7 +431,13 @@ class RuntimeService(AgentLoopRuntime):
             {
                 "id": "model",
                 "ready": model_ready,
-                "code": "ready" if model_ready else "runtime_not_configured",
+                "code": (
+                    "ready"
+                    if model_ready
+                    else model_issues[0]["code"]
+                    if model_issues
+                    else "runtime_not_configured"
+                ),
                 "detail": model_detail,
             },
             {
@@ -384,16 +452,32 @@ class RuntimeService(AgentLoopRuntime):
             },
         ]
         if _uses_image_model(source):
-            image_model = self._model_for(project_id, agent_id, IMAGE_BINDING_SLOT)
-            image_ready = bool(image_model.status()["configured"])
+            image_model = model_clients.get(IMAGE_BINDING_SLOT) or self._model_for(
+                project_id,
+                agent_id,
+                IMAGE_BINDING_SLOT,
+                required_capabilities=model_requirements.get(
+                    IMAGE_BINDING_SLOT, ("image_generation",)
+                ),
+            )
+            image_ready = bool(image_model.status()["configured"]) and not image_issues
             checks.append(
                 {
                     "id": "image_model",
                     "ready": image_ready,
-                    "code": "ready" if image_ready else "image_model_not_configured",
-                    "detail": (
-                        f"Image model {image_model.settings.model_id} is bound."
+                    "code": (
+                        "ready"
                         if image_ready
+                        else image_issues[0]["code"]
+                        if image_issues
+                        else "image_model_not_configured"
+                    ),
+                    "detail": (
+                        f"Image model {image_model.settings.model_id} is verified "
+                        "for image generation."
+                        if image_ready
+                        else image_issues[0]["message"]
+                        if image_issues
                         else "Bind an image generation model for the image steps."
                     ),
                 }
@@ -406,7 +490,7 @@ class RuntimeService(AgentLoopRuntime):
             "profile_source": profile_source,
             "model": {
                 "required": requires_model,
-                "configured": bool(model_status["configured"]),
+                "configured": bool(model_configured),
                 "model_id": model_status["model_id"],
                 "model_base_url": model_status["model_base_url"],
                 "model_api_key_env": model_status["model_api_key_env"],
@@ -416,6 +500,7 @@ class RuntimeService(AgentLoopRuntime):
             "dependencies": dependencies["dependencies"],
             "tool_checks": tool_checks,
             "checks": checks,
+            "setup_issues": setup_issues,
         }
 
     def _authorize_tool(
@@ -552,23 +637,596 @@ class RuntimeService(AgentLoopRuntime):
     def _require_runtime_modalities(
         self, project_id: str, agent_id: str, source: AgentSource
     ) -> None:
-        model = self._model_for(project_id, agent_id)
         requires_model = self._source_requires_model(project_id, source)
+        requirements = self._runtime_model_requirements(project_id, source)
+        clients = {
+            slot: self._model_for(
+                project_id,
+                agent_id,
+                slot,
+                required_capabilities=required,
+            )
+            for slot, required in requirements.items()
+        }
+        issues, profiles = self._runtime_model_setup_issues(
+            project_id, agent_id, requirements, expected_clients=clients
+        )
+        if issues:
+            first = issues[0]
+            raise RuntimeError(first["code"], first["message"])
+        image_input_slot = next(
+            (
+                slot
+                for slot, required in requirements.items()
+                if "image_input" in required
+            ),
+            RUNTIME_BINDING_SLOT,
+        )
+        model = clients.get(image_input_slot) or self._model_for(project_id, agent_id)
         check = _runtime_modality_readiness(
             source,
             requires_model,
-            runtime_model_capabilities(model.settings),
+            runtime_model_capabilities(
+                model.settings, profile=profiles.get(image_input_slot)
+            ),
         )
         if not check["ready"]:
             raise RuntimeError(str(check["code"]), str(check["detail"]))
+
+    def _runtime_model_requirements(
+        self, project_id: str, source: AgentSource
+    ) -> dict[str, tuple[str, ...]]:
+        gathered: dict[str, list[str]] = {}
+
+        def require(slot: str, capability: str) -> None:
+            capabilities = gathered.setdefault(slot, [])
+            if capability not in capabilities:
+                capabilities.append(capability)
+
+        if source.is_loop:
+            require(RUNTIME_BINDING_SLOT, "text_generation")
+            if _fields_include_image(source.inputs):
+                require(RUNTIME_BINDING_SLOT, "image_input")
+
+        model_nodes = [
+            node
+            for node in (() if source.is_loop else source.nodes)
+            if node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
+        ]
+        for node in model_nodes:
+            slot = self._model_slot_for_node(project_id, source, node)
+            if node.model_ref == IMAGE_MODEL_REF:
+                require(IMAGE_BINDING_SLOT, "image_generation")
+                continue
+            require(slot, "text_generation")
+            if _fields_include_image(node.inputs or source.inputs):
+                require(slot, "image_input")
+            if _node_requires_structured_output(source, node):
+                require(slot, "structured_output")
+
         if (
-            _uses_image_model(source)
-            and not self._model_for(project_id, agent_id, IMAGE_BINDING_SLOT).configured
+            self._source_requires_model(project_id, source)
+            and not source.is_loop
+            and not model_nodes
         ):
-            raise RuntimeError(
-                "image_model_not_configured",
-                "Bind an image generation model to this Agent before running it",
+            # Model-recipe Components currently use the effective primary role.
+            require(RUNTIME_BINDING_SLOT, "text_generation")
+        if _uses_image_model(source):
+            require(IMAGE_BINDING_SLOT, "image_generation")
+        return {slot: tuple(capabilities) for slot, capabilities in gathered.items()}
+
+    def _setup_issue(
+        self,
+        *,
+        code: str,
+        slot: str,
+        requirement: tuple[str, ...],
+        message: str,
+        action: str,
+        agent_id: str,
+        resource_type: str = "model_profile",
+        model_profile_id: str | None = None,
+    ) -> dict[str, Any]:
+        issue: dict[str, Any] = {
+            "code": code,
+            "scope": slot,
+            "resource_type": resource_type,
+            "requirement": list(requirement),
+            "message": message,
+            "action": action,
+            "agent_id": agent_id,
+        }
+        if model_profile_id:
+            issue["model_profile_id"] = model_profile_id
+        return issue
+
+    @staticmethod
+    def _model_setup_action(code: str) -> str:
+        if code in {
+            "runtime_not_configured",
+            "image_model_not_configured",
+            "model_connection_disabled",
+            "model_connection_not_ready",
+        }:
+            return "configure_model"
+        if code in {
+            "model_profile_not_found",
+            "model_profile_disabled",
+            "model_capability_mismatch",
+            "model_capability_unsupported",
+            "model_binding_mismatch",
+        }:
+            return "rebind_model"
+        return "verify_model"
+
+    def _resolve_registry_fallback(
+        self,
+        project_id: str,
+        agent_id: str,
+        slot: str,
+        required: tuple[str, ...],
+    ) -> tuple[Any, RuntimeBinding, Any] | None:
+        """Resolve an unbound role through current, verified Registry profiles.
+
+        An existing RuntimeBinding is handled before reaching this method. This
+        fallback therefore cannot mask a stale, disabled, or incompatible
+        explicit binding. ModelResolver prefers a matching capability default,
+        then uses its deterministic profile ordering.
+        """
+        if self.credentials is None or self.model_registry is None:
+            return None
+        profiles = self.model_registry.list_profiles()
+        defaults = self.model_registry.list_defaults()
+        bindings = self.model_registry.runtime_binding_profiles(project_id, agent_id)
+        requirement = ModelCapabilityRequirement(
+            slot=slot,
+            required=required,
+            reason=(
+                "Runtime model execution requires the declared verified capabilities."
+            ),
+            source="runtime_preflight",
+        )
+        resolution = ModelResolver.resolve(
+            (requirement,),
+            profiles,
+            bindings,
+            defaults,
+            agent_id=agent_id,
+        )[0]
+        profile_id = resolution.selected_model_profile_id
+        if not profile_id:
+            return None
+        profile = self.model_registry.get_profile(profile_id)
+        profile = self.model_registry.resolve_binding(
+            profile.provider_connection_id, profile.provider_model_id
+        )
+        credential = self.credentials.get(profile.provider_connection_id)
+        if credential.readiness != "ready":
+            return None
+        default_roles = {slot, *required}
+        is_default = any(
+            item.role in default_roles and item.model_profile_id == profile_id
+            for item in defaults
+        )
+        binding = RuntimeBinding(
+            project_id=project_id,
+            agent_id=agent_id,
+            slot=slot,
+            credential_id=credential.credential_id,
+            model_id=profile.provider_model_id,
+            source=(
+                "model_registry_default" if is_default else "model_registry_eligible"
+            ),
+            updated_at=profile.updated_at,
+        )
+        return credential, binding, profile
+
+    def _fallback_setup_issue(
+        self,
+        project_id: str,
+        agent_id: str,
+        slot: str,
+        required: tuple[str, ...],
+    ) -> dict[str, Any]:
+        code = (
+            "image_model_not_configured"
+            if slot == IMAGE_BINDING_SLOT
+            else "runtime_not_configured"
+        )
+        action = "configure_model"
+        capability_text = ", ".join(required)
+        message = (
+            f"No currently verified Model Profile satisfies {capability_text}. "
+            "Add or verify a compatible model in Model Settings."
+        )
+        if self.model_registry is not None:
+            profiles = self.model_registry.list_profiles()
+            resolution = ModelResolver.resolve(
+                (
+                    ModelCapabilityRequirement(
+                        slot=slot,
+                        required=required,
+                        reason=(
+                            "Runtime model execution requires the declared "
+                            "verified capabilities."
+                        ),
+                        source="runtime_preflight",
+                    ),
+                ),
+                profiles,
+                self.model_registry.runtime_binding_profiles(project_id, agent_id),
+                self.model_registry.list_defaults(),
+                agent_id=agent_id,
+            )[0]
+            issue = resolution.issue
+            issue_code = getattr(issue, "code", None)
+            if issue_code == "model_capability_unverified":
+                code = issue_code
+                action = "verify_model"
+                message = getattr(issue, "message", message)
+            elif issue_code in {
+                "model_capability_missing",
+                "model_binding_unsupported",
+            }:
+                code = "model_capability_mismatch"
+                action = "rebind_model"
+                message = getattr(issue, "message", message)
+        return self._setup_issue(
+            code=code,
+            slot=slot,
+            requirement=required,
+            message=message,
+            action=action,
+            agent_id=agent_id,
+        )
+
+    def _resolve_model_profile(
+        self,
+        project_id: str,
+        agent_id: str,
+        slot: str,
+        requirement: tuple[str, ...],
+        *,
+        expected_client: RuntimeModelClient | None = None,
+    ) -> tuple[Any | None, dict[str, Any] | None]:
+        if self.credentials is None:
+            return None, self._fallback_setup_issue(
+                project_id, agent_id, slot, requirement
             )
+
+        resolved = self.credentials.effective_credential(project_id, agent_id, slot)
+        binding = self.credentials.effective_binding(project_id, agent_id, slot)
+        if binding is not None and resolved is None:
+            try:
+                credential = self.credentials.get(binding.credential_id)
+            except Exception as exc:
+                code = str(getattr(exc, "code", "model_connection_not_ready"))
+                return None, self._setup_issue(
+                    code=code,
+                    slot=slot,
+                    requirement=requirement,
+                    message=(
+                        "The bound Provider connection is unavailable. Recheck "
+                        "or replace its credential."
+                    ),
+                    action=self._model_setup_action(code),
+                    resource_type="provider_connection",
+                    agent_id=agent_id,
+                )
+            if getattr(credential, "readiness", None) != "ready":
+                code = "model_connection_not_ready"
+                return None, self._setup_issue(
+                    code=code,
+                    slot=slot,
+                    requirement=requirement,
+                    message=(
+                        "The bound Provider connection needs a valid credential "
+                        "before this model can run."
+                    ),
+                    action="configure_model",
+                    resource_type="provider_connection",
+                    agent_id=agent_id,
+                )
+            code = "model_profile_not_found"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=(
+                    "The bound model is not available in the current Model "
+                    "Registry. Select a discovered model profile."
+                ),
+                action="rebind_model",
+                agent_id=agent_id,
+            )
+
+        if binding is None and (
+            resolved is None or resolved[1].source == "user_default"
+        ):
+            try:
+                fallback = self._resolve_registry_fallback(
+                    project_id, agent_id, slot, requirement
+                )
+            except Exception as exc:
+                error_code = getattr(exc, "code", None)
+                if not isinstance(error_code, str):
+                    raise
+                safe_message = getattr(exc, "message", None)
+                if not isinstance(safe_message, str) or not safe_message.strip():
+                    safe_message = "No compatible verified Model Profile is ready."
+                return None, self._setup_issue(
+                    code=error_code,
+                    slot=slot,
+                    requirement=requirement,
+                    message=safe_message,
+                    action=self._model_setup_action(error_code),
+                    agent_id=agent_id,
+                )
+            if fallback is None:
+                return None, self._fallback_setup_issue(
+                    project_id, agent_id, slot, requirement
+                )
+            resolved = (fallback[0], fallback[1])
+
+        if resolved is None:
+            code = (
+                "image_model_not_configured"
+                if slot == IMAGE_BINDING_SLOT
+                else "runtime_not_configured"
+            )
+            message = (
+                "Bind a verified image-generation model before running this Agent."
+                if slot == IMAGE_BINDING_SLOT
+                else "Bind a verified Runtime model before running this Agent."
+            )
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=message,
+                action="configure_model",
+                resource_type="provider_connection",
+                agent_id=agent_id,
+            )
+
+        credential, binding = resolved
+        if getattr(credential, "readiness", None) != "ready":
+            code = "model_connection_not_ready"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=(
+                    "The bound Provider connection needs a valid credential "
+                    "before this model can run."
+                ),
+                action="configure_model",
+                resource_type="provider_connection",
+                agent_id=agent_id,
+            )
+        if self.model_registry is None:
+            code = "model_registry_unavailable"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=(
+                    "The current Model Registry is unavailable, so this model's "
+                    "capabilities cannot be verified."
+                ),
+                action="verify_model",
+                agent_id=agent_id,
+            )
+
+        try:
+            profile = self.model_registry.resolve_binding(
+                credential.credential_id, binding.model_id
+            )
+        except Exception as exc:
+            error_code = getattr(exc, "code", None)
+            if not isinstance(error_code, str):
+                raise
+            code = (
+                "model_capability_mismatch"
+                if error_code == "model_capability_unsupported"
+                else error_code
+            )
+            safe_message = getattr(exc, "message", None)
+            if not isinstance(safe_message, str) or not safe_message.strip():
+                safe_message = (
+                    "The selected model profile is not ready for this Runtime binding."
+                )
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=safe_message,
+                action=self._model_setup_action(code),
+                agent_id=agent_id,
+            )
+
+        profile_id = getattr(profile, "model_profile_id", None)
+        profile_model_id = getattr(profile, "provider_model_id", None)
+        if profile_model_id != binding.model_id:
+            code = "model_binding_mismatch"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=(
+                    "The Registry profile does not match the model id in this "
+                    "Runtime binding. Rebind a discovered profile."
+                ),
+                action="rebind_model",
+                agent_id=agent_id,
+                model_profile_id=profile_id if isinstance(profile_id, str) else None,
+            )
+        if getattr(profile, "enabled", False) is not True:
+            code = "model_profile_disabled"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message="This Model Profile is disabled. Select an enabled profile.",
+                action="rebind_model",
+                agent_id=agent_id,
+                model_profile_id=profile_id if isinstance(profile_id, str) else None,
+            )
+        if getattr(profile, "connection_readiness", None) != "ready":
+            code = "model_connection_not_ready"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=(
+                    "The Provider connection for this Model Profile is no longer ready."
+                ),
+                action="configure_model",
+                resource_type="provider_connection",
+                agent_id=agent_id,
+                model_profile_id=profile_id if isinstance(profile_id, str) else None,
+            )
+        if getattr(profile, "registry_ready", False) is not True:
+            code = "model_profile_stale"
+            return None, self._setup_issue(
+                code=code,
+                slot=slot,
+                requirement=requirement,
+                message=(
+                    "This Model Profile needs a current capability verification "
+                    "before Runtime use."
+                ),
+                action="verify_model",
+                agent_id=agent_id,
+                model_profile_id=profile_id if isinstance(profile_id, str) else None,
+            )
+
+        if expected_client is not None:
+            expected = (
+                credential.provider_type,
+                credential.base_url.rstrip("/"),
+                binding.model_id,
+                self.credentials.secret_ref(credential.credential_id),
+            )
+            actual = (
+                expected_client.settings.provider_type,
+                expected_client.settings.model_base_url.rstrip("/"),
+                expected_client.settings.model_id,
+                getattr(expected_client, "_secret_ref", None),
+            )
+            if actual != expected:
+                code = "model_binding_mismatch"
+                return None, self._setup_issue(
+                    code=code,
+                    slot=slot,
+                    requirement=requirement,
+                    message=(
+                        "The Runtime client no longer matches the verified "
+                        "Provider, model, endpoint, and credential binding."
+                    ),
+                    action="rebind_model",
+                    agent_id=agent_id,
+                    model_profile_id=profile_id
+                    if isinstance(profile_id, str)
+                    else None,
+                )
+        return profile, None
+
+    def _runtime_model_setup_issues(
+        self,
+        project_id: str,
+        agent_id: str,
+        requirements: dict[str, tuple[str, ...]],
+        *,
+        expected_clients: dict[str, RuntimeModelClient] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        issues: list[dict[str, Any]] = []
+        profiles: dict[str, Any] = {}
+        for slot, required in requirements.items():
+            profile, issue = self._resolve_model_profile(
+                project_id,
+                agent_id,
+                slot,
+                required,
+                expected_client=(expected_clients or {}).get(slot),
+            )
+            if issue is not None:
+                issues.append(issue)
+                continue
+            assert profile is not None
+            profiles[slot] = profile
+            capability_map = getattr(profile, "capabilities", {})
+            for capability_name in required:
+                capability = capability_map.get(capability_name)
+                status = getattr(capability, "status", None)
+                status = getattr(status, "value", status)
+                evidence = getattr(capability, "evidence", None)
+                evidence_source = getattr(evidence, "source", None)
+                evidence_source = getattr(evidence_source, "value", evidence_source)
+                if status == "unsupported":
+                    code = "model_capability_mismatch"
+                    message = (
+                        "The selected Model Profile does not support required "
+                        f"capability '{capability_name}'."
+                    )
+                    action = "rebind_model"
+                elif (
+                    status != "supported"
+                    or evidence is None
+                    or evidence_source
+                    not in {"provider_metadata", "provider_adapter", "active_probe"}
+                ):
+                    code = "model_capability_unverified"
+                    message = (
+                        f"Required capability '{capability_name}' has no current "
+                        "verified evidence on this Model Profile."
+                    )
+                    action = "verify_model"
+                else:
+                    continue
+                issues.append(
+                    self._setup_issue(
+                        code=code,
+                        slot=slot,
+                        requirement=(capability_name,),
+                        message=message,
+                        action=action,
+                        agent_id=agent_id,
+                        model_profile_id=getattr(profile, "model_profile_id", None),
+                    )
+                )
+        return issues, profiles
+
+    def _require_bound_model_capabilities(
+        self,
+        project_id: str,
+        agent_id: str,
+        slot: str,
+        model: RuntimeModelClient,
+        capabilities: tuple[str, ...],
+    ) -> Any:
+        issues, profiles = self._runtime_model_setup_issues(
+            project_id,
+            agent_id,
+            {slot: capabilities},
+            expected_clients={slot: model},
+        )
+        if issues:
+            raise RuntimeError(issues[0]["code"], issues[0]["message"])
+        return profiles[slot]
+
+    def _runtime_model_capabilities_for_slot(
+        self,
+        project_id: str,
+        agent_id: str,
+        slot: str,
+        model: RuntimeModelClient,
+        requirements: tuple[str, ...],
+    ) -> RuntimeModelCapabilities:
+        profile = self._require_bound_model_capabilities(
+            project_id, agent_id, slot, model, requirements
+        )
+        return runtime_model_capabilities(model.settings, profile=profile)
 
     def components(self) -> dict[str, Any]:
         from veyra_agent_platform.local.components import component_registry
@@ -1071,6 +1729,7 @@ class RuntimeService(AgentLoopRuntime):
         *,
         checkpoint_id: str | None = None,
         comment: str | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         self.library._agent_in_project(project_id, agent_id)
@@ -1081,7 +1740,7 @@ class RuntimeService(AgentLoopRuntime):
             or row["project_id"] != project_id
         ):
             raise ProjectError("unknown Agent run")
-        if command not in {"approve", "reject", "stop", "resume", "retry"}:
+        if command not in {"approve", "reject", "stop", "resume", "retry", "reply"}:
             raise RuntimeError("command_invalid", "Unsupported run command")
         note = (comment or "").strip()
         if note and command not in {"approve", "reject"}:
@@ -1094,7 +1753,21 @@ class RuntimeService(AgentLoopRuntime):
                 f"Approval comments are limited to {_MAX_COMMENT_CHARS} characters",
             )
         scope = f"run-command:{run_id}"
-        digest = sha256_digest({"command": command})
+        if inputs is not None and command != "reply":
+            raise RuntimeError("command_invalid", "Only Reply accepts inputs")
+        if command == "reply" and (
+            not isinstance(inputs, dict)
+            or set(inputs) != {"reply"}
+            or not isinstance(inputs["reply"], str)
+            or not inputs["reply"].strip()
+            or len(inputs["reply"]) > 8_000
+        ):
+            raise RuntimeError(
+                "inputs_invalid", "Reply must contain a non-empty reply string"
+            )
+        digest = sha256_digest(
+            {"command": command, **({"inputs": inputs} if inputs is not None else {})}
+        )
         if note:
             digest = sha256_digest({"command": command, "comment": note})
         if checkpoint_id is not None:
@@ -1129,6 +1802,9 @@ class RuntimeService(AgentLoopRuntime):
             row,
             decision="approved" if command == "approve" else "rejected",
             comment=note,
+            input_reply=inputs["reply"]
+            if command == "reply" and inputs is not None
+            else None,
             scope=scope,
             idempotency_key=idempotency_key,
             digest=digest,
@@ -1337,7 +2013,15 @@ class RuntimeService(AgentLoopRuntime):
                 connection,
                 run_id,
                 [
-                    (pause.node_id, "node.waiting", {"reason": "approval"}),
+                    (
+                        pause.node_id,
+                        "node.waiting",
+                        {
+                            "reason": "input"
+                            if (pause.details or {}).get("kind") == "input"
+                            else "approval"
+                        },
+                    ),
                     (pause.node_id, "approval.requested", requested),
                     (
                         pause.node_id,
@@ -1402,7 +2086,13 @@ class RuntimeService(AgentLoopRuntime):
         project = self.repository.project(project_id)
         if project is None:
             raise RuntimeError("project_invalid", "Project is unavailable")
-        model = self._model_for(project_id, source.agent_id)
+        requirements = self._runtime_model_requirements(project_id, source)
+        model = self._model_for(
+            project_id,
+            source.agent_id,
+            RUNTIME_BINDING_SLOT,
+            required_capabilities=requirements.get(RUNTIME_BINDING_SLOT),
+        )
         return {
             "source_hash": source.source_hash,
             "permissions": source.permissions.to_dict(),
@@ -1880,6 +2570,7 @@ class RuntimeService(AgentLoopRuntime):
         idempotency_key: str,
         digest: str,
         comment: str = "",
+        input_reply: str | None = None,
     ) -> dict[str, Any]:
         if row["status"] != "waiting":
             raise RuntimeError(
@@ -1907,13 +2598,27 @@ class RuntimeService(AgentLoopRuntime):
                     "command_not_applicable", "No pending approval checkpoint"
                 )
             version = connection.execute(
-                "SELECT source_json FROM agent_versions WHERE version_id = ?",
+                "SELECT * FROM agent_versions WHERE version_id = ?",
                 (row["version_id"],),
             ).fetchone()
             if version is None:
                 raise RuntimeError("version_missing", "Agent version is unavailable")
             source = AgentSource.from_dict(json.loads(version["source_json"]))
+            if source.source_hash != version["source_hash"]:
+                raise RuntimeError(
+                    "agent_version_invalid",
+                    "The recorded Agent version failed integrity checks",
+                )
             values = json.loads(checkpoint["values_json"])
+            loop_state = values.get("$agent_loop") or {}
+            awaiting_input = source.is_loop and bool(loop_state.get("pending_input"))
+            if awaiting_input != (input_reply is not None):
+                raise RuntimeError(
+                    "command_not_applicable",
+                    "Use Reply for user input and approval commands for tool approval",
+                )
+            if awaiting_input:
+                values["$agent_reply"] = input_reply
             if (
                 decision == "rejected"
                 and (written := source.outputs.get("written")) is not None
@@ -1971,8 +2676,15 @@ class RuntimeService(AgentLoopRuntime):
                 connection,
                 command_id=command_id,
                 run_id=row["run_id"],
-                command_type="approve" if decision == "approved" else "reject",
-                payload={"decision": decision, "comment": comment},
+                command_type="reply"
+                if awaiting_input
+                else "approve"
+                if decision == "approved"
+                else "reject",
+                payload={
+                    "decision": "replied" if awaiting_input else decision,
+                    "comment": comment,
+                },
                 status="accepted",
                 created_at=now,
             )
@@ -1983,7 +2695,10 @@ class RuntimeService(AgentLoopRuntime):
                 command_id=command_id,
                 resolved_at=now,
             )
-            resolved_payload: dict[str, Any] = {"decision": decision}
+            resolved_payload: dict[str, Any] = {
+                "decision": "replied" if awaiting_input else decision,
+                **({"kind": "input"} if awaiting_input else {}),
+            }
             if comment:
                 resolved_payload["comment"] = comment
             if exhausted:
@@ -2111,7 +2826,14 @@ class RuntimeService(AgentLoopRuntime):
                 run_id,
                 source,
                 inputs,
-                self._model_for(project_id, source.agent_id),
+                self._model_for(
+                    project_id,
+                    source.agent_id,
+                    RUNTIME_BINDING_SLOT,
+                    required_capabilities=self._runtime_model_requirements(
+                        project_id, source
+                    ).get(RUNTIME_BINDING_SLOT),
+                ),
                 start_node=start_node,
                 approved=approved,
                 conversation_context=conversation_context,
@@ -2410,19 +3132,17 @@ class RuntimeService(AgentLoopRuntime):
             }
             if node.component_type in {ComponentType.AGENT, ComponentType.MODEL}:
                 node_model = self._model_for_node(project_id, source, node)
-                slot = MODEL_REF_SLOTS.get(node.model_ref or "", RUNTIME_BINDING_SLOT)
+                slot = self._model_slot_for_node(project_id, source, node)
+                required = self._runtime_model_requirements(project_id, source).get(
+                    slot, ("text_generation",)
+                )
                 start_payload.update(
                     self._model_evidence(
                         project_id,
                         source.agent_id,
                         node_model,
-                        node_binding_slot(node.id)
-                        if self.credentials is not None
-                        and self.credentials.binding(
-                            project_id, source.agent_id, node_binding_slot(node.id)
-                        )
-                        is not None
-                        else slot,
+                        slot,
+                        required_capabilities=required,
                     )
                 )
             emit(node.id, "node.started", start_payload)
@@ -2646,17 +3366,20 @@ class RuntimeService(AgentLoopRuntime):
                     def emit_model_delta(token: str, node_id: str = node.id) -> None:
                         emit(node_id, "model.delta", {"delta": token})
 
+                    model_slot = self._model_slot_for_node(project_id, source, node)
+                    node_model = self._model_for_node(project_id, source, node)
                     produced_values = self._run_agent(
                         project_id,
                         node,
                         source,
                         self._typed_node_values(store, node, values),
-                        self._model_for_node(project_id, source, node),
+                        node_model,
                         context_text,
                         conversation_context,
                         on_token=emit_model_delta,
                         run_id=run_id,
                         emit=emit,
+                        model_slot=model_slot,
                     )
                     values.update(produced_values)
                     if store is not None:
@@ -2796,6 +3519,8 @@ class RuntimeService(AgentLoopRuntime):
         return mapped
 
     def _source_requires_model(self, project_id: str, source: AgentSource) -> bool:
+        if source.is_loop:
+            return True
         for node in source.nodes:
             if (
                 node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
@@ -3123,6 +3848,7 @@ class RuntimeService(AgentLoopRuntime):
         *,
         run_id: str | None = None,
         emit: Callable[[str | None, str, dict[str, Any]], None] | None = None,
+        model_slot: str = RUNTIME_BINDING_SLOT,
     ) -> dict[str, Any]:
         if node.model_ref == IMAGE_MODEL_REF:
             return self._run_image_model(project_id, run_id, node, source, values, emit)
@@ -3153,7 +3879,18 @@ class RuntimeService(AgentLoopRuntime):
             response_format = (
                 _runtime_response_format(source.outputs) if emits_outputs else None
             )
-        capabilities = runtime_model_capabilities(model.settings)
+        required_capabilities = ["text_generation"]
+        if _fields_include_image(node.inputs or source.inputs):
+            required_capabilities.append("image_input")
+        if response_format is not None:
+            required_capabilities.append("structured_output")
+        capabilities = self._runtime_model_capabilities_for_slot(
+            project_id,
+            source.agent_id,
+            model_slot,
+            model,
+            tuple(required_capabilities),
+        )
         user_content: Any = self._model_user_content(
             project_id,
             source,
@@ -3176,6 +3913,13 @@ class RuntimeService(AgentLoopRuntime):
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
         ]
+        self._require_bound_model_capabilities(
+            project_id,
+            source.agent_id,
+            model_slot,
+            model,
+            tuple(required_capabilities),
+        )
         content = _stream_model_text(model, messages, response_format, on_token)
         if not emits_outputs:
             return {node.id: content}
@@ -3369,15 +4113,33 @@ class RuntimeService(AgentLoopRuntime):
         if not prompt:
             raise RuntimeError("image_step_invalid", "The image prompt is empty")
         client = self._model_for(project_id, source.agent_id, IMAGE_BINDING_SLOT)
-        if not client.configured:
-            raise RuntimeError(
-                "image_model_not_configured",
-                "Bind an image generation model to this Agent before running it",
-            )
+        self._require_bound_model_capabilities(
+            project_id,
+            source.agent_id,
+            IMAGE_BINDING_SLOT,
+            client,
+            ("image_generation",),
+        )
         count = 2 if field.multiple else 1
         generated: list[GeneratedImage] = []
         try:
             while len(generated) < count:
+                # Bindings, credentials, and verified capability snapshots can
+                # change during a long-running Agent. Recheck the exact client
+                # immediately before every Provider generation request.
+                self._require_bound_model_capabilities(
+                    project_id,
+                    source.agent_id,
+                    IMAGE_BINDING_SLOT,
+                    client,
+                    ("image_generation",),
+                )
+                if not client.configured:
+                    raise RuntimeError(
+                        "model_connection_not_ready",
+                        "The image-generation Provider credential is no longer "
+                        "available.",
+                    )
                 batch = client.generate_images(prompt, count=count - len(generated))
                 if not batch:
                     break
@@ -3533,30 +4295,59 @@ class RuntimeService(AgentLoopRuntime):
     def _model_for_node(
         self, project_id: str, source: AgentSource, node: FlowNode
     ) -> RuntimeModelClient:
-        slots = [
-            node_binding_slot(node.id),
-            MODEL_REF_SLOTS.get(node.model_ref or "", RUNTIME_BINDING_SLOT),
-        ]
+        slot = self._model_slot_for_node(project_id, source, node)
+        requirements = self._runtime_model_requirements(project_id, source)
+        return self._model_for(
+            project_id,
+            source.agent_id,
+            slot,
+            required_capabilities=requirements.get(slot, ("text_generation",)),
+        )
+
+    def _model_slot_for_node(
+        self, project_id: str, source: AgentSource, node: FlowNode
+    ) -> str:
         if node.model_ref == IMAGE_MODEL_REF:
-            slots.append(IMAGE_BINDING_SLOT)
-        slots.append(RUNTIME_BINDING_SLOT)
-        seen: set[str] = set()
-        last = self._model_for(project_id, source.agent_id, RUNTIME_BINDING_SLOT)
-        for slot in slots:
-            if slot in seen:
-                continue
-            seen.add(slot)
-            client = self._model_for(project_id, source.agent_id, slot)
-            last = client
-            if client.configured:
-                return client
-        return last
+            return IMAGE_BINDING_SLOT
+        node_slot = node_binding_slot(node.id)
+        if self.credentials is not None and (
+            self.credentials.binding(project_id, source.agent_id, node_slot) is not None
+            or self.credentials.binding(project_id, None, node_slot) is not None
+        ):
+            return node_slot
+        return MODEL_REF_SLOTS.get(node.model_ref or "", RUNTIME_BINDING_SLOT)
 
     def _model_for(
-        self, project_id: str, agent_id: str, slot: str = RUNTIME_BINDING_SLOT
+        self,
+        project_id: str,
+        agent_id: str,
+        slot: str = RUNTIME_BINDING_SLOT,
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
     ) -> RuntimeModelClient:
         if self.credentials is not None:
             resolved = self.credentials.effective_credential(project_id, agent_id, slot)
+            explicit_binding = self.credentials.effective_binding(
+                project_id, agent_id, slot
+            )
+            required = required_capabilities or (
+                ("image_generation",)
+                if slot == IMAGE_BINDING_SLOT
+                else ("text_generation",)
+            )
+            if explicit_binding is None and (
+                resolved is None or resolved[1].source == "user_default"
+            ):
+                try:
+                    fallback = self._resolve_registry_fallback(
+                        project_id, agent_id, slot, required
+                    )
+                except Exception as exc:
+                    if not isinstance(getattr(exc, "code", None), str):
+                        raise
+                    fallback = None
+                if fallback is not None:
+                    resolved = (fallback[0], fallback[1])
             if resolved is not None:
                 credential, binding = resolved
                 settings = self.model.settings.model_copy(
@@ -3595,23 +4386,83 @@ class RuntimeService(AgentLoopRuntime):
         agent_id: str,
         model: RuntimeModelClient,
         slot: str = RUNTIME_BINDING_SLOT,
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
     ) -> dict[str, str]:
         if self.credentials is not None:
+            requirements = required_capabilities or (
+                ("image_generation",)
+                if slot == IMAGE_BINDING_SLOT
+                else ("text_generation",)
+            )
+            registry = self.model_registry
+            profile, profile_issue = self._resolve_model_profile(
+                project_id, agent_id, slot, requirements, expected_client=model
+            )
+            if profile is not None and profile_issue is None and registry is not None:
+                credential = self.credentials.get(profile.provider_connection_id)
+                resolved = self.credentials.effective_credential(
+                    project_id, agent_id, slot
+                )
+                evidence = {
+                    "provider": credential.provider_type,
+                    "model": profile.provider_model_id,
+                    "credential_type": "user",
+                    "credential_alias": credential.label,
+                    "credential_scope": credential.credential_scope,
+                    "model_profile_id": profile.model_profile_id,
+                    "capability_revision": str(profile.capability_revision),
+                    "capability_digest": profile.capability_digest,
+                }
+                bound = self.credentials.effective_binding(project_id, agent_id, slot)
+                if bound is not None:
+                    evidence["binding_source"] = bound.source
+                elif resolved is not None:
+                    evidence["binding_source"] = resolved[1].source
+                else:
+                    default_roles = {slot, *requirements}
+                    defaults = registry.list_defaults()
+                    evidence["binding_source"] = (
+                        "model_registry_default"
+                        if any(
+                            item.role in default_roles
+                            and item.model_profile_id == profile.model_profile_id
+                            for item in defaults
+                        )
+                        else "model_registry_eligible"
+                    )
+                return evidence
             resolved = self.credentials.effective_credential(project_id, agent_id, slot)
             if resolved is not None:
                 credential, binding = resolved
-                return {
+                evidence = {
                     "provider": credential.provider_type,
                     "model": binding.model_id,
                     "credential_type": "user",
                     "credential_alias": credential.label,
                     "credential_scope": credential.credential_scope,
                 }
+                return evidence
         return {
             "provider": model.settings.provider_type,
             "model": model.settings.model_id,
             "credential_type": "test" if model.transport is not None else "unbound",
         }
+
+    def _image_model_evidence(self, project_id: str, agent_id: str) -> dict[str, str]:
+        model = self._model_for(
+            project_id,
+            agent_id,
+            IMAGE_BINDING_SLOT,
+            required_capabilities=("image_generation",),
+        )
+        return self._model_evidence(
+            project_id,
+            agent_id,
+            model,
+            IMAGE_BINDING_SLOT,
+            required_capabilities=("image_generation",),
+        )
 
     def _agent_system_prompt(self, node: Any, source: AgentSource) -> str:
         prompt = node.system_prompt or ""
@@ -3674,7 +4525,25 @@ def _json_safe_payload(value: Any) -> Any:
     return value
 
 
+def _fields_include_image(fields: Mapping[str, TypedField]) -> bool:
+    return any(
+        field.is_artifact() and field.artifact_kind == "image"
+        for field in fields.values()
+    )
+
+
+def _node_requires_structured_output(source: AgentSource, node: FlowNode) -> bool:
+    if node.outputs:
+        return _plain_text_field(node.outputs) is None
+    return (
+        _model_writes_agent_outputs(source, node.id)
+        and _runtime_response_format(source.outputs) is not None
+    )
+
+
 def _uses_image_model(source: AgentSource) -> bool:
+    if source.is_loop and loop_image_outputs(source):
+        return True
     return any(
         node.component_type in {ComponentType.AGENT, ComponentType.MODEL}
         and node.model_ref == IMAGE_MODEL_REF
@@ -3706,17 +4575,24 @@ def _runtime_modality_readiness(
             "code": "unsupported_modality",
             "detail": "Audio/video runtime adapters are not enabled",
         }
-    if "image" in kinds and requires_model and modalities.image_input == "unsupported":
+    if "image" in kinds and requires_model and modalities.image_input != "supported":
+        unknown = modalities.image_input == "unknown"
         return {
             "ready": False,
-            "code": "runtime_model_incompatible",
-            "detail": "Runtime model does not support image input",
+            "code": (
+                "model_capability_unknown" if unknown else "runtime_model_incompatible"
+            ),
+            "detail": (
+                "Runtime model image-input capability has not been verified."
+                if unknown
+                else "Runtime model does not support image input"
+            ),
         }
     if "image" in kinds and requires_model:
         return {
             "ready": True,
             "code": "ready",
-            "detail": "Runtime model accepts image input.",
+            "detail": "Runtime model has verified image-input capability.",
         }
     return {
         "ready": True,
@@ -3745,11 +4621,16 @@ def _agent_user_content(
             return
         if len(image_parts) >= _MAX_PROMPT_IMAGES:
             return
-        if capabilities.image_input == "unsupported":
+        if capabilities.image_input != "supported":
             if required:
+                unknown = capabilities.image_input == "unknown"
                 raise RuntimeError(
-                    "runtime_model_incompatible",
-                    "Runtime model does not support image input",
+                    "model_capability_unknown"
+                    if unknown
+                    else "runtime_model_incompatible",
+                    "Runtime model image-input capability has not been verified."
+                    if unknown
+                    else "Runtime model does not support image input",
                 )
             return
         seen.add(artifact_id)
@@ -4292,7 +5173,7 @@ def _check(check: str, values: dict[str, Any]) -> bool:
         return isinstance(result, dict)
     if check.startswith("required_fields:"):
         name = check.split(":", 1)[1]
-        return name in values and values[name] not in {None, "", []}
+        return name in values and values[name] not in (None, "", [])
     if check.startswith("artifact_exists:"):
         name = check.split(":", 1)[1]
         return bool(values.get(name))

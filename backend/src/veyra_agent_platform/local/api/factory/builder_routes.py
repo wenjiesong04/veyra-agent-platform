@@ -320,12 +320,19 @@ def _turn_stream(
     def preview(text: str) -> None:
         outgoing.put(("preview", {"text": text}))
 
+    def publish_snapshot(snapshot: dict[str, Any]) -> None:
+        outgoing.put(("snapshot", snapshot))
+
     def worker() -> None:
         try:
-            snapshot = _conversations(request).turn(
-                project_id, payload, on_event=emit, on_preview=preview
+            final_snapshot = _conversations(request).turn(
+                project_id,
+                payload,
+                on_event=emit,
+                on_preview=preview,
+                on_snapshot=publish_snapshot,
             )
-            outgoing.put(("snapshot", snapshot))
+            outgoing.put(("snapshot", final_snapshot))
         except Exception as exc:
             outgoing.put(("error", exc))
         finally:

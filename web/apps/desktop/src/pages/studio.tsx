@@ -102,6 +102,13 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   }, [api, projectId, agentId, workflowId, isWorkflow, locale, adoptDraft]);
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
+    if (isWorkflow && workflowId && api.listWorkflowVersions) {
+      let active = true;
+      void api.listWorkflowVersions(projectId, workflowId).then((response) => {
+        if (active) setHasCommittedVersion(response.versions.some((version) => version.committed === true));
+      }).catch(() => { if (active) setHasCommittedVersion(false); });
+      return () => { active = false; };
+    }
     if (!agentId || !api.listAgentVersions) {
       setHasCommittedVersion(false);
       return;
@@ -111,7 +118,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
       if (active) setHasCommittedVersion(committedVersions(response.versions).length > 0);
     }).catch(() => { if (active) setHasCommittedVersion(false); });
     return () => { active = false; };
-  }, [api, projectId, agentId]);
+  }, [api, projectId, agentId, workflowId, isWorkflow]);
   React.useEffect(() => {
     let active = true;
     if (api.listProjectResources) {
@@ -225,7 +232,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
               onLoadDisk={() => void loadDiskVersion()}
             />
           ) : null}
-          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{viewLabel(item)}</span></button>)}</div><div className="studio-toolbar-end">{!isWorkflow && agentId ? (hasCommittedVersion ? <LinkButton href={projectRoutePaths.agent(projectId, agentId)} icon={Play} variant="secondary">{copy.openApp}</LinkButton> : <Button icon={Play} disabled title={copy.commitFirst}>{copy.openApp}</Button>) : null}{view === "canvas" ? <><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</> : null}</div></div>
+          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{viewLabel(item)}</span></button>)}</div><div className="studio-toolbar-end">{agentId || workflowId ? (hasCommittedVersion ? <LinkButton href={isWorkflow && workflowId ? projectRoutePaths.workflowRun(projectId, workflowId) : projectRoutePaths.agent(projectId, agentId ?? "")} icon={Play} variant="secondary">{copy.openApp}</LinkButton> : <Button icon={Play} disabled title={copy.commitFirst}>{copy.openApp}</Button>) : null}{view === "canvas" ? <><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</> : null}</div></div>
           <StudioStage view={view}>
             {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} onBufferValidity={bufferValidity} /> : <SourceView source={source} onChange={updateSource} onBufferValidity={bufferValidity} />}
             {isWorkflow && workflowId && source.component_type === "Workflow" ? <StudioRunDock locale={locale}><WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}
@@ -339,7 +346,7 @@ function graphDiagnosticText(diagnostic: GraphDiagnostic, locale: "zh" | "en"): 
     case "agent_ref_invalid": return zh ? `${p.nodeId} 还没有绑定已提交的 Agent 版本。请在右侧选择 Agent；如果版本列表是空的，先打开该 Agent 提交一次。草稿不能拿来调用。` : `${p.nodeId} is not bound to a committed Agent version. Pick an Agent in the inspector; if the version list is empty, open that Agent and commit a version first. Drafts cannot be called.`;
     case "agent_version_unavailable": return zh ? `${p.nodeId} 引用的版本不可用。` : `${p.nodeId} references an unavailable version.`;
     case "agent_lock_mismatch": return zh ? `${p.nodeId} 的版本依赖锁不匹配。` : `${p.nodeId} has a mismatched version lock.`;
-    case "agent_mapping_invalid": return zh ? `${p.nodeId} 还要把 Agent 参数接到工作流变量。右侧把例如 request 选成 prompt。名字可以不一样。` : `${p.nodeId} still needs Agent parameters connected to Workflow values. In the inspector, map e.g. request to prompt. Names do not have to match.`;
+    case "agent_mapping_invalid": return zh ? `${p.nodeId} 的 Agent 输入或输出映射无效。请在右侧检查每个字段是否接到存在的工作流变量。` : `${p.nodeId} has an invalid Agent input or output mapping. In the inspector, connect each field to an existing Workflow value.`;
     case "start_count": return zh ? "必须且只能有一个输入节点。" : "Exactly one Start node is required.";
     case "output_missing": return zh ? "必须有一个 Output 节点。" : "An Output node is required.";
     case "output_declaration": return zh ? "每个 Output 节点都必须匹配一个已声明的输出。" : "Every Output node must match one declared output.";

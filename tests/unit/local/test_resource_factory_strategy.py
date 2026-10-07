@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from veyra_agent_platform.contracts.capability import CapabilityRequirement
 from veyra_agent_platform.local.resources.factory_strategy import (
     classify_factory_strategy,
@@ -22,6 +24,31 @@ def test_evaluation_method_is_not_false_positive_eval() -> None:
     strategy = classify_factory_strategy(_need("evaluation_method"))
     assert strategy.status == "generatable"
     assert strategy.generation_strategy == "skill_instruction"
+
+
+@pytest.mark.parametrize(
+    "capability", ["booking_agent", "invoice_reconciliation", "email_delivery"]
+)
+def test_unknown_capability_is_not_automatically_an_instruction_skill(
+    capability: str,
+) -> None:
+    strategy = classify_factory_strategy(_need(capability))
+    assert strategy.status == "unsupported"
+    assert strategy.can_generate is False
+    assert strategy.generation_strategy == "none"
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [{"side_effect": "write"}, {"network": "required"}, {"filesystem": "read"}],
+)
+def test_method_name_cannot_supply_an_effect_or_data_access(effect: dict) -> None:
+    strategy = classify_factory_strategy(
+        CapabilityRequirement(capability="reservation_method", **effect)
+    )
+    assert strategy.status == "unsupported"
+    assert strategy.can_generate is False
+    assert strategy.resource_kind is None
 
 
 def test_http_lookup_needs_host_configuration() -> None:

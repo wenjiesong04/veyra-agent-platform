@@ -13,7 +13,9 @@ from veyra_agent_platform.local.resources import ResourceCatalog
 from .prompt import BUILDER_SYSTEM_PROMPT, RUNNABLE_AGENT_PRIMITIVES
 
 MAX_CONTEXT_BYTES = 400_000
-BuilderMode = Literal["interview", "create_agent", "edit_source", "resolve_intent"]
+BuilderMode = Literal[
+    "interview", "create_agent", "edit_source", "resolve_intent", "plan_task"
+]
 ContextCategory = Literal[
     "conversation_recent_messages",
     "project_agents_metadata",
@@ -122,13 +124,37 @@ class BuilderHarness:
                     for row in versions(identity)
                 ]
         resources = self.catalog.factory_snapshot()
+        if mode == "plan_task":
+            # Task planning needs capability truth, not legacy graph node specs.
+            resources = [
+                item
+                for item in resources
+                if item["kind"] in {"tool", "mcp_tool", "skill", "policy"}
+            ]
         for resource in resources:
             descriptor = self.catalog.by_reference(resource["reference"])
             resource.update(
                 content_hash=descriptor["content_hash"],
                 origin=descriptor["origin"],
                 factory_selectable=descriptor["factory_selectable"],
+                capabilities=list(descriptor.get("capabilities") or ()),
             )
+            if mode == "plan_task":
+                spec = resource.get("spec") or {}
+                resource["spec"] = {
+                    key: spec[key]
+                    for key in (
+                        "adapter",
+                        "input_schema",
+                        "input_constraints",
+                        "output_schema",
+                        "approval_required",
+                        "input_json_schema",
+                        "output_json_schema",
+                        "schema_status",
+                    )
+                    if key in spec
+                }
         context = {
             "scope": "project" if target is None else target["kind"],
             "operation": mode,
@@ -153,6 +179,22 @@ class BuilderHarness:
             ],
             "target": target,
             "conversation": conversation,
+            "runtime_contract": {
+                "agent": {
+                    "execution": "bounded_model_tool_loop",
+                    "actions": ["tool", "ask_user", "final"],
+                    "images": "render_after_final",
+                    "context": "durable_messages_and_replies_within_one_run",
+                    "cross_run_entities": "require_explicit_state_tools_and_identity",
+                },
+                "workflow": {
+                    "execution": "DAG",
+                    "cycles": "unsupported",
+                    "human_input": "typed_reply",
+                },
+                "skills": "pinned_instructions_do_not_grant_permissions",
+                "policies": "partial_enforcement_only",
+            },
             "authority": {
                 "writes": "explicit_confirmation_only",
                 "file_contents": "not_loaded",
@@ -181,6 +223,73 @@ class BuilderHarness:
         )
         encoded = json.dumps(context, ensure_ascii=False)
         contract = {
+            "plan_task": (
+                "Return only TaskStructureV1 JSON matching the supplied schema: "
+                + json.dumps(schema, ensure_ascii=False)
+                + ". Preserve every user requirement, constraints and success "
+                "criteria. Understand semantic duties instead of matching "
+                "occupations or keywords. actors contains autonomous AI roles "
+                "only, never the user, approver or a Tool. "
+                "Use concise user-facing role labels in the user's language. "
+                "Declare actual user inputs and final outputs; "
+                "files use typed document/file/image "
+                "fields, not an empty array or a generic request/result substitute. "
+                "Capability names come from each resource's capabilities array, "
+                "not its reference/name. "
+                "When the task requires arithmetic, totals, amounts or numeric "
+                "comparisons, select the supplied arithmetic Tool capability "
+                "and require computed evidence instead of model mental math. "
+                "Describe explicit ordered stages and actor input/output contracts. "
+                "Bind inputs using input.name or "
+                "stage_id.output_port; ordering alone never transfers data. Each "
+                "execution boundary must refer to its actual stage. Human decisions "
+                "use human_input with typed expected_schema or human_approval; "
+                "skills are procedures, tools are permitted capabilities. Use only "
+                "supplied available capabilities, report missing capabilities and "
+                "uncertainty. Never invent refs, permissions, credentials or "
+                "immutable versions. The server decides Agent versus Workflow. A "
+                "single autonomous role may use multiple tools; do not split Agents "
+                "only for different prompt sections. Workflow is a DAG and cannot "
+                "repeat a stage indefinitely. The current Agent loop supports "
+                "tool/final/ask_user actions with durable replies. A single "
+                "interactive role can ask questions inside its loop; represent "
+                "these requested questions/choices with human_input boundaries. "
+                "ask_user and conversation context are native runtime actions, "
+                "not Tool capability names. Use text_generation for a reasoning "
+                "role, plus actual supplied Tool capabilities if needed. "
+                "Repeated choice, modification and confirmation within one task "
+                "use that role's loop, not a cyclic Workflow. Conversation context "
+                "does not need entity tools: lifecycle.persistent=false and "
+                "state=null unless the user needs separately stored records. "
+                "Do not invent cross-session persistence when the user only asks "
+                "to continue the current task. Model binding/configuration is "
+                "resolved by the server after planning; it is not uncertainty. "
+                "Cost estimates can be labeled estimates in constraints, without "
+                "inventing a live quotation dependency. uncertainty contains only "
+                "unresolved user requirements that block faithful execution, not "
+                "optional features, caveats or unsupported extras. Deterministic "
+                "Facts that users provide per task (file selection, column names, "
+                "budget, confirmation) belong in inputs or runtime questions, "
+                "not blocking uncertainty. A planning example: a role produces "
+                "draft.options (object), a human_input boundary at choose declares "
+                "expected_schema=[{name:selection,type:string}], and a later "
+                "role receives input_sources=[{input:options,source:draft.options}, "
+                "{input:selection,source:choose.selection}]. Human stages leave "
+                "actor empty. Pure Agent stages inside one loop need no dataflow "
+                "bindings; their questions and decisions remain instructions. "
+                "Deterministic human gates "
+                "belong in explicit Workflow boundaries. Cross-run edits require "
+                "explicit supported state and identity. If a request needs "
+                "record persistence, state.identity must be a declared data field "
+                "or entity_id, the platform's stable record ID. Never invent "
+                "undeclared task_key/record_key fields. Query by declared fields "
+                "to locate records, and ask_user on ambiguous matches. Users need "
+                "not design an ID scheme in advance; task-instance matching facts "
+                "are runtime questions, not blocking uncertainty. If a request needs "
+                "unsupported repeat interaction, report that limitation in "
+                "uncertainty, never silently return a simpler task. Arrays of named "
+                "types/bindings are the provider projection."
+            ),
             "interview": (
                 "Ask one concise follow-up about goal, inputs, outputs, risks or "
                 "success criteria. Do not ask users to learn internal node types."

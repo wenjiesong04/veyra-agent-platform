@@ -22,6 +22,13 @@ SECONDHAND = (
     "价格要让我确认。"
     "每件商品状态和价格历史都要保存。"
 )
+GIFT = (
+    "帮我做一个礼品包装设计助手。"
+    "用户上传商品图片。"
+    "分析商品以后生成 3 个设计方向。"
+    "用户选定方案以后再生成最终设计。"
+    "最后还要生成效果图。"
+)
 
 
 def test_composite_apply_rolls_back_companions_when_workflow_fails(
@@ -54,3 +61,37 @@ def test_composite_apply_rolls_back_companions_when_workflow_fails(
     summary = projects.project_summary(project_id)
     assert not summary.get("workflows")
     assert not summary.get("agents")
+
+
+def test_missing_image_model_keeps_packaging_composite_applyable(
+    tmp_path: Path,
+) -> None:
+    product = generate_builder_product(GIFT, ResourceCatalog())
+    assert product.status == "review"
+    assert product.orchestration is not None
+    assert product.resolved is not None
+    assert "image_generation" not in {
+        item.capability for item in product.resolved.missing_required
+    }
+
+    database = tmp_path / "app.sqlite3"
+    migrate_local_database(database)
+    projects = ProjectService(LocalRepository(database), tmp_path / "objects")
+    library = LibraryService(projects.repository, projects)
+    created = projects.create_managed(name="Packaging Needs Image Setup")
+    project_id = created["project_id"]
+
+    applied = apply_composite(
+        projects=projects,
+        library=library,
+        project_id=project_id,
+        companions=product.orchestration.companions,
+        workflow=product.orchestration.workflow,
+        flow=product.orchestration.flow,
+    )
+
+    assert applied["workflow_id"]
+    assert len(applied["companion_agents"]) == len(product.orchestration.companions)
+    summary = projects.project_summary(project_id)
+    assert len(summary["agents"]) == len(product.orchestration.companions)
+    assert len(summary["workflows"]) == 1

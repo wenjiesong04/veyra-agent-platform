@@ -68,7 +68,9 @@ function activityLabel(event: RuntimeEvent, locale: Locale): string | null {
   if (event.kind === "knowledge.retrieved") {
     return zh ? "正在阅读知识" : "Reading Knowledge";
   }
-  if (event.kind === "approval.requested") return zh ? "等待审批" : "Waiting for approval";
+  if (event.kind === "approval.requested") return event.payload.kind === "input"
+    ? (zh ? "等待你的回答" : "Waiting for your reply")
+    : (zh ? "等待审批" : "Waiting for approval");
   if (event.kind === "run.completed") return zh ? "已生成结果" : "Generated result";
   if (event.kind === "run.failed") return zh ? "运行失败" : "Failed";
   if (event.kind === "run.cancelled") return zh ? "已取消" : "Cancelled";

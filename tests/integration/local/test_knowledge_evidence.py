@@ -15,6 +15,7 @@ from .test_runtime_routes import (
     _agent_source,
     _run_until_settled,
 )
+from .verified_runtime_model import verified_client
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +41,7 @@ def test_historical_run_evidence_and_explicit_excerpt_survive_reload(tmp_path):
         project_storage_root=tmp_path / "projects",
     )
     transport = ScriptedRuntimeTransport("Answer")
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         project = client.post(
             "/api/v1/projects", json={"agents": [_agent_source()]}
         ).json()
@@ -97,7 +98,7 @@ def test_historical_run_evidence_and_explicit_excerpt_survive_reload(tmp_path):
         assert retrieval(empty)["receipts"] == []
         assert "xyzzy-private-query" not in json.dumps(retrieval(empty))
     calls = len(transport.calls)
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         assert client.get(f"{url}/runs/{run['run_id']}").json() == run
         assert client.get(f"{url}/runs/{empty['run_id']}").json() == empty
         assert (
@@ -119,7 +120,7 @@ def test_historical_run_evidence_and_explicit_excerpt_survive_reload(tmp_path):
         )
         assert client.get(f"{url}/runs/{run['run_id']}").json() == run
         assert len(transport.calls) == calls
-    with TestClient(create_app(settings, runtime_transport=transport)) as client:
+    with verified_client(settings, transport) as client:
         assert client.get(f"{url}/runs/{run['run_id']}").json() == run
         assert client.get(f"{url}/runs/{empty['run_id']}").json() == empty
         assert len(transport.calls) == calls

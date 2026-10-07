@@ -1033,12 +1033,58 @@ output modes. Existing compiler/resolvers, EditProposal storage, Draft writer,
 validation and Runtime preflight remain the authoritative execution boundaries.
 The model has no write, registration, permission-grant or execution tool.
 
-Long-term generation rule: models express and plan semantics; Veyra compiles
-semantics into canonical, validated, authorized and executable objects. The
-default provider-facing create contract is `AgentSemanticPlanV1`. A full
-`AgentBlueprint` is compiled server-side and remains the canonical review/Apply
-object. The Moonshot MFJS projection of AgentBlueprint is a compatibility
-bridge, not the default model contract.
+Generation rule: models express semantics; Veyra compiles canonical, authorized
+objects. The production creation contract is now `TaskStructureV1`: full goal,
+constraints, success criteria, actor-specific typed I/O, ordered semantic stages,
+input sources, human interaction and state lifecycle. `FactoryTaskStructurePlanner`
+uses the shared bounded Project Harness and safe invocation receipts. The server
+chooses Agent versus Workflow, resolves exact resources and model capabilities,
+compiles source, and checks required duties. A second `TaskCoverageV1` model review
+checks omissions against the compiled candidate; it is planning evidence, not a
+successful Run. JSON parsing, contract and composition repairs share a bounded
+budget and cannot remove required duties. Provider failure never falls back to
+keyword generation. The offline deterministic helper remains explicitly labelled
+an offline compiler preview. AgentSemanticPlanV1 and Blueprint projections remain
+legacy adapters, not the current production TaskStructure contract.
+
+Loop Agents execute `tool`, `ask_user`, and `final` actions under `max_turns`.
+`ask_user` stores a checkpoint and user-visible context; an explicit `reply`
+continues the same pinned version and Run. A user reply grants no Tool permission.
+Images are rendered after final output; questions do not trigger image generation.
+Pinned Skill instructions cannot override Agent instructions or grant permissions.
+Tool descriptors expose the actual public argument/result schema and approval
+requirements. Only offline argument validation can be repaired before dispatch;
+errors after execution do not trigger blind external-effect retries.
+
+Planning context includes real capability names and public Tool contracts, not
+legacy graph node specifications or Skill bodies. Provider JSON is validated
+against the complete closed projection before permissive server-contract defaults.
+Coverage review uses selected Tool contracts and one copy of each compiled Agent
+instruction set, without duplicated canvas/model prompts. Runtime input questions
+are distinct from unsupported software capabilities.
+
+Persistent loop Agents carry a typed `extensions.veyra.state_contract` in their
+canonical Source and behavior hash. Explicit Apply safely installs its entity type;
+conflicting existing definitions are not overwritten. Entity Query finds current
+Project records by type and exact data-field filters, with stable IDs and explicit
+truncation. The loop validates entity type, identity, fields and statuses before
+write dispatch. Entity Read/Write/Query execution scopes are isolated per call.
+This does not claim that concurrent updates are protected by an optimistic revision
+check; that remains an acceptance and engineering boundary.
+
+Arithmetic is a permitted, bounded, pure Tool, not generated executable code.
+It computes numeric expressions with exact rational values and separately marks
+approximate JSON numbers. Generated numeric tasks should bind it and retain
+calculation evidence. Its existence alone does not prove a generated Agent uses it.
+Same-run conversational context does not require an Entity Tool.
+
+Workflow remains a DAG. Typed HumanInput replies reject missing, extra, invalid,
+and foreign-project Artifact values. Whole-value transforms preserve JSON and
+ArtifactRef types. Explicit `input.name` / `stage.port` semantic references become
+real bound variables; ordered stages never imply data transfer. Candidate locks
+protect review contents and are replaced by actual immutable version pins at Apply.
+Unsupported indefinite Workflow revisions and unrepresented lifecycle promises
+must remain visible limitations rather than silently simpler generated products.
 
 Builder Conversation History and Runtime Run History are different canonical
 domains.
@@ -1406,7 +1452,9 @@ intent detection, Semantic Plan generation, repair, and Proposal generation. It
 is never exposed through the local User Credential API. User Runtime Providers
 are local credential metadata plus a device-system secret, and are selected by a
 Project/Agent binding slot. A Runtime resolver applies the precedence
-`explicit Agent binding → Project binding → User default → missing`.
+`explicit Agent binding → Project binding → capability/role default → eligible
+Model Profile → needs setup`. An invalid explicit binding blocks that role;
+it does not silently switch to another model.
 
 `provider_credentials` stores only local metadata (`provider_type`, label, base
 URL, status, `credential_scope`, capabilities, masked hint, timestamps and an
@@ -1440,8 +1488,68 @@ applies the same permission containment check, including
 
 Local development tests may inject a Runtime transport. The normal Local app does
 not use `MOONSHOT_API_KEY` or the Platform Builder secret as an implicit Runtime
-fallback. User Runtime execution requires an active credential and binding (or
-an explicit User default); production and release modes have the same boundary.
+fallback. User Runtime execution requires an active local credential and a
+compatible Profile selected by the Runtime resolver; production and release
+modes have the same boundary.
+
+### 6.6 Model Capability Registry and Runtime Setup
+
+Provider connections and models are separate local records. A connection owns
+endpoint and opaque secret reference; each Model Profile owns a Provider model
+ID, safe metadata, enabled/listed status and per-capability evidence. Capability
+metadata is separate from context window, token limits and Provider family.
+An ID returned by `/models` proves model discovery, not task capability.
+
+The V1 vocabulary is `text_input`, `image_input`, `audio_input`, `video_input`,
+`text_generation`, `image_generation`, `image_editing`, `audio_generation`,
+`video_generation`, `structured_output`, `tool_calling`, `reasoning`,
+`speech_to_text`, `text_to_speech`, `embeddings` and `reranking`. Each capability
+is `supported`, `unsupported` or `unknown`, with bounded evidence and observation
+time. Trusted Provider metadata, adapter evidence and successful explicit probes
+can satisfy a requirement. User declarations, inference and model-name guesses
+cannot. `image_input` never implies `image_generation`; `unknown` never satisfies
+a required capability.
+
+Saving or rechecking a Provider discovers models without generation. Missing
+capability metadata remains unknown. A missing model-list endpoint permits
+explicit manual model IDs followed by verification. A missing saved default ID
+is preserved and reported as needing setup. Active probes are separate, explicit
+actions: V1 implements bounded text generation, structured output, image input
+and image generation probes. Both image probes require a possible-charge
+acknowledgement. Other capabilities can enter the Registry through trusted
+metadata or adapters; their active probes are not available in V1. Probe outputs,
+raw responses, API keys and authorization headers are not persisted as evidence.
+
+Builder derives capability requirements per actor and model role from its task
+structure and execution plan. A pure, deterministic ModelResolver selects local
+Profiles using the precedence above. Review shows reasons, candidate Provider
+and model names, unknown versus unsupported gaps, and required versus optional
+needs. Model gaps belong to the Model Registry, not ResourceFactory. A missing
+model permits a reviewable and applyable Draft with Needs Setup. A Proposal
+candidate is re-resolved against current local configuration before a Run;
+it is not a credential embedded in immutable Agent source.
+Requirements describe the Provider protocol actually invoked. Current V2 loop
+Agents use the platform JSON-action protocol without native `tools` or
+`response_format`; Tool boundaries and typed JSON outputs do not by themselves
+require Provider `tool_calling` or native `structured_output`. Graph Model paths
+that invoke `response_format` still require verified structured-output evidence.
+
+Agent and Workflow Apps share RuntimeSetupPanel. It explains capability gaps,
+links directly to the relevant Model Profile or Add Provider, and can bind an
+existing compatible Profile to the exact Agent and model slot before automatic
+preflight. Workflow issues retain pinned child Agent and node identity. Changing
+Runtime configuration does not require rebuilding or changing the committed
+Agent/Workflow version. Optional gaps allow degradation only when an explicit
+compiled fallback removes that model dependency; an executed model path remains
+setup-gated.
+
+Preflight and invocation use the same Profile/evidence standard. Immediately
+before model calls, Runtime checks current connection readiness, required
+capabilities, endpoint identity and capability digest/revision. Run evidence
+records the selected Profile and digest without secrets. Disabled, deleted or
+unavailable credentials, endpoint changes, failed rechecks and stale evidence
+fail closed. Configuration and capability defaults remain device-local and are
+not copied into exported Agent source or Community data.
 
 ---
 

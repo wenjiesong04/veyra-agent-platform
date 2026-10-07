@@ -106,14 +106,18 @@ def test_image_generation_proposal_is_missing(tmp_path: Path) -> None:
             project_id,
             "创建一个可以直接生成最终包装设计图片的 Agent。",
         )
-        missing = [
-            item
+        assert not any(
+            item.get("capability") == "image_generation"
             for item in session["resource_plan"]
-            if item.get("bind_status") == "missing"
-            and item.get("capability") == "image_generation"
-        ]
-        assert missing
-        assert "image_generation" in " ".join(session.get("diagnostics") or [])
+        )
+        image_slot = next(
+            item
+            for item in session["proposal_preview"]["models"]
+            if "image_generation" in item["required"]
+        )
+        assert image_slot["status"] == "needs_setup"
+        assert image_slot["issue"]["missing"] == ["image_generation"]
+        assert session["run_availability"] == "requires_configuration"
 
 
 def test_apply_pins_exact_resource_plan_snapshot(tmp_path: Path) -> None:

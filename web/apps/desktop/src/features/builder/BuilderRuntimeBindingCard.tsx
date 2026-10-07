@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { BuilderConversationOperation, BuilderConversationSnapshot, ProviderCredential } from "@veyra/api-contracts";
-import { Alert, Button, Panel, SectionHeading, StatusBadge } from "@veyra/ui";
+import { Alert, Button } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 export function BuilderRuntimeBindingCard({
   api,
@@ -32,14 +32,18 @@ export function BuilderRuntimeBindingCard({
     void request.then((response) => {
       const available = response.credentials as ProviderCredential[];
       setCredentials(available);
-      if (!selected && available[0]) {
-        setSelected(available[0].credential_id);
-        setModel(available[0].default_model_id ?? String((available[0].capabilities.models as unknown[] | undefined)?.[0] ?? ""));
+      const first = available.find((item) => item.is_default && item.readiness === "ready")
+        ?? available.find((item) => item.readiness === "ready")
+        ?? available[0];
+      if (first) {
+        setSelected((current) => current || first.credential_id);
+        setModel((current) => current || first.default_model_id || String((first.capabilities.models as unknown[] | undefined)?.[0] ?? ""));
       }
     }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, [api, selected]);
+  }, [api]);
   const current = credentials.find((item) => item.credential_id === selected);
   const models = Array.isArray(current?.capabilities.models) ? current.capabilities.models.filter((item): item is string => typeof item === "string") : [];
+  const modelOptions = model && !models.includes(model) ? [model, ...models] : models;
   const addApi = () => {
     const returnTo = window.location.hash;
     const query = new URLSearchParams({ action: "add-provider", returnTo, operationId: operation.operation_id, purpose: "agent_runtime" });
@@ -54,14 +58,37 @@ export function BuilderRuntimeBindingCard({
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { onFollowChange?.(false); setBusy(false); }
   };
-  return <Panel className="builder-runtime-binding-card">
-    <SectionHeading eyebrow={zh ? "Runtime Provider" : "Runtime Provider"} title={waitingFor === "waiting_for_runtime_credential" ? (zh ? "还没有可用的模型 API" : "No Runtime model API is available") : (zh ? "选择这个 Agent 的运行模型" : "Choose this Agent's Runtime model")} detail={zh ? "Builder Platform Provider 与 Agent Runtime Provider 是两个独立域。这里不会显示或上传密钥。" : "The Builder Platform Provider and Agent Runtime Provider are separate domains. Secrets are never displayed or uploaded here."} />
-    {credentials.length === 0 ? <><Alert type="warning">{zh ? "Agent 需要用户自己的 Runtime Provider 才能运行。" : "This Agent needs a User Runtime Provider before it can run."}</Alert><Button variant="primary" onClick={addApi}>{zh ? "添加 API" : "Add API"}</Button></> : <>
-      <label className="settings-field"><span>{zh ? "凭据" : "Credential"}</span><select value={selected} onChange={(event) => { const next = credentials.find((item) => item.credential_id === event.target.value); setSelected(event.target.value); setModel(next?.default_model_id ?? ""); }}><option value="">{zh ? "选择凭据" : "Select a credential"}</option>{credentials.map((item) => <option key={item.credential_id} value={item.credential_id}>{item.label} · {item.provider_type}</option>)}</select></label>
-      <label className="settings-field"><span>{zh ? "模型" : "Model"}</span><select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{zh ? "选择模型" : "Select a model"}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-      <div className="button-row"><Button variant="primary" disabled={busy || !selected || !model} onClick={() => void continueBinding()}>{zh ? "确认并继续" : "Confirm & Continue"}</Button><Button variant="secondary" onClick={addApi}>{zh ? "添加 API" : "Add API"}</Button></div>
+  return <section className="builder-runtime-binding-card" aria-label={zh ? "运行模型设置" : "Runtime model setup"}>
+    <header className="builder-runtime-binding-head">
+      <div className="builder-runtime-binding-heading">
+        <span className="builder-runtime-binding-eyebrow">{zh ? "运行模型" : "Runtime model"}</span>
+        <h3>{waitingFor === "waiting_for_runtime_credential"
+          ? (zh ? "先添加模型 API，再继续构建" : "Add a model API to continue")
+          : (zh ? "选择运行模型，继续构建" : "Choose a Runtime model to continue")}</h3>
+        <p>{zh
+          ? "这个模型用于运行生成的 Agent。它与你用来构建方案的模型分开设置。"
+          : "This model runs the Agent you create. It is configured separately from the model used to build it."}</p>
+      </div>
+      <span className="builder-runtime-binding-status"><span aria-hidden="true" />{zh ? "等待你选择" : "Waiting for you"}</span>
+    </header>
+    {credentials.length === 0 ? <div className="builder-runtime-binding-empty">
+      <Alert type="warning">{zh ? "还没有可用的运行模型 API。添加后就能从这里继续。" : "No Runtime model API is available yet. Add one, then continue here."}</Alert>
+      <Button variant="primary" onClick={addApi}>{zh ? "添加模型 API" : "Add model API"}</Button>
+    </div> : <>
+      <div className="builder-runtime-binding-fields">
+        <label><span>{zh ? "模型 API" : "Model API"}</span><select value={selected} onChange={(event) => {
+          const next = credentials.find((item) => item.credential_id === event.target.value);
+          setSelected(event.target.value);
+          setModel(next?.default_model_id ?? (Array.isArray(next?.capabilities.models) ? String(next.capabilities.models[0] ?? "") : ""));
+        }}><option value="">{zh ? "选择 Provider" : "Select a provider"}</option>{credentials.map((item) => <option key={item.credential_id} value={item.credential_id}>{item.label} · {item.provider_type}</option>)}</select></label>
+        <label><span>{zh ? "模型" : "Model"}</span><select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{zh ? "选择模型" : "Select a model"}</option>{modelOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      </div>
+      <div className="builder-runtime-binding-actions">
+        <Button variant="primary" disabled={busy || !selected || !model} onClick={() => void continueBinding()}>{busy ? (zh ? "正在继续…" : "Continuing…") : (zh ? "确认并继续" : "Confirm and continue")}</Button>
+        <Button variant="secondary" onClick={addApi}>{zh ? "添加其他 Provider" : "Add another provider"}</Button>
+      </div>
     </>}
-    {error ? <p className="settings-secret-message" role="alert">{error}</p> : null}
-    <div className="settings-facts"><div><span>{zh ? "绑定状态" : "Binding status"}</span><StatusBadge label={waitingFor ?? "waiting"} tone="warn" /></div><div><span>{zh ? "作用域" : "Scope"}</span><strong>{zh ? "Project / User local" : "Project / user local"}</strong></div></div>
-  </Panel>;
+    {error ? <p className="builder-runtime-binding-error" role="alert">{error}</p> : null}
+    <p className="builder-runtime-binding-note">{zh ? "密钥仅保存在本机，不会在这里显示。" : "The secret stays on this device and is not shown here."}</p>
+  </section>;
 }

@@ -5,11 +5,12 @@ import type {
   BuilderOperationEvent,
   BuilderOperationEventKind,
   BuilderRunObservation,
+  FactorySession,
 } from "@veyra/api-contracts";
 import { ChevronsDown, ChevronsRight, Circle, CircleAlert, CircleCheck } from "lucide-react";
 import { Button, StatusBadge } from "@veyra/ui";
 import { observationStatusLabel } from "./BuilderTestRun";
-import { openStageStartedAt, runningClock } from "./workbench-phase";
+import { isBlockedCreation, isUnsupportedCreate, openStageStartedAt, runningClock } from "./workbench-phase";
 
 const STEP_ORDER = [
   "builder.intent.resolved",
@@ -65,6 +66,7 @@ const PLAN_FAILURE_CODES = new Set([
   "factory_unavailable",
   "factory_provider_not_configured",
   "factory_generation_invalid",
+  "factory_generation_blocked",
 ]);
 
 function durationLabel(operation: BuilderConversationOperation): string {
@@ -101,14 +103,15 @@ function failedStepKind(operation: BuilderConversationOperation): StepKind | nul
   return started?.[0] ?? null;
 }
 
-function failureSummary(operation: BuilderConversationOperation): string {
+function failureSummary(operation: BuilderConversationOperation, locale: "zh" | "en" = "en"): string {
   const code = operation.error_code ?? operation.diagnostic.error_code ?? "";
-  if (code === "factory_rate_limited" || operation.diagnostic.http_status === "429") return "Rate limited";
+  if (code === "factory_generation_blocked") return locale === "zh" ? "方案暂时无法生成" : "Plan blocked";
+  if (code === "factory_rate_limited" || operation.diagnostic.http_status === "429") return locale === "zh" ? "服务商暂时限流" : "Rate limited";
   if (code === "factory_missing_capability") return "Missing capability";
   return "";
 }
 
-function visibleSteps(operation: BuilderConversationOperation): Array<{
+function visibleSteps(operation: BuilderConversationOperation, locale: "zh" | "en"): Array<{
   key: StepKind;
   label: { zh: string; en: string };
   state: "done" | "current" | "failed" | "pending";
@@ -121,7 +124,10 @@ function visibleSteps(operation: BuilderConversationOperation): Array<{
   const current = canonicalEventKind(currentKind(operation.events));
   const failedKind = failedStepKind(operation);
   const createLike = operation.kind === "create_agent" || operation.kind === "create_workflow";
+  const unsupported = isUnsupportedCreate(operation);
   return STEP_ORDER.filter((kind) => {
+    if (operation.error_code === "factory_generation_blocked" && kind === "builder.operation.completed") return false;
+    if (unsupported) return kind === "builder.intent.resolved" || kind === "builder.operation.completed";
     const started = STARTED[kind];
     if (kind === "builder.proposal.confirmed" || kind === "builder.apply.completed") {
       return byKind.has(kind) || (started !== undefined && byKind.has(started)) || operation.status === "succeeded";
@@ -150,14 +156,16 @@ function visibleSteps(operation: BuilderConversationOperation): Array<{
       state = "done";
     } else if (failed && (current === kind || current === started)) {
       state = "failed";
-    } else if (current === kind || current === started) {
+    } else if ((operation.status === "in_progress" || operation.status === "waiting") && (current === kind || current === started)) {
       state = "current";
     }
     return {
       key: kind,
-      label: STEP_COPY[kind],
+      label: unsupported && kind === "builder.operation.completed"
+        ? { zh: "未生成方案", en: "No proposal created" }
+        : STEP_COPY[kind],
       state,
-      summary: state === "failed" ? failureSummary(operation) || capabilitySummary(kind, event) : capabilitySummary(kind, event),
+      summary: state === "failed" ? failureSummary(operation, locale) || capabilitySummary(kind, event) : capabilitySummary(kind, event),
     };
   });
 }
@@ -280,8 +288,10 @@ function statusPresentation(operation: BuilderConversationOperation, locale: "zh
   }
   if (operation.status === "in_progress") return { label: zh ? "进行中" : "Running", tone: "neutral" };
   if (operation.status === "waiting") return { label: zh ? "等待确认" : "Waiting", tone: "warn" };
+  if (operation.error_code === "factory_generation_blocked") return { label: zh ? "已阻塞" : "Blocked", tone: "warn" };
   if (operation.status === "failed") return { label: zh ? "失败" : "Failed", tone: "bad" };
   if (operation.status === "rejected") return { label: zh ? "已拒绝" : "Rejected", tone: "neutral" };
+  if (isUnsupportedCreate(operation)) return { label: zh ? "未创建" : "Not created", tone: "warn" };
   return { label: zh ? "已完成" : "Completed", tone: "good" };
 }
 
@@ -296,6 +306,8 @@ function headline(operation: BuilderConversationOperation, locale: "zh" | "en"):
     return zh ? "测试 Agent · 完成" : "Test Agent · completed";
   }
   const target = operation.target_kind === "workflow" ? "Workflow" : operation.target_kind === "agent" ? "Agent" : "";
+  if (operation.error_code === "factory_generation_blocked") return zh ? `${target ? `构建 ${target}` : "构建"} · 已阻塞` : `${target ? `Build ${target}` : "Build"} · blocked`;
+  if (isUnsupportedCreate(operation)) return zh ? `${target ? `构建 ${target}` : "构建"} · 未创建` : `${target ? `Build ${target}` : "Build"} · not created`;
   if (!target) {
     if (operation.status === "in_progress") return zh ? "正在理解需求" : "Understanding request";
     if (operation.status === "failed") return zh ? "构建 · 失败" : "Build · failed";
@@ -485,7 +497,7 @@ function failureStageLabel(stage: string, locale: "zh" | "en"): string {
 
 function safeErrorLabel(receipt: BuilderHarnessReceipt, locale: "zh" | "en"): string {
   const code = receipt.error_code ?? "";
-  if (code === "factory_rate_limited") return "Rate limited";
+  if (code === "factory_rate_limited") return locale === "zh" ? "服务商暂时限流" : "Rate limited";
   if (code === "factory_unauthorized") return locale === "zh" ? "未授权" : "Unauthorized";
   if (code === "factory_forbidden") return locale === "zh" ? "禁止访问" : "Forbidden";
   if (code === "factory_provider_error") return locale === "zh" ? "Provider 故障" : "Provider failure";
@@ -510,15 +522,21 @@ function StepMark({ state }: { state: "done" | "current" | "failed" | "pending" 
 
 export function BuilderActivityBlock({
   operation,
+  factorySession = null,
   locale,
   onRetry,
 }: {
   operation: BuilderConversationOperation;
+  factorySession?: FactorySession | null;
   locale: "zh" | "en";
   onRetry?: () => void;
 }) {
   const zh = locale === "zh";
-  const running = operation.status === "in_progress" || operation.status === "waiting";
+  const blocked = isBlockedCreation(operation, factorySession);
+  const displayOperation: BuilderConversationOperation = blocked
+    ? { ...operation, status: "failed", error_code: "factory_generation_blocked" }
+    : operation;
+  const running = displayOperation.status === "in_progress" || displayOperation.status === "waiting";
   const [now, setNow] = React.useState(() => Date.now());
   const stageStartedAt = openStageStartedAt(operation.events);
   React.useEffect(() => {
@@ -530,21 +548,22 @@ export function BuilderActivityBlock({
   React.useEffect(() => {
     setOpen(running);
   }, [running, operation.operation_id]);
-  const steps = operation.kind === "test_agent" ? testSteps(operation) : visibleSteps(operation);
+  const steps = operation.kind === "test_agent" ? testSteps(displayOperation) : visibleSteps(displayOperation, locale);
   const elapsed = durationLabel(operation);
   const currentStep = steps.find((item) => item.state === "current" || item.state === "failed");
-  const status = statusPresentation(operation, locale);
-  const showRetry = operation.status === "failed" && onRetry && operation.kind !== "test_agent";
-  const meta = operation.status === "succeeded" && elapsed
+  const status = statusPresentation(displayOperation, locale);
+  const showRetry = !blocked && operation.status === "failed" && onRetry && operation.kind !== "test_agent";
+  const meta = blocked ? failureSummary(displayOperation, locale)
+    : operation.status === "succeeded" && elapsed
     ? elapsed
     : operation.status === "failed" && operation.kind !== "test_agent"
-      ? failureSummary(operation)
+      ? failureSummary(operation, locale)
       : operation.status === "in_progress" && currentStep
         ? [zh ? currentStep.label.zh : currentStep.label.en, stageStartedAt ? runningClock(stageStartedAt, now, locale) : ""].filter(Boolean).join(" · ")
         : "";
   return (
-    <section className="builder-activity" data-status={operation.status} data-kind={operation.kind}>
-      <button type="button" className="builder-activity-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={headline(operation, locale)}>
+    <section className="builder-activity" data-status={displayOperation.status} data-kind={operation.kind}>
+      <button type="button" className="builder-activity-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={headline(displayOperation, locale)}>
         {open ? <ChevronsDown className="builder-activity-mark" size={16} aria-hidden="true" /> : <ChevronsRight className="builder-activity-mark" size={16} aria-hidden="true" />}
         <span className="builder-activity-copy">
           <span className="builder-activity-title">{activityTitle(operation, locale)}</span>
@@ -570,6 +589,7 @@ export function BuilderActivityBlock({
             : <BuilderBuildDetails operation={operation} locale={locale} />}
         </>
       ) : null}
+      {blocked ? <p role="status" aria-live="polite">{zh ? "未创建 Agent 或 Workflow。请调整任务要求后，在消息框重新发送。" : "No Agent or Workflow was created. Adjust the task and send it again in the message box."}</p> : null}
       {showRetry ? (
         <div className="builder-activity-actions">
           <Button size="sm" onClick={onRetry}>{zh ? "重试" : "Retry"}</Button>

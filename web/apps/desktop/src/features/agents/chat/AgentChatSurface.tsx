@@ -1,3 +1,4 @@
+import { AgentInputReply } from "./AgentInputReply";
 import * as React from "react";
 import { Bot, RotateCcw, Square } from "lucide-react";
 import { acceptedMediaTypes, compactFieldType, fieldIsMultiple, isArtifactCollection, isArtifactCompactType, isArtifactRef, projectRoutePaths, type AgentConversationMessage, type AgentConversationSummary, type AgentRunResponse, type AgentSource, type AgentVersionSnapshot, type ArtifactCollection, type ArtifactRecord, type ArtifactRef, type JsonValue, type ResourceDescriptor, type RuntimeReadiness, type TypedFields } from "@veyra/api-contracts";
@@ -11,10 +12,14 @@ import { CanvasOpenCard, ConversationCanvasPanel } from "./conversation-canvas";
 import { ConversationComposer, ConversationStage, ConversationTyping } from "./conversation-stage";
 import { ArtifactCard, initialRuntimeValues, requiredArtifactsReady, RuntimeInputForm } from "../../runtime/RuntimeInputForm";
 import { RuntimeOutputView } from "../../runtime/RuntimeOutputView";
+import { RuntimeSetupPanel } from "../../runtime/RuntimeSetupPanel";
 import { appActivity, approvalCard, knowledgeSources } from "../app-activity";
 import { productError, productRunError } from "../app-errors";
 import { chatFieldName, committedVersions, resolveInteractionMode, versionNumber, type ResolvedInteractionMode } from "../interaction-mode";
 import { clipboardCaption, clipboardFiles, ensureClipboardFileName } from "./conversation-attachment";
+import { ProjectFileSelection } from "./ProjectFileSelection";
+import { ProjectFileImport } from "../../projects/ProjectFileImport";
+import { GeneratedProjectFiles } from "./GeneratedProjectFiles";
 
 type Locale = "zh" | "en";
 type InputValues = Record<string, JsonValue>;
@@ -149,6 +154,7 @@ const copy = {
     newVersion: "有新版本可用",
     startLatest: "用新版本开始对话",
     descriptionMore: "查看完整说明",
+    descriptionLess: "收起说明",
     activity: "运行动态",
     sources: "使用的来源",
     ready: "就绪",
@@ -212,6 +218,7 @@ const copy = {
     newVersion: "New version available",
     startLatest: "Start new conversation with latest",
     descriptionMore: "Read full description",
+    descriptionLess: "Show less",
     activity: "Run activity",
     sources: "Sources used",
     ready: "Ready",
@@ -266,6 +273,27 @@ function latestCommitted(versions: AgentVersionSnapshot[]): AgentVersionSnapshot
   return committedVersions(versions).at(-1) ?? null;
 }
 
+function persistedAssistantDisplay(content: string, source: AgentSource): { text: string | null; fields: InputValues } {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const names = Object.keys(parsed);
+      if (names.length && names.every((name) => Object.hasOwn(source.outputs, name))) {
+        return { text: null, fields: parsed as InputValues };
+      }
+    }
+  } catch { /* Ordinary assistant text remains a text response. */ }
+  return { text: content, fields: {} };
+}
+
+function PersistedAssistantOutput({ content, source, locale, projectId, api }: {
+  content: string; source: AgentSource; locale: Locale; projectId: string; api: LocalProjectApi;
+}) {
+  const display = React.useMemo(() => persistedAssistantDisplay(content, source), [content, source.outputs]);
+  return display.text !== null ? <p>{display.text}</p>
+    : <RuntimeOutputView result={display.fields} locale={locale} projectId={projectId} api={api} presentation="reading" />;
+}
+
 function extraSchema(source: AgentSource, mode: ResolvedInteractionMode, chatField: string | null, followup: boolean): TypedFields {
   const entries = Object.entries(source.inputs);
   if (mode === "form") return source.inputs;
@@ -278,9 +306,12 @@ function extraSchema(source: AgentSource, mode: ResolvedInteractionMode, chatFie
 
 function preflightBlock(readiness: RuntimeReadiness | null, locale: Locale): { title: string; detail?: string } | null {
   if (!readiness) return null;
+  if (readiness.setup_issues?.length) return null;
   if (readiness.model.required && !readiness.model.configured) {
     return { title: locale === "zh" ? "尚未配置运行模型。" : "Runtime model is not configured." };
   }
+  const imageModel = readiness.checks.find((item) => item.id === "image_model" && !item.ready);
+  if (imageModel) return { title: locale === "zh" ? "需要配置图片生成模型。" : "An image generation model is needed.", detail: locale === "zh" ? "这个 Agent 需要生成图片，但当前没有可用的图片生成模型。" : "This Agent generates images, but no compatible image generation model is available." };
   const config = readiness.tool_checks.find((item) => item.code === "needs_configuration")
     || readiness.checks.find((item) => item.code === "needs_configuration" || item.code === "runtime_not_configured");
   if (config && !config.ready) {
@@ -292,6 +323,10 @@ function preflightBlock(readiness: RuntimeReadiness | null, locale: Locale): { t
   const unbound = readiness.dependencies.find((item) => item.status === "resource_unbound" || item.status === "configuration_required" || item.status === "lock_mismatch");
   if (unbound) {
     return { title: unbound.detail || (locale === "zh" ? "这个 Agent 运行前还需要配置。" : "This Agent needs configuration before it can run.") };
+  }
+  if (!readiness.ready) {
+    const check = readiness.checks.find((item) => !item.ready);
+    return { title: locale === "zh" ? "这个 Agent 还不能运行。" : "This Agent is not ready to run.", detail: check?.detail };
   }
   return null;
 }
@@ -316,6 +351,8 @@ export function AgentChatSurface({
   const [versionId, setVersionId] = React.useState<string | null>(null);
   const [catalog, setCatalog] = React.useState<ResourceDescriptor[]>([]);
   const [fileOptions, setFileOptions] = React.useState<string[]>([]);
+  const [selectedProjectFiles, setSelectedProjectFiles] = React.useState<string[]>([]);
+  const [projectImportBusy, setProjectImportBusy] = React.useState(false);
   const [loadState, setLoadState] = React.useState<"loading" | "ready" | "error" | "empty">("loading");
   const [values, setValues] = React.useState<InputValues>({});
   const [submitted, setSubmitted] = React.useState<InputValues | null>(null);
@@ -361,9 +398,6 @@ export function AgentChatSurface({
       if (initialPrompt && stringField) next[stringField] = initialPrompt;
       setValues(next);
       setLoadState("ready");
-      if (api.runtimeReadiness) {
-        void api.runtimeReadiness(projectId, agentId, { versionId: latest.version_id }).then(setReadiness).catch(() => setReadiness(null));
-      }
     } catch (cause) {
       const mapped = productError(cause, locale);
       setError(mapped.message);
@@ -372,6 +406,21 @@ export function AgentChatSurface({
     }
   }, [api, projectId, agentId, locale, initialPrompt, text.unavailable]);
   React.useEffect(() => { void load(); }, [load]);
+  React.useEffect(() => {
+    let current = true;
+    setReadiness(null);
+    if (!versionId || !api.runtimeReadiness) return () => { current = false; };
+    void api.runtimeReadiness(projectId, agentId, { versionId }).then((next) => {
+      if (current && next.version_id === versionId) setReadiness(next);
+    }).catch((cause) => {
+      if (!current) return;
+      setReadiness(null);
+      const mapped = productError(cause, locale);
+      setError(mapped.message);
+      setErrorCode(mapped.code);
+    });
+    return () => { current = false; };
+  }, [api, projectId, agentId, versionId]);
   React.useEffect(() => {
     if (!api.listResources) return;
     void Promise.all([
@@ -424,6 +473,8 @@ export function AgentChatSurface({
       if (!active) return;
       setConversationMessages(conversation.messages);
       setInitialInputs((conversation.initial_inputs ?? {}) as InputValues);
+      const pending = history.find((item) => item.conversation_id === conversationId && ["running", "waiting"].includes(item.status));
+      if (pending && pending.run_id !== live.run?.run_id) void live.restore(pending.run_id);
       if (conversation.agent_version_id) {
         const snapshot = versions.find((item) => item.version_id === conversation.agent_version_id && item.committed);
         if (snapshot) {
@@ -438,7 +489,7 @@ export function AgentChatSurface({
       }
     });
     return () => { active = false; };
-  }, [api, projectId, agentId, conversationId, live.run?.status, versions]);
+  }, [api, projectId, agentId, conversationId, live.run?.status, versions, history, live.restore]);
   React.useEffect(() => {
     if (!live.run || live.run.status === "running" || live.run.status === "waiting") return;
     if (live.run.conversation_id) {
@@ -467,7 +518,9 @@ export function AgentChatSurface({
       return { file, fields };
     });
     if (routes.some((route) => route.fields.length === 0)) {
-      setPasteError(text.pastedFileError);
+      setPasteError(source.extensions.veyra.permissions.tools.includes("veyra.tool.filesystem.read")
+        ? (locale === "zh" ? "请展开“选择项目文件”，将材料导入项目后选择使用。" : "Open “Choose Project files” to import and select these materials.")
+        : text.pastedFileError);
       return;
     }
     if (routes.some((route) => route.fields.length !== 1)) {
@@ -523,7 +576,7 @@ export function AgentChatSurface({
       setUploadingFile("");
       uploadingRef.current = false;
     }
-  }, [api, initialInputs, projectId, source, text.ambiguousPastedFile, text.existingPastedFile, text.missingUploadApi, text.multiplePastedFiles, text.oversizedPastedFile, text.pastePending, text.pastedFileError, values]);
+  }, [api, initialInputs, locale, projectId, source, text.ambiguousPastedFile, text.existingPastedFile, text.missingUploadApi, text.multiplePastedFiles, text.oversizedPastedFile, text.pastePending, text.pastedFileError, values]);
 
   const removePastedArtifact = React.useCallback((attachment: PastedArtifact) => {
     setPastedArtifacts((current) => current.filter((item) => item.ref.artifact_id !== attachment.ref.artifact_id));
@@ -552,6 +605,7 @@ export function AgentChatSurface({
     setConversationMessages([]);
     setInitialInputs({});
     setPastedArtifacts([]);
+    setSelectedProjectFiles([]);
     setPasteError("");
     setUploadingFile("");
     live.clear();
@@ -613,12 +667,14 @@ export function AgentChatSurface({
 
   const mode: ResolvedInteractionMode = resolveInteractionMode(source);
   const chatField = chatFieldName(source.inputs);
+  const acceptsProjectFiles = mode !== "form" && Boolean(chatField)
+    && source.extensions.veyra.permissions.tools.includes("veyra.tool.filesystem.read");
   const hybridFollowup = mode === "hybrid" && Boolean(conversationId && Object.keys(initialInputs).length);
   const visibleForm = extraSchema(source, mode, chatField, hybridFollowup);
   const inFlight = live.busy || live.run?.status === "running" || live.run?.status === "waiting";
-  const pasteBusy = Boolean(uploadingFile);
+  const pasteBusy = Boolean(uploadingFile) || projectImportBusy;
   const stopping = live.busy && live.run?.status === "running";
-  const canStart = Boolean(api.runAgent) && !inFlight;
+  const canStart = Boolean(api.runAgent && api.runtimeReadiness && readiness?.ready === true && readiness.version_id === versionId) && !inFlight;
   const composerValue = chatField && mode !== "form" ? String(values[chatField] ?? "") : "";
   const mergedValues = { ...initialInputs, ...values };
   const canSubmit = canStart && !pasteBusy && requiredArtifactsReady(source.inputs, mergedValues) && (mode === "form" || !chatField || composerValue.trim().length > 0);
@@ -636,7 +692,10 @@ export function AgentChatSurface({
   const latestNumber = versionNumber(versions, latest?.version_id);
   const versionStale = Boolean(latest && versionId && latest.version_id !== versionId);
   const blocked = preflightBlock(readiness, locale);
-  const approval = approvalCard(live.run);
+  const inputRequest = live.run?.status === "waiting" ? live.run.events?.filter((event) => event.kind === "approval.requested").at(-1) : undefined;
+  const pendingQuestion = inputRequest?.payload;
+  const awaitingInput = pendingQuestion?.kind === "input" && typeof pendingQuestion.prompt === "string";
+  const approval = awaitingInput ? null : approvalCard(live.run);
   const activity = appActivity(live.run?.events, locale);
   const sources = knowledgeSources(live.run?.events, locale);
   const showComposer = mode !== "form";
@@ -688,14 +747,17 @@ export function AgentChatSurface({
     : (activity.at(-1)?.label ?? (live.run ? text.thinking : text.starting));
 
   const payloadFor = (inputs: InputValues): InputValues => {
+    const contextualInputs = acceptsProjectFiles && chatField && selectedProjectFiles.length
+      ? { ...inputs, [chatField]: `${String(inputs[chatField] ?? "")}\n\n${locale === "zh" ? "本次选择的项目文件（请用读文件工具读取）" : "Selected Project files (use the file-reading tool)"}:\n${selectedProjectFiles.map((path) => `- ${path}`).join("\n")}` }
+      : inputs;
     if (hybridFollowup && chatField) {
       const pastedFields = Array.from(new Set(activePastedArtifacts.map((item) => item.field)));
       return {
-        [chatField]: inputs[chatField],
+        [chatField]: contextualInputs[chatField],
         ...Object.fromEntries(pastedFields.map((field) => [field, inputs[field] ?? initialInputs[field]]).filter((entry): entry is [string, JsonValue] => entry[1] !== undefined)),
       };
     }
-    return inputs;
+    return contextualInputs;
   };
 
   const header = (
@@ -704,14 +766,14 @@ export function AgentChatSurface({
         <strong>{source.name || source.slug}</strong>
         {source.description.length > 220 ? (
           <details className="agent-app-description">
-            <summary><span>{source.description.slice(0, 180)}…</span><small>{text.descriptionMore}</small></summary>
+            <summary><span>{source.description.slice(0, 180)}…</span><small className="is-closed">{text.descriptionMore}</small><small className="is-open">{text.descriptionLess}</small></summary>
             <p>{source.description}</p>
           </details>
         ) : source.description ? <p>{source.description}</p> : null}
       </div>
       <div className="agent-app-meta">
         {currentNumber ? <StatusBadge label={`v${currentNumber}`} tone="good" /> : null}
-        <StatusBadge label={blocked ? text.needsSetup : text.ready} tone={blocked ? "warn" : "good"} />
+        <StatusBadge label={!readiness ? (locale === "zh" ? "等待运行检查" : "Awaiting runtime checks") : blocked ? text.needsSetup : text.ready} tone={!readiness || blocked ? "warn" : "good"} />
         <LinkButton href={projectRoutePaths.agentDesign(projectId, agentId)} size="sm" variant="ghost">{text.editStudio}</LinkButton>
         <button type="button" className="agent-app-sidebar-toggle" onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? text.hideHistory : text.showHistory}</button>
       </div>
@@ -727,7 +789,7 @@ export function AgentChatSurface({
           <ul>
             {conversations.map((conversation) => (
               <li key={conversation.conversation_id}>
-                <button type="button" className={conversation.conversation_id === conversationId ? "is-active" : ""} onClick={() => { setConversationId(conversation.conversation_id); setSubmitted(null); setPastedArtifacts([]); setPasteError(""); live.clear(); }}>
+                <button type="button" className={conversation.conversation_id === conversationId ? "is-active" : ""} onClick={() => { setConversationId(conversation.conversation_id); setSubmitted(null); setPastedArtifacts([]); setSelectedProjectFiles([]); setPasteError(""); live.clear(); }}>
                   <span>{displayConversationTitle(conversation.title, locale)}</span>
                   {conversation.updated_at ? <small aria-hidden="true">{relativeActivityTime(conversation.updated_at, locale)}</small> : null}
                 </button>
@@ -787,7 +849,7 @@ export function AgentChatSurface({
           <Button size="sm" onClick={reset}>{text.startLatest}</Button>
         </div>
       ) : null}
-      {blocked ? <ErrorState message={blocked.detail ? `${blocked.title} ${blocked.detail}` : blocked.title} /> : null}
+      {readiness?.setup_issues?.length ? <RuntimeSetupPanel issues={readiness.setup_issues} locale={locale} returnTo={window.location.hash} api={api} projectId={projectId} onRecheck={() => { if (api.runtimeReadiness && versionId) return api.runtimeReadiness(projectId, agentId, { versionId }).then((next) => setReadiness(next.version_id === versionId ? next : null)).catch((cause) => { setReadiness(null); throw cause; }); }} /> : blocked ? <ErrorState message={blocked.detail ? `${blocked.title} ${blocked.detail}` : blocked.title} /> : null}
       <div className={`agent-app-body${sidebarOpen ? " has-sidebar" : ""}`}>
         {sidebar}
         <ConversationStage
@@ -814,10 +876,13 @@ export function AgentChatSurface({
               textboxLabel={chatField && mode !== "form" ? chatField : text.input}
               hideTextarea={!showComposer || !chatField}
               attachLabel={text.attachFile}
-              onAttachFiles={(files) => void attachPastedFiles(files)}
+              onAttachFiles={Object.values(source.inputs).some((field) => isArtifactCompactType(compactFieldType(field))) ? (files) => void attachPastedFiles(files) : undefined}
               extraFields={(
                 <div className="agent-app-input-stack">
                   {pastedAttachmentList}
+                  {acceptsProjectFiles ? <ProjectFileSelection paths={fileOptions} selected={selectedProjectFiles} onChange={setSelectedProjectFiles} projectId={projectId} locale={locale} disabled={inFlight}>
+                    <ProjectFileImport api={api} projectId={projectId} disabled={inFlight} onFilesChange={(files) => setFileOptions(files.map((file) => file.path))} onImported={(paths) => setSelectedProjectFiles((current) => [...new Set([...current, ...paths])])} onBusyChange={setProjectImportBusy} />
+                  </ProjectFileSelection> : null}
                   {Object.keys(visibleForm).length ? (
                     <RuntimeInputForm
                       schema={visibleForm}
@@ -838,7 +903,7 @@ export function AgentChatSurface({
                     {source.name || source.slug}
                     {currentNumber ? ` · v${currentNumber}` : ""}
                   </span>
-                  <small className="agent-convo-paste-hint" title={text.pasteHintTitle} aria-label={`${text.pasteHint}. ${text.pasteHintTitle}`}>{text.pasteHint}</small>
+                  {acceptsProjectFiles ? <small className="agent-convo-paste-hint">{locale === "zh" ? "通过“选择项目文件”添加任务材料" : "Add task materials with “Choose Project files”"}</small> : Object.values(source.inputs).some((field) => isArtifactCompactType(compactFieldType(field))) ? <small className="agent-convo-paste-hint" title={text.pasteHintTitle} aria-label={`${text.pasteHint}. ${text.pasteHintTitle}`}>{text.pasteHint}</small> : null}
                 </>
               )}
             />
@@ -864,8 +929,10 @@ export function AgentChatSurface({
               return (
                 <article className={`agent-chat-bubble ${message.role} agent-convo-enter`} key={message.message_id}>
                   <span>{message.role === "user" ? text.you : text.result}</span>
-                  {display.text !== null ? <p>{display.text}</p> : null}
-                  {Object.keys(display.fields).length ? <RuntimeOutputView result={display.fields} locale={locale} projectId={projectId} api={api} /> : null}
+                  {message.role === "assistant" ? <PersistedAssistantOutput content={message.content} source={source} locale={locale} projectId={projectId} api={api} /> : <>
+                    {display.text !== null ? <p>{display.text}</p> : null}
+                    {Object.keys(display.fields).length ? <RuntimeOutputView result={display.fields} locale={locale} projectId={projectId} api={api} /> : null}
+                  </>}
                 </article>
               );
             })()
@@ -873,7 +940,7 @@ export function AgentChatSurface({
           {!visibleMessages.length && mode === "form" ? visibleHistory.map((item) => (
             <article className="agent-chat-bubble result agent-convo-enter" key={item.run_id}>
               <span className="agent-convo-result-head">{text.history}<StatusBadge label={text[item.status]} tone={statusTone(item.status)} /></span>
-              {item.result ? <RuntimeOutputView result={item.result} locale={locale} projectId={projectId} api={api} /> : item.error ? <p>{productRunError(item.error.code, item.error.message, locale)}</p> : <p>{item.status}</p>}
+              {item.result ? <RuntimeOutputView result={item.result} locale={locale} projectId={projectId} api={api} presentation="reading" /> : item.error ? <p>{productRunError(item.error.code, item.error.message, locale)}</p> : <p>{item.status}</p>}
             </article>
           )) : null}
           {submitted && user ? (
@@ -887,7 +954,11 @@ export function AgentChatSurface({
           {displayError ? <article className="agent-chat-bubble error agent-convo-enter" role="alert"><strong>{text.governedError}</strong><span>{displayError}</span>{errorCode ? <small>{errorCode}</small> : null}</article> : null}
           {live.run?.error ? <article className="agent-chat-bubble error agent-convo-enter" role="alert"><strong>{text.governedError}</strong><span>{productRunError(live.run.error.code, live.run.error.message, locale)}</span><small>{live.run.error.code}</small></article> : null}
           {inFlight && live.run?.stream_text ? <article className="agent-chat-bubble result agent-convo-enter"><span>{text.result}</span><p>{live.run.stream_text}</p></article> : null}
-          {inFlight ? <ConversationTyping label={typingLabel} /> : null}
+          {inFlight && !awaitingInput ? <ConversationTyping label={typingLabel} /> : null}
+          {awaitingInput && pendingQuestion ? <AgentInputReply key={inputRequest?.event_id}
+            question={String(pendingQuestion.prompt)} context={pendingQuestion.context} locale={locale} busy={live.busy}
+            projectId={projectId} api={api} onReply={(reply) => live.sendCommand("reply", { reply })}
+            onStop={() => void live.sendCommand("stop")} /> : null}
           {approval ? (
             <article className="agent-app-approval" role="region" aria-label={locale === "zh" ? "运行审批" : "Run approval"}>
               <strong>{approval.action}</strong>
@@ -917,7 +988,7 @@ export function AgentChatSurface({
               </span>
               {preview.openedInCanvas ? <p>{preview.text}</p> : null}
               {!preview.openedInCanvas || containsArtifacts(live.run.result) ? (
-                <RuntimeOutputView result={live.run.result} locale={locale} projectId={projectId} api={api} />
+                <RuntimeOutputView result={live.run.result} locale={locale} projectId={projectId} api={api} presentation="reading" />
               ) : null}
               {spec ? <CanvasOpenCard title={spec.title} locale={locale} onOpen={() => { setCanvasDismissed(false); setCanvasOpen(true); }} /> : null}
               <a className="agent-app-detail-link" href={`${projectRoutePaths.agentRun(projectId, agentId)}?run_id=${encodeURIComponent(live.run.run_id)}`}>{text.details}</a>
@@ -935,6 +1006,7 @@ export function AgentChatSurface({
             {live.run?.status === "running" ? <Button icon={Square} variant="ghost" size="sm" disabled={live.busy} onClick={() => void live.sendCommand("stop")}>{stopping ? text.stopping : text.stop}</Button> : null}
             {failed && lastInputs ? <Button icon={RotateCcw} variant="ghost" size="sm" disabled={inFlight} onClick={() => void start(lastInputs)}>{text.retry}</Button> : null}
           </div>
+          <GeneratedProjectFiles events={live.run?.events} projectId={projectId} locale={locale} />
         </ConversationStage>
       </div>
     </div>

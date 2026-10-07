@@ -10,6 +10,7 @@ import { AgentChatSurface } from "./AgentChatSurface";
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "reviewer", name: "Reviewer", description: "Reviews the supplied request.", inputs: { request: "string" }, outputs: { answer: "string" }, nodes: [], transitions: [], extensions: { veyra: { runtime_profile: "guarded-local", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] }, interaction_mode: "chat" } }, ui: { positions: {} }, lock: {} };
 const version: AgentVersionSnapshot = { version_id: "version-1", agent_id: "agent-1", source_hash: "a".repeat(64), behavior_hash: "b".repeat(64), created_at: "2026-08-28T00:00:00Z", source, committed: true };
 const run: AgentRunResponse = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1", version_id: "version-1", status: "verified", result: { answer: "Reviewed" }, error: null, created_at: "2026-08-28T00:00:00Z", finished_at: "2026-08-28T00:00:01Z" };
+const readyReadiness: RuntimeReadiness = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", version_id: "version-1", ready: true, profile_source: "default", model: { required: true, configured: true, model_id: "test-model", model_base_url: "http://localhost", model_api_key_env: "" }, dependency_summary: { total: 0, ready: 0, attention: 0 }, dependencies: [], tool_checks: [], checks: [{ id: "model", ready: true, code: "ready", detail: "Ready" }] };
 
 function versionsFor(next: AgentSource = source, committed = true): AgentVersionSnapshot {
   return { ...version, source: next, committed };
@@ -21,12 +22,77 @@ const resultText = () => screen.getByText("Reviewed");
 function apiWith(overrides: Partial<LocalProjectApi> = {}, nextSource: AgentSource = source): LocalProjectApi {
   return {
     listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [versionsFor(nextSource)] }),
+    runtimeReadiness: vi.fn().mockResolvedValue(readyReadiness),
     ...overrides,
   } as unknown as LocalProjectApi;
 }
 
 describe("AgentChatSurface", () => {
   afterEach(cleanup);
+  it("sends only explicitly selected Project file paths through the declared chat input", async () => {
+    const fileSource = { ...source, extensions: { veyra: { ...source.extensions.veyra, permissions: { network_hosts: [], tools: ["veyra.tool.filesystem.read"] } } } };
+    const runAgent = vi.fn().mockResolvedValue(run);
+    const api = apiWith({ runAgent, listProjectFiles: vi.fn().mockResolvedValue({ files: [{ path: "assets/orders.csv" }, { path: "assets/payments.csv" }, { path: "manifest.json" }] }) }, fileSource);
+    const user = userEvent.setup();
+    renderSurface(api);
+    await user.type(await screen.findByRole("textbox", { name: "request" }), "Reconcile the selected materials");
+    await user.click(screen.getByText("Choose Project files", { selector: "summary" }));
+    await user.click(await screen.findByRole("checkbox", { name: "assets/orders.csv" }));
+    expect(screen.queryByRole("checkbox", { name: "manifest.json" })).not.toBeInTheDocument();
+    expect(runAgent).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(runAgent).toHaveBeenCalled());
+    expect(runAgent.mock.calls[0][2]).toMatchObject({ inputs: { request: "Reconcile the selected materials\n\nSelected Project files (use the file-reading tool):\n- assets/orders.csv" }, source: "committed", version_id: "version-1" });
+    expect(runAgent.mock.calls[0][2].inputs.request).not.toContain("payments.csv");
+    await user.click(screen.getByRole("button", { name: "New conversation" }));
+    expect(screen.getByRole("checkbox", { name: "assets/orders.csv" })).not.toBeChecked();
+  });
+
+  it("does not offer Project filesystem inputs to an Agent without the read permission", async () => {
+    renderSurface(apiWith({ runAgent: vi.fn(), listProjectFiles: vi.fn().mockResolvedValue({ files: [{ path: "assets/orders.csv" }] }) }));
+    await screen.findByRole("textbox", { name: "request" });
+    expect(screen.queryByText("Choose Project files", { selector: "summary" })).not.toBeInTheDocument();
+  });
+
+  it("reads persisted structured assistant output only when all top-level keys are declared outputs", async () => {
+    const nextSource: AgentSource = { ...source, outputs: { result: "object" } };
+    const content = JSON.stringify({ result: { title: "Saved weekly plan", tasks: [{ name: "Review", completed: false }, { name: "Write", completed: true }] } });
+    const conversation = {
+      schema_version: "1.0" as const, conversation_id: "conversation-structured", project_id: "project-1", agent_id: "agent-1", agent_version_id: "version-1",
+      title: "Plan", created_at: run.created_at, updated_at: run.created_at, initial_inputs: {},
+      messages: [{ schema_version: "1.0" as const, message_id: "message-structured", conversation_id: "conversation-structured", sequence: 0, role: "assistant" as const, content, run_id: "old-run", created_at: run.created_at }],
+    };
+    const api = apiWith({
+      runAgent: vi.fn(),
+      listAgentConversations: vi.fn().mockResolvedValue({ schema_version: "1.0", conversations: [{ ...conversation, message_count: 1 }] }),
+      getAgentConversation: vi.fn().mockResolvedValue(conversation),
+    }, nextSource);
+    const { container } = renderSurface(api);
+    expect(await screen.findByText("Saved weekly plan")).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Output items" })).toBeInTheDocument();
+    expect(screen.queryByText(content)).not.toBeInTheDocument();
+    expect(container.querySelector(".agent-chat-bubble.assistant pre")).toBeNull();
+    expect(conversation.messages[0].content).toBe(content);
+    expect(api.runAgent).not.toHaveBeenCalled();
+  });
+
+  it.each(["Ordinary assistant text", '{"title":"ordinary JSON answer"}', '{"answer":"Known","extra":"not declared"}', "{malformed}", "[]", "{}"]) (
+    "retains a plain or non-contract JSON assistant answer as its original text: %s", async (content) => {
+      const conversation = {
+        schema_version: "1.0" as const, conversation_id: "conversation-text", project_id: "project-1", agent_id: "agent-1", agent_version_id: "version-1",
+        title: "Text", created_at: run.created_at, updated_at: run.created_at, initial_inputs: {},
+        messages: [{ schema_version: "1.0" as const, message_id: "message-text", conversation_id: "conversation-text", sequence: 0, role: "assistant" as const, content, run_id: "old-run", created_at: run.created_at }],
+      };
+      const { container } = renderSurface(apiWith({
+        runAgent: vi.fn(),
+        listAgentConversations: vi.fn().mockResolvedValue({ schema_version: "1.0", conversations: [{ ...conversation, message_count: 1 }] }),
+        getAgentConversation: vi.fn().mockResolvedValue(conversation),
+      }));
+      expect(await screen.findByText(content)).toBeInTheDocument();
+      expect(container.querySelector(".runtime-output-reading")).toBeNull();
+    },
+  );
+
   it("loads the committed version, submits exact input, and renders the Runtime result", async () => {
     const runAgent = vi.fn().mockResolvedValue(run); const getAgentRun = vi.fn().mockResolvedValue(run);
     renderSurface(apiWith({ runAgent, getAgentRun }));
@@ -83,6 +149,7 @@ describe("AgentChatSurface", () => {
       schema_version: "1.0",
       project_id: "project-1",
       agent_id: "agent-1",
+      version_id: "version-1",
       ready: false,
       profile_source: "default",
       model: { required: true, configured: false, model_id: "kimi-k3", model_base_url: "", model_api_key_env: "" },
@@ -98,11 +165,22 @@ describe("AgentChatSurface", () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
+  it("explains missing image generation setup before an App run", async () => {
+    const readiness: RuntimeReadiness = { ...readyReadiness, ready: false, checks: [{ id: "image_model", ready: false, code: "image_model_not_configured", detail: "Bind image_model" }] };
+    const runAgent = vi.fn();
+    renderSurface(apiWith({ runAgent, runtimeReadiness: vi.fn().mockResolvedValue(readiness) }));
+    expect(await screen.findByText("An image generation model is needed.", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText("image_model_not_configured")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
   it("blocks send when a resource still needs configuration", async () => {
     const readiness: RuntimeReadiness = {
       schema_version: "1.0",
       project_id: "project-1",
       agent_id: "agent-1",
+      version_id: "version-1",
       ready: false,
       profile_source: "default",
       model: { required: true, configured: true, model_id: "kimi-k3", model_base_url: "http://127.0.0.1", model_api_key_env: "KEY" },
@@ -495,4 +573,17 @@ describe("AgentChatSurface", () => {
     expect(document.querySelector(".agent-app-body")?.className).toContain("has-sidebar");
     expect(document.querySelector(".agent-conversation")?.classList.contains("is-empty")).toBe(true);
   });
+});
+
+it("restores a waiting question from the selected committed conversation", async () => {
+  const waiting = { ...run, status: "waiting" as const, result: null, finished_at: null, conversation_id: "conversation-waiting", events: [{ schema_version: "1.0" as const, event_id: "input-event", run_id: "run-1", sequence: 1, node_id: "model", kind: "approval.requested" as const, payload: { kind: "input", prompt: "Choose A, B or C", context: { choices: ["A", "B", "C"] } }, timestamp: "2026-08-28T00:00:00Z" }] };
+  const conversation = { schema_version: "1.0" as const, conversation_id: "conversation-waiting", project_id: "project-1", agent_id: "agent-1", agent_version_id: "version-1", title: "Design choices", created_at: run.created_at, updated_at: run.created_at, initial_inputs: { request: "Create options" }, messages: [] };
+  const getAgentRun = vi.fn().mockResolvedValue(waiting);
+  renderSurface(apiWith({ listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [waiting] }), getAgentRun,
+    listAgentConversations: vi.fn().mockResolvedValue({ schema_version: "1.0", conversations: [{ ...conversation, message_count: 1 }] }),
+    getAgentConversation: vi.fn().mockResolvedValue(conversation), commandAgentRun: vi.fn().mockResolvedValue(run) }));
+  expect(await screen.findByRole("form", { name: "Provide task information" })).toBeInTheDocument();
+  expect(getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1");
+  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Your reply" })).toBeEnabled();
 });
