@@ -8,12 +8,12 @@ Desktop application.
 ## Build
 
 The release target is `aarch64-apple-darwin` and the build identity is the
-source commit SHA:
+source commit SHA. Activate the Python environment from the [quick start](../README.md#quick-start)
+and run the commands from the repository root.
 
 ```sh
-cd /Users/spectre/PycharmProjects/veyra-agent-platform
 VEYRA_BUILD_SHA="$(git rev-parse HEAD)" \
-  /opt/anaconda3/envs/veyra-agent-platform/bin/python \
+  python \
   scripts/build/package/package.py
 ```
 
@@ -95,7 +95,7 @@ graceful stop, port release, and port-conflict failure:
 
 ```sh
 VEYRA_BUILD_SHA="$(git rev-parse HEAD)" \
-  /opt/anaconda3/envs/veyra-agent-platform/bin/python \
+  python \
   scripts/build/package/package_smoke.py \
   --sidecar apps/desktop/src-tauri/binaries/veyra-local-aarch64-apple-darwin \
   --build-sha "$(git rev-parse HEAD)"

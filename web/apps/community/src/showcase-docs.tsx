@@ -43,7 +43,7 @@ const text = {
       ["失败后能否继续", "区分等待补充、等待审批、预算限制和失败。先读取错误与已有操作记录，再决定如何继续，避免重复外部操作。"],
     ],
     releaseTitle: "当前发布边界", releaseBody: "部分本地路径具备测试与运行记录，但整体验收仍需要固定同一份代码，分别检查真实 Provider、普通用户操作、跨任务重复交付、失败恢复，以及安装包启动、干净安装和升级。官网演示与单次成功记录不能替代这些证据。",
-    packaging: "桌面构建与证据说明", design: "完整产品设计", status: "开发进展与已有证据", faq: "常见问题", faqs: [
+    packaging: "桌面构建指南", communityGuide: "社区发布与导入", deployment: "社区部署与存储", faq: "常见问题", faqs: [
       ["工作空间在本机，就代表完全离线吗？", "不是。项目和运行在本机管理，配置的模型或外部工具仍可能联网。请根据任务选择要发送的资料与允许的工具。"],
       ["Agent 运行完成，结果就已经验证了吗？", "不是。执行状态、工具回执和结果验证是不同的证据。模型审查也不是独立业务认证，仍要检查本次交付所需的事实和标准。"],
       ["可以直接下载桌面安装包吗？", "当前没有经过发布验收的公开安装包。开发者可以参考构建指南在自己的环境验证；本地构建成功不代表签名、公证和安装升级已经通过。"],
@@ -86,7 +86,7 @@ const text = {
       ["Can a failed task continue safely?", "Distinguish requests for information, approval waits, budget limits, and failures. Read errors and existing operation records before continuing so external actions are not repeated blindly."],
     ],
     releaseTitle: "Current release boundary", releaseBody: "Some local paths have tests and run records. Overall acceptance still requires one fixed code revision and separate evidence for real Providers, ordinary user interactions, repeat delivery across tasks, failure recovery, package startup, clean installation, and upgrades. Website demonstrations and a single success do not replace these checks.",
-    packaging: "Desktop builds and evidence", design: "Full product design", status: "Development status and evidence", faq: "Common questions", faqs: [
+    packaging: "Desktop build guide", communityGuide: "Community publishing and import", deployment: "Community deployment and storage", faq: "Common questions", faqs: [
       ["Does local-first mean fully offline?", "No. Projects and runs are managed locally, but configured models and external tools may use the network. Choose the materials and tools appropriate to your task."],
       ["Is a completed Agent run a verified result?", "No. Execution state, tool receipts, and result verification are different evidence. Model review is not independent business certification. Check the facts and criteria required for the delivery."],
       ["Can I download a desktop installer?", "There is no public installer that has passed release acceptance yet. Developers can follow the build guide for local validation. A successful build does not prove signing, notarization, clean installation, or upgrades."],
@@ -216,7 +216,7 @@ export function ShowcaseDocs({ locale, section }: { locale: "zh" | "en"; section
             <p className="showcase-docs-kicker">04 · {copy.items[3]}</p><h2 id="showcase-docs-acceptance-title">{copy.acceptanceTitle}</h2><p>{copy.acceptanceBody}</p>
             <ul className="showcase-docs-checks">{copy.checks.map(([title, body]) => <li key={title}><Check size={17} /><div><h3>{title}</h3><p>{body}</p></div></li>)}</ul>
             <h3>{copy.releaseTitle}</h3><p>{copy.releaseBody}</p>
-            <div className="showcase-docs-sources">{[["desktop_packaging.md", copy.packaging], ["PROJECT_DESIGN.md", copy.design], ["DEVELOPMENT.md", copy.status]].map(([file, label]) => <a className="showcase-docs-source" key={file} href={`${sourceRoot}/docs/${file}`} target="_blank" rel="noreferrer">{label}<ArrowUpRight size={15} /></a>)}</div>
+            <div className="showcase-docs-sources">{[["desktop_packaging.md", copy.packaging], ["COMMUNITY_WEBSITE.md", copy.communityGuide], ["community_production_storage.md", copy.deployment]].map(([file, label]) => <a className="showcase-docs-source" key={file} href={`${sourceRoot}/docs/${file}`} target="_blank" rel="noreferrer">{label}<ArrowUpRight size={15} /></a>)}</div>
             <h3 className="showcase-docs-faq-title">{copy.faq}</h3>
             <div className="showcase-docs-faq">{copy.faqs.map(([question, answer]) => <details key={question}><summary>{question}<ChevronRight size={17} /></summary><p>{answer}</p></details>)}</div>
           </section>

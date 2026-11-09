@@ -64,6 +64,8 @@ deploy/community/backups/
 *.swp
 *.bak
 
-# Agent session objects and local scratch (not product source)
-.backboard/sessions/
+# Local AI development instructions and sessions
+/AGENTS.md
+/.backboard/
+/.cursor/
 /$DB

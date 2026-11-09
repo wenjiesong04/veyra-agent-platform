@@ -6,10 +6,11 @@ Describe a task in your own words, review what Veyra proposes, and edit the
 Agent or Workflow in Studio. Commit a version before running it with your own
 inputs, then inspect the results and execution records.
 
-![The gift-packaging Workflow open in Veyra Studio](web/apps/community/public/showcase/gift-studio.png)
+![English Veyra Studio showing an example gift-packaging Workflow draft](docs/images/gift-studio-en.jpg)
 
-The gift-packaging walkthrough shows a recorded Workflow and an existing image
-candidate. The parent run failed, and the candidate still needs review.
+The screenshot shows an example draft in the English Studio. The walkthrough
+uses recorded Workflow screens and an existing image candidate. The parent
+run failed, and the candidate still needs review.
 [Watch the 40-second walkthrough](web/apps/community/public/showcase/veyra-gift-tour.mp4) ·
 [Read the case notes](docs/SHOWCASE_MEDIA.md)
 
@@ -78,7 +79,6 @@ signature, and DMG. [Desktop packaging guide](docs/desktop_packaging.md)
 
 ## Project documentation
 
-- [Web Community and Desktop handoff](docs/COMMUNITY_WEBSITE.md)
+- [Community publishing and desktop import](docs/COMMUNITY_WEBSITE.md)
+- [Desktop build and packaging](docs/desktop_packaging.md)
 - [Community deployment and storage](docs/community_production_storage.md)
-- [Product and architecture design](docs/PROJECT_DESIGN.md)
-- [Development status and acceptance evidence](docs/DEVELOPMENT.md)
