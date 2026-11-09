@@ -2,7 +2,7 @@ import { ArrowUpRight, Check, ChevronRight, FileText } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "./showcase-docs.css";
 
-const sourceRoot = "https://github.com/wenjiesong04/veyra-agent-platform/blob/codex/agent-platform";
+const sourceRoot = "https://github.com/wenjiesong04/veyra-agent-platform/blob/HEAD";
 const sections = ["get-started", "concepts", "first-agent", "acceptance"] as const;
 type Section = typeof sections[number];
 

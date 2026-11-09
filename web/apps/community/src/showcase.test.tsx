@@ -67,7 +67,7 @@ describe("Veyra showcase experience", () => {
     expect(screen.getByRole("link", { name: /Project documentation/ })).toHaveAttribute("href", "#/docs/get-started");
     expect(screen.getByRole("link", { name: /Project documentation/ })).not.toHaveAttribute("target");
     expect(within(screen.getByRole("navigation", { name: "Primary navigation" })).getByRole("link", { name: "Docs" })).toHaveAttribute("href", "#/docs");
-    expect(screen.getByRole("link", { name: /Desktop build guide/ })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/codex/agent-platform/docs/desktop_packaging.md");
+    expect(screen.getByRole("link", { name: /Desktop build guide/ })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/HEAD/docs/desktop_packaging.md");
     expect(screen.getByText(/Public installers have not passed release acceptance/)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /download (?:app|installer|desktop)/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Download gift packaging video" })).toHaveAttribute("href", "/showcase/veyra-gift-tour.mp4");

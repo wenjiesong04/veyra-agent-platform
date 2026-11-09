@@ -160,8 +160,8 @@ paused=false、muted=true、loop=true、controls=false、duration=40；手动暂
 最终前端行为检查：Community 41 项通过，类型检查/生产构建通过；此前概念动画
 阶段 45 项是已被替换实现的历史结果，不能作为最终视频播放器的测试数字。
 浏览器覆盖桌面、768 平板、390/320 手机，中英文与明暗主题，均未发现页面横向
-溢出；最终视频另做实际播放与章节验证。视频、海报、字幕及来源说明在
-`web/public/showcase/`；私有镜头、编辑脚本与日志在 `/tmp/veyra-showcase-20261031/`。
+溢出；最终视频另做实际播放与章节验证。该版素材为历史档案。现用礼盒素材位于
+`web/apps/community/public/showcase/`，来源见 [素材说明](SHOWCASE_MEDIA.md)。
 
 并行只读功能检查：当前 `test_generated_csv_mainline.py` 12 项通过，覆盖正式 API、
 编译、原生 CSV、审批与真实写盘，模型传输为合成；不属于真实 Provider 或浏览器
@@ -222,8 +222,8 @@ draw/inspect 脚本；实际浏览器检查使用 CUA，不能称该 inspector �
 
 ## 素材与真实性
 
-四张素材位于 `web/public/showcase/`，总计约371KB。均为第一方产品的
-合成对账测试界面，不含账号邮箱、凭据或真实客户数据。来源说明同目录 README。
+历史对账展示使用四张第一方产品的合成测试界面。现用素材及历史来源见
+[素材说明](SHOWCASE_MEDIA.md)。
 Builder 是创建草稿的既有记录；其它三张是本轮只读重拍，没有修改 source 或 Run。
 保留原有未验证状态，不把单个成功样本当作跨任务准确率或完整发布验收。
 

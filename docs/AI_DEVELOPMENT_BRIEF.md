@@ -17,7 +17,7 @@
 3. [AGENTS.md](../AGENTS.md)。
 4. [PROJECT_DESIGN.md](PROJECT_DESIGN.md)。
 5. [DEVELOPMENT.md](DEVELOPMENT.md)。
-6. [.backboard/HANDOFF.md](../.backboard/HANDOFF.md)。
+6. [交接指引](../.backboard/HANDOFF.md)与可选的本地 `.backboard/HANDOFF.local.md`。
 7. 历史聊天、Codex 总结和本文引用的历史参考。
 
 代码决定“现在做到了什么”，设计决定“希望做到什么”；代码存在不等于运行验收通过。
@@ -30,7 +30,7 @@
 | `docs/AI_DEVELOPMENT_BRIEF.md` | AI 职责、产品定义、长期原则、开发方式、模块方向 |
 | `docs/PROJECT_DESIGN.md` | 详细产品模型、架构决策、契约与设计边界 |
 | `docs/DEVELOPMENT.md` | 当前模块实现、架构决策落地、验收结果、优先级和主要缺口 |
-| `.backboard/HANDOFF.md` | 正在做什么、刚完成什么、working tree、实际测试、中断点和具体下一步 |
+| `.backboard/HANDOFF.local.md` | 仅本机保存的工作区、测试、运行和中断记录 |
 | Git / 实际代码 | 最终事实来源；远端提交不包含本机未提交成果 |
 
 不要向本文追加当前 HEAD、未提交文件清单、临时 Bug、测试总数、服务端口/进程状态、
@@ -422,7 +422,7 @@ Publish → Discover → Inspect → Import → Configure → Reuse
 
 ```text
 读取必要文件 → 实现 → 窄测试 → 必要静态检查 → Review Diff → 修复明确问题
-→ 更新 docs/DEVELOPMENT.md → 更新 .backboard/HANDOFF.md → 下一切片
+→ 更新 docs/DEVELOPMENT.md → 按需更新本地交接 → 下一切片
 ```
 
 先找实际调用路径和已有约定，不为局部工作重扫全仓。测试覆盖修改风险与用户行为，
@@ -469,7 +469,7 @@ Publish → Discover → Inspect → Import → Configure → Reuse
 2. `docs/AI_DEVELOPMENT_BRIEF.md`
 3. `docs/PROJECT_DESIGN.md`
 4. `docs/DEVELOPMENT.md`
-5. `.backboard/HANDOFF.md`
+5. `.backboard/HANDOFF.md`，如存在则接着读 `.backboard/HANDOFF.local.md`
 
 然后在仓库目录执行：
 

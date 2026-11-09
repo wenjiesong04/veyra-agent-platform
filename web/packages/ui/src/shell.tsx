@@ -1,5 +1,6 @@
 import { ArrowLeft, ChevronDown, History, Languages, LogIn, LogOut, Menu, Moon, PanelLeftClose, Settings2, Sun, Trash2, UserRound, X, type LucideIcon } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import brandIconUrl from "./assets/veyra-icon.png";
 import { useLocale } from "./i18n";
 import { PaneResizeHandle } from "./pane-resize";
 import { IconButton } from "./primitives";
@@ -630,7 +631,7 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
     setCollapsed((value) => !value);
   };
 
-  const iconSrc = brand.iconSrc ?? "/veyra-icon.png";
+  const iconSrc = brand.iconSrc ?? brandIconUrl;
   const languageIsEnglish = locale === "en";
   const localizedEyebrow = eyebrow ? shellText(eyebrow, t) : undefined;
   const localizedTitle = shellText(title, t);

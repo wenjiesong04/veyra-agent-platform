@@ -102,7 +102,7 @@ VEYRA_BUILD_SHA="$(git rev-parse HEAD)" \
 ```
 
 The GitHub Actions `desktop-package` job repeats the same checks on a clean
-`macos-14` arm64 runner, then runs the Tauri build and asserts that exactly one
+`macos-15` arm64 runner, then runs the Tauri build and asserts that exactly one
 DMG exists under the target-specific release bundle directory. A local static
 pass or a Rust compile pass is not a packaged-artifact proof; the real sidecar
 and DMG steps are the release evidence.

@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { BrandLoading } from "./brand-loading";
+import brandIconUrl from "./assets/veyra-icon.png";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md";
@@ -121,7 +122,7 @@ export function EmptyState({ icon: Icon, title, detail, action }: { icon?: Lucid
     <div className="ui-empty">
       <span className="ui-empty-figure" aria-hidden="true">
         {Icon ? <span className="ui-empty-icon"><Icon size={28} /></span> : (
-          <span className="ui-empty-mark"><img src="/veyra-icon.png" alt="" /></span>
+          <span className="ui-empty-mark"><img src={brandIconUrl} alt="" /></span>
         )}
       </span>
       <strong>{title}</strong>

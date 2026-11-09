@@ -2,7 +2,8 @@
 
 Every new session or main development agent must read, in order:
 `AGENTS.md`, `docs/AI_DEVELOPMENT_BRIEF.md`, `docs/PROJECT_DESIGN.md`,
-`docs/DEVELOPMENT.md`, and `.backboard/HANDOFF.md`.
+`docs/DEVELOPMENT.md`, and `.backboard/HANDOFF.md`. Read `.backboard/HANDOFF.local.md`
+if it exists.
 Then run `git status -sb`, `git diff --stat`, and `git diff --name-status`
 and reconcile the actual working tree before continuing. Historical handoffs
 do not override the latest user scope or grant commit, push, or restart permission.

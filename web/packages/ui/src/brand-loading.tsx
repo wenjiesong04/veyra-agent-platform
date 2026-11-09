@@ -1,8 +1,9 @@
 import type { CSSProperties, ReactNode } from "react";
+import brandIconUrl from "./assets/veyra-icon.png";
 
 export function BrandMark({
   size = 72,
-  src = "/veyra-icon.png",
+  src = brandIconUrl,
 }: {
   size?: number;
   src?: string;

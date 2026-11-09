@@ -1,6 +1,6 @@
 import { Languages, Moon, Sun } from "lucide-react";
 import type { ReactNode } from "react";
-import { useLocale, useTheme } from "@veyra/ui";
+import { brandIconUrl, useLocale, useTheme } from "@veyra/ui";
 
 export function AuthLayout({ children }: { children: ReactNode }) {
   const { locale, setLanguage, t } = useLocale();
@@ -11,7 +11,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
     <div className="auth-shell">
       <header className="auth-header">
         <a className="auth-brand" href="#/community" aria-label="Veyra">
-          <img src="/veyra-icon.png" alt="" />
+          <img src={brandIconUrl} alt="" />
           <span><strong>Veyra</strong><small>Agent Platform</small></span>
         </a>
         <div className="auth-preferences">

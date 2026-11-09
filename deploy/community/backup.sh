@@ -23,12 +23,3 @@ docker compose --env-file "$deployment_dir/.env" \
   exec -T minio tar -C /data -czf - . > "$blob_output"
 chmod 0600 "$blob_output"
 printf 'blob_store_backup=%s\n' "$blob_output"
-
-if [ -n "${VEYRA_CLOUD_CREDENTIAL_MASTER_KEY_BACKUP_PATH:-}" ]; then
-  key_output="$backup_dir/cloud-credential-master-$stamp.key"
-  cp -- "$VEYRA_CLOUD_CREDENTIAL_MASTER_KEY_BACKUP_PATH" "$key_output"
-  chmod 0600 "$key_output"
-  printf 'credential_master_key_backup=%s\n' "$key_output"
-else
-  printf '%s\n' 'credential_master_key_backup=NOT_COPIED_provision_the_same_VEYRA_CLOUD_CREDENTIAL_MASTER_KEY_separately' >&2
-fi

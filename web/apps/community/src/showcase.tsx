@@ -1,6 +1,6 @@
 import { ArrowRight, ArrowUpRight, BookOpen, Check, ChevronRight, FileText, Maximize2, Menu, Moon, Play, RotateCcw, ShieldCheck, Sun, X } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ThemeProvider, useLocale, useTheme } from "@veyra/ui";
+import { brandIconUrl, ThemeProvider, useLocale, useTheme } from "@veyra/ui";
 import { showcaseCopy } from "./showcase-copy";
 import { ShowcaseDemo } from "./showcase-demo";
 import { ShowcaseDocs } from "./showcase-docs";
@@ -8,7 +8,7 @@ import { ShowcaseBrief, ShowcaseOutput } from "./showcase-case";
 import "./showcase.css";
 
 const repository = "https://github.com/wenjiesong04/veyra-agent-platform";
-const branch = `${repository}/blob/codex/agent-platform`;
+const branch = `${repository}/blob/HEAD`;
 const sources = ["gift-input.jpg", "gift-studio.png", "gift-runtime.png"] as const;
 const linkTargets = ["#/docs/get-started", repository, `${branch}/docs/desktop_packaging.md`];
 const sectionTargets = ["#demo", "#product", "#safety", "#/docs", "#/community"];
@@ -146,7 +146,7 @@ function ShowcasePage({ documentation = false, documentSection, community = fals
     }}>
       <a className="showcase-skip" href="#main" onClick={(event) => { event.preventDefault(); document.getElementById("main")?.focus({ preventScroll: true }); scrollRef.current?.scrollTo({ top: 0, behavior: "instant" }); }}>{copy.skip}</a>
       <header className="showcase-header">
-        <a className="showcase-brand" href="#home" aria-label="Veyra"><img src="/veyra-icon.png" alt="" width="32" height="32" /><span>Veyra</span></a>
+        <a className="showcase-brand" href="#home" aria-label="Veyra"><img src={brandIconUrl} alt="" width="32" height="32" /><span>Veyra</span></a>
         <nav id="showcase-navigation" className={menuOpen ? "showcase-nav is-open" : "showcase-nav"} aria-label={copy.navigation}>
           {copy.nav.map((label, index) => <a key={sectionTargets[index]} href={sectionTargets[index]} aria-current={activeSection === sectionTargets[index] ? "location" : undefined} onClick={() => setMenuOpen(false)}>{label}</a>)}
         </nav>

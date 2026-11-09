@@ -41,7 +41,7 @@ describe("Veyra public showcase", () => {
     for (const anchor of ["product", "how-it-works", "safety", "docs", "download", "experience", "control", "start"]) {
       expect(document.getElementById(anchor)).toBeInTheDocument();
     }
-    expect(screen.getByRole("link", { name: /Desktop build guide/ })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/codex/agent-platform/docs/desktop_packaging.md");
+    expect(screen.getByRole("link", { name: /Desktop build guide/ })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/HEAD/docs/desktop_packaging.md");
     const buildLinks = screen.getAllByRole("link", { name: "Build" });
     expect(buildLinks).toHaveLength(2);
     for (const link of buildLinks) expect(link).toHaveAttribute("href", "#/docs/get-started");

@@ -1,9 +1,11 @@
+import { brandIconUrl } from "@veyra/ui";
+
 type Locale = "zh" | "en";
 
 export function ConversationHeroMark() {
   return (
     <span className="agent-convo-mark" aria-hidden="true">
-      <img src="/veyra-icon.png" alt="" />
+      <img src={brandIconUrl} alt="" />
     </span>
   );
 }

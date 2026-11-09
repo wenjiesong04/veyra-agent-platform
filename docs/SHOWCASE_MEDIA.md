@@ -1,5 +1,8 @@
 # Veyra website product images
 
+The current website assets are in `web/apps/community/public/showcase/` and
+are served under `/showcase/`. Earlier captures described below are archival.
+
 ## Current presentation edit (2026-11-02)
 
 The current 40-second gift film retains the same artifact and real UI sources.
@@ -24,9 +27,9 @@ The current page uses the actual pink divided candy-box / Christmas gift-design
 case. `gift-input.jpg` is the case's uploaded photo. `gift-output.jpg` is a
 presentation-size encoding of its existing `render-1.png` runtime artifact.
 The original generated image is not corrected or repainted. `gift-studio.png`,
-`gift-capabilities.png`, `gift-analysis.png`, and `gift-runtime.png` are actual
-UI captures with the account sidebar closed. No credentials or account email
-appear in these public files.
+`gift-capabilities.png`, and `gift-runtime.png` are actual UI captures with the
+account sidebar closed. No credentials or account email appear in these public
+files. The earlier `gift-analysis.png` capture is archival.
 
 The historical parent Workflow failed. Its Analyzer and Renderer child runs
 have unverified results, including the image candidate. A generated image is

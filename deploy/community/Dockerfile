@@ -8,7 +8,8 @@ WORKDIR /app
 
 COPY requirements/runtime-py311.txt requirements/runtime-py311.txt
 COPY pyproject.toml pyproject.toml
-COPY backend backend
+COPY backend/src backend/src
+COPY backend/migrations/community backend/migrations/community
 RUN python -m pip install --require-hashes --requirement requirements/runtime-py311.txt \
     && python -m pip install --no-deps --no-build-isolation --editable . \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin veyra

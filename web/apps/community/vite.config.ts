@@ -3,7 +3,6 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
-  publicDir: "../../public",
   server: {
     host: "127.0.0.1",
     port: 5174,

@@ -31,3 +31,20 @@ def test_community_container_health_checks_dependency_readiness() -> None:
     assert any("/api/v1/ready" in str(item) for item in health_test)
     dockerfile = (_COMPOSE_PATH.parent / "Dockerfile").read_text(encoding="utf-8")
     assert "/api/v1/ready" in dockerfile
+
+
+def test_community_compose_uses_supported_production_settings() -> None:
+    compose_source = _COMPOSE_PATH.read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_source)
+    environment = compose["services"]["community"]["environment"]
+    assert environment["VEYRA_COMMUNITY_MODE"] == "production"
+    assert environment["VEYRA_COMMUNITY_OBJECT_STORAGE_BACKEND"] == "s3"
+    assert "VEYRA_COMMUNITY_DATABASE_URL" in environment
+    assert not any(key.startswith("VEYRA_CLOUD_") for key in environment)
+
+    sample_env = _COMPOSE_PATH.with_name(".env.example").read_text(encoding="utf-8")
+    provided_variables = set(
+        re.findall(r"^([A-Z][A-Z0-9_]*)=", sample_env, re.MULTILINE)
+    )
+    required_variables = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?", compose_source))
+    assert required_variables <= provided_variables

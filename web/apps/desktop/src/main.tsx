@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { brandIconUrl } from "@veyra/ui";
 import "@veyra/ui/styles/tokens.css";
 import "@veyra/ui/styles/base.css";
 import "@veyra/ui/styles/shell.css";
@@ -21,6 +22,12 @@ const queryClient = new QueryClient({
   },
 });
 const localApi = createLocalApiClient();
+
+const favicon = document.createElement("link");
+favicon.rel = "icon";
+favicon.type = "image/png";
+favicon.href = brandIconUrl;
+document.head.append(favicon);
 
 createRoot(root).render(
   <StrictMode>
