@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorCopy } from "@veyra/connected-account";
@@ -234,11 +234,18 @@ describe("Community account flows", () => {
     const user = userEvent.setup();
     render(<CommunityApp />);
     const name = await screen.findByLabelText("Display name");
-    fireEvent.change(name, { target: { value: "Alice Chen" } });
-    await user.click(screen.getByRole("button", { name: "Save profile" }));
+    await waitFor(() => {
+      expect(name).toHaveValue(account.display_name);
+      expect(screen.getByLabelText("Public handle")).toHaveValue(account.handle);
+    });
+    await user.clear(name);
+    await user.type(name, "Alice Chen");
+    const save = screen.getByRole("button", { name: "Save profile" });
+    expect(save).toBeEnabled();
+    await user.click(save);
     await waitFor(() => expect(requests.some((request) => request.url.endsWith("/account/profile"))).toBe(true), { timeout: 3000 });
     await waitFor(() => expect(screen.getByText("Profile updated.").closest('[role="status"]')).not.toBeNull(), { timeout: 3000 });
-    await user.click(screen.getByRole("button", { name: "Revoke access" }));
+    await user.click(await screen.findByRole("button", { name: "Revoke access" }));
     await waitFor(() => expect(screen.queryByText("Old browser")).not.toBeInTheDocument());
 
     expect(requests.find((request) => request.url.endsWith("/account/profile"))?.body).toEqual({ display_name: "Alice Chen" });
