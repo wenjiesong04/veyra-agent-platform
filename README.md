@@ -1,85 +1,84 @@
 # Veyra Agent Platform
 
-Veyra is a local-first AI Agent workspace. Desktop and the Local API create,
-inspect, run, control, and version user-owned Agents. Community is the
-separate account and release registry. There is no Cloud data plane.
+**Build and run Agents and Workflows in a local AI studio.**
 
-The repository is a greenfield implementation. The legacy Veyra repository is
-read-only migration evidence and is never a runtime dependency.
+Describe a task in your own words, review what Veyra proposes, and edit the
+Agent or Workflow in Studio. Commit a version before running it with your own
+inputs, then inspect the results and execution records.
 
-## V1 products
+![The gift-packaging Workflow open in Veyra Studio](web/apps/community/public/showcase/gift-studio.png)
 
-- Desktop (`5173`): the local workspace for Projects, Chat/Builder, Studio,
-  Resources, Knowledge, Runs/Monitor, and Community publish/discovery/import.
-- Public site (`5174`): the anonymous product showcase, plus the Community
-  catalog and account pages. It does not host Cloud Projects, Chat, Files, or
-  Runs.
-- Local API (`8771`): the local Project, Builder, Runtime, Knowledge, Resource,
-  Import, and Orchestrator service. Builder and Chat call the configured model
-  provider directly from this process.
-- Community API (`8772`): accounts and the immutable Agent/Plugin release
-  registry. It does not execute Agents and does not own a Cloud data plane.
+The gift-packaging walkthrough shows a recorded Workflow and an existing image
+candidate. The parent run failed, and the candidate still needs review.
+[Watch the 40-second walkthrough](web/apps/community/public/showcase/veyra-gift-tour.mp4) ·
+[Read the case notes](docs/SHOWCASE_MEDIA.md)
 
-## Development baseline
+## What you can do
 
-- Python 3.11.15 in the dedicated Conda environment `veyra-agent-platform`
-- FastAPI, Pydantic, SQLAlchemy, Alembic, and SQLite/PostgreSQL
-- React 19, TypeScript 5.9, Vite 7, and npm workspaces
-- Tauri 2 and a PyInstaller sidecar for the desktop release
+- **Build in Desktop.** Create Projects, describe tasks in Chat, and review,
+  edit, test, and version your Agents and Workflows in Studio. Project files,
+  Builder conversations, and Run records are stored locally. Configured model
+  providers and tools may connect to external services.
+- **Share through the Community website.** Export an Agent in Desktop, then
+  sign in on the website to preview and publish the file. The website accepts
+  Agent definitions and Plugin Packs. Downloaded packages are imported and
+  inspected in Desktop. [Community guide](docs/COMMUNITY_WEBSITE.md)
+- **Inspect what ran.** Open the execution record to see the version, inputs,
+  outputs, and verification status. An execution can finish before its
+  result has been verified.
 
-The canonical product and engineering requirements are in
-`docs/PROJECT_DESIGN.md`.
+## Quick start
 
-Current implementation status, module priorities, and acceptance evidence are
-maintained in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
-
-Desktop and the Local API own Projects, Builder conversations, files, and
-Runs. The public site does not read or write that local state. Community
-account and release metadata stay on `8772`.
-
-## Backend development
-
-Activate the dedicated Conda environment before local work:
+Use Conda, Python 3.11, and Node.js 24 with npm. Run these commands from the
+repository root. Create the Conda environment once and reuse it on later runs.
 
 ```sh
+conda env create -f environment.yml
 conda activate veyra-agent-platform
-make install
-make check
+make install PYTHON=python
+npm --prefix web ci
 ```
 
-`make install` installs the hashed dev lock with `--require-hashes`, then
-installs the local package with `--no-deps --no-build-isolation`. Runtime-only
-environments use `make install-runtime`. The runtime and dev lock files are the
-only committed dependency locks. Refresh both generated locks deterministically
-with `make lock-refresh`; the lock files pin versions and artifact hashes.
+### Preview the website
 
-The local Runtime uses the cross-platform `keyring` abstraction for device
-credentials: macOS Keychain, Windows Credential Manager, or a Linux Secret
-Service/KWallet backend. A missing system credential service is reported as an
-unavailable credential store; it is never silently replaced with a plaintext
-file or process-memory store. Process environment variables remain an explicit
-development fallback for deployment-owned Platform credentials only.
-`make linux-lock-check` validates the dev lock with Linux wheel resolution.
+Run `npm --prefix web run dev:community` and open
+[the local product showcase](http://127.0.0.1:5174). The demo and project
+documentation are available before signing in.
 
-To configure the model Runtime/Factory and GitHub adapters, open Desktop
-Settings and save the API key or token in the Credentials panels. Project and
-Agent sources store only opaque references; values are never written to Project
-files or local SQLite. `MOONSHOT_API_KEY` and `GITHUB_TOKEN` remain supported
-for headless development and CI.
+### Start the desktop workspace
 
-To bring in an external Agent, open a Project's Add Agent menu and choose
-Import external Agent. Veyra accepts a generic YAML file, a folder, or a ZIP
-archive. It first shows a compatibility report, then creates an editable
-Veyra Agent draft only after confirmation; ZIP is treated as a transport and
-external code or dependency files are never executed automatically.
+Start each service in its own terminal from the repository root. Activate
+`veyra-agent-platform` in each Python terminal.
 
-## Desktop release candidate
+| Service | Command | Local address |
+| --- | --- | --- |
+| Local API | `veyra-local` | `127.0.0.1:8771` |
+| Community API | `make migrate-community PYTHON=python && veyra-community` | `127.0.0.1:8772` |
+| Desktop interface | `npm --prefix web run dev:desktop` | `127.0.0.1:5173` |
+| Community website | `npm --prefix web run dev:community` | `127.0.0.1:5174` |
 
-The Desktop shell and macOS arm64 packaging contract are documented in
-[`docs/desktop_packaging.md`](docs/desktop_packaging.md). The static contract
-check does not require Rust or PyInstaller:
+Open [Desktop](http://127.0.0.1:5173) and sign in with an account on the
+Community API you started. To create an account, set the SMTP variables shown
+in [.env.example](.env.example) in the Community API terminal before starting
+the service. Configure a model provider in Desktop Settings before asking
+Builder to generate an Agent or running a model-backed task.
+
+## Build and validate
 
 ```sh
-python3 scripts/build/package/package_smoke.py --static-only \
-  --target aarch64-apple-darwin
+make check PYTHON=python
+npm --prefix web run typecheck
+npm --prefix web test
+npm --prefix web run build
 ```
+
+The macOS arm64 desktop package is a release candidate. The repository contains
+the source and build instructions, and CI checks the sidecar, application
+signature, and DMG. [Desktop packaging guide](docs/desktop_packaging.md)
+
+## Project documentation
+
+- [Web Community and Desktop handoff](docs/COMMUNITY_WEBSITE.md)
+- [Community deployment and storage](docs/community_production_storage.md)
+- [Product and architecture design](docs/PROJECT_DESIGN.md)
+- [Development status and acceptance evidence](docs/DEVELOPMENT.md)
