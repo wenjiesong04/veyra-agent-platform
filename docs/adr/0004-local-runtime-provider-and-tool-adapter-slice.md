@@ -1,0 +1,62 @@
+# ADR 0004: First local Runtime provider and Tool adapter
+
+## Decision
+
+The first Runtime slice supports these real execution paths:
+
+- an `Agent` node calls one configured OpenAI-compatible model through the
+  host-side Runtime profile;
+- `veyra.tool.filesystem.read@1.0.0` reads a UTF-8 file below the selected
+  Project root; and
+- `veyra.tool.filesystem.write@1.0.0` writes a UTF-8 file below the Project
+  root after an approved `HumanApproval` node on the current path.
+- `veyra.tool.http.request@1.0.0` calls an HTTP(S) host explicitly listed on
+  the Tool node and requires an approved `HumanApproval` node.
+- `veyra.tool.web.search@1.0.0` searches a fixed web provider and returns bounded
+  titles, links, and snippets after an approved `HumanApproval` node.
+
+Tool execution records an authorization decision before any adapter effect.
+Write, Shell, and similar high-authority tools remain approval-gated. A run
+that reaches `HumanApproval` becomes `waiting`, persists a checkpoint and
+approval request, and continues only through a durable `run_command`
+(`approve`, `reject`, `stop`, `retry`).
+
+The opening POST remains asynchronous for execution: node events are persisted
+as they happen and replayed over SSE. OpenAI-compatible model transports may
+stream assistant deltas; the Runtime records them as `model.delta` events and
+the UI renders the same replayable stream. A run without a model credential
+fails with `runtime_not_configured`; it is never simulated.
+
+## Boundaries
+
+- Tool references must resolve to a ready Resource Catalog descriptor, match the
+  immutable content hash in the Agent lock, and have the required permission
+  subset in the source.
+- The file adapter rejects absolute paths, traversal, symlinks, secret-like
+  names and files larger than 1 MiB. Read returns text as the declared
+  `content` value. Write returns `{ written: true }` after an approved
+  `HumanApproval`. Receipts record only digests and a relative path, never
+  file contents.
+- Model responses are mapped only to declared Agent outputs. String outputs use
+  the final response text; object, array, number and boolean outputs require
+  matching JSON values.
+- Shell and arbitrary network requests outside the explicit HTTP adapter remain
+  explicit unsupported states. MCP is an experimental Tool adapter only: stdio uses
+  newline-delimited JSON-RPC, discovered descriptors are not Factory-selectable
+  until reviewed, Runtime enforces that review gate, discovered input schemas
+  preserve required fields and basic types, and discovered calls require approval by default. The generic
+  builtin `veyra.mcp.call` descriptor remains unconfigured until a concrete
+  server/tool descriptor exists. These boundaries are not represented as fake
+  successful adapters. `resume` is not used for approval waits; those waits
+  continue through `approve` or `reject`.
+  `GET .../runs/{run_id}/events` is a replayable SSE follow of persisted
+  events. POST `/run` returns the persisted `running` record immediately.
+
+## Consequences
+
+The Resource Library can now honestly mark filesystem read and write as
+runnable, and Factory can select them. Write still requires a HumanApproval
+node before compilation. A reviewed MCP Tool can use the same catalog lock,
+authorization, approval, receipt, and Runtime adapter boundary; discovery alone
+does not grant execution. Model deltas now paint live output in Studio and Agent
+Chat without changing the portable Agent source format.

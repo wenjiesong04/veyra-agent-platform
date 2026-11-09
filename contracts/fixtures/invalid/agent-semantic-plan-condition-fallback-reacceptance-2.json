@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "goal": "Classify a free-text request into one of two categories and prepare a reviewed response.",
+  "suggested_name": "Request Handler",
+  "description": "Each category has its own approval and response step.",
+  "inputs": [
+    {"name": "request", "type": "string"}
+  ],
+  "outputs": [
+    {"name": "priority", "type": "string"},
+    {"name": "summary", "type": "string"}
+  ],
+  "steps": [
+    "classify request",
+    "approve the selected category",
+    "prepare the response"
+  ],
+  "capability_intents": [],
+  "knowledge_intents": [],
+  "approval_points": [],
+  "success_criteria": [],
+  "user_constraints": [],
+  "step_intents": [
+    {
+      "semantic_key": "classify_priority",
+      "name": "Classify request",
+      "purpose": "Classify the request content into two named categories.",
+      "operation_kind": "condition",
+      "branches": [
+        {"key": "urgent", "label": "Urgent"},
+        {"key": "routine", "label": "Routine"}
+      ]
+    },
+    {
+      "semantic_key": "approve_urgent",
+      "name": "Approve urgent handling",
+      "purpose": "Human approval before the first category response.",
+      "operation_kind": "approval",
+      "depends_on": ["classify_priority"],
+      "branch_condition": "classify_priority",
+      "branch_key": "urgent"
+    },
+    {
+      "semantic_key": "advise_urgent",
+      "name": "Prepare urgent response",
+      "purpose": "Prepare the first category response after approval.",
+      "operation_kind": "model",
+      "depends_on": ["approve_urgent"],
+      "branch_condition": "classify_priority",
+      "branch_key": "urgent"
+    },
+    {
+      "semantic_key": "approve_routine",
+      "name": "Approve routine handling",
+      "purpose": "Human approval before the second category response.",
+      "operation_kind": "approval",
+      "depends_on": ["classify_priority"],
+      "branch_condition": "classify_priority",
+      "branch_key": "routine"
+    },
+    {
+      "semantic_key": "advise_routine",
+      "name": "Prepare routine response",
+      "purpose": "Prepare the second category response after approval.",
+      "operation_kind": "model",
+      "depends_on": ["approve_routine"],
+      "branch_condition": "classify_priority",
+      "branch_key": "routine"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# veyra.tool.entity.read@1.0.0
+availability: ready
+description: Read a persistent project entity record.
+factory_selectable: true
+capabilities:
+- entity_read
+kind: tool
+name: Entity Read
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.entity.read
+resource_id: veyra.tool.entity.read
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.entity.read
+  approval_required: false
+  input_schema:
+    entity_id: string
+  output_schema:
+    entity_id: string
+    payload: object
+    status: string
+    revision: integer
+  tool_name: entity.read
+  ui:
+    category: state
+    icon: database
+    title: Read Entity
+tags:
+- state
+- local
+version: 1.0.0

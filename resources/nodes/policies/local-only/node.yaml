@@ -1,0 +1,26 @@
+# veyra.policy.local-only@1.0.0
+availability: ready
+description: Keep execution and data handling local.
+factory_selectable: true
+capabilities:
+- local_only
+kind: policy
+name: Local Only
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.policy.local-only
+runtime_status: supported
+spec:
+  network: deny
+  ui:
+    category: policy
+    icon: lock
+    title: Local Only
+tags:
+- policy
+- builtin
+version: 1.0.0

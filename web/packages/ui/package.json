@@ -1,0 +1,21 @@
+{
+  "name": "@veyra/ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles/tokens.css": "./src/styles/tokens.css",
+    "./styles/base.css": "./src/styles/base.css",
+    "./styles/shell.css": "./src/styles/shell.css",
+    "./styles/primitives.css": "./src/styles/primitives.css",
+    "./styles/feedback.css": "./src/styles/feedback.css"
+  },
+  "peerDependencies": {
+    "react": ">=19.0.0",
+    "react-dom": ">=19.0.0"
+  },
+  "dependencies": {
+    "lucide-react": "^0.555.0"
+  }
+}

@@ -1,0 +1,95 @@
+.account-page-avatar {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  margin-bottom: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  color: var(--hero-text);
+  background: linear-gradient(145deg, var(--hero-start), var(--hero-end));
+  font-size: 26px;
+  font-weight: 840;
+}
+
+.capability-list {
+  display: grid;
+  gap: 6px;
+}
+
+.capability-list > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+  color: var(--good);
+}
+
+.capability-list > div > span {
+  display: grid;
+  gap: 1px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.capability-list small {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.account-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 18px;
+  border-radius: 12px;
+  padding: 11px 12px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.connection-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 12px;
+}
+
+.connection-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.connection-card > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.connection-card small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+@media (max-width: 540px) {
+  .connection-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .connection-card .ui-button {
+    width: 100%;
+  }
+}

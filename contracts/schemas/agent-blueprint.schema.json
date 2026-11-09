@@ -1,0 +1,835 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/contracts/agent-blueprint.schema.json",
+  "title": "Untrusted Factory AgentBlueprint V1",
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
+    "node_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "reference": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*@[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "compact_field_type": {
+      "type": "string",
+      "enum": [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "object",
+        "array",
+        "table",
+        "image",
+        "pdf",
+        "document",
+        "file",
+        "audio",
+        "video",
+        "collection"
+      ]
+    },
+    "typed_field_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "number",
+            "integer",
+            "boolean",
+            "object",
+            "array",
+            "table",
+            "artifact",
+            "image",
+            "pdf",
+            "document",
+            "file",
+            "audio",
+            "video",
+            "collection"
+          ]
+        },
+        "artifact_kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "pdf",
+            "document",
+            "file",
+            "audio",
+            "video",
+            "collection"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "multiple": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "accepted_media_types": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "json_schema": {
+          "type": "object"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "artifact"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "artifact_kind"
+            ]
+          }
+        }
+      ]
+    },
+    "typed_fields": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/slug"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/compact_field_type"
+          },
+          {
+            "$ref": "#/$defs/typed_field_descriptor"
+          }
+        ]
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network_hosts",
+        "tools"
+      ],
+      "properties": {
+        "network_hosts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "filesystem_read_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "filesystem_write_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "shell_workspace_only": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "checks"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "start_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Start"
+        }
+      }
+    },
+    "agent_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "model_ref",
+        "system_prompt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Agent"
+        },
+        "model_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "system_prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
+        }
+      },
+      "description": "Historical model node spelling, preserved during roundtrip."
+    },
+    "tool_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "uses"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Tool"
+        },
+        "uses": {
+          "$ref": "#/$defs/reference"
+        }
+      }
+    },
+    "condition_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "expression"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Condition"
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        }
+      }
+    },
+    "transform_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "mapping"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Transform"
+        },
+        "mapping": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
+        }
+      }
+    },
+    "approval_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "prompt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "HumanApproval"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*(?:\\.(?:[a-z][a-z0-9_-]*|[0-9]+))*$"
+        },
+        "max_revisions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        }
+      }
+    },
+    "verifier_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "checks"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Verifier"
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "output_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "output_name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Output"
+        },
+        "output_name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "node": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/start_node"
+        },
+        {
+          "$ref": "#/$defs/agent_node"
+        },
+        {
+          "$ref": "#/$defs/model_node"
+        },
+        {
+          "$ref": "#/$defs/tool_node"
+        },
+        {
+          "$ref": "#/$defs/condition_node"
+        },
+        {
+          "$ref": "#/$defs/transform_node"
+        },
+        {
+          "$ref": "#/$defs/approval_node"
+        },
+        {
+          "$ref": "#/$defs/verifier_node"
+        },
+        {
+          "$ref": "#/$defs/output_node"
+        }
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "port",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/node_id"
+        },
+        "port": {
+          "enum": [
+            "next",
+            "true",
+            "false",
+            "approved",
+            "rejected",
+            "passed",
+            "failed"
+          ]
+        },
+        "to": {
+          "$ref": "#/$defs/node_id"
+        }
+      }
+    },
+    "required_capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component_types",
+        "tool_refs"
+      ],
+      "properties": {
+        "component_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "Start",
+              "Agent",
+              "Model",
+              "Tool",
+              "Condition",
+              "Transform",
+              "HumanApproval",
+              "Verifier",
+              "Output"
+            ]
+          }
+        },
+        "tool_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "skill_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "policy_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        }
+      }
+    },
+    "ui_suggestions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positions"
+      ],
+      "properties": {
+        "positions": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "x",
+              "y"
+            ],
+            "properties": {
+              "x": {
+                "type": "integer"
+              },
+              "y": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "reference",
+              "x",
+              "y"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "skill",
+                  "policy",
+                  "template",
+                  "mcp_tool",
+                  "knowledge"
+                ]
+              },
+              "reference": {
+                "type": "string",
+                "pattern": "^(?:[a-z][a-z0-9_.-]*|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})@[0-9]+\\.[0-9]+\\.[0-9]+$"
+              },
+              "x": {
+                "type": "integer"
+              },
+              "y": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "x",
+              "y",
+              "text"
+            ],
+            "properties": {
+              "x": {
+                "type": "integer"
+              },
+              "y": {
+                "type": "integer"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 4000
+              },
+              "color": {
+                "enum": [
+                  "teal",
+                  "amber",
+                  "violet",
+                  "slate"
+                ]
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 160,
+                "maximum": 640
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 96,
+                "maximum": 640
+              },
+              "manual_position": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "labels": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "branch_labels": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/node_id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "true",
+              "false"
+            ],
+            "properties": {
+              "true": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "false": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            }
+          }
+        }
+      }
+    },
+    "model_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "component_type",
+        "model_ref",
+        "system_prompt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "component_type": {
+          "const": "Model"
+        },
+        "model_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "system_prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        }
+      }
+    },
+    "port_kind": {
+      "type": "string",
+      "enum": [
+        "run_input",
+        "node",
+        "run_output"
+      ]
+    },
+    "port_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "port"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/port_kind"
+        },
+        "port": {
+          "$ref": "#/$defs/slug"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node_id"
+        }
+      }
+    },
+    "data_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "target"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/port_ref"
+        },
+        "target": {
+          "$ref": "#/$defs/port_ref"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "goal",
+    "inputs",
+    "outputs",
+    "nodes",
+    "transitions",
+    "required_capabilities",
+    "requested_permissions",
+    "verification",
+    "ui_suggestions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "$ref": "#/$defs/typed_fields"
+    },
+    "outputs": {
+      "$ref": "#/$defs/typed_fields"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/transition"
+      }
+    },
+    "required_capabilities": {
+      "$ref": "#/$defs/required_capabilities"
+    },
+    "requested_permissions": {
+      "$ref": "#/$defs/permissions"
+    },
+    "verification": {
+      "$ref": "#/$defs/verification"
+    },
+    "ui_suggestions": {
+      "$ref": "#/$defs/ui_suggestions"
+    },
+    "data_edges": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/data_edge"
+      }
+    }
+  }
+}

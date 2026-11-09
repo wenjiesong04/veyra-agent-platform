@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veyra-agent-platform"
+version = "0.1.0"
+description = "Local-first Agent platform backend scaffold"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "alembic==1.16.4",
+    "aiosqlite==0.21.0",
+    "argon2-cffi==25.1.0",
+    "cryptography==45.0.5",
+    "fastapi==0.116.1",
+    "greenlet==3.5.5",
+    "httpx==0.28.1",
+    "keyring==25.6.0",
+    "jsonschema==4.26.0",
+    "platformdirs==4.3.8",
+    "Pillow==12.3.0",
+    "pydantic==2.11.7",
+    "pydantic-settings==2.10.1",
+    "PyYAML==6.0.2",
+    "python-multipart==0.0.20",
+    "secretstorage==3.5.0",
+    "psycopg[binary]==3.2.9",
+    "SQLAlchemy==2.0.43",
+    "uvicorn==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy==1.17.1",
+    "pip-tools==7.6.1",
+    "pytest==8.4.1",
+    "pytest-asyncio==1.1.0",
+    "pytest-cov==6.2.1",
+    "respx==0.22.0",
+    "ruff==0.12.9",
+]
+
+[project.scripts]
+veyra-community = "veyra_agent_platform.community.app:main"
+veyra-local = "veyra_agent_platform.local.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "backend/src"}
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
+include = ["veyra_agent_platform*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["backend/src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["veyra_agent_platform"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["backend/src"]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+
+[tool.coverage.run]
+branch = true
+source = ["veyra_agent_platform"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = ["backend/src"]
+files = ["backend/src", "scripts"]
+strict = true

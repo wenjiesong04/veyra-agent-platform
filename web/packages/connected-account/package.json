@@ -1,0 +1,19 @@
+{
+  "name": "@veyra/connected-account",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "dependencies": {
+    "@veyra/api-contracts": "0.1.0",
+    "@veyra/ui": "0.1.0",
+    "lucide-react": "^0.555.0",
+    "react": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7"
+  }
+}

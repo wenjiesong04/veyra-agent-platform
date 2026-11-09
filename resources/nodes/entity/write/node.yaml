@@ -1,0 +1,38 @@
+# veyra.tool.entity.write@1.0.0
+availability: ready
+description: Write a persistent project entity record and revision event.
+factory_selectable: true
+capabilities:
+- entity_write
+kind: tool
+name: Entity Write
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.entity.write
+resource_id: veyra.tool.entity.write
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.entity.write
+  approval_required: false
+  input_schema:
+    entity_id: string
+    entity_type: string
+    payload: object
+    status: string
+  output_schema:
+    entity_id: string
+    revision: integer
+    status: string
+  tool_name: entity.write
+  ui:
+    category: state
+    icon: database
+    title: Write Entity
+tags:
+- state
+- local
+version: 1.0.0

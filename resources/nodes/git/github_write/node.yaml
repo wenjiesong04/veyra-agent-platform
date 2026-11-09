@@ -1,0 +1,39 @@
+# veyra.tool.github.write@1.0.0
+availability: ready
+description: Write GitHub repository resources using a host-configured token and approval.
+factory_selectable: true
+capabilities:
+- github_write
+kind: tool
+name: GitHub Write
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts:
+  - api.github.com
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.github.write
+resource_id: veyra.tool.github.write
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.github.write
+  approval_required: true
+  input_schema:
+    body: string
+    method: string
+    path: string
+  output_schema:
+    body: string
+    status: integer
+  secret_env: GITHUB_TOKEN
+  secret_ref: github.main
+  tool_name: github.write
+  ui:
+    category: git
+    icon: github
+    title: GitHub Write
+tags:
+- github
+- approval
+version: 1.0.0

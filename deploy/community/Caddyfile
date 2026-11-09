@@ -1,0 +1,16 @@
+{
+    email {$CADDY_EMAIL}
+}
+
+{$VEYRA_COMMUNITY_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+    }
+
+    reverse_proxy community:8000
+}

@@ -1,0 +1,32 @@
+# veyra.template.document-distiller@1.0.0
+availability: ready
+description: 把长文档或粘贴文本，提炼成你真正需要的结论、证据和待确认项。不编造原文没有的事实。
+factory_selectable: true
+kind: template
+loop_compatible: false
+name: 文档提炼
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.template.document-distiller
+runtime_status: runtime_not_configured
+spec:
+  component_references:
+  - veyra.component.start@1.0.0
+  - veyra.component.agent@1.0.0
+  - veyra.component.output@1.0.0
+  skill_references:
+  - veyra.skill.document-analyzer@1.0.0
+  - veyra.skill.need-extractor@1.0.0
+  template_id: veyra.document-distiller@1.0.0
+  ui:
+    category: template
+    icon: layout-template
+    title: 文档提炼
+tags:
+- template
+- forkable
+version: 1.0.0

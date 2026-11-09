@@ -1,0 +1,28 @@
+# veyra.component.humanapproval@1.0.0
+availability: ready
+description: Platform-owned HumanApproval graph component.
+factory_selectable: true
+kind: component
+name: HumanApproval
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.humanapproval
+runtime_status: supported
+spec:
+  fields:
+  - prompt
+  output_ports:
+  - approved
+  - rejected
+  ui:
+    category: core
+    icon: shield-check
+    title: Approval
+tags:
+- graph
+- builtin
+version: 1.0.0

@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "agentspec_version": "26.1",
+  "component_type": "Flow",
+  "agent_id": "01a03795-a5b0-72d3-8204-6f66a60073db",
+  "slug": "release-summary",
+  "name": "Release Summary",
+  "description": "Reads a release record and renders a portable summary.",
+  "inputs": {"release": "string"},
+  "outputs": {"summary": "string"},
+  "nodes": [
+    {"id": "start", "component_type": "Start"},
+    {"id": "read_release", "component_type": "Tool", "uses": "veyra.github.release_read@1.0.0"},
+    {"id": "render", "component_type": "Transform", "mapping": {"summary": "release.notes"}},
+    {"id": "output", "component_type": "Output", "output_name": "summary"}
+  ],
+  "transitions": [
+    {"from": "start", "port": "next", "to": "read_release"},
+    {"from": "read_release", "port": "next", "to": "render"},
+    {"from": "render", "port": "next", "to": "output"}
+  ],
+  "extensions": {"veyra": {
+    "runtime_profile": "veyra-runtime-profile/1",
+    "secret_refs": [],
+    "permissions": {"network_hosts": ["api.github.com"], "tools": ["veyra.github.release_read"]},
+    "verification": {"required": false, "checks": []}
+  }},
+  "ui": {"positions": {"start": {"x": 0, "y": 0}, "read_release": {"x": 140, "y": 0}, "render": {"x": 280, "y": 0}, "output": {"x": 420, "y": 0}}},
+  "lock": {"veyra.github.release_read@1.0.0": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+}

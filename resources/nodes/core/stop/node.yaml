@@ -1,0 +1,25 @@
+# veyra.component.stop@1.0.0
+availability: ready
+description: Cancel a Workflow without delivering business outputs.
+factory_selectable: true
+kind: component
+name: Stop
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.stop
+runtime_status: supported
+spec:
+  fields: []
+  output_ports: []
+  ui:
+    category: core
+    icon: square
+    title: Stop
+tags:
+- graph
+- builtin
+version: 1.0.0

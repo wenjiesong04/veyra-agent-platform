@@ -1,0 +1,9 @@
+# Build inputs relative to the repository root.
+**
+!requirements/runtime-py311.txt
+!pyproject.toml
+!backend/src/veyra_agent_platform/**/*.py
+!backend/migrations/community/**/*.py
+!backend/migrations/community/alembic.ini
+!backend/migrations/community/script.py.mako
+!deploy/community/start.sh

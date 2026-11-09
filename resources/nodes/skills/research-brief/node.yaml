@@ -1,0 +1,28 @@
+# veyra.skill.research-brief@1.0.0
+availability: ready
+description: Structure a bounded research brief with sources and open questions.
+factory_selectable: true
+capabilities:
+- research_planning
+kind: skill
+name: Research Brief
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.skill.research-brief
+runtime_status: runtime_not_configured
+spec:
+  instruction: State scope, evidence, findings, and open questions. Separate what
+    the provided material supports from what remains unknown. Do not invent citations,
+    URLs, or files.
+  ui:
+    category: skill
+    icon: book-open
+    title: Research Brief
+tags:
+- research
+- instruction
+version: 1.0.0

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/contracts/resource-manifest.schema.json",
+  "title": "Veyra Resource Manifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "resource_id",
+    "version",
+    "name",
+    "slug"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "kind": {
+      "enum": [
+        "agent",
+        "workflow",
+        "component",
+        "knowledge",
+        "asset"
+      ]
+    },
+    "resource_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "component_class": {
+      "enum": [
+        "primitive",
+        "composite"
+      ]
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "component"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "component_class"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "component_class"
+          ]
+        }
+      }
+    }
+  ]
+}

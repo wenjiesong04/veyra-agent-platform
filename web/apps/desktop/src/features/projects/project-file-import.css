@@ -1,0 +1,139 @@
+.project-file-import {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-block: 12px;
+}
+
+.project-file-import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.project-file-import-copy,
+.project-file-import-result-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-file-import-copy p,
+.project-file-import-hint,
+.project-file-import-result-copy span,
+.project-file-import-result-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-file-import-actions > .ui-button {
+  flex-shrink: 0;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+
+.project-file-import-summary:empty {
+  display: none;
+}
+
+.project-file-import-summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.project-file-import-results {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-file-import-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-block: 10px;
+  border-top: 1px solid var(--line);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
+}
+
+.project-file-import-result > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.project-file-import-result:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.project-file-import-result-copy {
+  flex: 1;
+}
+
+.project-file-import-result-copy p {
+  font-size: 12px;
+}
+
+.project-file-import-success {
+  color: var(--good);
+}
+
+.project-file-import-failure {
+  color: var(--bad);
+}
+
+.project-file-import-open {
+  flex-shrink: 0;
+  padding: 2px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  text-underline-offset: 3px;
+  touch-action: manipulation;
+}
+
+.project-file-import-open:hover {
+  color: var(--ink);
+}
+
+.project-file-import-target {
+  display: grid;
+  gap: 6px;
+  max-width: 360px;
+}
+
+.project-file-import-target select {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+@media (max-width: 600px) {
+  .project-file-import-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .project-file-import-result {
+    flex-wrap: wrap;
+  }
+
+  .project-file-import-result-copy {
+    flex-basis: calc(100% - 28px);
+  }
+
+  .project-file-import-open {
+    margin-left: 26px;
+  }
+}

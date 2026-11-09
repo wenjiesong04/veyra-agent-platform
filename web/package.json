@@ -1,0 +1,29 @@
+{
+  "name": "@veyra/web-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build:desktop && npm run build:community",
+    "build:desktop": "npm run build --workspace=@veyra/desktop",
+    "build:community": "npm run build --workspace=@veyra/community",
+    "dev:desktop": "npm run dev --workspace=@veyra/desktop",
+    "dev:community": "npm run dev --workspace=@veyra/community",
+    "test": "npm run test:desktop && npm run test:community",
+    "test:desktop": "npm run test --workspace=@veyra/desktop",
+    "test:community": "npm run test --workspace=@veyra/community",
+    "typecheck": "npm run typecheck --workspace=@veyra/desktop && npm run typecheck --workspace=@veyra/community"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.3.0",
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.4"
+  }
+}

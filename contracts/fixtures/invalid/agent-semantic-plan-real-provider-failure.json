@@ -1,0 +1,119 @@
+{
+  "schema_version": "1.0",
+  "goal": "Handle a request with branch-specific advice.",
+  "suggested_name": "Request Triage",
+  "description": "Sanitized structural fixture from the persisted final failed attempt.",
+  "inputs": [
+    {"name": "request", "type": "string"}
+  ],
+  "outputs": [
+    {"name": "priority", "type": "string"},
+    {"name": "summary", "type": "string"}
+  ],
+  "steps": ["classify request", "approve", "produce advice", "map outputs"],
+  "capability_intents": [],
+  "knowledge_intents": [],
+  "approval_points": [],
+  "success_criteria": [],
+  "user_constraints": [],
+  "step_intents": [
+    {
+      "semantic_key": "classify_request",
+      "name": "Classify request",
+      "purpose": "Classify the request into one declared branch.",
+      "operation_kind": "condition",
+      "branches": [
+        {"key": "urgent", "label": "Urgent"},
+        {"key": "routine", "label": "Routine"}
+      ]
+    },
+    {
+      "semantic_key": "approve_urgent",
+      "name": "Approve urgent handling",
+      "purpose": "Approve the urgent handling advice.",
+      "operation_kind": "approval",
+      "depends_on": ["classify_request"],
+      "branch_condition": "classify_request",
+      "branch_key": "urgent"
+    },
+    {
+      "semantic_key": "advice_urgent",
+      "name": "Prepare urgent advice",
+      "purpose": "Prepare branch-specific advice.",
+      "operation_kind": "model",
+      "depends_on": ["approve_urgent"],
+      "branch_condition": "classify_request",
+      "branch_key": "urgent",
+      "inputs": [{"name": "request", "type": "string"}],
+      "outputs": [
+        {"name": "advice_priority", "type": "string"},
+        {"name": "advice_summary", "type": "string"}
+      ]
+    },
+    {
+      "semantic_key": "normalize_urgent",
+      "name": "Normalize urgent advice",
+      "purpose": "Map branch advice to the declared Agent outputs.",
+      "operation_kind": "transform",
+      "depends_on": ["advice_urgent"],
+      "branch_condition": "classify_request",
+      "branch_key": "urgent",
+      "inputs": [
+        {"name": "advice_priority", "type": "string"},
+        {"name": "advice_summary", "type": "string"}
+      ],
+      "outputs": [
+        {"name": "priority", "type": "string"},
+        {"name": "summary", "type": "string"}
+      ],
+      "output_mapping": {
+        "priority": "{{advice_priority}}",
+        "summary": "{{advice_summary}}"
+      }
+    },
+    {
+      "semantic_key": "approve_routine",
+      "name": "Approve routine handling",
+      "purpose": "Approve the routine handling advice.",
+      "operation_kind": "approval",
+      "depends_on": ["classify_request"],
+      "branch_condition": "classify_request",
+      "branch_key": "routine"
+    },
+    {
+      "semantic_key": "advice_routine",
+      "name": "Prepare routine advice",
+      "purpose": "Prepare branch-specific advice.",
+      "operation_kind": "model",
+      "depends_on": ["approve_routine"],
+      "branch_condition": "classify_request",
+      "branch_key": "routine",
+      "inputs": [{"name": "request", "type": "string"}],
+      "outputs": [
+        {"name": "advice_priority", "type": "string"},
+        {"name": "advice_summary", "type": "string"}
+      ]
+    },
+    {
+      "semantic_key": "normalize_routine",
+      "name": "Normalize routine advice",
+      "purpose": "Map branch advice to the declared Agent outputs.",
+      "operation_kind": "transform",
+      "depends_on": ["advice_routine"],
+      "branch_condition": "classify_request",
+      "branch_key": "routine",
+      "inputs": [
+        {"name": "advice_priority", "type": "string"},
+        {"name": "advice_summary", "type": "string"}
+      ],
+      "outputs": [
+        {"name": "priority", "type": "string"},
+        {"name": "summary", "type": "string"}
+      ],
+      "output_mapping": {
+        "priority": "{{advice_priority}}",
+        "summary": "{{advice_summary}}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# veyra.skill.file-taxonomy@1.0.0
+availability: ready
+description: Propose folders, rename rules, and keep/archive candidates from a listing.
+factory_selectable: true
+capabilities:
+- file_taxonomy
+kind: skill
+name: File Taxonomy
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.skill.file-taxonomy
+runtime_status: runtime_not_configured
+spec:
+  instruction: Treat the listing as the only inventory. Propose a folder tree, rename
+    pattern, duplicate handling, and keep/archive/delete candidates. Do not claim
+    files were moved. Flag destructive deletes. If the listing is incomplete, say
+    so.
+  ui:
+    category: skill
+    icon: folder-tree
+    title: File Taxonomy
+tags:
+- files
+- instruction
+version: 1.0.0

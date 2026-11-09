@@ -1,0 +1,769 @@
+from __future__ import annotations
+
+import json
+import shutil
+import sqlite3
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy.exc import OperationalError
+
+from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.local.library import LibraryService
+from veyra_agent_platform.local.library.service import DraftConflict
+from veyra_agent_platform.local.projects import ProjectService
+from veyra_agent_platform.local.projects.layout import BLANK_AGENT_NOTE_TEXT
+from veyra_agent_platform.local.projects.service import (
+    MAX_INDEXED_FILE_BYTES,
+    ProjectError,
+)
+from veyra_agent_platform.local.storage import (
+    IdempotencyConflict,
+    LocalRepository,
+    migrate_local_database,
+)
+from veyra_agent_platform.local.storage.bootstrap import HEAD_REVISION
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _sources() -> list[dict[str, object]]:
+    fixture = ROOT / "contracts" / "fixtures" / "project" / "agents"
+    return [
+        json.loads((fixture / slug / "agent.vagent.yaml").read_text())
+        for slug in ("github-triage", "release-summary")
+    ]
+
+
+def _services(tmp_path: Path) -> tuple[ProjectService, LibraryService]:
+    database_path = tmp_path / "app.sqlite3"
+    migrate_local_database(database_path)
+    projects = ProjectService(LocalRepository(database_path), tmp_path / "objects")
+    return projects, LibraryService(projects.repository, projects)
+
+
+def test_only_alembic_bootstraps_schema_and_fresh_upgrade_is_repeatable(
+    tmp_path: Path,
+) -> None:
+    fresh = tmp_path / "fresh.sqlite3"
+    with pytest.raises(RuntimeError, match="has not been migrated"):
+        LocalRepository(fresh)
+    migrate_local_database(fresh)
+    migrate_local_database(fresh)
+    assert LocalRepository(fresh).projects() == []
+    collision = tmp_path / "legacy-embedded-ddl.sqlite3"
+    with sqlite3.connect(collision) as connection:
+        connection.execute("CREATE TABLE projects (project_id TEXT PRIMARY KEY)")
+    with pytest.raises(OperationalError, match="already exists"):
+        migrate_local_database(collision)
+
+
+def test_failed_migration_restores_or_removes_sqlite_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_upgrade(*_: object, **__: object) -> None:
+        raise RuntimeError("upgrade failed")
+
+    existing = tmp_path / "existing.sqlite3"
+    migrate_local_database(existing)
+    with sqlite3.connect(existing) as connection:
+        connection.execute("CREATE TABLE preserved (value TEXT)")
+        connection.execute("INSERT INTO preserved VALUES ('keep')")
+    Path(f"{existing}-wal").write_text("stale")
+    Path(f"{existing}-shm").write_text("stale")
+    monkeypatch.setattr(
+        "veyra_agent_platform.local.storage.bootstrap._schema_head",
+        lambda _path: "local_0019_edit_proposals",
+    )
+    monkeypatch.setattr(
+        "veyra_agent_platform.local.storage.bootstrap.command.upgrade", fail_upgrade
+    )
+    with pytest.raises(RuntimeError, match="upgrade failed"):
+        migrate_local_database(existing)
+    assert not Path(f"{existing}-wal").exists()
+    assert not Path(f"{existing}-shm").exists()
+    with sqlite3.connect(existing) as connection:
+        assert connection.execute("SELECT value FROM preserved").fetchone() == ("keep",)
+
+    fresh = tmp_path / "fresh.sqlite3"
+    Path(f"{fresh}-wal").write_text("stale")
+    Path(f"{fresh}-shm").write_text("stale")
+    with pytest.raises(RuntimeError, match="upgrade failed"):
+        migrate_local_database(fresh)
+    assert not fresh.exists()
+    assert not Path(f"{fresh}-wal").exists()
+    assert not Path(f"{fresh}-shm").exists()
+
+
+def test_current_schema_head_skips_alembic_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "current.sqlite3"
+    migrate_local_database(database_path)
+    called = {"upgrade": 0}
+
+    def boom(*_: object, **__: object) -> None:
+        called["upgrade"] += 1
+        raise AssertionError("current schema head must not take an Alembic lock")
+
+    monkeypatch.setattr(
+        "veyra_agent_platform.local.storage.bootstrap.command.upgrade", boom
+    )
+    migrate_local_database(database_path)
+    assert called["upgrade"] == 0
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+
+
+def test_lifecycle_migration_empty_and_upgrade_identity(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.sqlite3"
+    migrate_local_database(fresh)
+    with sqlite3.connect(fresh) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert "removed_at" in {
+            row[1] for row in connection.execute("PRAGMA table_info(projects)")
+        }
+
+    upgraded = tmp_path / "upgraded.sqlite3"
+    config = Config("backend/migrations/local/alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{upgraded}")
+    command.upgrade(config, "local_0004_project_metadata")
+    migrate_local_database(upgraded)
+    with sqlite3.connect(upgraded) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+
+    from_0005 = tmp_path / "from-0005.sqlite3"
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{from_0005}")
+    command.upgrade(config, "local_0005_project_lifecycle")
+    migrate_local_database(from_0005)
+    with sqlite3.connect(from_0005) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'runtime_runs'"
+        ).fetchone() == ("runtime_runs",)
+
+
+def test_managed_delete_rolls_back_move_when_database_marking_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "app.sqlite3"
+    migrate_local_database(database_path)
+    managed_root = tmp_path / "application-data" / "projects"
+    projects = ProjectService(
+        LocalRepository(database_path),
+        tmp_path / "objects",
+        project_storage_root=managed_root,
+    )
+    created = projects.create_managed(name="Rollback")
+    root = Path(created["root_path"])
+    monkeypatch.setattr(projects.repository, "remove_project", lambda *_: False)
+
+    with pytest.raises(ProjectError, match="unknown Project"):
+        projects.remove(created["project_id"])
+
+    assert root.is_dir()
+    assert not (
+        managed_root.parent / "trash" / "projects" / created["project_id"]
+    ).exists()
+
+
+def test_failed_duplicate_name_index_restores_external_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+    projects.create(root_path=tmp_path / "first", name="Duplicate")
+    projects.create(root_path=tmp_path / "second", name="Other")
+    manifest_path = tmp_path / "second" / "project.vproject.yaml"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["name"] = "Duplicate"
+    original_text = json.dumps(manifest)
+    manifest_path.write_text(original_text, encoding="utf-8")
+    monkeypatch.setattr(
+        projects,
+        "_collect_allowed_files",
+        lambda *_: (_ for _ in ()).throw(OSError("index unavailable")),
+    )
+
+    with pytest.raises(OSError, match="index unavailable"):
+        projects.index(tmp_path / "second")
+
+    assert manifest_path.read_text(encoding="utf-8") == original_text
+
+
+def test_template_projects_fork_agent_identities_and_write_agent_scaffolding(
+    tmp_path: Path,
+) -> None:
+    projects, _ = _services(tmp_path)
+    first = projects.create(root_path=tmp_path / "one", name="One", sources=_sources())
+    second = projects.create(root_path=tmp_path / "two", name="Two", sources=_sources())
+
+    assert {item["agent_id"] for item in first["agents"]}.isdisjoint(
+        {item["agent_id"] for item in second["agents"]}
+    )
+    assert len(projects.repository.agents(first["project_id"])) == 2
+    for agent in first["agents"]:
+        root = tmp_path / "one" / agent["source_path"]
+        assert (root.parent / "README.md").is_file()
+        assert (root.parent / "tests").is_dir()
+
+
+def test_empty_project_creates_required_layout_and_reopens(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    root = tmp_path / "empty"
+
+    created = projects.create(root_path=root, name="Empty")
+
+    manifest = json.loads((root / "project.vproject.yaml").read_text())
+    assert manifest["agents"] == []
+    assert manifest["default_agent_id"] is None
+    assert (root / "agents").is_dir()
+    assert (root / "workflows").is_dir()
+    assert (root / "components" / "primitive").is_dir()
+    assert (root / "components" / "composite").is_dir()
+    assert (root / "knowledge").is_dir()
+    assert (root / "assets").is_dir()
+    assert (root / "resources").is_dir()
+    assert (root / "tests").is_dir()
+    assert created["agent_count"] == 0
+    assert created["workflow_count"] == 0
+    assert created["knowledge_count"] == 0
+    assert created["agents"] == []
+    assert created["workflows"] == []
+    assert created["indexed_at"]
+    assert projects.index(root)["project_id"] == created["project_id"]
+
+
+def test_legacy_manifest_without_description_indexes_as_empty(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    root = tmp_path / "legacy"
+    created = projects.create(root_path=root, name="Legacy", description="Retained")
+    manifest_path = root / "project.vproject.yaml"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["description"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    indexed = projects.index(root)
+
+    assert created["description"] == "Retained"
+    assert indexed["description"] == ""
+
+
+def test_index_reconciles_unversioned_manifest_removal_and_rejects_duplicate_copy(
+    tmp_path: Path,
+) -> None:
+    projects, library = _services(tmp_path)
+    created = projects.create(
+        root_path=tmp_path / "one", name="One", sources=_sources()
+    )
+    project_id = created["project_id"]
+    manifest_path = tmp_path / "one" / "project.vproject.yaml"
+    manifest = json.loads(manifest_path.read_text())
+    removed = manifest["agents"].pop()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    summary = projects.index(tmp_path / "one")
+    assert {item["agent_id"] for item in summary["agents"]} == {
+        manifest["agents"][0]["agent_id"]
+    }
+    copied = tmp_path / "copied"
+    shutil.copytree(tmp_path / "one", copied)
+    with pytest.raises(ProjectError, match="duplicate Project ID"):
+        projects.index(copied)
+    first_agent = summary["agents"][0]["agent_id"]
+    draft = library.draft(project_id, first_agent)
+    library.commit(
+        project_id=project_id,
+        agent_id=first_agent,
+        expected_revision=draft["revision"],
+        expected_etag=draft["etag"],
+        idempotency_key=new_uuid7(),
+    )
+    manifest["agents"] = [removed]
+    manifest["default_agent_id"] = removed["agent_id"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ProjectError, match="immutable versions"):
+        projects.index(tmp_path / "one")
+    assert removed["agent_id"] not in {item["agent_id"] for item in summary["agents"]}
+
+
+def test_index_excludes_git_and_rejects_oversized_allowed_file(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(
+        root_path=tmp_path / "project", name="One", sources=_sources()
+    )
+    git_file = tmp_path / "project" / ".git" / "objects" / "payload"
+    git_file.parent.mkdir(parents=True)
+    git_file.write_bytes(b"not indexed")
+    projects.index(tmp_path / "project")
+    with projects.repository._connect() as connection:
+        git_rows = connection.execute(
+            """SELECT relative_path FROM files
+               WHERE project_id = ? AND relative_path LIKE '.git%'""",
+            (created["project_id"],),
+        ).fetchall()
+    assert git_rows == []
+    (tmp_path / "project" / "resources" / "too-big.txt").write_bytes(
+        b"x" * (MAX_INDEXED_FILE_BYTES + 1)
+    )
+    with pytest.raises(ProjectError, match="size limit"):
+        projects.index(tmp_path / "project")
+
+
+def test_atomic_create_failure_leaves_no_target_or_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+
+    def fail_write(_: Path, __: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(projects, "atomic_write", fail_write)
+    target = tmp_path / "target"
+    with pytest.raises(OSError, match="disk full"):
+        projects.create(root_path=target, name="One", sources=_sources())
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target.veyra-staging-*"))
+
+
+def test_agent_install_failure_restores_manifest_and_agent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="One")
+    root = Path(created["root_path"])
+    manifest_path = root / "project.vproject.yaml"
+    previous_manifest = manifest_path.read_text(encoding="utf-8")
+
+    def fail_index(_: Path) -> dict[str, object]:
+        raise OSError("index unavailable")
+
+    monkeypatch.setattr(projects, "index", fail_index)
+    with pytest.raises(OSError, match="index unavailable"):
+        projects.create_agent(project_id=created["project_id"], mode="blank")
+
+    assert manifest_path.read_text(encoding="utf-8") == previous_manifest
+    assert list((root / "agents").iterdir()) == []
+    assert projects.repository.agents(created["project_id"]) == []
+
+
+def test_create_accepts_existing_empty_directory_and_refuses_nonempty_root(
+    tmp_path: Path,
+) -> None:
+    projects, _ = _services(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    created = projects.create(root_path=empty, name="Empty", sources=_sources())
+
+    assert created["project_id"]
+    assert (empty / "project.vproject.yaml").is_file()
+
+    nonempty = tmp_path / "nonempty"
+    nonempty.mkdir()
+    preserved = nonempty / "not-a-project.txt"
+    preserved.write_text("do not overwrite", encoding="utf-8")
+    with pytest.raises(ProjectError, match="not empty"):
+        projects.create(root_path=nonempty, name="No")
+    assert preserved.read_text(encoding="utf-8") == "do not overwrite"
+
+
+def test_create_failure_restores_preexisting_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects, _ = _services(tmp_path)
+    target = tmp_path / "empty"
+    target.mkdir()
+
+    def fail_index(_: Path) -> dict[str, object]:
+        raise OSError("index unavailable")
+
+    monkeypatch.setattr(projects, "index", fail_index)
+    with pytest.raises(OSError, match="index unavailable"):
+        projects.create(root_path=target, name="One", sources=_sources())
+
+    assert target.is_dir()
+    assert not target.is_symlink()
+    assert list(target.iterdir()) == []
+    assert not list(tmp_path.glob(".empty.veyra-staging-*"))
+
+
+def test_reload_accepts_external_edit_and_divergent_idempotency_conflicts(
+    tmp_path: Path,
+) -> None:
+    projects, library = _services(tmp_path)
+    created = projects.create(
+        root_path=tmp_path / "project", name="One", sources=_sources()
+    )
+    agent = created["agents"][0]
+    project_id, agent_id = created["project_id"], agent["agent_id"]
+    draft = library.draft(project_id, agent_id)
+    first = deepcopy(draft["source"])
+    first["description"] = "first"
+    key = new_uuid7()
+    library.replace_draft(
+        project_id=project_id,
+        agent_id=agent_id,
+        source=first,
+        expected_revision=draft["revision"],
+        expected_etag=draft["etag"],
+        idempotency_key=key,
+    )
+    second = deepcopy(first)
+    second["description"] = "different request"
+    with pytest.raises(IdempotencyConflict):
+        library.replace_draft(
+            project_id=project_id,
+            agent_id=agent_id,
+            source=second,
+            expected_revision=draft["revision"],
+            expected_etag=draft["etag"],
+            idempotency_key=key,
+        )
+    source_path = tmp_path / "project" / agent["source_path"]
+    external = json.loads(source_path.read_text())
+    external["description"] = "external"
+    source_path.write_text(json.dumps(external), encoding="utf-8")
+    with pytest.raises(DraftConflict):
+        library.draft(project_id, agent_id)
+    reloaded = library.reload_from_disk(project_id, agent_id)
+    assert reloaded["source"]["description"] == "external"
+
+
+def test_create_workflow_writes_layout_and_indexes_blank_source(
+    tmp_path: Path,
+) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="One")
+    workflow = projects.create_workflow(
+        project_id=created["project_id"], name="Review path"
+    )
+    root = Path(created["root_path"])
+    source_path = root / workflow["source_path"]
+    assert workflow["slug"] == "new-workflow"
+    assert workflow["name"] == "Review path"
+    assert workflow["node_count"] == 2
+    assert source_path.is_file()
+    assert (source_path.parent / "resource.yaml").is_file()
+    assert (source_path.parent / "README.md").is_file()
+    summary = projects.project_summary(created["project_id"])
+    assert summary["workflow_count"] == 1
+    assert summary["workflows"][0]["workflow_id"] == workflow["workflow_id"]
+    manifest = json.loads((root / "project.vproject.yaml").read_text())
+    assert manifest["workflows"][0]["path"] == "workflows/new-workflow"
+    source = json.loads(source_path.read_text())
+    assert source["component_type"] == "Workflow"
+    assert source["lock"] == {}
+    assert [node["component_type"] for node in source["nodes"]] == ["Start", "Output"]
+    note = source["ui"]["notes"]["note_intro"]
+    assert "Workflow" in note["text"]
+    assert note["y"] == -220
+
+
+def test_create_blank_agent_includes_default_canvas_note(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create(root_path=tmp_path / "project", name="One")
+    agent = projects.create_agent(project_id=created["project_id"], mode="blank")
+    source = json.loads((Path(created["root_path"]) / agent["source_path"]).read_text())
+    assert source["ui"]["notes"]["note_intro"]["text"] == BLANK_AGENT_NOTE_TEXT
+    assert [node["component_type"] for node in source["nodes"]] == [
+        "Start",
+        "Model",
+        "Output",
+    ]
+
+
+def _insert_row(
+    connection: sqlite3.Connection, table: str, values: dict[str, object]
+) -> None:
+    info = list(connection.execute(f"PRAGMA table_info({table})"))
+    payload: dict[str, object] = {}
+    for _cid, name, coltype, notnull, default, _pk in info:
+        if name in values:
+            payload[name] = values[name]
+            continue
+        if notnull and default is None:
+            kind = (coltype or "TEXT").upper()
+            payload[name] = 0 if "INT" in kind else ""
+    columns = ", ".join(payload)
+    placeholders = ", ".join("?" for _ in payload)
+    connection.execute(
+        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+        tuple(payload.values()),
+    )
+
+
+def test_fresh_head_creates_project_and_blank_agent(tmp_path: Path) -> None:
+    projects, _ = _services(tmp_path)
+    created = projects.create_managed(name="Fresh RC")
+    agent = projects.create_agent(project_id=created["project_id"], mode="blank")
+    with sqlite3.connect(tmp_path / "app.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM projects WHERE project_id = ?",
+            (created["project_id"],),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM agents WHERE agent_id = ?",
+            (agent["agent_id"],),
+        ).fetchone() == (1,)
+
+
+def test_upgrade_from_0026_preserves_project_agent_conversation_and_run(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "from-0026.sqlite3"
+    config = Config("backend/migrations/local/alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database}")
+    command.upgrade(config, "local_0026_builder_semantic_plan")
+    now = "2026-09-01T00:00:00Z"
+    with sqlite3.connect(database) as connection:
+        _insert_row(
+            connection,
+            "projects",
+            {
+                "project_id": "proj-keep",
+                "root_path": str(tmp_path / "kept-project"),
+                "name": "Kept Project",
+                "manifest_hash": "m",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agents",
+            {
+                "agent_id": "agent-keep",
+                "project_id": "proj-keep",
+                "slug": "kept",
+                "source_path": "agents/kept/agent.vagent.yaml",
+                "source_file_hash": "s",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_versions",
+            {
+                "version_id": "version-keep",
+                "agent_id": "agent-keep",
+                "source_hash": "a" * 64,
+                "behavior_hash": "b" * 64,
+                "lock_hash": "c" * 64,
+                "file_hash": "d" * 64,
+                "source_json": "{}",
+                "source_text": "{}",
+                "created_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_conversations",
+            {
+                "conversation_id": "conv-keep",
+                "project_id": "proj-keep",
+                "agent_id": "agent-keep",
+                "title": "Kept chat",
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "runtime_runs",
+            {
+                "run_id": "run-keep",
+                "project_id": "proj-keep",
+                "agent_id": "agent-keep",
+                "version_id": "version-keep",
+                "status": "verified",
+                "created_at": now,
+                "conversation_id": "conv-keep",
+            },
+        )
+        connection.commit()
+
+    migrate_local_database(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT name FROM projects WHERE project_id = 'proj-keep'"
+        ).fetchone() == ("Kept Project",)
+        assert connection.execute(
+            "SELECT slug FROM agents WHERE agent_id = 'agent-keep'"
+        ).fetchone() == ("kept",)
+        assert connection.execute(
+            "SELECT title FROM agent_conversations WHERE conversation_id = 'conv-keep'"
+        ).fetchone() == ("Kept chat",)
+        assert connection.execute(
+            "SELECT status FROM runtime_runs WHERE run_id = 'run-keep'"
+        ).fetchone() == ("verified",)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(agent_conversations)")
+        }
+        assert "agent_version_id" in columns
+        assert "committed" in {
+            row[1] for row in connection.execute("PRAGMA table_info(agent_versions)")
+        }
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {"project_entities", "entity_records", "entity_events"} <= tables
+
+
+def test_upgrade_from_0033_preserves_rows_and_adds_entity_tables(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "from-0033.sqlite3"
+    config = Config("backend/migrations/local/alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database}")
+    command.upgrade(config, "local_0033_agent_app_versions")
+    now = "2026-09-29T00:00:00Z"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("local_0033_agent_app_versions",)
+        _insert_row(
+            connection,
+            "projects",
+            {
+                "project_id": "proj-0033",
+                "root_path": str(tmp_path / "kept-0033"),
+                "name": "Kept 0033",
+                "manifest_hash": "m",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agents",
+            {
+                "agent_id": "agent-0033",
+                "project_id": "proj-0033",
+                "slug": "kept-0033",
+                "source_path": "agents/kept/agent.vagent.yaml",
+                "source_file_hash": "s",
+                "indexed_at": now,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_versions",
+            {
+                "version_id": "version-0033",
+                "agent_id": "agent-0033",
+                "source_hash": "a" * 64,
+                "behavior_hash": "b" * 64,
+                "lock_hash": "c" * 64,
+                "file_hash": "d" * 64,
+                "source_json": "{}",
+                "source_text": "{}",
+                "created_at": now,
+                "committed": 1,
+            },
+        )
+        _insert_row(
+            connection,
+            "agent_conversations",
+            {
+                "conversation_id": "conv-0033",
+                "project_id": "proj-0033",
+                "agent_id": "agent-0033",
+                "title": "Kept 0033 chat",
+                "created_at": now,
+                "updated_at": now,
+                "agent_version_id": "version-0033",
+            },
+        )
+        _insert_row(
+            connection,
+            "runtime_runs",
+            {
+                "run_id": "run-0033",
+                "project_id": "proj-0033",
+                "agent_id": "agent-0033",
+                "version_id": "version-0033",
+                "status": "verified",
+                "created_at": now,
+                "conversation_id": "conv-0033",
+            },
+        )
+        connection.commit()
+        before = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "project_entities" not in before
+
+    migrate_local_database(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute(
+            "SELECT name FROM projects WHERE project_id = 'proj-0033'"
+        ).fetchone() == ("Kept 0033",)
+        assert connection.execute(
+            "SELECT slug FROM agents WHERE agent_id = 'agent-0033'"
+        ).fetchone() == ("kept-0033",)
+        assert connection.execute(
+            "SELECT committed FROM agent_versions WHERE version_id = 'version-0033'"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT title, agent_version_id FROM agent_conversations "
+            "WHERE conversation_id = 'conv-0033'"
+        ).fetchone() == ("Kept 0033 chat", "version-0033")
+        assert connection.execute(
+            "SELECT status FROM runtime_runs WHERE run_id = 'run-0033'"
+        ).fetchone() == ("verified",)
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {"project_entities", "entity_records", "entity_events"} <= tables
+        assert connection.execute(
+            "SELECT COUNT(*) FROM project_entities"
+        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM entity_records").fetchone() == (
+            0,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM entity_events").fetchone() == (
+            0,
+        )
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert {
+            "ix_entity_records_project_type",
+            "ix_entity_events_entity",
+        } <= indexes
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(entity_events)"
+        ).fetchall()
+        assert [(row[2], row[3], row[4], row[6]) for row in foreign_keys] == [
+            ("entity_records", "entity_id", "entity_id", "CASCADE")
+        ]

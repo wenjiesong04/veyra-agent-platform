@@ -1,0 +1,32 @@
+# veyra.component.agent-call@1.0.0
+availability: ready
+description: Platform-owned AgentCall graph component for a Workflow canvas.
+factory_selectable: false
+kind: component
+component_class: primitive
+name: AgentCall
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.agent-call
+runtime_status: supported
+spec:
+  fields:
+  - agent_ref
+  - input_mapping
+  - output_mapping
+  output_ports:
+  - next
+  ui:
+    category: orchestration
+    icon: bot
+    title: Agent call
+tags:
+- graph
+- builtin
+- primitive
+- workflow
+version: 1.0.0

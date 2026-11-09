@@ -1,0 +1,96 @@
+import { describe, expect, it } from "vitest";
+import type { BuilderConversationOperation, FactorySession } from "@veyra/api-contracts";
+import { openStageStartedAt, runningClock, workbenchPhase } from "./workbench-phase";
+
+function operation(kinds: string[], status: BuilderConversationOperation["status"] = "in_progress"): BuilderConversationOperation {
+  return {
+    operation_id: "op-1",
+    conversation_id: "conv-1",
+    kind: "create_agent",
+    target_kind: "agent",
+    status,
+    retry_of: null,
+    error_code: null,
+    proposal_id: null,
+    run_id: null,
+    factory_session_id: "session-1",
+    created_at: "2026-09-18T00:00:00Z",
+    updated_at: "2026-09-18T00:00:01Z",
+    diagnostic: {},
+    has_request: true,
+    events: kinds.map((kind, sequence) => ({
+      event_id: `evt-${sequence}`,
+      operation_id: "op-1",
+      sequence,
+      kind: kind as BuilderConversationOperation["events"][number]["kind"],
+      label: kind,
+      summary: "",
+      facts: {},
+      created_at: "2026-09-18T00:00:00Z",
+    })),
+    receipts: [],
+  };
+}
+
+const session = { state: "generating" } as FactorySession;
+
+describe("workbenchPhase", () => {
+  it("follows server events instead of a timer script", () => {
+    expect(workbenchPhase(operation(["builder.operation.started", "builder.intent.started"]), session, null)).toBe("understanding");
+    expect(workbenchPhase(operation(["builder.specification.started"]), session, null)).toBe("planning");
+    expect(workbenchPhase(operation(["builder.compile.started"]), session, null)).toBe("compiling");
+    expect(workbenchPhase(operation(["builder.validation.started"]), session, null)).toBe("validating");
+    expect(workbenchPhase(operation(["builder.proposal.ready"], "waiting"), { ...session, state: "review" }, null)).toBe("review");
+    expect(workbenchPhase(operation(["builder.proposal.ready"], "failed"), { ...session, state: "missing_capability" }, null)).toBe("missing");
+    expect(workbenchPhase({
+      ...operation(["builder.capabilities.resolved", "builder.operation.failed"], "failed"),
+      error_code: "factory_missing_capability",
+    }, null, null)).toBe("missing");
+    expect(workbenchPhase(operation(["builder.operation.completed"], "succeeded"), { ...session, state: "completed" }, "agent-1")).toBe("completed");
+  });
+
+  it("keeps the clock on the open plan stage", () => {
+    const events = operation(["builder.intent.started", "builder.intent.resolved", "builder.specification.started"]).events;
+    events[2] = { ...events[2], created_at: "2026-09-18T00:01:30Z" };
+    expect(openStageStartedAt(events)).toBe("2026-09-18T00:01:30Z");
+    expect(runningClock("2026-09-18T00:01:30Z", Date.parse("2026-09-18T00:03:05Z"), "zh")).toBe("已进行 1:35");
+  });
+
+  it("uses a blocked Factory result even when a legacy operation says succeeded", () => {
+    const stopped = operation(["builder.semantic_plan.started", "builder.operation.completed"], "succeeded");
+    expect(workbenchPhase(stopped, { ...session, state: "ready", blocked_reason: "Invalid output mapping" }, null)).toBe("blocked");
+    expect(workbenchPhase({ ...stopped, status: "failed", error_code: "factory_generation_blocked" }, null, null)).toBe("blocked");
+    expect(workbenchPhase(stopped, { ...session, state: "missing_capability", blocked_reason: "missing model" }, null)).toBe("missing");
+  });
+
+  it("retains a historical operation's blocked result after the conversation moves to another session", () => {
+    const old = operation(["builder.semantic_plan.started", "builder.specification.completed", "builder.operation.completed"], "succeeded");
+    old.events[1].facts = { target_kind: "blocked", blocked_reason: "State requirement cannot be represented" };
+    expect(workbenchPhase(old, null, null)).toBe("blocked");
+    const active = operation(["builder.semantic_plan.started"]);
+    expect(workbenchPhase(active, session, null)).toBe("planning");
+  });
+
+  it("does not allow a previous started or proposal event to override failure", () => {
+    const failed = operation(["builder.semantic_plan.started", "builder.proposal.ready", "builder.operation.failed"], "failed");
+    expect(workbenchPhase(failed, { ...session, state: "ready" }, null)).toBe("failed");
+    expect(workbenchPhase(operation(["builder.semantic_plan.started", "builder.operation.completed"], "succeeded"), null, null)).toBe("finished");
+    expect(workbenchPhase(operation(["builder.semantic_plan.started"], "rejected"), null, null)).toBe("finished");
+    expect(workbenchPhase(failed, { ...session, state: "completed" }, "created-agent")).toBe("completed");
+  });
+
+  it.each(["agent_creation_apply", "workflow_creation_apply"])("retains the reviewed proposal after %s fails", (stage) => {
+    const failed = { ...operation(["builder.proposal.ready", "builder.operation.failed"], "failed"), proposal_id: "proposal-1", diagnostic: { stage } };
+    const reviewed = { ...session, session_id: "session-1", state: "review" as const };
+    expect(workbenchPhase(failed, reviewed, null)).toBe("review");
+    expect(failed.status).toBe("failed");
+    expect(workbenchPhase(failed, { ...reviewed, session_id: "other" }, null)).toBe("failed");
+    expect(workbenchPhase(failed, null, null)).toBe("failed");
+    expect(workbenchPhase({ ...failed, proposal_id: null }, reviewed, null)).toBe("failed");
+    expect(workbenchPhase({ ...failed, diagnostic: { stage: "coverage_review" } }, reviewed, null)).toBe("failed");
+  });
+
+  it.each(["builder.operation.completed", "builder.operation.failed"])("closes the plan clock after %s", (terminal) => {
+    expect(openStageStartedAt(operation(["builder.semantic_plan.started", terminal]).events)).toBeNull();
+  });
+});

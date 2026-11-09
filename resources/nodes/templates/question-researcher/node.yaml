@@ -1,0 +1,32 @@
+# veyra.template.question-researcher@1.0.0
+availability: ready
+description: 根据你的问题和已有材料，整理已知、未知、证据和下一步。当前不会上网搜索，也不编造来源。
+factory_selectable: true
+kind: template
+loop_compatible: false
+name: 问题研究
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.template.question-researcher
+runtime_status: runtime_not_configured
+spec:
+  component_references:
+  - veyra.component.start@1.0.0
+  - veyra.component.agent@1.0.0
+  - veyra.component.output@1.0.0
+  skill_references:
+  - veyra.skill.research-brief@1.0.0
+  - veyra.skill.evidence-ledger@1.0.0
+  template_id: veyra.question-researcher@1.0.0
+  ui:
+    category: template
+    icon: layout-template
+    title: 问题研究
+tags:
+- template
+- forkable
+version: 1.0.0

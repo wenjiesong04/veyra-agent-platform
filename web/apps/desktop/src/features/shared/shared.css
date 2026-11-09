@@ -1,0 +1,401 @@
+.page-stack {
+  display: grid;
+  gap: 20px;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+.page-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 22px;
+}
+
+.page-intro h2 {
+  max-width: 720px;
+  margin-top: 7px;
+  color: var(--ink);
+  font-size: clamp(22px, 2.4vw, 30px);
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  line-height: 1.16;
+}
+
+.page-intro p {
+  max-width: 690px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.intro-actions,
+.button-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.content-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.content-grid.two-thirds {
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.8fr);
+}
+
+.row-icon,
+.run-state-icon,
+.entry-icon,
+.boundary-mark,
+.account-connect-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.run-state-icon.active {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.row-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.row-copy strong,
+.row-copy small,
+.row-copy em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-copy strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 780;
+}
+
+.row-copy small,
+.row-copy em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.row-copy em {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--subtle);
+}
+
+.row-arrow {
+  flex: 0 0 auto;
+  color: var(--subtle);
+}
+
+.detail-list {
+  display: grid;
+  gap: 0;
+  margin: 0 0 18px;
+}
+
+.detail-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 9px 0;
+}
+
+.detail-list dt {
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+.detail-list dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.settings-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.settings-facts > div {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 10px;
+}
+
+.settings-facts span {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.settings-facts strong {
+  font-size: 12px;
+}
+
+.project-missing {
+  display: grid;
+  max-width: 520px;
+  gap: 12px;
+  margin: 0 auto;
+  padding: 32px 0;
+  color: var(--muted);
+}
+
+.project-missing p {
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .page-intro {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .intro-actions {
+    width: 100%;
+  }
+
+  .content-grid.two-thirds {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  .page-intro h2 {
+    font-size: 27px;
+  }
+
+  .settings-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .row-copy small,
+  .row-copy em {
+    white-space: normal;
+  }
+}
+
+.runtime-artifact-input,
+.runtime-artifact-list,
+.runtime-artifact-grid,
+.runtime-output-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-input-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.runtime-input-field-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.runtime-input-field-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.runtime-input-field-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.runtime-input-field-meta small {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--subtle);
+  background: var(--surface-soft);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.runtime-input-field-meta .runtime-input-requirement.is-required {
+  border-color: color-mix(in srgb, var(--accent-strong) 26%, var(--line));
+  color: var(--accent-strong);
+}
+
+.runtime-input-description,
+.runtime-input-multiple {
+  display: block;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.runtime-input-description { overflow-wrap: anywhere; }
+
+.runtime-artifact-list,
+.runtime-artifact-grid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-artifact-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface-soft);
+}
+
+.runtime-artifact-card img {
+  width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.runtime-artifact-card strong,
+.runtime-output-fields dt {
+  font-size: 12px;
+}
+
+.runtime-artifact-card strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-artifact-card button,
+.runtime-artifact-list li > button {
+  justify-self: start;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.runtime-artifact-card button:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent-strong);
+}
+
+.runtime-artifact-list li > button:hover {
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+  color: var(--bad);
+}
+
+.runtime-artifact-input input[type="file"] {
+  max-width: 100%;
+  color: var(--subtle);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.runtime-artifact-input input[type="file"]::file-selector-button {
+  margin-right: 8px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
+.runtime-artifact-input input[type="file"]:hover::file-selector-button {
+  border-style: solid;
+}
+
+.runtime-artifact-card small,
+.runtime-io-error {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-io-error {
+  color: var(--bad);
+}
+
+.runtime-output-fields > div {
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-output-text,
+.runtime-output-scalar {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.runtime-output-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.runtime-output-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.runtime-output-table th,
+.runtime-output-table td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.runtime-output-table th {
+  background: var(--surface-soft);
+  font-weight: 650;
+}

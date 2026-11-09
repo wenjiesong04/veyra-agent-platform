@@ -6,6 +6,8 @@
 *.key
 *.p12
 secrets/
+!backend/src/veyra_agent_platform/local/api/secrets/
+!backend/src/veyra_agent_platform/local/api/secrets/**
 
 # Python
 __pycache__/
@@ -18,7 +20,7 @@ __pycache__/
 coverage.xml
 htmlcov/
 dist/
-build/
+/build/
 
 # Conda and virtual environments
 .conda/
@@ -36,14 +38,18 @@ test-results/
 # Rust and desktop output
 target/
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/gen/
 
 # Runtime data
-data/
-state/
-runs/
-logs/
-objects/
-workspaces/
+/data/
+deploy/community/.env
+deploy/community/backups/
+/state/
+/runs/
+/logs/
+/objects/
+/workspaces/
 *.sqlite
 *.sqlite3
 *.db
@@ -58,3 +64,6 @@ workspaces/
 *.swp
 *.bak
 
+# Agent session objects and local scratch (not product source)
+.backboard/sessions/
+/$DB

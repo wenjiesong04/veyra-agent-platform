@@ -1,0 +1,60 @@
+# veyra.tool.entity.history@1.0.0
+availability: ready
+description: Read saved revision snapshots for one entity in the current Project and declared entity type. New writes retain actual data, status, time, and source. Legacy baselines are incomplete and do not reconstruct older contents. Results are newest first, limited to 25 snapshots and 1000000 UTF-8 bytes; use before_revision for older pages and never treat truncated history as complete.
+factory_selectable: true
+capabilities:
+- entity_history
+kind: tool
+name: Entity History
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.entity.history
+resource_id: veyra.tool.entity.history
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.entity.history
+  approval_required: false
+  input_schema:
+    entity_type: string
+    entity_id: string
+    limit:
+      type: integer
+      required: false
+      description: Maximum snapshots to return, from 1 to 25; defaults to 25.
+    before_revision:
+      type: integer
+      required: false
+      description: Return only snapshots with a revision less than this positive integer.
+  input_constraints:
+    limit:
+      minimum: 1
+      maximum: 25
+    before_revision:
+      minimum: 1
+      maximum: 9223372036854775807
+  output_constraints:
+    max_records: 25
+    max_result_bytes: 1000000
+  output_schema:
+    entity_id: string
+    entity_type: string
+    current_revision: integer
+    available_from: integer_or_null
+    incomplete: boolean
+    revisions: array
+    truncated: boolean
+    next_before_revision: integer_or_null
+  tool_name: entity.history
+  ui:
+    category: state
+    icon: database
+    title: Entity History
+tags:
+- state
+- local
+- read-only
+version: 1.0.0

@@ -1,0 +1,221 @@
+# veyra.tool.tabular.compare@1.2.0 - declared and checked source evidence
+resource_id: veyra.tool.tabular.compare
+version: 1.2.0
+kind: tool
+name: CSV Group Comparison
+description: >-
+  Compare original UTF-8 CSV bytes from declared uploaded Run file inputs or
+  relative Project paths using exact text keys and finite decimal amounts.
+  Full-file counts and exact decimal-string totals cover every parsed record.
+  Each source has a SHA-256, byte length, selected columns and header line span.
+  Groups and blank-key records retain original 1-based physical line_start and
+  line_end, including multiline quoted records, with exact amounts. Detail and
+  row truncation flags must be checked before claiming complete row evidence.
+  Default results fit 7500 UTF-8 bytes; include_all_groups requests bounded
+  expanded details. A multi-record group is a fact, not proof of duplicate
+  payment. Runtime validates this declared output contract after execution.
+availability: ready
+factory_selectable: true
+runtime_status: supported
+capabilities: [tabular_compare]
+tags: [table, local, read-only, source-evidence]
+required_permissions:
+  tools: [veyra.tool.tabular.compare]
+  filesystem_read_roots: [project]
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+spec:
+  adapter: veyra.runtime.tabular.compare
+  tool_name: tabular.compare
+  approval_required: false
+  output_validation: true
+  input_schema:
+    left_source:
+      type: object
+      description: 'Exactly {input: declared file input name} or {path: relative Project path}.'
+    right_source:
+      type: object
+      description: 'Exactly {input: declared file input name} or {path: relative Project path}.'
+    left_key:
+      type: string
+      description: Exact left CSV header name for the grouping key.
+    right_key:
+      type: string
+      description: Exact right CSV header name for the grouping key.
+    left_amount:
+      type: string
+      description: Exact left CSV header name for finite decimal amounts.
+    right_amount:
+      type: string
+      description: Exact right CSV header name for finite decimal amounts.
+    include_all_groups:
+      type: boolean
+      required: false
+      description: Defaults to false. Expanded detail may be truncated; inspect flags.
+  input_constraints:
+    left_key: {minLength: 1, maxLength: 256}
+    right_key: {minLength: 1, maxLength: 256}
+    left_amount: {minLength: 1, maxLength: 256}
+    right_amount: {minLength: 1, maxLength: 256}
+  input_json_schema:
+    type: object
+    additionalProperties: false
+    required: [left_source, right_source, left_key, right_key, left_amount, right_amount]
+    properties:
+      left_source: &source
+        type: object
+        additionalProperties: false
+        minProperties: 1
+        maxProperties: 1
+        properties:
+          input: {type: string, minLength: 1, maxLength: 128}
+          path: {type: string, minLength: 1, maxLength: 4096}
+      right_source: *source
+      left_key: {type: string, minLength: 1, maxLength: 256}
+      right_key: {type: string, minLength: 1, maxLength: 256}
+      left_amount: {type: string, minLength: 1, maxLength: 256}
+      right_amount: {type: string, minLength: 1, maxLength: 256}
+      include_all_groups: {type: boolean}
+  output_constraints:
+    max_file_bytes: 1000000
+    max_records_per_file: 2000
+    max_columns: 50
+    max_cell_bytes: 4096
+    max_detail_groups: 200
+    max_row_references_per_group: 200
+    max_result_bytes: 500000
+    default_max_result_bytes: 7500
+  output_schema:
+    schema_version: string
+    left: object
+    right: object
+    counts: object
+    totals: object
+    mismatch_groups: array
+    mismatch_groups_truncated: boolean
+    multi_record_groups: array
+    multi_record_groups_truncated: boolean
+    groups: array
+    groups_requested: boolean
+    groups_truncated: boolean
+    blank_keys: object
+    blank_keys_truncated: object
+    summary_complete: boolean
+    truncated: boolean
+    key_rule: string
+    difference_rule: string
+  output_json_schema:
+    type: object
+    additionalProperties: false
+    required:
+      - schema_version
+      - left
+      - right
+      - counts
+      - totals
+      - mismatch_groups
+      - mismatch_groups_truncated
+      - multi_record_groups
+      - multi_record_groups_truncated
+      - groups
+      - groups_requested
+      - groups_truncated
+      - blank_keys
+      - blank_keys_truncated
+      - summary_complete
+      - truncated
+      - key_rule
+      - difference_rule
+    properties:
+      schema_version: {type: string, enum: ['1.0']}
+      left: &metadata
+        type: object
+        description: Identity and exact full-file facts for the original selected bytes.
+        additionalProperties: false
+        required: [path, sha256, byte_length, column_count, key_column, amount_column, header_line_start, header_line_end, record_count, group_count, blank_key_record_count, total, keyed_total, blank_key_total]
+        properties:
+          path: {type: string, description: Relative Project path or declared input label; never a host path.}
+          sha256: {type: string, minLength: 64, maxLength: 64}
+          byte_length: {type: integer, minimum: 0}
+          column_count: {type: integer, minimum: 1, maximum: 50}
+          key_column: {type: string}
+          amount_column: {type: string}
+          header_line_start: {type: integer, minimum: 1}
+          header_line_end: {type: integer, minimum: 1}
+          record_count: {type: integer, minimum: 0, maximum: 2000}
+          group_count: {type: integer, minimum: 0}
+          blank_key_record_count: {type: integer, minimum: 0}
+          total: {type: string, description: 'Exact decimal sum, not a floating-point approximation.'}
+          keyed_total: {type: string}
+          blank_key_total: {type: string}
+      right: *metadata
+      counts:
+        type: object
+        description: Counts over all parsed records, including omitted detail.
+        additionalProperties: {type: integer, minimum: 0}
+        required: [matched_groups, equal_groups, different_groups, left_only_groups, right_only_groups, left_matched_records, right_matched_records, left_only_records, right_only_records, left_blank_key_records, right_blank_key_records, left_unmatched_records, right_unmatched_records, multi_record_groups]
+      totals:
+        type: object
+        description: Exact decimal strings over all records; differences are right minus left.
+        additionalProperties: {type: string}
+        required: [left_all, right_all, left_matched, right_matched, left_only, right_only, left_blank_key, right_blank_key, left_unmatched, right_unmatched, matched_difference, right_matched_minus_left_all, all_difference]
+      mismatch_groups: &groups
+        type: array
+        maxItems: 200
+        items:
+          type: object
+          additionalProperties: false
+          required: [key, status, left_count, right_count, left_total, right_total, difference, left_rows, right_rows, left_rows_truncated, right_rows_truncated]
+          properties:
+            key: {type: string, description: Exact original nonblank text key.}
+            status: {type: string, enum: [equal, different, left_only, right_only]}
+            left_count: {type: integer, minimum: 0}
+            right_count: {type: integer, minimum: 0}
+            left_total: {type: [string, 'null']}
+            right_total: {type: [string, 'null']}
+            difference: {type: [string, 'null'], description: Null when a side is absent.}
+            left_rows: &rows
+              type: array
+              maxItems: 200
+              items:
+                type: object
+                description: Original physical lines; quoted multiline records span several lines.
+                additionalProperties: false
+                required: [line_start, line_end, amount]
+                properties:
+                  line_start: {type: integer, minimum: 1}
+                  line_end: {type: integer, minimum: 1}
+                  amount: {type: string, description: Exact decimal string for this original record.}
+            right_rows: *rows
+            left_rows_truncated: {type: boolean}
+            right_rows_truncated: {type: boolean}
+      mismatch_groups_truncated: {type: boolean}
+      multi_record_groups: *groups
+      multi_record_groups_truncated: {type: boolean}
+      groups: *groups
+      groups_requested: {type: boolean}
+      groups_truncated: {type: boolean}
+      blank_keys:
+        type: object
+        description: Unmatched blank-key rows retain original line and amount evidence.
+        additionalProperties: false
+        required: [left, right]
+        properties:
+          left: *rows
+          right: *rows
+      blank_keys_truncated:
+        type: object
+        additionalProperties: false
+        required: [left, right]
+        properties:
+          left: {type: boolean}
+          right: {type: boolean}
+      summary_complete: {type: boolean, enum: [true]}
+      truncated: {type: boolean, description: True when any returned detail was omitted.}
+      key_rule: {type: string}
+      difference_rule: {type: string}
+  ui:
+    category: table
+    icon: table
+    title: Compare CSV Groups

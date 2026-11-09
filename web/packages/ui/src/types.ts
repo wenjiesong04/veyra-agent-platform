@@ -1,0 +1,68 @@
+import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
+
+export type ThemeChoice = "system" | "light" | "dark";
+
+export type Brand = {
+  name: string;
+  subtitle: string;
+  mark?: string;
+  iconSrc?: string;
+};
+
+export type NavigationTone = "project" | "kind" | "instance" | "collection" | "catalog";
+
+export type NavigationResourceKind =
+  | "agent"
+  | "workflow"
+  | "knowledge"
+  | "files"
+  | "runs"
+  | "library"
+  | "component"
+  | "tooling"
+  | "skill"
+  | "policy"
+  | "template";
+
+export type NavigationItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  active?: boolean;
+  contextual?: boolean;
+  tone?: NavigationTone;
+  resourceKind?: NavigationResourceKind;
+  detail?: string;
+  meta?: string;
+  onClick?: () => void;
+  trailingAction?: ReactNode;
+  leadingAction?: ReactNode;
+  children?: NavigationItem[];
+  expanded?: boolean;
+};
+
+export type NavigationGroupStatus = "loading" | "empty" | "error";
+
+export type NavigationGroup = {
+  label: string;
+  items: NavigationItem[];
+  section?: "fixed" | "projects" | "pinned" | "recent";
+  action?: ReactNode;
+  status?: NavigationGroupStatus;
+  statusText?: string;
+  backLink?: { href: string; label: string };
+};
+
+/** Sidebar account chip + popover. Local mode stays useful without a remote identity. */
+export type AccountMenuConfig = {
+  displayName: string;
+  detail?: string;
+  initials?: string;
+  avatarUrl?: string | null;
+  authenticated?: boolean;
+  accountHref: string;
+  settingsHref?: string;
+  trashHref?: string;
+  onSignOut?: () => void;
+};

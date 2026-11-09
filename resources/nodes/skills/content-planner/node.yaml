@@ -1,0 +1,28 @@
+# veyra.skill.content-planner@1.0.0
+availability: ready
+description: Plan audience, outline, dependencies, review points, and success criteria.
+factory_selectable: true
+capabilities:
+- content_planning
+kind: skill
+name: Content Planner
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.skill.content-planner
+runtime_status: runtime_not_configured
+spec:
+  instruction: Produce a reviewable plan before drafting or moving anything. Include
+    outline, dependencies, review points, and a done-when check. Prefer a short plan
+    the user can apply.
+  ui:
+    category: skill
+    icon: list-tree
+    title: Content Planner
+tags:
+- planning
+- instruction
+version: 1.0.0

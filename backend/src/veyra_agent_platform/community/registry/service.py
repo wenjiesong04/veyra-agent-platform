@@ -1,0 +1,1077 @@
+"""Publish, browse, and download validated Agent packages."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Any
+
+import yaml  # type: ignore[import-untyped]
+from sqlalchemy.exc import IntegrityError
+
+from veyra_agent_platform.contracts.agent import AgentSource
+from veyra_agent_platform.contracts.resource import ResourceRef
+
+from ..accounts.profiles import AccountProfileService
+from ..storage.database import CommunityDatabase
+from ..storage.identifiers import utc_now
+from ..storage.package_storage import PackageStorage
+from ..storage.registry_repository import CommunityRegistryRepository
+from ..storage.schema import (
+    CommunityAgent,
+    CommunityAgentVersion,
+    CommunityAvatar,
+    CommunityUser,
+)
+
+MAX_PACKAGE_BYTES = 1_000_000
+_SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_FORBIDDEN_MARKERS = (
+    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "ghp_",
+    "github_pat_",
+    "AKIA",
+)
+_SEMVER = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_PROFILE_REFERENCE = "veyra.runtime.profile@1.0.0"
+_ABSOLUTE_PATH = re.compile(
+    r"(?:^|[\s\"'=:(])(?:[A-Za-z]:[\\/]|\\\\|/(?:Users|home|private|tmp|var|etc|opt|root|Volumes|mnt)(?:[\\/]|$))"
+)
+_PATH_TRAVERSAL = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
+_SENSITIVE_PATH = re.compile(
+    r"(?i)(?:^|[\\/])(?:\.env|credentials(?:\.json)?|id_rsa|[^\\/]+\.(?:key|pem|p12|token))(?:[\\/]|$)"
+)
+
+
+class CommunityRegistryError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class CommunityForkOrigin:
+    """The published version that a new Community version was forked from."""
+
+    owner_handle: str
+    slug: str
+    version: str
+    source_hash: str
+
+    @classmethod
+    def from_optional_fields(
+        cls,
+        *,
+        owner_handle: str | None,
+        slug: str | None,
+        version: str | None,
+        source_hash: str | None,
+    ) -> CommunityForkOrigin | None:
+        fields = (owner_handle, slug, version, source_hash)
+        if all(value is None for value in fields):
+            return None
+        if any(value is None or not value.strip() for value in fields):
+            raise CommunityRegistryError(
+                "registry_fork_invalid",
+                "Fork origin fields must be provided together",
+            )
+        assert owner_handle is not None
+        assert slug is not None
+        assert version is not None
+        assert source_hash is not None
+        origin = cls(
+            owner_handle=owner_handle.strip(),
+            slug=slug.strip(),
+            version=version.strip(),
+            source_hash=source_hash.strip(),
+        )
+        if len(origin.owner_handle) > 32 or len(origin.slug) > 63:
+            raise CommunityRegistryError(
+                "registry_fork_invalid", "Fork origin identity is too long"
+            )
+        if not _SEMVER.fullmatch(origin.version) or len(origin.version) > 32:
+            raise CommunityRegistryError(
+                "registry_fork_invalid", "Fork origin version is invalid"
+            )
+        if not _SHA256.fullmatch(origin.source_hash):
+            raise CommunityRegistryError(
+                "registry_fork_invalid", "Fork origin source hash is invalid"
+            )
+        return origin
+
+
+class CommunityRegistryService:
+    """Own the validated package boundary; Community never executes Agents."""
+
+    def __init__(
+        self,
+        database: CommunityDatabase,
+        storage: PackageStorage,
+        profiles: AccountProfileService,
+        *,
+        require_moderation: bool = False,
+    ) -> None:
+        self.database = database
+        self.storage = storage
+        self.profiles = profiles
+        self.require_moderation = require_moderation
+        self.repository = CommunityRegistryRepository()
+
+    def list_entries(
+        self, *, query: str | None = None, limit: int = 50
+    ) -> dict[str, Any]:
+        clean_query = query.strip()[:120] if query else None
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_public(
+                session, query_text=clean_query, limit=clean_limit
+            )
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        fork_source=self.repository.fork_source(
+                            session, target_version_id=row[1].id
+                        ),
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        source=source,
+                    )
+                )
+        return {
+            "schema_version": "community.registry.v1",
+            "entries": entries,
+        }
+
+    def entry(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            row = self.repository.find_public_version(
+                session,
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+            )
+            fork_source = (
+                self.repository.fork_source(session, target_version_id=row[1].id)
+                if row is not None
+                else None
+            )
+            feedback = (
+                self.repository.feedback(session, version_id=row[1].id)
+                if row is not None
+                else None
+            )
+        if row is None:
+            raise CommunityRegistryError(
+                "registry_entry_not_found", "Published Agent was not found"
+            )
+        source = self._stored_source(row[1])
+        return _entry_payload(
+            *row,
+            fork_source=fork_source,
+            feedback=feedback,
+            capabilities=_capability_payload(source) if source is not None else None,
+            source=source,
+        )
+
+    def versions(self, *, owner_handle: str, slug: str) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            rows = self.repository.list_public_versions(
+                session, owner_handle=owner_handle, slug=slug
+            )
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        fork_source=self.repository.fork_source(
+                            session, target_version_id=row[1].id
+                        ),
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        source=source,
+                    )
+                )
+        if not entries:
+            raise CommunityRegistryError(
+                "registry_entry_not_found", "Published Agent was not found"
+            )
+        return {
+            "schema_version": "community.registry.v1",
+            "owner_handle": owner_handle,
+            "slug": slug,
+            "versions": entries,
+        }
+
+    def owned_entries(self, *, user_id: str, limit: int = 100) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_owned_versions(
+                session, owner_id=user_id, limit=clean_limit
+            )
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        scan=_stored_scan(row[1]),
+                        source=source,
+                    )
+                )
+        return {"schema_version": "community.registry.v1", "entries": entries}
+
+    def starred_entries(self, *, user_id: str, limit: int = 100) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_starred_versions(
+                session, user_id=user_id, limit=clean_limit
+            )
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        fork_source=self.repository.fork_source(
+                            session, target_version_id=row[1].id
+                        ),
+                        feedback=self.repository.feedback(
+                            session, version_id=row[1].id
+                        ),
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        source=source,
+                    )
+                )
+        return {"schema_version": "community.registry.v1", "entries": entries}
+
+    def download(
+        self, *, owner_handle: str, slug: str, version: str | None = None
+    ) -> tuple[dict[str, Any], bytes]:
+        with self.database.transaction() as session:
+            row = self.repository.find_public_version(
+                session,
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+            )
+            fork_source = (
+                self.repository.fork_source(session, target_version_id=row[1].id)
+                if row is not None
+                else None
+            )
+            feedback = (
+                self.repository.feedback(session, version_id=row[1].id)
+                if row is not None
+                else None
+            )
+        if row is None:
+            raise CommunityRegistryError(
+                "registry_entry_not_found", "Published Agent was not found"
+            )
+        agent, record, user = row
+        content = self.storage.get(record.source_storage_id)
+        if content is None:
+            raise CommunityRegistryError(
+                "registry_package_missing", "Published Agent package is unavailable"
+            )
+        source = _source_from_content(content, record.source_hash)
+        if source is None:
+            raise CommunityRegistryError(
+                "registry_package_invalid",
+                "Published Agent package failed integrity checks",
+            )
+        return (
+            _entry_payload(
+                agent,
+                record,
+                user,
+                fork_source=fork_source,
+                feedback=feedback,
+                capabilities=_capability_payload(source),
+                source=source,
+            ),
+            content,
+        )
+
+    def publish(
+        self,
+        *,
+        user_id: str,
+        filename: str | None,
+        content: bytes,
+        fork_origin: CommunityForkOrigin | None = None,
+    ) -> dict[str, Any]:
+        if len(content) > MAX_PACKAGE_BYTES:
+            raise CommunityRegistryError(
+                "registry_package_too_large", "Agent package exceeds the 1 MiB limit"
+            )
+        if filename and not filename.lower().endswith((".yaml", ".yml")):
+            raise CommunityRegistryError(
+                "registry_package_type_invalid", "Agent package must be YAML"
+            )
+        try:
+            source_text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CommunityRegistryError(
+                "registry_package_invalid", "Agent package must be UTF-8"
+            ) from exc
+        _scan_source(source_text)
+        try:
+            payload = yaml.safe_load(source_text)
+            source = AgentSource.from_dict(payload)
+        except (yaml.YAMLError, TypeError, ValueError) as exc:
+            raise CommunityRegistryError(
+                "registry_package_invalid", "Agent package is not a valid Agent source"
+            ) from exc
+        _assert_publishable_source(source)
+        if not _SLUG.fullmatch(source.slug):
+            raise CommunityRegistryError(
+                "registry_slug_invalid", "Agent slug is not publishable"
+            )
+        profile = self.profiles.get(user_id)
+        if profile is None:
+            raise CommunityRegistryError(
+                "registry_account_not_found", "Publisher account was not found"
+            )
+        canonical_text = yaml.safe_dump(
+            source.to_dict(), sort_keys=False, allow_unicode=True
+        )
+        canonical_bytes = canonical_text.encode("utf-8")
+        scan = _scan_payload(canonical_text, source)
+        storage_id = self.storage.put(canonical_bytes)
+        now = utc_now()
+        status = "quarantined" if self.require_moderation else "published"
+        try:
+            with self.database.transaction() as session:
+                agent = self.repository.find_agent(
+                    session, owner_id=user_id, slug=source.slug
+                )
+                if agent is None:
+                    agent = self.repository.create_agent(
+                        session,
+                        owner_id=user_id,
+                        slug=source.slug,
+                        name=source.name,
+                        description=source.description,
+                        now=now,
+                    )
+                else:
+                    agent.name = source.name
+                    agent.description = source.description
+                    agent.updated_at = now
+                    session.flush()
+                if (
+                    self.repository.find_version(
+                        session, agent_id=agent.id, version=source.version
+                    )
+                    is not None
+                ):
+                    raise CommunityRegistryError(
+                        "registry_version_exists",
+                        "This Agent version is already published",
+                    )
+                source_fork = None
+                if fork_origin is not None:
+                    source_fork = self.repository.find_fork_source(
+                        session,
+                        owner_handle=fork_origin.owner_handle,
+                        slug=fork_origin.slug,
+                        version=fork_origin.version,
+                    )
+                    if (
+                        source_fork is None
+                        or source_fork[1].source_hash != fork_origin.source_hash
+                    ):
+                        raise CommunityRegistryError(
+                            "registry_fork_source_not_found",
+                            "Fork source version was not found or changed",
+                        )
+                record = self.repository.create_version(
+                    session,
+                    agent_id=agent.id,
+                    version=source.version,
+                    source_storage_id=storage_id,
+                    source_hash=source.source_hash,
+                    behavior_hash=source.behavior_hash,
+                    lock_hash=source.lock_hash,
+                    scan_json=json.dumps(scan, ensure_ascii=False, sort_keys=True),
+                    status=status,
+                    published_at=now if status == "published" else None,
+                    now=now,
+                )
+                if source_fork is not None:
+                    self.repository.create_fork(
+                        session,
+                        source_version_id=source_fork[1].id,
+                        target_version_id=record.id,
+                        forked_by=user_id,
+                        now=now,
+                    )
+                feedback = self.repository.feedback(session, version_id=record.id)
+        except IntegrityError as exc:
+            raise CommunityRegistryError(
+                "registry_version_exists", "This Agent version is already published"
+            ) from exc
+        return _entry_payload(
+            agent,
+            record,
+            profile,
+            fork_source=source_fork,
+            feedback=feedback,
+            capabilities=_capability_payload(source),
+            scan=scan,
+            source=source,
+        )
+
+    def moderation_queue(self, *, limit: int = 50) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_moderation_queue(session, limit=clean_limit)
+            entries = []
+            for row in rows:
+                source = self._stored_source(row[1])
+                entries.append(
+                    _entry_payload(
+                        *row,
+                        session=session,
+                        capabilities=(
+                            _capability_payload(source) if source is not None else None
+                        ),
+                        scan=_stored_scan(row[1]),
+                        source=source,
+                    )
+                )
+        return {
+            "schema_version": "community.moderation.v1",
+            "entries": entries,
+        }
+
+    def moderate(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+        moderator_id: str,
+        action: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        if action not in {"publish", "reject"}:
+            raise CommunityRegistryError(
+                "registry_moderation_action_invalid",
+                "Moderation action must publish or reject",
+            )
+        clean_reason = reason.strip()
+        if not clean_reason or len(clean_reason) > 4_000:
+            raise CommunityRegistryError(
+                "registry_moderation_reason_invalid",
+                "Moderation reason must contain 1 to 4000 characters",
+            )
+        with self.database.transaction() as session:
+            row = self.repository.find_version_for_moderation(
+                session,
+                owner_handle=owner_handle,
+                slug=slug,
+                version=version,
+            )
+            if row is None:
+                raise CommunityRegistryError(
+                    "registry_version_not_found", "Agent version was not found"
+                )
+            agent, record, user = row
+            if record.status != "quarantined":
+                raise CommunityRegistryError(
+                    "registry_moderation_not_pending",
+                    "Only quarantined Agent versions can be moderated",
+                )
+            now = utc_now()
+            next_status = "published" if action == "publish" else "rejected"
+            self.repository.set_version_status(
+                session,
+                record,
+                status=next_status,
+                published_at=now if next_status == "published" else None,
+            )
+            self.repository.create_moderation(
+                session,
+                version_id=record.id,
+                moderator_id=moderator_id,
+                action=action,
+                reason=clean_reason,
+                now=now,
+            )
+            feedback = self.repository.feedback(session, version_id=record.id)
+        source = self._stored_source(record)
+        return _entry_payload(
+            agent,
+            record,
+            user,
+            feedback=feedback,
+            capabilities=_capability_payload(source) if source is not None else None,
+            scan=_stored_scan(record),
+            source=source,
+        )
+
+    def _stored_source(self, record: CommunityAgentVersion) -> AgentSource | None:
+        return _source_from_content(
+            self.storage.get(record.source_storage_id), record.source_hash
+        )
+
+    def star(
+        self, *, owner_handle: str, slug: str, version: str, user_id: str
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            if (
+                self.repository.find_star(
+                    session, version_id=record.id, user_id=user_id
+                )
+                is None
+            ):
+                self.repository.create_star(
+                    session, version_id=record.id, user_id=user_id, now=utc_now()
+                )
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return {
+            "schema_version": "community.feedback.v1",
+            "starred": True,
+            **feedback,
+        }
+
+    def star_status(
+        self, *, owner_handle: str, slug: str, version: str, user_id: str
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            starred = (
+                self.repository.find_star(
+                    session, version_id=record.id, user_id=user_id
+                )
+                is not None
+            )
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return {
+            "schema_version": "community.feedback.v1",
+            "starred": starred,
+            **feedback,
+        }
+
+    def unstar(
+        self, *, owner_handle: str, slug: str, version: str, user_id: str
+    ) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            star = self.repository.find_star(
+                session, version_id=record.id, user_id=user_id
+            )
+            if star is not None:
+                self.repository.delete_star(session, star)
+            feedback = self.repository.feedback(session, version_id=record.id)
+        return {
+            "schema_version": "community.feedback.v1",
+            "starred": False,
+            **feedback,
+        }
+
+    def reviews(self, *, owner_handle: str, slug: str, version: str) -> dict[str, Any]:
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            reviews = [
+                _review_payload(review, user)
+                for review, user in self.repository.list_reviews(
+                    session, version_id=record.id
+                )
+            ]
+        return {
+            "schema_version": "community.feedback.v1",
+            "reviews": reviews,
+        }
+
+    def review(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+        user_id: str,
+        rating: int,
+        body: str,
+    ) -> dict[str, Any]:
+        if rating < 1 or rating > 5:
+            raise CommunityRegistryError(
+                "registry_rating_invalid", "Review rating must be between 1 and 5"
+            )
+        clean_body = body.strip()
+        if not clean_body or len(clean_body) > 4_000:
+            raise CommunityRegistryError(
+                "registry_review_invalid",
+                "Review text must contain 1 to 4000 characters",
+            )
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            review = self.repository.upsert_review(
+                session,
+                version_id=record.id,
+                user_id=user_id,
+                rating=rating,
+                body=clean_body,
+                now=utc_now(),
+            )
+            feedback = self.repository.feedback(session, version_id=record.id)
+            author = session.get(CommunityUser, user_id)
+        if author is None:
+            raise CommunityRegistryError(
+                "registry_account_not_found", "Reviewer account was not found"
+            )
+        return {
+            "schema_version": "community.feedback.v1",
+            "review": _review_payload(review, author),
+            **feedback,
+        }
+
+    def report(
+        self,
+        *,
+        owner_handle: str,
+        slug: str,
+        version: str,
+        user_id: str,
+        reason: str,
+        details: str,
+    ) -> dict[str, Any]:
+        clean_reason = reason.strip()
+        clean_details = details.strip()
+        if not clean_reason or len(clean_reason) > 64:
+            raise CommunityRegistryError(
+                "registry_report_invalid", "Report reason is invalid"
+            )
+        if len(clean_details) > 4_000:
+            raise CommunityRegistryError(
+                "registry_report_invalid", "Report details are too long"
+            )
+        with self.database.transaction() as session:
+            record = self._public_record(
+                session, owner_handle=owner_handle, slug=slug, version=version
+            )
+            report = self.repository.find_report(
+                session,
+                version_id=record.id,
+                reporter_id=user_id,
+                reason=clean_reason,
+            )
+            if report is None:
+                report = self.repository.create_report(
+                    session,
+                    version_id=record.id,
+                    reporter_id=user_id,
+                    reason=clean_reason,
+                    details=clean_details,
+                    now=utc_now(),
+                )
+        return {
+            "schema_version": "community.feedback.v1",
+            "report_id": report.id,
+            "status": report.status,
+        }
+
+    def _public_record(
+        self, session: Any, *, owner_handle: str, slug: str, version: str
+    ) -> CommunityAgentVersion:
+        row = self.repository.find_public_version(
+            session,
+            owner_handle=owner_handle,
+            slug=slug,
+            version=version,
+        )
+        if row is None:
+            raise CommunityRegistryError(
+                "registry_entry_not_found", "Published Agent was not found"
+            )
+        return row[1]
+
+
+def _scan_source(source_text: str) -> None:
+    for marker in _FORBIDDEN_MARKERS:
+        if marker in source_text:
+            raise CommunityRegistryError(
+                "registry_secret_detected", "Agent package contains a credential marker"
+            )
+
+
+def _assert_publishable_source(source: AgentSource) -> None:
+    """Fail closed before storage when an Agent carries machine-private data."""
+    if source.secret_refs:
+        raise CommunityRegistryError(
+            "registry_secret_reference_detected",
+            "Remove host Secret references before publishing this Agent",
+        )
+    findings = _path_findings(source)
+    if findings:
+        raise CommunityRegistryError(
+            "registry_nonportable_path_detected",
+            "Remove absolute, sensitive, or traversing paths before publishing",
+        )
+
+
+def _source_from_content(
+    content: bytes | None, expected_source_hash: str
+) -> AgentSource | None:
+    if content is None:
+        return None
+    try:
+        source = AgentSource.from_dict(yaml.safe_load(content.decode("utf-8")))
+    except (UnicodeDecodeError, yaml.YAMLError, TypeError, ValueError):
+        return None
+    if source.source_hash != expected_source_hash:
+        return None
+    return source
+
+
+def _scan_payload(source_text: str, source: AgentSource) -> dict[str, Any]:
+    capabilities = _capability_payload(source)
+    warnings: list[dict[str, Any]] = []
+    dependency_summary = _dependency_summary(source)
+    declared = set(dependency_summary["declared"])
+    unbound_locks = sorted(set(source.lock) - declared)
+    if unbound_locks:
+        warnings.append(
+            {
+                "code": "unbound_lock_entries",
+                "details": unbound_locks,
+            }
+        )
+    if dependency_summary["unlocked"]:
+        warnings.append(
+            {
+                "code": "unlocked_dependency",
+                "details": dependency_summary["unlocked"],
+            }
+        )
+    if dependency_summary["external"]:
+        warnings.append(
+            {
+                "code": "external_dependency_review",
+                "details": dependency_summary["external"],
+            }
+        )
+    if dependency_summary["knowledge"]:
+        warnings.append(
+            {
+                "code": "knowledge_dependency_not_portable",
+                "details": dependency_summary["knowledge"],
+            }
+        )
+    non_project_roots = sorted(
+        {
+            root
+            for root in (
+                *source.permissions.filesystem_read_roots,
+                *source.permissions.filesystem_write_roots,
+            )
+            if root != "project"
+        }
+    )
+    if non_project_roots:
+        warnings.append(
+            {
+                "code": "filesystem_scope_review",
+                "details": non_project_roots,
+            }
+        )
+    path_findings = _path_findings(source)
+    if path_findings:
+        warnings.append(
+            {
+                "code": "path_reference_review",
+                "details": [
+                    f"{finding['field']}:{finding['kind']}" for finding in path_findings
+                ],
+            }
+        )
+    if not source.verification.required:
+        warnings.append({"code": "verification_not_required", "details": []})
+    return {
+        "schema_version": "community.scan.v1",
+        "status": "warning" if warnings else "passed",
+        "package_bytes": len(source_text.encode("utf-8")),
+        "checks": [
+            {"name": "utf8", "status": "passed"},
+            {"name": "agent_source", "status": "passed"},
+            {"name": "secret_markers", "status": "passed"},
+            {"name": "source_hash", "status": "passed"},
+            {
+                "name": "dependency_lock",
+                "status": (
+                    "warning"
+                    if unbound_locks or dependency_summary["unlocked"]
+                    else "passed"
+                ),
+            },
+            {
+                "name": "dependency_portability",
+                "status": (
+                    "warning"
+                    if dependency_summary["external"] or dependency_summary["knowledge"]
+                    else "passed"
+                ),
+            },
+            {
+                "name": "path_safety",
+                "status": "warning" if path_findings else "passed",
+            },
+            {
+                "name": "filesystem_scope",
+                "status": "warning" if non_project_roots else "passed",
+            },
+            {
+                "name": "verification",
+                "status": "passed" if source.verification.required else "warning",
+            },
+        ],
+        "warnings": warnings,
+        "dependency_summary": dependency_summary,
+        "path_findings": path_findings,
+        "risk_level": capabilities["risk_level"],
+        "risk_reasons": capabilities["risk_reasons"],
+    }
+
+
+def _dependency_summary(source: AgentSource) -> dict[str, list[str]]:
+    declared = (
+        {node.uses for node in source.nodes if node.uses is not None}
+        | set(source.skill_refs)
+        | set(source.policy_refs)
+        | set(source.knowledge_refs)
+        | {
+            str(binding["reference"])
+            for binding in (source.ui.get("bindings") or {}).values()
+        }
+        | {_RUNTIME_PROFILE_REFERENCE}
+    )
+    locked = set(source.lock)
+    knowledge = sorted(source.knowledge_refs)
+    external = sorted(
+        reference
+        for reference in declared
+        if not reference.startswith("veyra.") and not _is_resource_reference(reference)
+    )
+    required = declared - {_RUNTIME_PROFILE_REFERENCE}
+    return {
+        "declared": sorted(declared),
+        "locked": sorted(locked),
+        "unlocked": sorted(required - locked),
+        "external": external,
+        "knowledge": knowledge,
+    }
+
+
+def _is_resource_reference(value: str) -> bool:
+    try:
+        ResourceRef.from_string(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _path_findings(source: AgentSource) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(field: str, kind: str) -> None:
+        key = (field, kind)
+        if key not in seen:
+            seen.add(key)
+            findings.append({"field": field, "kind": kind})
+
+    def visit(value: Any, field: str) -> None:
+        if isinstance(value, str):
+            if _PATH_TRAVERSAL.search(value):
+                add(field, "path_traversal")
+            if _ABSOLUTE_PATH.search(value):
+                add(field, "absolute_path")
+            if _SENSITIVE_PATH.search(value):
+                add(field, "sensitive_path")
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, f"{field}.{key}")
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{field}[{index}]")
+
+    visit(source.to_dict(), "$")
+    return findings
+
+
+def _stored_scan(record: CommunityAgentVersion) -> dict[str, Any] | None:
+    try:
+        value = json.loads(record.scan_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) and value else None
+
+
+def _capability_payload(source: AgentSource) -> dict[str, Any]:
+    permissions = source.permissions.to_dict()
+    tool_refs = sorted({node.uses for node in source.nodes if node.uses is not None})
+    risk_reasons: list[str] = []
+    if permissions["network_hosts"]:
+        risk_reasons.append("network_access")
+    if permissions["filesystem_write_roots"]:
+        risk_reasons.append("filesystem_write")
+    if permissions["shell_workspace_only"]:
+        risk_reasons.append("workspace_shell")
+    if source.secret_refs:
+        risk_reasons.append("host_secrets")
+    if tool_refs and "tool_access" not in risk_reasons:
+        risk_reasons.append("tool_access")
+    risk_level = (
+        "high"
+        if any(
+            reason in risk_reasons
+            for reason in {"filesystem_write", "workspace_shell", "host_secrets"}
+        )
+        else "medium"
+        if risk_reasons
+        else "low"
+    )
+    return {
+        "tools": tool_refs,
+        "skills": list(source.skill_refs),
+        "policies": list(source.policy_refs),
+        "knowledge": list(source.knowledge_refs),
+        "secret_refs": list(source.secret_refs),
+        "permissions": permissions,
+        "verification_required": source.verification.required,
+        "verification_checks": list(source.verification.checks),
+        "node_count": len(source.nodes),
+        "risk_level": risk_level,
+        "risk_reasons": risk_reasons,
+    }
+
+
+def _owner_avatar_url(session: Any, user: Any) -> str | None:
+    user_id = getattr(user, "id", None)
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    avatar = session.get(CommunityAvatar, user_id)
+    if avatar is None:
+        return None
+    return f"/api/v1/avatars/{user_id}?v={avatar.etag}"
+
+
+def _entry_payload(
+    agent: CommunityAgent,
+    record: CommunityAgentVersion,
+    user: Any,
+    *,
+    session: Any | None = None,
+    fork_source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None = None,
+    feedback: dict[str, Any] | None = None,
+    capabilities: dict[str, Any] | None = None,
+    scan: dict[str, Any] | None = None,
+    source: AgentSource | None = None,
+) -> dict[str, Any]:
+    summary = feedback or {
+        "star_count": 0,
+        "review_count": 0,
+        "average_rating": 0.0,
+    }
+    return {
+        "schema_version": "community.registry.v1",
+        "owner_handle": user.handle,
+        "owner_display_name": user.display_name,
+        "slug": agent.slug,
+        "name": source.name if source is not None else agent.name,
+        "description": source.description if source is not None else agent.description,
+        "version": record.version,
+        "source_hash": record.source_hash,
+        "behavior_hash": record.behavior_hash,
+        "lock_hash": record.lock_hash,
+        "status": record.status,
+        "created_at": record.created_at.isoformat(),
+        "published_at": record.published_at.isoformat()
+        if record.published_at
+        else None,
+        "fork_of": _fork_payload(fork_source),
+        "capabilities": capabilities,
+        "scan": scan if scan is not None else _stored_scan(record),
+        "star_count": int(summary["star_count"]),
+        "review_count": int(summary["review_count"]),
+        "average_rating": float(summary["average_rating"]),
+        "owner_avatar_url": _owner_avatar_url(session, user)
+        if session is not None
+        else None,
+    }
+
+
+def _fork_payload(
+    source: tuple[CommunityAgent, CommunityAgentVersion, Any] | None,
+) -> dict[str, str] | None:
+    if source is None:
+        return None
+    agent, record, user = source
+    return {
+        "owner_handle": user.handle,
+        "slug": agent.slug,
+        "version": record.version,
+        "source_hash": record.source_hash,
+    }
+
+
+def _review_payload(review: Any, user: Any) -> dict[str, Any]:
+    return {
+        "id": review.id,
+        "author_handle": user.handle,
+        "author_display_name": user.display_name,
+        "rating": review.rating,
+        "body": review.body,
+        "created_at": review.created_at.isoformat(),
+        "updated_at": review.updated_at.isoformat(),
+    }

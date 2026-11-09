@@ -1,0 +1,37 @@
+# veyra.tool.github.read@1.0.0
+availability: ready
+description: Read a GitHub API repository path using a host-configured token.
+factory_selectable: true
+capabilities:
+- github_read
+kind: tool
+name: GitHub Read
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts:
+  - api.github.com
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.github.read
+resource_id: veyra.tool.github.read
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.github.read
+  approval_required: false
+  input_schema:
+    path: string
+  output_schema:
+    body: string
+    status: integer
+  secret_env: GITHUB_TOKEN
+  secret_ref: github.main
+  tool_name: github.read
+  ui:
+    category: git
+    icon: github
+    title: GitHub Read
+tags:
+- github
+- network
+version: 1.0.0

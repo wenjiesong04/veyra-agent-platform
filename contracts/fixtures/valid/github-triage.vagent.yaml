@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "agentspec_version": "26.1",
+  "component_type": "Flow",
+  "agent_id": "01a03795-a5b0-7b1c-bad0-e07ac7dda22b",
+  "slug": "github-triage",
+  "name": "GitHub Triage",
+  "description": "Classifies issues and requires independent verification.",
+  "inputs": {"repository": "string", "issue": "string"},
+  "outputs": {"result": "object", "rejected": "object"},
+  "nodes": [
+    {"id": "start", "component_type": "Start"},
+    {"id": "analyze", "component_type": "Agent", "model_ref": "model.primary", "system_prompt": "Classify the reported issue."},
+    {"id": "read_issue", "component_type": "Tool", "uses": "veyra.github.issue_search@1.0.0"},
+    {"id": "has_evidence", "component_type": "Condition", "expression": "issue_has_evidence"},
+    {"id": "normalize", "component_type": "Transform", "mapping": {"summary": "analysis.summary"}},
+    {"id": "approval", "component_type": "HumanApproval", "prompt": "Approve the triage result?"},
+    {"id": "verify", "component_type": "Verifier", "checks": ["github.issue.exists"]},
+    {"id": "output", "component_type": "Output", "output_name": "result"},
+    {"id": "no_action", "component_type": "Output", "output_name": "rejected"}
+  ],
+  "transitions": [
+    {"from": "start", "port": "next", "to": "analyze"},
+    {"from": "analyze", "port": "next", "to": "read_issue"},
+    {"from": "read_issue", "port": "next", "to": "has_evidence"},
+    {"from": "has_evidence", "port": "true", "to": "normalize"},
+    {"from": "has_evidence", "port": "false", "to": "no_action"},
+    {"from": "normalize", "port": "next", "to": "approval"},
+    {"from": "approval", "port": "approved", "to": "verify"},
+    {"from": "approval", "port": "rejected", "to": "no_action"},
+    {"from": "verify", "port": "passed", "to": "output"},
+    {"from": "verify", "port": "failed", "to": "no_action"}
+  ],
+  "extensions": {"veyra": {
+    "runtime_profile": "veyra-runtime-profile/1",
+    "secret_refs": ["github.main"],
+    "permissions": {"network_hosts": ["api.github.com"], "tools": ["veyra.github.issue_search"]},
+    "verification": {"required": true, "checks": ["github.issue.exists"]}
+  }},
+  "ui": {"positions": {"start": {"x": 0, "y": 0}, "analyze": {"x": 120, "y": 0}, "read_issue": {"x": 240, "y": 0}, "has_evidence": {"x": 360, "y": 0}, "normalize": {"x": 480, "y": 0}, "approval": {"x": 600, "y": 0}, "verify": {"x": 720, "y": 0}, "output": {"x": 840, "y": 0}, "no_action": {"x": 480, "y": 120}}},
+  "lock": {"veyra.github.issue_search@1.0.0": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+}

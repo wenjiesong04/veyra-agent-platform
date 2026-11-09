@@ -1,0 +1,26 @@
+# veyra.component.start@1.0.0
+availability: ready
+description: Platform-owned Start graph component.
+factory_selectable: true
+kind: component
+name: Start
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.component.start
+runtime_status: supported
+spec:
+  fields: []
+  output_ports:
+  - next
+  ui:
+    category: core
+    icon: circle-play
+    title: Start
+tags:
+- graph
+- builtin
+version: 1.0.0

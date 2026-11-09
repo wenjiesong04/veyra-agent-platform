@@ -1,0 +1,38 @@
+# veyra.tool.web.search@1.0.0
+availability: ready
+description: Search the web and return bounded titles, links, and snippets.
+factory_selectable: true
+capabilities:
+- web_search
+kind: tool
+name: Web Search
+resource_id: veyra.tool.web.search
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts:
+  - html.duckduckgo.com
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.web.search
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.web.search
+  approval_required: true
+  input_schema:
+    count: integer
+    query: string
+  output_schema:
+    provider: string
+    query: string
+    results: array
+    status: integer
+  tool_name: web.search
+  ui:
+    category: web
+    icon: search
+    title: Web Search
+tags:
+- web
+- search
+version: 1.0.0

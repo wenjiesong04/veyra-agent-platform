@@ -1,0 +1,28 @@
+# veyra.skill.need-extractor@1.0.0
+availability: ready
+description: Distinguish the user's actual need from extra or generic information.
+factory_selectable: true
+capabilities:
+- need_extraction
+kind: skill
+name: Need Extractor
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools: []
+resource_id: veyra.skill.need-extractor
+runtime_status: runtime_not_configured
+spec:
+  instruction: Read the user's need before the source. Rank must-have answers, nice-to-have
+    context, and out-of-scope material. Prefer answering the need over summarizing
+    everything. Drop padding.
+  ui:
+    category: skill
+    icon: filter
+    title: Need Extractor
+tags:
+- need
+- instruction
+version: 1.0.0

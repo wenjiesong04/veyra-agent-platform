@@ -1,0 +1,35 @@
+# veyra.tool.filesystem.list@1.0.0
+availability: ready
+description: List a bounded Project directory without reading file contents.
+factory_selectable: true
+capabilities:
+- workspace_list
+kind: tool
+name: Filesystem List
+required_permissions:
+  filesystem_read_roots:
+  - project
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.filesystem.list
+resource_id: veyra.tool.filesystem.list
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.filesystem.list
+  approval_required: false
+  input_schema:
+    path: string
+  output_schema:
+    entries: array
+  tool_name: filesystem.list
+  ui:
+    category: filesystem
+    icon: folder-tree
+    title: List Files
+tags:
+- filesystem
+- local
+- read_only
+version: 1.0.0

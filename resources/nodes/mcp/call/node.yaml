@@ -1,0 +1,30 @@
+# veyra.mcp.call@1.0.0
+availability: requires_configuration
+description: Call a discovered MCP tool after a server is configured and normalized
+  into a Tool descriptor.
+factory_selectable: false
+capabilities:
+- mcp_call
+kind: mcp_tool
+name: MCP Call
+required_permissions:
+  filesystem_read_roots: []
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.mcp.call
+resource_id: veyra.mcp.call
+runtime_status: runtime_not_configured
+spec:
+  credentials: host_side
+  discovery: normalized_tool_required
+  tool_name: mcp.call
+  ui:
+    category: mcp
+    icon: plug
+    title: MCP Call
+tags:
+- mcp
+- discovery
+version: 1.0.0

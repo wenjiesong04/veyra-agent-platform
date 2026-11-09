@@ -1,0 +1,87 @@
+# veyra.tool.tabular.compare@1.0.0
+availability: ready
+description: Compare two Project UTF-8 CSVs by chosen exact text key and decimal amount columns. Exact full-file sums and counts come first, followed by mismatch groups, multi-record groups, and blank-key rows with their own truncation flags. Blank keys stay unmatched; absent sides have null amounts and differences. Never guesses business meanings such as duplicate payment. Default result fits 7500 UTF-8 bytes; include_all_groups requests expanded details that Runtime may further clip. Summary counts and totals always cover every parsed record.
+factory_selectable: true
+capabilities:
+- tabular_compare
+kind: tool
+name: CSV Group Comparison
+required_permissions:
+  filesystem_read_roots:
+  - project
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.tabular.compare
+resource_id: veyra.tool.tabular.compare
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.tabular.compare
+  approval_required: false
+  input_schema:
+    left_path:
+      type: string
+      description: Relative Project path to the left CSV, at most 1000000 bytes and 2000 records.
+    right_path:
+      type: string
+      description: Relative Project path to the right CSV, at most 1000000 bytes and 2000 records.
+    left_key:
+      type: string
+      description: Exact left CSV header name for the text grouping key.
+    right_key:
+      type: string
+      description: Exact right CSV header name for the text grouping key.
+    left_amount:
+      type: string
+      description: Exact left CSV header name for finite decimal amounts.
+    right_amount:
+      type: string
+      description: Exact right CSV header name for finite decimal amounts.
+    include_all_groups:
+      type: boolean
+      required: false
+      description: Defaults to false. Request bounded full group details in addition to the compact mismatch and multi-record facts. Expanded results may be further truncated by Runtime.
+  input_constraints:
+    left_path: {minLength: 1, maxLength: 4096}
+    right_path: {minLength: 1, maxLength: 4096}
+    left_key: {minLength: 1, maxLength: 256}
+    right_key: {minLength: 1, maxLength: 256}
+    left_amount: {minLength: 1, maxLength: 256}
+    right_amount: {minLength: 1, maxLength: 256}
+  output_constraints:
+    max_file_bytes: 1000000
+    max_records_per_file: 2000
+    max_columns: 50
+    max_cell_bytes: 4096
+    max_detail_groups: 200
+    max_row_references_per_group: 200
+    max_result_bytes: 500000
+    default_max_result_bytes: 7500
+  output_schema:
+    schema_version: string
+    left: object
+    right: object
+    counts: object
+    totals: object
+    mismatch_groups: array
+    mismatch_groups_truncated: boolean
+    multi_record_groups: array
+    multi_record_groups_truncated: boolean
+    groups: array
+    groups_requested: boolean
+    groups_truncated: boolean
+    blank_keys: object
+    blank_keys_truncated: object
+    summary_complete: boolean
+    truncated: boolean
+  tool_name: tabular.compare
+  ui:
+    category: table
+    icon: table
+    title: Compare CSV Groups
+tags:
+- table
+- local
+- read-only
+version: 1.0.0
