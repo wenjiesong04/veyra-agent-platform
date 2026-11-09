@@ -345,7 +345,7 @@ describe("WorkflowAppPage", () => {
       status: "waiting",
       result: null,
       finished_at: null,
-      waiting: { kind: "input", node_id: "review", prompt: "Choose a model number", expected_fields: ["model"] } as WorkflowRunResponse["waiting"],
+      waiting: { kind: "input", node_id: "review", prompt: "Choose a model number", request_id: "input-request-1", expected_fields: ["model"] } as WorkflowRunResponse["waiting"],
       children: [],
       events: [event("run-previous", "approval.requested")],
     });
@@ -365,7 +365,7 @@ describe("WorkflowAppPage", () => {
     expect(screen.queryByRole("button", { name: "Run workflow" })).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "model" }), "ABC-1");
     await user.click(screen.getByRole("button", { name: "Submit and continue" }));
-    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "reply", inputs: { model: "ABC-1" } }));
+    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "reply", expected_request_id: "input-request-1", inputs: { model: "ABC-1" } }));
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
   });
 
@@ -374,7 +374,7 @@ describe("WorkflowAppPage", () => {
       status: "waiting",
       result: null,
       finished_at: null,
-      waiting: { kind: "approval", node_id: "review", prompt: "Confirm this step." },
+      waiting: { kind: "approval", node_id: "review", prompt: "Confirm this step.", request_id: "approval-request-1" },
       children: [],
       events: [event("run-previous", "approval.requested")],
     });
@@ -388,7 +388,67 @@ describe("WorkflowAppPage", () => {
     expect(screen.queryByRole("textbox", { name: "Task description" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Committed version" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "approve" }));
+    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "approve", expected_request_id: "approval-request-1" }));
+  });
+
+  it("extends child budget only for the displayed request and never automatically replays a changed request", async () => {
+    const context = { budget: { scope: "run_model_turns", used: 14, limit: 16, remaining: 2 }, required_remaining: 4, max_additional_turns: 32, suggested_additional_turns: 8 };
+    const first = run({ status: "waiting", result: null, finished_at: null, waiting: { kind: "budget", node_id: "review", prompt: "More turns needed", request_id: "budget-old", child_run_id: "child-1", context } });
+    const second = { ...first, waiting: { ...first.waiting!, request_id: "budget-new", context: { ...context, suggested_additional_turns: 4 } } };
+    let current = first;
+    const commandWorkflowRun = vi.fn().mockImplementation(async () => { current = second; throw new Error("Request changed"); });
+    const api = makeApi({ getWorkflowRun: vi.fn().mockImplementation(async () => current), commandWorkflowRun });
+    window.history.replaceState(null, "", runDetailHref({ projectId, workflowId, runId: first.run_id }));
+    mount(api);
+    const user = userEvent.setup();
+    await screen.findByRole("spinbutton", { name: "Additional model turns" });
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.getByRole("spinbutton")).toHaveValue(4));
+    expect(commandWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(commandWorkflowRun.mock.calls[0].slice(0, 4)).toEqual([projectId, workflowId, first.run_id, { command: "extend_budget", expected_request_id: "budget-old", additional_turns: 8 }]);
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(commandWorkflowRun.mock.calls[1][3]).toEqual({ command: "extend_budget", expected_request_id: "budget-new", additional_turns: 4 });
+    expect(commandWorkflowRun.mock.calls[1][4].idempotencyKey).not.toBe(commandWorkflowRun.mock.calls[0][4].idempotencyKey);
+  });
+
+  it("shows child Agent questions and forwards replies without approving effects", async () => {
+    const first = run({ status: "waiting", result: null, finished_at: null,
+      waiting: { kind: "input", node_id: "review", prompt: "Which column?", agent_id: "child-agent", child_run_id: "child-run", request_id: "question-1", input_schema: { reply: "string" }, context: { choices: ["amount", "total"] } },
+      events: [event("run-previous", "approval.requested")],
+    });
+    const second = { ...first, waiting: { ...first.waiting!, prompt: "Which unit?", request_id: "question-2", context: { choices: ["USD", "CNY"] } } };
+    const toolWait = { ...first, waiting: { kind: "agent", node_id: "review", prompt: "Approve exact write", agent_id: "child-agent", child_run_id: "child-run", approval_summary: { action: "Write file", target: "reports/review.md" } } };
+    let current = first;
+    const api = makeApi({
+      getWorkflowRun: vi.fn().mockImplementation(async () => current),
+      commandWorkflowRun: vi.fn().mockImplementation(async () => {
+        current = current === first ? second : toolWait;
+        return current;
+      }),
+    });
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", runDetailHref({ projectId, workflowId, runId: first.run_id }));
+    mount(api);
+    const region = await screen.findByRole("region", { name: "Provide run input" });
+    expect(within(region).getByText("Which column?")).toBeInTheDocument();
+    await user.click(within(region).getByText("View this turn's options and context"));
+    expect(within(region).getByText(/"amount"/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "reply" }), "amount");
+    await user.click(screen.getByRole("button", { name: "Submit and continue" }));
+    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, first.run_id, { command: "reply", expected_request_id: "question-1", inputs: { reply: "amount" } }));
+    expect(await screen.findByText("Which unit?")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "reply" })).toHaveValue("");
+    await user.type(screen.getByRole("textbox", { name: "reply" }), "CNY");
+    await user.click(screen.getByRole("button", { name: "Submit and continue" }));
+    expect(api.commandWorkflowRun).toHaveBeenLastCalledWith(projectId, workflowId, first.run_id, { command: "reply", expected_request_id: "question-2", inputs: { reply: "CNY" } });
+    expect(await screen.findByText("Approve exact write")).toBeInTheDocument();
+    expect(screen.getByText("Write file: reports/review.md")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "reply" })).not.toBeInTheDocument();
+    expect(api.commandWorkflowRun).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
   });
 
   it("sends reject for a waiting Workflow approval", async () => {
@@ -396,7 +456,7 @@ describe("WorkflowAppPage", () => {
       status: "waiting",
       result: null,
       finished_at: null,
-      waiting: { kind: "approval", node_id: "review", prompt: "Confirm this step." },
+      waiting: { kind: "approval", node_id: "review", prompt: "Confirm this step.", request_id: "reject-request-1" },
       children: [],
       events: [event("run-previous", "approval.requested")],
     });
@@ -406,7 +466,65 @@ describe("WorkflowAppPage", () => {
     mount(api);
 
     await user.click(await screen.findByRole("button", { name: "Reject" }));
-    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "reject" }));
+    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "reject", expected_request_id: "reject-request-1" }));
+  });
+
+  it("shows the server-bound report preview before approving its write", async () => {
+    const waiting = run({ status: "waiting", result: null, finished_at: null,
+      waiting: { kind: "approval", node_id: "write", prompt: "Approve report write", request_id: "report-request-1",
+        tool_reference: "veyra.tool.filesystem.write@1.0.0",
+        approval_summary: { action: "Write file", target: "reports/reconciliation.csv", content_preview: "order,total\nA,30.00", content_digest: "sealed-digest", preview_truncated: true } },
+      children: [], events: [],
+    });
+    const api = makeApi({ getWorkflowRun: vi.fn().mockResolvedValue(waiting) });
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", runDetailHref({ projectId, workflowId, runId: waiting.run_id }));
+    mount(api);
+    expect(await screen.findByText("order,total A,30.00")).toBeInTheDocument();
+    expect(screen.getByText("Partial content preview")).toBeInTheDocument();
+    expect(screen.getByText("Write file: reports/reconciliation.csv")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(api.commandWorkflowRun).toHaveBeenCalledWith(projectId, workflowId, waiting.run_id, { command: "approve", expected_request_id: "report-request-1" }));
+  });
+
+  it("refreshes a changed approval after failure without replaying it with the new token", async () => {
+    const first = run({ status: "waiting", result: null, finished_at: null,
+      waiting: { kind: "approval", node_id: "review", prompt: "First approval", request_id: "request-old" },
+    });
+    const second = { ...first, waiting: { ...first.waiting!, prompt: "Second approval", request_id: "request-new" } };
+    let current = first;
+    const commandWorkflowRun = vi.fn().mockImplementation(async () => {
+      if (current === first) { current = second; throw new Error("Request changed"); }
+      return current;
+    });
+    const api = makeApi({ getWorkflowRun: vi.fn().mockImplementation(async () => current), commandWorkflowRun });
+    window.history.replaceState(null, "", runDetailHref({ projectId, workflowId, runId: first.run_id }));
+    mount(api);
+    const user = userEvent.setup();
+    await screen.findByText("First approval");
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Second approval")).toBeInTheDocument();
+    expect(commandWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(commandWorkflowRun).toHaveBeenLastCalledWith(projectId, workflowId, first.run_id, { command: "approve", expected_request_id: "request-old" });
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    expect(commandWorkflowRun).toHaveBeenLastCalledWith(projectId, workflowId, first.run_id, { command: "reject", expected_request_id: "request-new" });
+  });
+
+  it("does not send an approval without a displayed request identity and only refreshes", async () => {
+    const missing = run({ status: "waiting", result: null, finished_at: null, waiting: { kind: "approval", node_id: "review", prompt: "Legacy approval" } });
+    const refreshed = { ...missing, waiting: { ...missing.waiting!, prompt: "Current approval", request_id: "request-current" } };
+    let current = missing;
+    const getWorkflowRun = vi.fn().mockImplementation(async () => current);
+    const commandWorkflowRun = vi.fn().mockResolvedValue(refreshed);
+    const api = makeApi({ getWorkflowRun, commandWorkflowRun });
+    window.history.replaceState(null, "", runDetailHref({ projectId, workflowId, runId: missing.run_id }));
+    mount(api);
+    await screen.findByText("Legacy approval");
+    current = refreshed;
+    await userEvent.setup().click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Current approval")).toBeInTheDocument();
+    expect(commandWorkflowRun).not.toHaveBeenCalled();
+    expect(getWorkflowRun.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("sends stop for a running Workflow", async () => {
@@ -552,7 +670,7 @@ describe("WorkflowAppPage", () => {
     expect(within(resultPanel).getByText(String(result))).toBeInTheDocument();
     expect(document.querySelectorAll(".runtime-output-scalar")).toHaveLength(1);
     await user.click(screen.getByText("Run details"));
-    expect(await screen.findByRole("heading", { name: finished.run_id })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Run detail" })).toBeInTheDocument();
     expect(document.querySelectorAll(".runtime-output-scalar")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "New run" })).toBeEnabled();
     expect(screen.queryByRole("textbox", { name: "Task description" })).not.toBeInTheDocument();

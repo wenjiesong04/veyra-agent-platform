@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentRunResponse, JsonObject, JsonValue, RuntimeReadiness, TypedFields, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonObject, JsonValue, RuntimeEvent, RuntimeReadiness, TypedFields, WorkflowRunResponse, WorkflowRuntimeReadiness } from "@veyra/api-contracts";
 import { compactFieldType, fieldIsMultiple, isArtifactCompactType } from "@veyra/api-contracts";
 import { Alert } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
@@ -34,20 +34,23 @@ export function runTone(status: AgentRunResponse["status"]): "good" | "warn" | "
 
 export function runStatusLabel(status: AgentRunResponse["status"], locale: "zh" | "en"): string {
   const labels = locale === "zh"
-    ? { running: "运行中", waiting: "等待审批", verified: "已验证", unverified: "未验证", failed: "失败", interrupted: "已中断", cancelled: "已取消" }
+    ? { running: "运行中", waiting: "等待", verified: "已验证", unverified: "未验证", failed: "失败", interrupted: "已中断", cancelled: "已取消" }
     : { running: "Running", waiting: "Waiting", verified: "Verified", unverified: "Unverified", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled" };
   return labels[status];
 }
 
 export function loopTimelineLabel(kind: string, payload: JsonObject, locale: "zh" | "en"): string {
   const zh = locale === "zh";
+  if (kind.startsWith("finalization.")) return eventLabel(kind as RuntimeEvent["kind"], locale);
+  if (kind === "image.response_received") return zh ? "图片服务已返回" : "Image response received";
   if (kind === "node.started" && payload.phase === "model") return zh ? `模型调用 · 第 ${String(payload.turn ?? "")} 轮` : `Model call · turn ${String(payload.turn ?? "")}`;
   if (kind === "node.completed" && payload.phase === "model") return zh ? "模型完成" : "Model completed";
   if (kind === "tool.requested") return zh ? `请求工具 ${String(payload.tool_reference ?? "")}` : `Tool request ${String(payload.tool_reference ?? "")}`;
   if (kind === "tool.started") return zh ? `执行工具 ${String(payload.tool_reference ?? "")}` : `Tool ${String(payload.tool_reference ?? "")}`;
   if (kind === "tool.completed") return zh ? "工具结果" : "Tool result";
-  if (kind === "node.completed") return zh ? "最终输出" : "Final output";
-  if (kind === "approval.requested") return zh ? "需要审批" : "Approval required";
+  if (kind === "node.completed" && payload.phase === "image") return payload.reused === true ? (zh ? "复用已有图片" : "Existing image reused") : (zh ? "图片候选已生成" : "Image candidate generated");
+  if (kind === "node.completed") return zh ? "输出已准备" : "Output prepared";
+  if (kind === "approval.requested") return payload.kind === "budget" ? (zh ? "等待追加轮次" : "Waiting for additional turns") : payload.kind === "input" ? (zh ? "等待输入" : "Waiting for input") : (zh ? "需要审批" : "Approval required");
   if (kind === "run.failed") return zh ? "失败" : "Failed";
   if (kind === "run.cancelled" || kind === "run.interrupted") return zh ? "已停止" : "Stopped";
   if (kind.startsWith("run.")) return kind;
@@ -61,6 +64,19 @@ export function eventLabel(kind: NonNullable<AgentRunResponse["events"]>[number]
     "tool.requested": ["工具已请求", "Tool requested"], "tool.started": ["工具已开始", "Tool started"], "tool.completed": ["工具已完成", "Tool completed"], "model.delta": ["模型正在输出", "Model output streaming"], "approval.requested": ["审批已请求", "Approval requested"], "approval.resolved": ["审批已处理", "Approval resolved"], "input.requested": ["输入已请求", "Input requested"], "input.resolved": ["输入已提供", "Input provided"], "artifact.created": ["产物已创建", "Artifact created"], "checkpoint.created": ["检查点已创建", "Checkpoint created"],
     "verification.completed": ["验证已完成", "Verification completed"], "verifier.result": ["验证器结果", "Verifier result"],
     "tool.failed": ["工具失败", "Tool failed"],
+    "tool.input_rejected": ["工具输入未通过检查", "Tool input rejected"],
+    "model.output_rejected": ["模型输出未通过检查", "Model output rejected"],
+    "agent.plan_updated": ["Agent 计划已更新", "Agent plan updated"],
+    "agent.budget_updated": ["执行预算", "Execution budget"],
+    "agent.budget_insufficient": ["交付所需轮次不足", "Insufficient turns for delivery"],
+    "finalization.started": ["交付检查开始", "Delivery review started"],
+    "finalization.progress": ["正在接收审查响应", "Receiving review response"],
+    "model.progress": ["模型响应传输", "Model response transport"],
+    "finalization.failed": ["交付审查未完成", "Delivery review incomplete"],
+    "finalization.completed": ["审查意见已返回", "Review feedback received"],
+    "finalization.rejected": ["候选需要修改或补充证据", "Candidate needs revision or evidence"],
+    "finalization.accepted": ["交付检查已通过", "Delivery checks accepted"],
+    "image.response_received": ["图片服务已返回", "Image response received"],
   };
   const label = labels[kind];
   return label ? label[locale === "zh" ? 0 : 1] : kind;
@@ -75,7 +91,7 @@ export function nodeStateLabel(state: "pending" | "running" | "waiting" | "compl
 
 export function workflowRunAsAgentRun(run: WorkflowRunResponse): AgentRunResponse {
   const events = [...(run.events ?? [])];
-  if (run.status === "waiting" && run.waiting?.prompt && !events.some((event) => event.kind === "approval.requested")) {
+  if (run.status === "waiting" && run.waiting?.prompt) {
     events.push({
       schema_version: "1.0",
       event_id: `${run.run_id}:waiting`,
@@ -83,7 +99,7 @@ export function workflowRunAsAgentRun(run: WorkflowRunResponse): AgentRunRespons
       sequence: (events.at(-1)?.sequence ?? 0) + 1,
       kind: "approval.requested",
       node_id: run.waiting.node_id,
-      payload: { prompt: run.waiting.prompt },
+      payload: { prompt: run.waiting.prompt, kind: run.waiting.kind, ...(run.waiting.request_id ? { request_id: run.waiting.request_id } : {}), ...(run.waiting.context != null ? { context: run.waiting.context } : {}), ...(run.waiting.approval_summary ? { approval_summary: run.waiting.approval_summary } : {}) },
       timestamp: run.created_at,
     });
   }

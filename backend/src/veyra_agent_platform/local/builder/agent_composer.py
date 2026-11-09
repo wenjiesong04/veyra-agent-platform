@@ -12,12 +12,17 @@ from typing import Any
 from veyra_agent_platform.contracts.agent import (
     DEFAULT_MAX_TURNS,
     EXECUTION_KIND_LOOP,
-    HARD_MAX_TURNS,
     AgentSource,
 )
 from veyra_agent_platform.contracts.agent_spec import AgentSpecification
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.contracts.filesystem_scope import (
+    NATIVE_PROJECT_FILESYSTEM_ADAPTERS,
+    filesystem_roots_satisfied,
+    normalize_project_scope,
+)
+from veyra_agent_platform.contracts.finalization import FinalizationContract
 from veyra_agent_platform.contracts.interaction import derive_interaction_mode
 from veyra_agent_platform.contracts.resource_plan import PlannedResource, ResourcePlan
 from veyra_agent_platform.contracts.semantic_plan import SemanticField
@@ -45,6 +50,11 @@ def compose_loop_agent(
     requirement: str = "",
     agent_id: str | None = None,
     state: StateRequirement | None = None,
+    filesystem_write_roots: tuple[str, ...] = (),
+    protect_input_files: bool = False,
+    protected_input_fields: tuple[str, ...] = (),
+    finalization: FinalizationContract | None = None,
+    initial_model_turns: int = DEFAULT_MAX_TURNS,
 ) -> AgentSource:
     """Build AgentSource from a server ResourcePlan. Never invents resource IDs."""
 
@@ -54,13 +64,26 @@ def compose_loop_agent(
     instructions = _instructions(specification, requirement)
     if state is not None:
         instructions += "\n\n" + state_instructions(state)
+    if finalization is not None:
+        instructions += (
+            "\n\nDelivery contract: final submits a candidate, not a published result. "
+            "Runtime checks it and returns read-only review feedback in this same "
+            "run. Correct the cited defects without changing the task or granting "
+            "permissions. Ask the user only when an absent fact or choice is "
+            "needed to fulfill the task. When the task asks to report gaps or "
+            "conflicts, report them without guessing; optional future corrections "
+            "are not a delivery prerequisite. Preserve explicit user decisions "
+            "and before-effect approvals. Model review is "
+            "not independent factual or physical verification."
+            " If project state includes generated images, use render_images and "
+            "record its actual artifact references before final. Business state "
+            "writes are retained as progress, not automatic proof of acceptance."
+        )
     outputs = {
-        _portable_field_name(item.name): _field_wire(item)
-        for item in specification.outputs
+        agent_io_name(item.name): _field_wire(item) for item in specification.outputs
     } or {"result": "string"}
     inputs = {
-        _portable_field_name(item.name): _field_wire(item)
-        for item in specification.inputs
+        agent_io_name(item.name): _field_wire(item) for item in specification.inputs
     } or {"request": "string"}
     if len(inputs) != len(specification.inputs) and specification.inputs:
         raise ValueError("Agent input field names collide after normalization")
@@ -84,6 +107,12 @@ def compose_loop_agent(
     skills = [item for item in ready if item.kind == "skill"]
     policies = [item for item in ready if item.kind == "policy"]
     permissions = dict(_EMPTY_PERMISSIONS)
+    if protect_input_files:
+        permissions["protect_input_files"] = True
+    if protected_input_fields:
+        permissions["protected_input_fields"] = [
+            agent_io_name(name) for name in protected_input_fields
+        ]
     lock: dict[str, str] = {
         _RUNTIME_LOCK: sha256_digest({"runtime_profile": _RUNTIME_PROFILE})
     }
@@ -97,6 +126,42 @@ def compose_loop_agent(
             "x": 480,
             "y": 40 + (index * 90),
         }
+    if filesystem_write_roots:
+        roots = tuple(
+            dict.fromkeys(
+                normalize_project_scope(root) for root in filesystem_write_roots
+            )
+        )
+        if roots != ("project",) and any(
+            "shell_exec" in resource.capabilities
+            or (resource.required_permissions or {}).get("shell_workspace_only")
+            or (
+                "workspace_write" in resource.capabilities
+                and resource.adapter not in NATIVE_PROJECT_FILESYSTEM_ADAPTERS
+            )
+            for resource in tools
+        ):
+            raise ValueError("Selected executor cannot enforce a directory write limit")
+    if filesystem_write_roots and permissions["filesystem_write_roots"]:
+        writers = [
+            resource
+            for resource in tools
+            if (resource.required_permissions or {}).get("filesystem_write_roots")
+        ]
+        if set(roots) != set(permissions["filesystem_write_roots"]) and any(
+            resource.adapter not in NATIVE_PROJECT_FILESYSTEM_ADAPTERS
+            for resource in writers
+        ):
+            raise ValueError("Selected executor cannot enforce a directory write limit")
+        if not filesystem_roots_satisfied(
+            permissions["filesystem_write_roots"],
+            roots,
+            allow_subscopes=True,
+        ):
+            raise ValueError(
+                "Requested write scope is incompatible with selected Tools"
+            )
+        permissions["filesystem_write_roots"] = list(roots)
     for index, resource in enumerate(skills, start=1):
         lock[resource.reference] = resource.content_hash
         bindings[f"bind_skill{index}"] = {
@@ -113,8 +178,6 @@ def compose_loop_agent(
             "x": 920,
             "y": 40 + (index * 90),
         }
-    max_turns = 16 if tools else DEFAULT_MAX_TURNS
-    max_turns = min(HARD_MAX_TURNS, max_turns)
     secret_refs = sorted({ref for resource in tools for ref in _secret_refs(resource)})
     payload: dict[str, Any] = {
         "schema_version": "1.0",
@@ -151,7 +214,7 @@ def compose_loop_agent(
                 "execution_kind": EXECUTION_KIND_LOOP,
                 "interaction_mode": derive_interaction_mode(inputs),
                 "instructions": instructions,
-                "max_turns": max_turns,
+                "max_turns": initial_model_turns,
                 "handoff_agent_refs": [],
                 **({"state_contract": state.to_dict()} if state is not None else {}),
             }
@@ -169,6 +232,8 @@ def compose_loop_agent(
         ),
         "lock": lock,
     }
+    if finalization is not None:
+        payload["extensions"]["veyra"]["finalization"] = finalization.to_dict()
     if plan.knowledge.status == "available":
         for document in plan.knowledge.documents:
             payload = bind_knowledge(payload, dict(document))
@@ -250,7 +315,7 @@ def _unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(item for item in values if item))
 
 
-def _portable_field_name(name: str) -> str:
+def agent_io_name(name: str) -> str:
     compact = re.sub(r"[^a-z0-9-]", "", name.casefold().replace("_", "-"))
     compact = re.sub(r"-{2,}", "-", compact).strip("-")
     if not compact or compact[0].isdigit() or not compact[0].isalpha():

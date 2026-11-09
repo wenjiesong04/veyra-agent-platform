@@ -170,6 +170,7 @@ class WorkflowSource:
             )
         if set(source.lock) != required_lock:
             raise ContractValidationError("Workflow lock contains unused references")
+        source.permissions.validate_input_fields(source.inputs)
         return source
 
     @property

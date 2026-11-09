@@ -58,6 +58,26 @@ describe("Workflow AgentCall binding", () => {
     ])?.version_id).toBe(agent.version_id);
   });
 
+  it("preserves upstream variables, output aliases and unrelated locks when upgrading a version", () => {
+    const bound = bindWorkflowAgentCall(source, "call", agent);
+    const toolRef = "veyra.tool.math.calculate@1.0.0";
+    const mapped: WorkflowSource = {
+      ...bound,
+      nodes: [
+        { id: "upstream", component_type: "AgentCall", output_mapping: { text: "analyze_analysis" } },
+        ...bound.nodes.map((node) => node.id === "call" ? { ...node, input_mapping: { prompt: "analyze_analysis" }, output_mapping: { result: "review_final_report" } } : node),
+      ],
+      lock: { ...bound.lock, [toolRef]: "d".repeat(64) },
+    };
+    const newer = { ...agent, version_id: "01900000-0000-7000-8000-000000000012", source_hash: "c".repeat(64) };
+    const upgraded = bindWorkflowAgentCall(mapped, "call", newer);
+    expect(upgraded.nodes.find((node) => node.id === "call")?.input_mapping).toEqual({ prompt: "analyze_analysis" });
+    expect(upgraded.nodes.find((node) => node.id === "call")?.output_mapping).toEqual({ result: "review_final_report" });
+    expect(upgraded.lock[toolRef]).toBe("d".repeat(64));
+    expect(upgraded.lock[agentCallRef(agent)]).toBeUndefined();
+    expect(upgraded.lock[agentCallRef(newer)]).toBe(newer.source_hash);
+  });
+
   it("maps a uniquely available Workflow input when the Agent parameter uses a different name", () => {
     const translation: AgentVersionSnapshot = { ...agent, source: { ...agent.source, inputs: { request: "string" } } };
     const next = bindWorkflowAgentCall(source, "call", translation);

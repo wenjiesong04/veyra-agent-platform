@@ -31,6 +31,7 @@ import { projectRoutePaths, type AgentVersionSnapshot, type FlowNode, type Proje
 import { Button, Panel, SectionHeading, Tag } from "@veyra/ui";
 import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, flowNodeOutgoingPort, insertFlowNodeOnEdge, isLoopAgent, newFlowNodeId, shouldSplicePaletteItem, sourceWithGraph, toCanvas, type CanvasNodeData } from "./graph";
 import { useLiveRun } from "./live-run";
+import { FinalizationInspector } from "./FinalizationInspector";
 import {
   attachCatalogResource,
   attachCatalogBinding,
@@ -49,7 +50,7 @@ import {
   workflowAgentPalette,
   type PaletteItem,
 } from "./palette";
-import { agentIdFromRef, bindWorkflowAgentCall, latestAgentVersion, parseAgentCallRef } from "./agent-call";
+import { agentIdFromRef, bindWorkflowAgentCall, latestAgentVersion, parseAgentCallRef, workflowBindableValues } from "./agent-call";
 import { AgentCallInspector } from "./AgentCallInspector";
 import { ModelRuntimeInspector } from "./ModelRuntimeInspector";
 import { CanvasEdgeActionsProvider, FlowEdge } from "./canvas-edge";
@@ -162,6 +163,8 @@ function executionStateLabel(state: NodeExecutionState, locale: "zh" | "en"): st
     queued: { zh: "排队中", en: "Queued" },
     running: { zh: "运行中", en: "Running" },
     waiting_approval: { zh: "等待批准", en: "Waiting for approval" },
+    waiting_budget: { zh: "等待追加轮次", en: "Waiting for additional turns" },
+    waiting_input: { zh: "等待输入", en: "Waiting for input" },
     completed: { zh: "已完成", en: "Completed" },
     failed: { zh: "失败", en: "Failed" },
     stopped: { zh: "已停止", en: "Stopped" },
@@ -893,7 +896,7 @@ export function StudioWorkbench({
             <span>{locale === "zh" ? "运行" : "Run"}</span>
             <strong>{runStatusLabel(live.run.status, locale)}</strong>
           </div> : null}
-          <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
+          <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} onExtendBudget={(turns) => void live.sendCommand("extend_budget", undefined, turns)} />
         </div>
       </Panel>
       <StudioRail
@@ -957,7 +960,7 @@ export function StudioWorkbench({
               else window.location.hash = href;
             }}
           /> : null}
-          {flow.component_type === "Agent" || flow.component_type === "Model" ? <ModelRuntimeInspector api={api} projectId={projectId} agentId={agentId} nodeId={flow.id} modelRef={flow.model_ref || "model.primary"} locale={locale} /> : null}
+          {flow.component_type === "Agent" || flow.component_type === "Model" ? <ModelRuntimeInspector api={api} projectId={projectId} agentId={agentId} nodeId={loopAgent ? undefined : flow.id} modelRef={flow.model_ref || "model.primary"} locale={locale} /> : null}
           {loopAgent && (flow.component_type === "Agent" || flow.component_type === "Model") ? <>
             <label>{locale === "zh" ? "名称" : "Name"}<input value={source.component_type === "Flow" ? source.name : ""} readOnly /></label>
             <label>{locale === "zh" ? "说明" : "Instructions"}<textarea rows={6} value={source.component_type === "Flow" ? (source.extensions.veyra.instructions || flow.system_prompt || "") : ""} onChange={(event) => {
@@ -975,8 +978,20 @@ export function StudioWorkbench({
               applySource({ ...source, extensions: { ...source.extensions, veyra: { ...source.extensions.veyra, max_turns: maxTurns } } });
             }} /></label>
             <p className="rail-note">{locale === "zh" ? "输入/输出是 Agent 的外部契约。运行时由模型自主决定何时调用工具。" : "Inputs and outputs are the Agent's external contract. The runtime loop decides when to call tools."}</p>
+            {source.component_type === "Flow" ? <FinalizationInspector
+              policy={source.extensions.veyra.finalization}
+              inputNames={Object.keys(source.inputs)}
+              hasImages={Object.values(source.outputs).some((field) => typeof field === "string" ? field === "image" : field.type === "artifact" && field.artifact_kind === "image")}
+              locale={locale}
+              onChange={(finalization) => {
+                const veyra = { ...source.extensions.veyra };
+                if (finalization) veyra.finalization = finalization;
+                else delete veyra.finalization;
+                applySource({ ...source, extensions: { ...source.extensions, veyra } });
+              }}
+            /> : null}
           </> : null}
-          {flow.component_type === "AgentCall" ? <AgentCallInspector key={flow.id} node={flow} agents={agents} api={api} projectId={projectId} zh={locale === "zh"} initialAgentId={pendingCallAgentId} workflowInputs={Object.keys(source.inputs)} workflowOutputs={Object.keys(source.outputs)} onBind={bindAgent} onMapping={(field, mapping) => updateNode(field, JSON.stringify(mapping))} onOpenAgent={openAgentCanvas} onAttachToFlow={attachSelectedToFlow} canAttachToFlow={canAttachSelected} /> : fieldFor(flow, updateNode, locale)}
+          {flow.component_type === "AgentCall" ? <AgentCallInspector key={flow.id} node={flow} agents={agents} api={api} projectId={projectId} zh={locale === "zh"} initialAgentId={pendingCallAgentId} workflowInputs={source.component_type === "Workflow" ? workflowBindableValues(source, flow.id) : Object.keys(source.inputs)} workflowOutputs={Object.keys(source.outputs)} onBind={bindAgent} onMapping={(field, mapping) => updateNode(field, JSON.stringify(mapping))} onOpenAgent={openAgentCanvas} onAttachToFlow={attachSelectedToFlow} canAttachToFlow={canAttachSelected} /> : fieldFor(flow, updateNode, locale)}
           {flow.component_type === "AgentCall" && parseAgentCallRef(flow.agent_ref) ? <Button onClick={() => openAgentCall(flow.agent_ref)}>{locale === "zh" ? "打开已绑定版本" : "Open bound version"}</Button> : null}
           {flow.component_type === "Tool" ? <>
             <label>{locale === "zh" ? "允许的工具" : "Allowed tools"}<input value={source.extensions.veyra.permissions.tools.join(", ")} readOnly /></label>

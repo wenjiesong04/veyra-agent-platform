@@ -110,7 +110,7 @@ def _create_credential(client: TestClient, *, make_default: bool = False) -> dic
 def test_fresh_local_database_creates_model_registry_tables(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         assert client.app.state.database_revision == HEAD_REVISION
-        assert HEAD_REVISION == "local_0037_entity_revision_history"
+        assert HEAD_REVISION == "local_0038_work_item_version_binding"
         with client.app.state.repository._connect() as connection:
             rows = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"

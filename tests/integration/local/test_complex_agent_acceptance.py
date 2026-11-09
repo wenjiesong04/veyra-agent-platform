@@ -66,6 +66,23 @@ _FACTORY_SKILL = (
     "创建一个 Agent。capability: comparative_risk_method。"
     "它需要一种当前 Veyra 没有的比较风险方法。"
 )
+_RISK_METHOD = (
+    "Purpose\nCompare supplied operational risks using traceable evidence.\n\n"
+    "When to use\n"
+    "Use when a customer provides risk descriptions and impact criteria.\n\n"
+    "Procedure\n"
+    "1. Extract each risk, affected operation, and cited source.\n"
+    "2. Classify impact and likelihood as low, medium, or high using the "
+    "customer's supplied criteria; mark missing evidence as unknown.\n"
+    "3. Order risks by impact first and likelihood second, preserving ties.\n"
+    "4. List a mitigation for each risk and the facts needing confirmation.\n\n"
+    "Expected output\nA comparison table with evidence, ordered priorities, "
+    "mitigations, and unresolved questions.\n\n"
+    "Constraints\nUse supplied facts only. Do not invent evidence, execute "
+    "external actions, or treat uncertainty as a confirmed low risk.\n\n"
+    "Failure handling\n"
+    "Ask the customer for missing criteria or evidence before ranking."
+)
 _KNOWLEDGE_RESEARCH = "VEYRA_RESEARCH_KNOWLEDGE_5821"
 _KNOWLEDGE_BRAND = "VEYRA_BRAND_GUIDE_4417"
 _SEARCH_HIT = "SEARCH_RESULT_728"
@@ -666,13 +683,41 @@ def test_factory_generated_skill_reaches_committed_app_runtime(tmp_path: Path) -
             for item in session["resource_factory_plans"]
             if item["capability"] == "comparative_risk_method"
         )
-        approved = client.post(
+        assert planned["status"] == "requires_user_configuration"
+        assert planned["validation"]["passed"] is False
+        approval_url = (
             f"/api/v1/projects/{project_id}/factory/sessions/"
-            f"{session['session_id']}/factory-resources/approve",
+            f"{session['session_id']}/factory-resources/approve"
+        )
+        refused = client.post(
+            approval_url,
             json={
                 "confirm": True,
                 "capability": "comparative_risk_method",
                 "content_hash": planned["snapshot_hash"],
+                "bind_to_project": True,
+            },
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["code"] == "factory_skill_instruction_required"
+        assert not transport.calls
+        scaffold = planned["draft"]
+        supplied = client.post(
+            f"/api/v1/resources/{scaffold['resource_id']}/versions/"
+            f"{scaffold['version']}/approve",
+            json={"instruction": _RISK_METHOD},
+        )
+        assert supplied.status_code == 200, supplied.text
+        reviewed = supplied.json()["resource"]
+        assert reviewed["availability"] == "ready"
+        assert reviewed["spec"]["instruction"] == _RISK_METHOD
+        assert reviewed["content_hash"] != scaffold["content_hash"]
+        approved = client.post(
+            approval_url,
+            json={
+                "confirm": True,
+                "capability": "comparative_risk_method",
+                "content_hash": reviewed["content_hash"],
                 "bind_to_project": True,
             },
         )
@@ -682,23 +727,31 @@ def test_factory_generated_skill_reaches_committed_app_runtime(tmp_path: Path) -
             for item in approved.json()["resource_factory_plans"]
             if item["capability"] == "comparative_risk_method"
         )["published"]
-        applied = _apply(client, project_id, session)
+        applied = _apply(client, project_id, approved.json())
         agent_id = applied["agent"]["agent_id"]
         source = _draft_source(client, project_id, agent_id)
         assert published["reference"] in source["extensions"]["veyra"]["skill_refs"]
+        assert source["lock"][published["reference"]] == published["content_hash"]
         version = _commit(client, project_id, agent_id)
         url = f"/api/v1/projects/{project_id}/agents/{agent_id}/run"
-        run = _app_start(client, url, {_primary_field(source): "compare these risks"})
+        run = _app_start(
+            client,
+            url,
+            {
+                _primary_field(source): "Compare delivery delays affecting one order "
+                "against storage humidity affecting every item. Use the supplied "
+                "impact criteria: all items is high, one order is low. Likelihood "
+                "is unknown for both; ask for evidence before ranking."
+            },
+        )
         assert run["status"] in {"unverified", "verified"}
         assert run["version_id"] == version["version_id"]
         events = client.get(f"{url}s/{run['run_id']}").json()["events"]
         loaded = next(event for event in events if event["kind"] == "skill.loaded")
         assert loaded["payload"]["skill_id"] == published["resource_id"]
         blob = json.dumps(transport.calls, ensure_ascii=False)
-        assert (
-            published["spec"]["instruction"].splitlines()[0] in blob
-            or "Purpose" in blob
-        )
+        assert _RISK_METHOD in transport.calls[-1][0]["content"]
+        assert "preserving ties" in blob
         origin = str(published.get("origin") or "") + " ".join(
             published.get("tags") or []
         )
@@ -754,13 +807,22 @@ def test_error_recovery_matches_runtime_state(tmp_path: Path) -> None:
         assert failed["status"] == "failed"
         assert failed["error"]["code"] == "runtime_provider_error"
         turns = _app_start(client, url, {field: "keep calling tools"})
-        if turns["status"] == "waiting":
-            turns = _approve_until(client, url, turns)
-        assert turns["status"] == "failed"
-        assert turns["error"]["code"] == "agent_max_turns_exceeded"
+        for _ in range(3):
+            request = next(
+                (
+                    event["payload"]
+                    for event in reversed(turns["events"])
+                    if event["kind"] == "approval.requested"
+                ),
+                {},
+            )
+            if turns["status"] != "waiting" or request.get("kind") == "budget":
+                break
+            turns = _command_until(client, url, str(turns["run_id"]), "approve")
+        assert turns["status"] == "waiting" and request["kind"] == "budget"
+        assert turns["error"] is None
         detail = client.get(f"{url}s/{turns['run_id']}").json()
-        assert detail["status"] == "failed"
-        assert detail["error"]["code"] == "agent_max_turns_exceeded"
+        assert detail["status"] == "waiting" and detail["result"] is None
 
 
 def test_tool_error_is_a_structured_run_failure(tmp_path: Path) -> None:

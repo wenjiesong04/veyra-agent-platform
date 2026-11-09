@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from veyra_agent_platform.contracts.agent import AgentSource
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.runtime.service import RuntimeError, RuntimeService
@@ -17,6 +17,7 @@ _STATUSES = {
     "ready",
     "running",
     "waiting",
+    "cancelling",
     "done",
     "failed",
     "cancelled",
@@ -55,7 +56,9 @@ class OrchestratorService:
         for item in items:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
         active = [
-            item for item in items if item["status"] in {"ready", "running", "waiting"}
+            item
+            for item in items
+            if item["status"] in {"ready", "running", "waiting", "cancelling"}
         ]
         stale_count = sum(1 for item in items if item.get("stale", False))
         return {
@@ -90,12 +93,20 @@ class OrchestratorService:
         *,
         title: str,
         agent_id: str,
+        agent_version_id: str | None = None,
         description: str = "",
         depends_on: list[str] | None = None,
         inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_project(project_id)
         self._require_agent(project_id, agent_id)
+        version, source = self._version(project_id, agent_id, agent_version_id)
+        try:
+            prepared_inputs = self.runtime._prepare_inputs(
+                project_id, source, dict(inputs or {})
+            )
+        except RuntimeError as exc:
+            raise OrchestratorError(exc.code, str(exc)) from exc
         clean_title = title.strip()
         if not clean_title:
             raise OrchestratorError(
@@ -114,8 +125,10 @@ class OrchestratorService:
                 title=clean_title[:200],
                 description=description.strip()[:4_000],
                 agent_id=agent_id,
+                agent_version_id=version["version_id"],
+                agent_source_hash=version["source_hash"],
                 depends_on=dependencies,
-                inputs=dict(inputs or {}),
+                inputs=prepared_inputs,
                 status=status,
                 created_at=now,
             )
@@ -141,16 +154,49 @@ class OrchestratorService:
         title: str | None = None,
         description: str | None = None,
         agent_id: str | None = None,
+        agent_version_id: str | None = None,
         depends_on: list[str] | None = None,
         inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         row = self._row(work_item_id)
-        if row["status"] in _DONE | {"running", "waiting"}:
+        if row["status"] in _DONE | {"running", "waiting", "cancelling"}:
             raise OrchestratorError(
                 "work_item_not_editable",
                 "A dispatched or finished work item cannot be edited",
             )
         fields: dict[str, Any] = {"updated_at": _now()}
+        if any(value is not None for value in (agent_id, agent_version_id, inputs)):
+            if int(row["attempt_number"]) != 0:
+                raise OrchestratorError(
+                    "work_item_not_editable",
+                    "Attempted work cannot change its Agent, version or inputs",
+                )
+            target_agent = agent_id or row["agent_id"]
+            self._require_agent(row["project_id"], target_agent)
+            selected = agent_version_id or (
+                row["agent_version_id"] if target_agent == row["agent_id"] else None
+            )
+            if row["agent_version_id"] is None and agent_version_id is None:
+                raise OrchestratorError(
+                    "work_item_version_required",
+                    "Select a committed Agent version before binding this legacy item",
+                )
+            version, source = self._version(row["project_id"], target_agent, selected)
+            fields.update(
+                agent_id=target_agent,
+                agent_version_id=version["version_id"],
+                agent_source_hash=version["source_hash"],
+            )
+            try:
+                fields["inputs"] = self.runtime._prepare_inputs(
+                    row["project_id"],
+                    source,
+                    inputs
+                    if inputs is not None
+                    else OrchestratorStore.payload(row)["inputs"],
+                )
+            except RuntimeError as exc:
+                raise OrchestratorError(exc.code, str(exc)) from exc
         if title is not None:
             clean = title.strip()
             if not clean:
@@ -171,246 +217,63 @@ class OrchestratorService:
             fields["status"] = (
                 "ready" if self._dependencies_done(depends_on) else "backlog"
             )
-        if inputs is not None:
-            fields["inputs"] = dict(inputs)
         with self.store.transaction() as connection:
+            current = connection.execute(
+                "SELECT * FROM work_items WHERE work_item_id = ?", (work_item_id,)
+            ).fetchone()
+            if current is None or dict(current) != dict(row):
+                raise OrchestratorError(
+                    "work_item_command_stale",
+                    "Work item changed; refresh before editing",
+                )
             self.store.update(connection, work_item_id, **fields)
         return self.get_work_item(work_item_id)
 
-    def dispatch(self, work_item_id: str) -> dict[str, Any]:
-        row = self._row(work_item_id)
-        current = self._reconcile(row)
-        if current["status"] not in {"backlog", "ready"}:
-            raise OrchestratorError(
-                "work_item_not_dispatchable",
-                "Only backlog or ready work items can be dispatched",
-            )
-        depends_on = list(current["depends_on"])
-        if not self._dependencies_done(depends_on):
-            raise OrchestratorError(
-                "work_item_blocked",
-                "Work item dependencies have not finished",
-            )
-        attempt_number = int(current["attempt_number"]) + 1
-        attempt_id = new_uuid7()
-        lease_token = new_uuid7()
-        claimed_at = _now()
-        lease_expires_at = _lease_expiry()
-        with self.store.transaction() as connection:
-            global_active, project_active = self.store.active_counts_in_connection(
-                connection, current["project_id"]
-            )
-            if global_active >= _MAX_GLOBAL_CONCURRENT:
-                raise OrchestratorError(
-                    "orchestrator_concurrency_limit",
-                    "Global local Runtime concurrency limit has been reached",
-                )
-            if project_active >= _MAX_PROJECT_CONCURRENT:
-                raise OrchestratorError(
-                    "project_concurrency_limit",
-                    "This Project local Runtime concurrency limit has been reached",
-                )
-            if not self.store.claim(
-                connection,
-                work_item_id=work_item_id,
-                attempt_number=attempt_number,
-                lease_token=lease_token,
-                lease_expires_at=lease_expires_at,
-                updated_at=claimed_at,
-            ):
-                raise OrchestratorError(
-                    "work_item_not_dispatchable",
-                    "Work item was claimed by another dispatch",
-                )
-            self.store.create_attempt(
-                connection,
-                attempt_id=attempt_id,
-                work_item_id=work_item_id,
-                attempt_number=attempt_number,
-                lease_token=lease_token,
-                claimed_at=claimed_at,
-                created_at=claimed_at,
-            )
-        try:
-            started = self.runtime.run(
-                current["project_id"],
-                current["agent_id"],
-                dict(current["inputs"]),
-                new_uuid7(),
-            )
-        except RuntimeError as exc:
-            self._finish_dispatch_failure(
-                work_item_id, attempt_id, _failure_class(exc.code)
-            )
-            raise OrchestratorError(exc.code, str(exc)) from exc
-        except ProjectError as exc:
-            self._finish_dispatch_failure(
-                work_item_id, attempt_id, _failure_class("project_invalid")
-            )
-            raise OrchestratorError("work_item_dispatch_failed", str(exc)) from exc
-        orphaned = False
-        with self.store.transaction() as connection:
-            orphaned = not self.store.bind_run(
-                connection,
-                work_item_id=work_item_id,
-                lease_token=lease_token,
-                run_id=started["run_id"],
-                updated_at=_now(),
-            )
-            self.store.update_attempt(
-                connection,
-                attempt_id,
-                status="cancelled" if orphaned else "running",
-                run_id=started["run_id"] if not orphaned else None,
-                failure_class="dispatch_cancelled" if orphaned else None,
-                started_at=None if orphaned else _now(),
-                finished_at=_now() if orphaned else None,
-            )
-        if orphaned:
-            with contextlib.suppress(RuntimeError, ProjectError):
-                self.runtime.command(
-                    current["project_id"],
-                    current["agent_id"],
-                    started["run_id"],
-                    "stop",
-                    new_uuid7(),
-                )
-        return self.get_work_item(work_item_id)
+    def dispatch(
+        self, work_item_id: str, idempotency_key: str, *, expected_attempt_number: int
+    ) -> dict[str, Any]:
+        from .execution import execute_work_item
 
-    def retry(self, work_item_id: str) -> dict[str, Any]:
-        current = self._reconcile(self._row(work_item_id))
-        if current["status"] != "failed":
-            raise OrchestratorError(
-                "work_item_not_retryable",
-                "Only failed WorkItems can be retried",
-            )
-        with self.store.transaction() as connection:
-            self.store.update(
-                connection,
-                work_item_id,
-                status="ready",
-                run_id=None,
-                lease_token=None,
-                lease_expires_at=None,
-                failure_class=None,
-                updated_at=_now(),
-            )
-        return self.dispatch(work_item_id)
+        return execute_work_item(
+            self, work_item_id, "dispatch", idempotency_key, expected_attempt_number
+        )
+
+    def retry(
+        self, work_item_id: str, idempotency_key: str, *, expected_attempt_number: int
+    ) -> dict[str, Any]:
+        from .execution import execute_work_item
+
+        return execute_work_item(
+            self, work_item_id, "retry", idempotency_key, expected_attempt_number
+        )
 
     def cancel(self, work_item_id: str) -> dict[str, Any]:
-        row = self._row(work_item_id)
-        current = self._reconcile(row)
-        if current["status"] in _DONE:
-            raise OrchestratorError(
-                "work_item_not_cancellable",
-                "A finished work item cannot be cancelled",
-            )
-        if current["run_id"] and current["status"] in {"running", "waiting"}:
-            with contextlib.suppress(RuntimeError, ProjectError):
-                self.runtime.command(
-                    current["project_id"],
-                    current["agent_id"],
-                    current["run_id"],
-                    "stop",
-                    new_uuid7(),
-                )
-        with self.store.transaction() as connection:
-            self.store.update(
-                connection,
-                work_item_id,
-                status="cancelled",
-                lease_token=None,
-                lease_expires_at=None,
-                updated_at=_now(),
-            )
-            attempt = self.store.latest_attempt_in_connection(connection, work_item_id)
-            if attempt and attempt["status"] in {"dispatching", "running", "waiting"}:
-                self.store.update_attempt(
-                    connection,
-                    attempt["attempt_id"],
-                    status="cancelled",
-                    failure_class="cancelled",
-                    finished_at=_now(),
-                )
-        return self.get_work_item(work_item_id)
+        from .cancellation import cancel_work_item
+
+        return cancel_work_item(self, work_item_id)
 
     def recover_stalled(self, work_item_id: str) -> dict[str, Any]:
-        """Stop and fail a stale run so the WorkItem can be retried."""
-        row = self._row(work_item_id)
-        current = self._reconcile(row)
-        if current["status"] != "running" or not current.get("stale", False):
-            raise OrchestratorError(
-                "work_item_not_stalled",
-                "Only a stale running WorkItem can be recovered",
-            )
-        run_id = current["run_id"]
-        lease_token = row["lease_token"]
-        if not isinstance(lease_token, str) or not lease_token:
-            raise OrchestratorError(
-                "stall_recovery_failed", "Stalled WorkItem has no active lease"
-            )
-        if run_id:
-            try:
-                self.runtime.command(
-                    current["project_id"],
-                    current["agent_id"],
-                    run_id,
-                    "stop",
-                    new_uuid7(),
-                )
-            except (RuntimeError, ProjectError) as exc:
-                refreshed = self._reconcile(self._row(work_item_id))
-                if refreshed["status"] != "running" or not refreshed.get(
-                    "stale", False
-                ):
-                    return refreshed
-                raise OrchestratorError(
-                    "stall_recovery_failed",
-                    "The stale Runtime run could not be stopped",
-                ) from exc
-        now = _now()
-        with self.store.transaction() as connection:
-            recovered = self.store.fail_stalled(
-                connection,
-                work_item_id=work_item_id,
-                run_id=run_id,
-                lease_token=lease_token,
-                failure_class="stall_recovered",
-                updated_at=now,
-            )
-            if recovered:
-                attempt = self.store.latest_attempt_in_connection(
-                    connection, work_item_id
-                )
-                if attempt and attempt["status"] in {
-                    "dispatching",
-                    "running",
-                    "waiting",
-                }:
-                    self.store.update_attempt(
-                        connection,
-                        attempt["attempt_id"],
-                        status="failed",
-                        failure_class="stall_recovered",
-                        finished_at=now,
-                    )
-        if not recovered:
-            return self.get_work_item(work_item_id)
-        return self.get_work_item(work_item_id)
+        from .cancellation import recover_stalled
+
+        return recover_stalled(self, work_item_id)
 
     def _reconcile(self, row: Any) -> dict[str, Any]:
         payload = OrchestratorStore.payload(row)
+        if payload["status"] == "cancelling":
+            from .cancellation import finish_cancellation
+
+            return _with_attention(finish_cancellation(self, payload["work_item_id"]))
         run_id = payload["run_id"]
         if payload["status"] in _DONE:
             return _with_attention(payload)
         if not run_id:
             if _lease_expired(payload["lease_expires_at"]):
-                self._expire_lease(payload)
+                self._expire_lease(payload, row["lease_token"])
             return _with_attention(payload)
         run = self.runtime.repository.run(run_id)
         if run is None:
             if _lease_expired(payload["lease_expires_at"]):
-                self._expire_lease(payload)
+                self._expire_lease(payload, row["lease_token"])
             return _with_attention(payload)
         mapped = _map_run_status(run["status"])
         if mapped is not None:
@@ -426,7 +289,7 @@ class OrchestratorService:
                 and _lease_expired(payload["lease_expires_at"])
                 and not progressed
             ):
-                self._expire_lease(payload)
+                self._expire_lease(payload, row["lease_token"])
                 return _with_attention(payload)
             if not (status_changed or finished or progressed):
                 return _with_attention(payload)
@@ -434,6 +297,21 @@ class OrchestratorService:
             activity_at = progress_at if progressed and progress_at else now
             lease_token = row["lease_token"]
             with self.store.transaction() as connection:
+                owner = connection.execute(
+                    "SELECT * FROM work_items WHERE work_item_id = ?",
+                    (payload["work_item_id"],),
+                ).fetchone()
+                if (
+                    owner is None
+                    or owner["lease_token"] != lease_token
+                    or owner["run_id"] != run_id
+                    or owner["status"] in _DONE | {"cancelling"}
+                ):
+                    return (
+                        _with_attention(OrchestratorStore.payload(owner))
+                        if owner
+                        else _with_attention(payload)
+                    )
                 self.store.update(
                     connection,
                     payload["work_item_id"],
@@ -465,6 +343,7 @@ class OrchestratorService:
                             else None
                         ),
                         finished_at=now if finished else None,
+                        error_code=run["error_code"] if mapped == "failed" else None,
                     )
             payload["status"] = mapped
             payload["lease_expires_at"] = None if finished else _lease_expiry()
@@ -476,60 +355,10 @@ class OrchestratorService:
             payload["updated_at"] = activity_at
         return _with_attention(payload)
 
-    def _expire_lease(self, payload: dict[str, Any]) -> None:
-        now = _now()
-        with self.store.transaction() as connection:
-            self.store.update(
-                connection,
-                payload["work_item_id"],
-                status="failed",
-                run_id=None,
-                lease_token=None,
-                lease_expires_at=None,
-                failure_class="lease_expired",
-                updated_at=now,
-            )
-            attempt = self.store.latest_attempt_in_connection(
-                connection, payload["work_item_id"]
-            )
-            if attempt and attempt["status"] in {"dispatching", "running", "waiting"}:
-                self.store.update_attempt(
-                    connection,
-                    attempt["attempt_id"],
-                    status="failed",
-                    failure_class="lease_expired",
-                    finished_at=now,
-                )
-        payload.update(
-            status="failed",
-            run_id=None,
-            lease_expires_at=None,
-            failure_class="lease_expired",
-            updated_at=now,
-        )
+    def _expire_lease(self, payload: dict[str, Any], lease_token: str | None) -> None:
+        from .cancellation import expire_lease
 
-    def _finish_dispatch_failure(
-        self, work_item_id: str, attempt_id: str, failure_class: str
-    ) -> None:
-        now = _now()
-        with self.store.transaction() as connection:
-            self.store.update(
-                connection,
-                work_item_id,
-                status="failed",
-                run_id=None,
-                lease_token=None,
-                lease_expires_at=None,
-                failure_class=failure_class,
-                updated_at=now,
-            )
-            self.store.update_attempt(
-                connection,
-                attempt_id,
-                status="failed",
-                failure_class=failure_class,
-                finished_at=now,
-            )
+        expire_lease(self, payload, lease_token)
 
     def _row(self, work_item_id: str) -> Any:
         row = self.store.get(work_item_id)
@@ -550,6 +379,45 @@ class OrchestratorService:
             raise OrchestratorError(
                 "orchestrator_agent_not_found", "Agent was not found in this Project"
             ) from exc
+
+    def _version(
+        self, project_id: str, agent_id: str, version_id: str | None
+    ) -> tuple[Any, AgentSource]:
+        import json
+
+        try:
+            version = self.runtime._resolve_committed_version(
+                project_id, agent_id, version_id, None
+            )
+            source = AgentSource.from_dict(json.loads(version["source_json"]))
+            if source.agent_id != agent_id or any(
+                getattr(source, field) != version[field]
+                for field in ("source_hash", "behavior_hash", "lock_hash")
+            ):
+                raise RuntimeError(
+                    "agent_version_invalid",
+                    "Committed Agent version integrity check failed",
+                )
+        except RuntimeError as exc:
+            raise OrchestratorError(exc.code, str(exc)) from exc
+        return version, source
+
+    def _require_binding(self, current: dict[str, Any]) -> None:
+        if not current.get("agent_version_id") or not current.get("agent_source_hash"):
+            raise OrchestratorError(
+                "work_item_version_required",
+                "This legacy item has no committed version binding; "
+                "bind an unattempted item or create a new item "
+                "after checking its history",
+            )
+        version, _ = self._version(
+            current["project_id"], current["agent_id"], current["agent_version_id"]
+        )
+        if version["source_hash"] != current["agent_source_hash"]:
+            raise OrchestratorError(
+                "agent_version_invalid",
+                "Work item version digest does not match its binding",
+            )
 
     def _validate_dependencies(
         self, project_id: str, depends_on: list[str], *, skip: str | None = None

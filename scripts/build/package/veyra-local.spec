@@ -69,6 +69,7 @@ for dependency in (
     "fastapi",
     "httpx",
     "jsonschema",
+    "keyring",
     "platformdirs",
     "pydantic",
     "pydantic_settings",
@@ -88,7 +89,7 @@ for dependency in (
 # catalog paths remain valid inside the bundle. These standard-library imports
 # therefore need to be declared explicitly rather than discovered from frozen
 # first-party modules.
-hiddenimports.extend(["html.parser", "urllib.parse"])
+hiddenimports.extend(["html.parser", "urllib.parse", "xml.etree.ElementTree"])
 
 
 analysis = Analysis(

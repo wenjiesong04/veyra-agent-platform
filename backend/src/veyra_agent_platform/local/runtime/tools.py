@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 import signal
+import stat
 import subprocess
 import unicodedata
 from collections.abc import Mapping
 from contextlib import suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
@@ -20,6 +21,12 @@ import httpx
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
+from veyra_agent_platform.contracts.common import ContractValidationError
+from veyra_agent_platform.contracts.filesystem_scope import (
+    NATIVE_PROJECT_FILESYSTEM_ADAPTERS,
+    filesystem_roots_satisfied,
+    path_in_project_scopes,
+)
 from veyra_agent_platform.local.mcp.execution import McpExecutionError, execute_call
 from veyra_agent_platform.local.mcp.schema import McpSchemaError, require_contract
 from veyra_agent_platform.local.mcp.service import McpService
@@ -29,7 +36,18 @@ from veyra_agent_platform.local.state import EntityStoreError
 from veyra_agent_platform.local.state.entity_store import ENTITY_HISTORY_MAX_RECORDS
 
 from .arithmetic import ArithmeticError, calculate
+from .file_sources import ArtifactReader, FileSourceError, NativeFileSources
+from .input_protection import (
+    InputProtectionError,
+    InputProtectionScope,
+    InputProtectionStore,
+)
 from .tabular import TABULAR_MAX_FILE_BYTES, TabularError, compare_csv
+from .tool_output_contract import (
+    ToolOutputContractError,
+    prepare_tool_output_contract,
+    verify_tool_output_contract,
+)
 
 _MAX_FILE_BYTES = 1_000_000
 _FORBIDDEN_NAMES = {".env", "credentials.json", "id_rsa"}
@@ -71,6 +89,7 @@ class ToolRuntimeError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.receipt = receipt
+        self.recovery: Literal["observe"] | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +149,8 @@ class ToolRuntime:
         http_client: httpx.Client | None = None,
         secret_store: SecretStore | None = None,
         entity_store: Any | None = None,
+        artifacts: ArtifactReader | None = None,
+        input_protection: InputProtectionStore | None = None,
     ) -> None:
         self.catalog = catalog
         self.mcp = mcp
@@ -138,6 +159,14 @@ class ToolRuntime:
         )
         self._secret_store = secret_store
         self._entity_store = entity_store
+        self._artifacts = artifacts
+        self.input_protection = input_protection
+        self._call_input_protection: ContextVar[InputProtectionScope | None] = (
+            ContextVar("veyra_tool_input_protection", default=None)
+        )
+        self._call_input_files: ContextVar[Mapping[str, Any] | None] = ContextVar(
+            "veyra_tool_input_files", default=None
+        )
         self._call_project_id: ContextVar[str | None] = ContextVar(
             "veyra_tool_project_id", default=None
         )
@@ -295,7 +324,7 @@ class ToolRuntime:
                     values,
                     resource,
                 )
-        return ToolAuthorization(
+        authorization = ToolAuthorization(
             tool_reference=node.uses,
             adapter=str(adapter),
             decision="allowed",
@@ -305,6 +334,13 @@ class ToolRuntime:
             approval_required=bool(resource.get("spec", {}).get("approval_required")),
             resource=resource,
         )
+        try:
+            self._check_native_filesystem_scope(
+                source, authorization, values, allow_missing=True
+            )
+        except ToolRuntimeError as exc:
+            return self._denied(node.uses, exc.code, str(exc), values, resource)
+        return authorization
 
     def execute(
         self,
@@ -316,8 +352,17 @@ class ToolRuntime:
         authorization: ToolAuthorization,
         approved: bool,
         project_id: str | None = None,
+        input_files: Mapping[str, Any] | None = None,
+        input_protection_scope: InputProtectionScope | None = None,
     ) -> ToolExecution:
+        if source.permissions.protect_input_files and input_protection_scope is None:
+            raise ToolRuntimeError(
+                "input_protection_unavailable",
+                "Protected execution requires a Run scope",
+            )
         token = self._call_project_id.set(project_id)
+        files_token = self._call_input_files.set(dict(input_files or {}))
+        protection_token = self._call_input_protection.set(input_protection_scope)
         try:
             return self._execute_authorized(
                 project_root=project_root,
@@ -329,6 +374,8 @@ class ToolRuntime:
             )
         finally:
             self._call_project_id.reset(token)
+            self._call_input_files.reset(files_token)
+            self._call_input_protection.reset(protection_token)
 
     def _execute_authorized(
         self,
@@ -362,14 +409,283 @@ class ToolRuntime:
             raise ToolRuntimeError(
                 "tool_runtime_unavailable", "Tool adapter is not installed"
             )
-        return adapter(
-            project_root=project_root,
-            source=source,
-            node=node,
-            values=values,
-            authorization=authorization,
-            approved=approved,
+        try:
+            output_contract = prepare_tool_output_contract(
+                authorization.resource.get("spec") or {}
+            )
+        except ToolOutputContractError as exc:
+            raise ToolRuntimeError(
+                exc.code, "Tool output contract is invalid or unsupported"
+            ) from None
+        try:
+            if self._call_input_protection.get() is not None:
+                self._require_protection_adapter(authorization.adapter)
+            self._check_native_filesystem_scope(source, authorization, values)
+            execution = adapter(
+                project_root=project_root,
+                source=source,
+                node=node,
+                values=values,
+                authorization=authorization,
+                approved=approved,
+            )
+            try:
+                verification = verify_tool_output_contract(
+                    output_contract, execution.output
+                )
+            except ToolOutputContractError as exc:
+                receipt = {
+                    **execution.receipt,
+                    "outcome": "failed",
+                    "code": exc.code,
+                    "output_verification": exc.verification,
+                }
+                raise ToolRuntimeError(
+                    exc.code,
+                    "Tool result does not match its declared output contract",
+                    receipt=receipt,
+                ) from None
+            if verification is not None:
+                execution = replace(
+                    execution,
+                    receipt={
+                        **execution.receipt,
+                        "output_verification": verification,
+                    },
+                )
+            return execution
+        except InputProtectionError as exc:
+            raise ToolRuntimeError(exc.code, str(exc)) from None
+        except ToolRuntimeError as exc:
+            # A matching error code cannot establish what an injected adapter did.
+            trusted_read = self._is_native_observer(adapter)
+            recoverable_code = exc.code in {
+                "tool_input_invalid",
+                "tool_failed",
+                "tool_timeout",
+                "tool_output_invalid",
+                "tool_output_too_large",
+                "tool_redirect_limit",
+                "native_file_source_invalid",
+                "native_file_input_unavailable",
+                "native_file_unavailable",
+                "tabular_input_invalid",
+                "tabular_output_too_large",
+                "tabular_file_too_large",
+                "tabular_csv_invalid",
+                "tabular_rows_exceeded",
+                "tabular_cell_too_large",
+                "tabular_amount_invalid",
+            }
+            exc.recovery = "observe" if trusted_read and recoverable_code else None
+            if exc.recovery:
+                receipt = self._receipt_execution(authorization, {}, 0, "").receipt
+                receipt.update(exc.receipt or {})
+                receipt.update(outcome="failed", code=exc.code, recovery=exc.recovery)
+                exc.receipt = receipt
+            raise
+
+    def can_refresh_observation(self, authorization: ToolAuthorization) -> bool:
+        """Only native observer implementations can safely refresh unchanged input."""
+        return self._is_native_observer(self._adapters.get(authorization.adapter or ""))
+
+    def can_batch_observation(self, authorization: ToolAuthorization) -> bool:
+        """Only platform-owned local observations can share a model turn."""
+        return self._is_native_observer(
+            self._adapters.get(authorization.adapter or ""), local_only=True
         )
+
+    def _is_native_observer(self, adapter: Any, *, local_only: bool = False) -> bool:
+        if getattr(adapter, "__self__", None) is not self:
+            return False
+        method = getattr(adapter, "__func__", None)
+        return method in {
+            ToolRuntime._execute_read,
+            ToolRuntime._execute_list,
+            ToolRuntime._execute_search,
+            ToolRuntime._execute_entity_read,
+            ToolRuntime._execute_entity_query,
+            ToolRuntime._execute_entity_history,
+            ToolRuntime._execute_arithmetic,
+            ToolRuntime._execute_tabular_compare,
+        } or (
+            not local_only
+            and method
+            in {
+                ToolRuntime._execute_browser_navigate,
+                ToolRuntime._execute_web_search,
+                ToolRuntime._execute_github_read,
+            }
+        )
+
+    def protection_scope(
+        self, project_id: str, run_kind: str, run_id: str
+    ) -> InputProtectionScope | None:
+        if self.input_protection is None:
+            return None
+        try:
+            return self.input_protection.scope_for_run(project_id, run_kind, run_id)
+        except InputProtectionError as exc:
+            raise ToolRuntimeError(exc.code, str(exc)) from None
+
+    def protect_inputs(
+        self,
+        project_id: str,
+        project_root: Path,
+        source: Any,
+        inputs: Mapping[str, Any],
+        scope: InputProtectionScope | None,
+    ) -> None:
+        if scope is None:
+            return
+        if self.input_protection is None:
+            raise ToolRuntimeError(
+                "input_protection_unavailable", "Input protection is unavailable"
+            )
+        try:
+            self.input_protection.validate_scope(scope)
+            for reference in source.lock:
+                if reference.rsplit("@", 1)[0] not in source.permissions.tools:
+                    continue
+                resource = self.catalog.detail(*reference.rsplit("@", 1))
+                self._require_protection_adapter(
+                    resource.get("spec", {}).get("adapter")
+                )
+            for name in source.permissions.protected_input_fields:
+                path = inputs.get(name)
+                if path is None or source.inputs[name].is_artifact():
+                    # Typed artifacts are immutable objects, not Project paths.
+                    continue
+                if not path_in_project_scopes(
+                    path, source.permissions.filesystem_read_roots
+                ):
+                    raise ToolRuntimeError(
+                        "tool_path_denied",
+                        "Protected input is outside the filesystem read scope",
+                    )
+                NativeFileSources(
+                    project_id=project_id,
+                    project_target=lambda value: self._project_target(
+                        project_root, value, create_parents=False
+                    ),
+                    selected_inputs={},
+                    on_project_read=lambda target,
+                    metadata,
+                    payload: self.input_protection.protect_project_file(  # type: ignore[union-attr]
+                        scope, project_root, target, metadata, payload
+                    ),
+                ).read({"path": path}, TABULAR_MAX_FILE_BYTES)
+        except (InputProtectionError, FileSourceError, ResourceCatalogError) as exc:
+            raise ToolRuntimeError(
+                getattr(exc, "code", "input_protection_invalid"), str(exc)
+            ) from None
+
+    def _require_protection_adapter(self, adapter_name: Any) -> None:
+        adapter = (
+            self._adapters.get(adapter_name) if isinstance(adapter_name, str) else None
+        )
+        if (
+            adapter is None
+            or getattr(adapter, "__self__", None) is not self
+            or adapter_name in {_SHELL_ADAPTER, _MCP_ADAPTER}
+            or getattr(adapter, "__func__", None)
+            not in {
+                ToolRuntime._execute_read,
+                ToolRuntime._execute_list,
+                ToolRuntime._execute_search,
+                ToolRuntime._execute_write,
+                ToolRuntime._execute_http,
+                ToolRuntime._execute_browser_navigate,
+                ToolRuntime._execute_web_search,
+                ToolRuntime._execute_entity_read,
+                ToolRuntime._execute_entity_query,
+                ToolRuntime._execute_entity_history,
+                ToolRuntime._execute_entity_write,
+                ToolRuntime._execute_arithmetic,
+                ToolRuntime._execute_tabular_compare,
+                ToolRuntime._execute_github_read,
+                ToolRuntime._execute_github_write,
+            }
+        ):
+            raise ToolRuntimeError(
+                "input_protection_not_enforceable",
+                "This Tool cannot enforce the Run's protected Project inputs",
+            )
+
+    def _protect_read(
+        self, project_root: Path, path: Path, metadata: os.stat_result, payload: bytes
+    ) -> None:
+        scope = self._call_input_protection.get()
+        if scope is None:
+            return
+        if self.input_protection is None:
+            raise ToolRuntimeError(
+                "input_protection_unavailable", "Input protection is unavailable"
+            )
+        self.input_protection.protect_project_file(
+            scope, project_root, path, metadata, payload
+        )
+
+    @staticmethod
+    def _check_native_filesystem_scope(
+        source: AgentSource,
+        authorization: ToolAuthorization,
+        values: Mapping[str, Any],
+        *,
+        allow_missing: bool = False,
+    ) -> None:
+        adapter = authorization.adapter
+        if adapter not in NATIVE_PROJECT_FILESYSTEM_ADAPTERS:
+            return
+        write = adapter == _WRITE_ADAPTER
+        scopes = (
+            source.permissions.filesystem_write_roots
+            if write
+            else source.permissions.filesystem_read_roots
+        )
+        directory = adapter in {_LIST_ADAPTER, _FILESYSTEM_SEARCH_ADAPTER}
+        if adapter == _TABULAR_COMPARE_ADAPTER:
+            paths = []
+            uses_sources = "left_source" in (authorization.resource or {}).get(
+                "spec", {}
+            ).get("input_schema", {})
+            for side in ("left", "right"):
+                raw = (
+                    values.get(side + "_source")
+                    if uses_sources
+                    else {"path": values.get(side + "_path")}
+                )
+                if isinstance(raw, Mapping) and set(raw) == {"input"}:
+                    continue
+                paths.append(raw.get("path") if isinstance(raw, Mapping) else None)
+            paths = [
+                unicodedata.normalize("NFKC", path) if isinstance(path, str) else path
+                for path in paths
+            ]
+        else:
+            paths = [_wrapper_project_path(authorization, values.get("path"))]
+        for path in paths:
+            # Catalog readiness uses no arguments, and the Agent loop repairs
+            # malformed argument types offline before adapter dispatch.
+            if allow_missing and (not isinstance(path, str) or not path.strip()):
+                continue
+            if directory and path is None:
+                path = "."
+            if not isinstance(path, str) or (not path.strip() and not directory):
+                raise ToolRuntimeError(
+                    "tool_input_invalid", "Filesystem Tool requires a relative path"
+                )
+            try:
+                allowed = path_in_project_scopes(path, scopes, allow_root=directory)
+            except ContractValidationError as exc:
+                raise ToolRuntimeError(
+                    "tool_path_denied", "Tool path is not a safe Project path"
+                ) from exc
+            if not allowed:
+                raise ToolRuntimeError(
+                    "tool_path_denied",
+                    "Tool path is outside the Agent filesystem scope",
+                )
 
     def _execute_read(
         self,
@@ -555,7 +871,20 @@ class ToolRuntime:
         try:
             output = calculate(values.get("expression"))
         except ArithmeticError as exc:
-            raise ToolRuntimeError("tool_input_invalid", str(exc)) from exc
+            from .tool_input_contract import ToolInputIssue
+
+            issue = ToolInputIssue(
+                str(exc),
+                (
+                    {
+                        "category": "arithmetic_expression",
+                        "location": "/arguments/expression",
+                    },
+                ),
+            )
+            raise ToolRuntimeError(
+                "tool_input_invalid", str(exc), receipt={"diagnostic": issue.to_dict()}
+            ) from exc
         return self._receipt_execution(
             authorization, output, len(json.dumps(output).encode("utf-8")), ""
         )
@@ -571,40 +900,40 @@ class ToolRuntime:
         approved: bool,
     ) -> ToolExecution:
         del source, node, approved
-        materials: list[tuple[bytes, str]] = []
-        for field in ("left_path", "right_path"):
-            raw_path = values.get(field)
-            if not isinstance(raw_path, str) or len(raw_path) > 4096:
-                raise ToolRuntimeError(
-                    "tool_input_invalid",
-                    "CSV comparison requires relative Project paths",
+        reader = NativeFileSources(
+            project_id=self._call_project_id.get() or "",
+            project_target=lambda path: self._project_target(
+                project_root, unicodedata.normalize("NFKC", path), create_parents=False
+            ),
+            selected_inputs=self._call_input_files.get() or {},
+            artifacts=self._artifacts,
+            on_project_read=lambda path, metadata, payload: self._protect_read(
+                project_root, path, metadata, payload
+            ),
+        )
+        uses_sources = "left_source" in (authorization.resource or {}).get(
+            "spec", {}
+        ).get("input_schema", {})
+        try:
+            materials = []
+            for side in ("left", "right"):
+                selected = (
+                    values.get(side + "_source")
+                    if uses_sources
+                    else {"path": values.get(side + "_path")}
                 )
-            path = unicodedata.normalize("NFKC", raw_path)
-            if "\\" in path or any(
-                ord(character) < 32 or ord(character) == 127 for character in path
-            ):
-                raise ToolRuntimeError(
-                    "tool_path_denied", "CSV paths must be safe relative Project paths"
+                materials.append(
+                    reader.read(
+                        selected if isinstance(selected, Mapping) else {},
+                        TABULAR_MAX_FILE_BYTES,
+                    )
                 )
-            target, relative_path = self._project_target(
-                project_root, path, create_parents=False
-            )
-            if not target.is_file():
-                raise ToolRuntimeError(
-                    "tool_input_invalid", "CSV path is not a regular Project file"
-                )
-            try:
-                with target.open("rb") as stream:
-                    content = stream.read(TABULAR_MAX_FILE_BYTES + 1)
-            except OSError as exc:
-                raise ToolRuntimeError(
-                    "tool_failed", "CSV Project file could not be read"
-                ) from exc
-            if len(content) > TABULAR_MAX_FILE_BYTES:
+        except FileSourceError as exc:
+            if exc.code == "native_file_too_large":
                 raise ToolRuntimeError(
                     "tool_output_too_large", "CSV file exceeds the 1 MB limit"
-                )
-            materials.append((content, relative_path))
+                ) from exc
+            raise ToolRuntimeError(exc.code, str(exc)) from exc
         try:
             output = compare_csv(
                 materials[0][0],
@@ -1235,15 +1564,23 @@ class ToolRuntime:
                 "tool_permission_denied",
                 "Agent permissions do not include required network access",
             )
-        if not set(required.get("filesystem_read_roots", [])) <= set(
-            permissions.filesystem_read_roots
+        native = (
+            resource.get("spec", {}).get("adapter")
+            in NATIVE_PROJECT_FILESYSTEM_ADAPTERS
+        )
+        if not filesystem_roots_satisfied(
+            required.get("filesystem_read_roots", []),
+            permissions.filesystem_read_roots,
+            allow_subscopes=native,
         ):
             raise ToolRuntimeError(
                 "tool_permission_denied",
                 "Agent permissions do not include required file access",
             )
-        if not set(required.get("filesystem_write_roots", [])) <= set(
-            permissions.filesystem_write_roots
+        if not filesystem_roots_satisfied(
+            required.get("filesystem_write_roots", []),
+            permissions.filesystem_write_roots,
+            allow_subscopes=native,
         ):
             raise ToolRuntimeError(
                 "tool_permission_denied",
@@ -1258,11 +1595,10 @@ class ToolRuntime:
                 "Agent permissions do not include required shell scope",
             )
 
-    @classmethod
     def _read_project_file(
-        cls, project_root: Path, raw_path: Any
+        self, project_root: Path, raw_path: Any
     ) -> tuple[dict[str, Any], int, str]:
-        target, relative_path = cls._project_target(
+        target, relative_path = self._project_target(
             project_root, raw_path, create_parents=False
         )
         if not target.is_file():
@@ -1270,7 +1606,16 @@ class ToolRuntime:
                 "tool_input_invalid", "Tool path is not a regular file"
             )
         try:
-            content = target.read_bytes()
+            content, _ = NativeFileSources(
+                project_id=self._call_project_id.get() or "",
+                project_target=lambda _: (target, relative_path),
+                selected_inputs={},
+                on_project_read=lambda path, metadata, payload: self._protect_read(
+                    project_root, path, metadata, payload
+                ),
+            ).read({"path": relative_path}, _MAX_FILE_BYTES)
+        except FileSourceError as exc:
+            raise ToolRuntimeError(exc.code, str(exc)) from None
         except OSError as exc:
             raise ToolRuntimeError(
                 "tool_failed", "Tool could not read the Project file"
@@ -1287,9 +1632,8 @@ class ToolRuntime:
             ) from exc
         return {"content": text}, len(content), relative_path
 
-    @classmethod
     def _write_project_file(
-        cls, project_root: Path, raw_path: Any, raw_content: Any
+        self, project_root: Path, raw_path: Any, raw_content: Any
     ) -> tuple[dict[str, Any], int, str]:
         if not isinstance(raw_content, str):
             raise ToolRuntimeError(
@@ -1300,7 +1644,7 @@ class ToolRuntime:
             raise ToolRuntimeError(
                 "tool_output_too_large", "Tool file exceeds the 1 MiB limit"
             )
-        target, relative_path = cls._project_target(
+        target, relative_path = self._project_target(
             project_root, raw_path, create_parents=True
         )
         if target.exists() and not target.is_file():
@@ -1308,7 +1652,45 @@ class ToolRuntime:
                 "tool_input_invalid", "Tool path is not a regular file"
             )
         try:
-            target.write_bytes(encoded)
+            protection_scope = self._call_input_protection.get()
+            if protection_scope is not None:
+                if self.input_protection is None:
+                    raise ToolRuntimeError(
+                        "input_protection_unavailable",
+                        "Input protection is unavailable",
+                    )
+                self.input_protection.assert_writable(
+                    protection_scope, project_root, target
+                )
+            # Check the actual opened file before truncating; pathname checks alone
+            # cannot reject a hard-link substitution made while opening the file.
+            descriptor = os.open(
+                target,
+                os.O_WRONLY
+                | os.O_CREAT
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ToolRuntimeError(
+                        "tool_input_invalid", "Tool path is not a regular file"
+                    )
+                if protection_scope is not None:
+                    assert self.input_protection is not None
+                    self.input_protection.assert_writable(
+                        protection_scope, project_root, target, metadata
+                    )
+                stream.truncate(0)
+                stream.write(encoded)
+                stream.flush()
+                if protection_scope is not None:
+                    assert self.input_protection is not None
+                    self.input_protection.record_output_file(
+                        protection_scope, project_root, target, metadata
+                    )
         except OSError as exc:
             raise ToolRuntimeError(
                 "tool_failed", "Tool could not write the Project file"
@@ -1383,15 +1765,14 @@ class ToolRuntime:
                 )
         return current, relative_path
 
-    @classmethod
     def _search_project_files(
-        cls, project_root: Path, raw_path: Any, raw_query: Any
+        self, project_root: Path, raw_path: Any, raw_query: Any
     ) -> tuple[dict[str, Any], int, str]:
         if not isinstance(raw_query, str) or not raw_query.strip():
             raise ToolRuntimeError(
                 "tool_input_invalid", "Filesystem Search requires a query"
             )
-        directory, relative_path = cls._project_directory(project_root, raw_path)
+        directory, relative_path = self._project_directory(project_root, raw_path)
         query = raw_query.casefold()
         matches: list[dict[str, Any]] = []
         scanned = 0
@@ -1409,15 +1790,18 @@ class ToolRuntime:
             if (
                 candidate.is_symlink()
                 or not candidate.is_file()
-                or cls._is_forbidden_path(candidate.name)
+                or self._is_forbidden_path(candidate.name)
             ):
                 continue
             scanned += 1
             try:
                 if candidate.stat().st_size > _MAX_FILE_BYTES:
                     continue
-                text = candidate.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+                output, _, _ = self._read_project_file(
+                    project_root, candidate.relative_to(project_root).as_posix()
+                )
+                text = output["content"]
+            except (OSError, UnicodeDecodeError, ToolRuntimeError):
                 continue
             for line_number, line in enumerate(text.splitlines(), start=1):
                 if query not in line.casefold():

@@ -15,10 +15,19 @@ from veyra_agent_platform.contracts.execution_plan import (
 )
 from veyra_agent_platform.contracts.task_structure import (
     ExecutionBoundary,
+    TaskIOField,
     TaskStructure,
 )
 
-from .product_shape import decide_product_shape
+from .approval_routing import approval_outcome
+from .product_shape import (
+    decide_product_shape,
+    effective_actor_capabilities,
+    native_loop_input,
+    native_loop_state,
+    native_loop_verification,
+    validate_business_gate_ownership,
+)
 
 
 def _nid(value: str) -> str:
@@ -31,6 +40,7 @@ def compile_execution_plan(
     *,
     decision: ProductShapeDecision | None = None,
 ) -> ExecutionPlan:
+    validate_business_gate_ownership(structure)
     shape = decision or decide_product_shape(structure)
     if shape.status != "decided":
         return ExecutionPlan(
@@ -90,20 +100,22 @@ def _actors(structure: TaskStructure, shape: str) -> tuple[PlanActor, ...]:
                 name=name,
                 capabilities=caps,
                 brief=structure.summary[:400],
+                inputs=_native_inputs(structure),
             ),
         )
     if shape == "WORKFLOW":
         return ()
     actors: list[PlanActor] = []
+    scheduled = {stage.actor for stage in structure.stages if stage.actor}
     for item in structure.actors:
-        if item.id == "main" and len(structure.actors) > 1:
+        if item.id == "main" and len(structure.actors) > 1 and item.id not in scheduled:
             continue
         actors.append(
             PlanActor(
                 id=item.id,
                 kind="agent",
                 name=_actor_name(item.role, item.id),
-                capabilities=item.capabilities,
+                capabilities=effective_actor_capabilities(structure, item),
                 brief=item.reason or item.role,
                 inputs=item.inputs,
                 outputs=item.outputs,
@@ -120,6 +132,19 @@ def _actors(structure: TaskStructure, shape: str) -> tuple[PlanActor, ...]:
             )
         )
     return tuple(actors)
+
+
+def _native_inputs(structure: TaskStructure) -> tuple[TaskIOField, ...]:
+    if len(structure.actors) != 1:
+        return structure.inputs
+    fields = {item.name.replace("_", "-"): item for item in structure.inputs}
+    for item in structure.actors[0].inputs:
+        key = item.name.replace("_", "-")
+        if key not in fields:
+            fields[key] = item
+        elif (fields[key].type, fields[key].multiple) != (item.type, item.multiple):
+            raise ValueError("Task and autonomous role inputs have conflicting types")
+    return tuple(fields.values())
 
 
 def _actor_name(role: str, actor_id: str) -> str:
@@ -337,6 +362,13 @@ def _retarget_skip_approval(backbone: list[PlanStep]) -> None:
 
 
 def _wire(backbone: list[PlanStep], side: list[PlanStep]) -> tuple[PlanStep, ...]:
+    ids = {step.id for step in (*backbone, *side)}
+    stop_id = "stop"
+    suffix = 2
+    while stop_id in ids:
+        stop_id = f"stop_{suffix}"
+        suffix += 1
+    needs_stop = False
     wired: list[PlanStep] = []
     for index, step in enumerate(backbone):
         nxt = backbone[index + 1].id if index + 1 < len(backbone) else ""
@@ -350,14 +382,17 @@ def _wire(backbone: list[PlanStep], side: list[PlanStep]) -> tuple[PlanStep, ...
             on_false = step.on_false or "output"
             on_next = on_true
         elif step.kind in {"human_approval", "human_input"}:
-            on_approved = nxt or "output"
-            on_rejected = "output"
+            on_approved = step.on_approved or nxt or "output"
+            on_rejected = step.on_rejected or (
+                stop_id if step.kind == "human_approval" else "output"
+            )
+            needs_stop |= step.kind == "human_approval" and not step.on_rejected
             on_next = on_approved
         elif step.kind == "verifier":
             on_true = nxt or "output"
             on_false = "output"
             on_next = on_true
-        elif step.kind != "output":
+        elif step.kind not in {"output", "stop"}:
             on_next = nxt or "output"
         wired.append(
             PlanStep(
@@ -402,6 +437,16 @@ def _wire(backbone: list[PlanStep], side: list[PlanStep]) -> tuple[PlanStep, ...
             )
         )
     ordered = list(wired)
+    if needs_stop:
+        position = (
+            len(ordered) - 1
+            if ordered and ordered[-1].kind == "output"
+            else len(ordered)
+        )
+        ordered.insert(
+            position,
+            PlanStep(id=stop_id, kind="stop", why="Rejection stops without delivery"),
+        )
     for item in extras:
         owner_index = next(
             (i for i, step in enumerate(ordered) if step.on_false == item.id),
@@ -443,7 +488,9 @@ def _boundary_step(boundary: ExecutionBoundary, *, step_id: str = "") -> PlanSte
         why=boundary.reason,
         expression=boundary.expression,
         question=boundary.question,
-        prompt=boundary.reason if kind == "human_approval" else "",
+        prompt=(boundary.question or boundary.reason)
+        if kind == "human_approval"
+        else "",
         checks=boundary.checks,
         entity=boundary.entity,
         capability=boundary.capability,
@@ -483,6 +530,40 @@ def _semantic_steps(
             for index, boundary in enumerate(structure.execution_boundaries)
             if _nid(boundary.stage) == _nid(stage.id)
         ]
+        routes: dict[str, str] = {}
+        folded: set[int] = set()
+        declared_stages = {item.id: _nid(item.id) for item in structure.stages}
+        declared_stages["output"] = "output"
+        for index, boundary in matching:
+            outcome = approval_outcome(structure, boundary)
+            if outcome is None:
+                continue
+            folded.add(index)
+            if len(boundary.branches) == 2 and all(
+                value in declared_stages for value in boundary.branches
+            ):
+                branch_targets = {declared_stages[value] for value in boundary.branches}
+                if len(branch_targets) == 2 and "output" not in branch_targets:
+                    raise ValueError(
+                        "approval_branch_join_ambiguous: distinct non-terminal "
+                        f"routes at stage {stage.id} need explicit branch joins; "
+                        "a linear stage list cannot safely separate their actions"
+                    )
+                for approved, truth in (
+                    (True, outcome.true_means_approved),
+                    (False, not outcome.true_means_approved),
+                ):
+                    port = "approved" if approved else "rejected"
+                    target = declared_stages[boundary.branches[0 if truth else 1]]
+                    if port in routes and routes[port] != target:
+                        raise ValueError(
+                            "approval predicates disagree on their control route"
+                        )
+                    routes[port] = target
+        used.update(folded)
+        matching = [
+            (index, boundary) for index, boundary in matching if index not in folded
+        ]
         for index, boundary in matching:
             used.add(index)
             if boundary.kind in {"reasoning", "multimodal", "tool", "artifact"}:
@@ -501,6 +582,21 @@ def _semantic_steps(
                 continue
             if boundary.kind == "human_approval" and boundary.approval_class == "tool":
                 continue
+            if boundary.kind == "human_input" and native_loop_input(
+                structure, boundary.stage
+            ):
+                continue
+            if boundary.kind == "verification" and native_loop_verification(
+                structure, boundary.stage
+            ):
+                continue
+            if (
+                boundary.kind == "state"
+                and native_loop_state(structure, boundary.stage)
+                and structure.state is not None
+                and boundary.entity == structure.state.entity
+            ):
+                continue
             if boundary.kind == "state":
                 backbone.append(
                     PlanStep(
@@ -513,7 +609,16 @@ def _semantic_steps(
             suffix = (
                 f"_{boundary.kind}_{index}" if stage.actor or len(matching) > 1 else ""
             )
-            backbone.append(_boundary_step(boundary, step_id=_nid(stage.id) + suffix))
+            compiled = _boundary_step(boundary, step_id=_nid(stage.id) + suffix)
+            if boundary.kind in {"verification", "human_approval"} and not stage.actor:
+                compiled = replace(compiled, input_sources=stage.input_sources)
+            if boundary.kind == "human_approval":
+                compiled = replace(
+                    compiled,
+                    on_approved=routes.get("approved", ""),
+                    on_rejected=routes.get("rejected", ""),
+                )
+            backbone.append(compiled)
         if not stage.actor and not matching:
             raise ValueError(f"stage has no executable actor or boundary: {stage.id}")
     for index, boundary in enumerate(structure.execution_boundaries):

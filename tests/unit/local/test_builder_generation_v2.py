@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 from veyra_agent_platform.contracts.common import SCHEMA_VERSION, new_uuid7
 from veyra_agent_platform.contracts.task_structure import (
@@ -81,6 +82,45 @@ def test_translation_is_pure_agent() -> None:
     assert [item.kind for item in plan.steps] == ["start", "agent_call", "output"]
 
 
+def test_tool_permission_gate_does_not_force_an_autonomous_role_into_a_workflow() -> (
+    None
+):
+    structure = _plan(TRANSLATION)
+    structure = replace(
+        structure,
+        stages=(
+            TaskStage(
+                id="work", summary="Perform the task", actor=structure.actors[0].id
+            ),
+        ),
+    )
+    approval = ExecutionBoundary(
+        kind="human_approval",
+        stage="write",
+        reason="Approve each tool effect",
+        approval_class="tool",
+    )
+    tool_gated = replace(structure, execution_boundaries=(approval,))
+    decision = decide_product_shape(tool_gated)
+    assert decision.shape == "PURE_AGENT" and not decision.downgraded
+    business_gated = replace(
+        tool_gated, execution_boundaries=(replace(approval, approval_class="business"),)
+    )
+    assert decide_product_shape(business_gated).shape == "AGENT_WORKFLOW"
+    independently_verified = replace(
+        structure,
+        execution_boundaries=(
+            ExecutionBoundary(
+                kind="verification",
+                stage="check",
+                reason="Independent check",
+                checks=("output.not_empty",),
+            ),
+        ),
+    )
+    assert decide_product_shape(independently_verified).shape == "AGENT_WORKFLOW"
+
+
 def test_research_stays_a_single_agent() -> None:
     structure = _plan(RESEARCH)
     decision = decide_product_shape(structure)
@@ -116,7 +156,7 @@ def test_workspace_editor_uses_tool_approval_not_business_approval() -> None:
 def test_secondhand_listing_is_agent_workflow() -> None:
     structure = _plan(SECONDHAND)
     decision = decide_product_shape(structure)
-    assert decision.shape == "AGENT_WORKFLOW"
+    assert decision.shape == "MULTI_AGENT_WORKFLOW"
     images = next(item for item in structure.inputs if item.type == "image")
     assert images.multiple is True
     kinds = _kinds(structure)
@@ -374,18 +414,73 @@ def test_soft_if_does_not_become_a_condition() -> None:
     assert "condition" not in _kinds(structure)
 
 
-def test_user_can_force_a_simple_agent_with_a_warning() -> None:
+def test_simple_agent_preference_cannot_remove_required_business_gates() -> None:
     structure = _plan(SECONDHAND + "不要 Workflow，就做一个简单 Agent")
     decision = decide_product_shape(structure)
-    assert decision.shape == "PURE_AGENT"
-    assert decision.downgraded is True
+    assert decision.shape == "MULTI_AGENT_WORKFLOW"
+    assert decision.downgraded is False
     assert decision.warnings
+
+
+def test_single_role_override_preserves_owned_finalization_at_the_same_stage() -> None:
+    structure = replace(
+        _plan(TRANSLATION),
+        stages=(TaskStage(id="work", summary="Translate", actor="translator"),),
+        actors=(
+            TaskActor(
+                id="translator", role="translator", capabilities=("text_generation",)
+            ),
+        ),
+        execution_boundaries=(
+            ExecutionBoundary(
+                kind="verification",
+                stage="work",
+                reason="Check the final result",
+                checks=("output.not_empty",),
+            ),
+        ),
+        user_shape_override="PURE_AGENT",
+    )
+    decision = decide_product_shape(structure)
+    assert decision.shape == "PURE_AGENT"
+    assert not decision.downgraded
+    plan = compile_execution_plan(structure, decision=decision)
+    assert not any(step.kind == "verifier" for step in plan.steps)
+    product = generate_builder_product(
+        TRANSLATION,
+        ResourceCatalog(),
+        planner_provider=SimpleNamespace(
+            complete_json=lambda prompt, schema: structure.to_dict()
+        ),
+    )
+    assert product.status == "review", product.diagnostics
+    assert product.source is not None and product.source.finalization is not None
+    assert "Check the final result" in product.source.finalization.criteria
+
+
+def test_single_agent_preference_can_still_merge_roles_without_required_gates() -> None:
+    structure = replace(
+        _plan(TRANSLATION),
+        actors=(
+            TaskActor(id="writer", role="writer", capabilities=("text_generation",)),
+            TaskActor(id="editor", role="editor", capabilities=("text_generation",)),
+        ),
+        stages=(
+            TaskStage(id="write", summary="Write", actor="writer"),
+            TaskStage(id="edit", summary="Edit", actor="editor"),
+        ),
+        execution_boundaries=(),
+        user_shape_override="PURE_AGENT",
+    )
+    decision = decide_product_shape(structure)
+    assert decision.shape == "PURE_AGENT" and decision.warnings
+    assert decision.downgraded
 
 
 def test_saying_agent_does_not_lock_secondhand_to_pure_agent() -> None:
     structure = _plan(SECONDHAND)
     assert structure.user_requested_surface == "agent"
-    assert decide_product_shape(structure).shape == "AGENT_WORKFLOW"
+    assert decide_product_shape(structure).shape == "MULTI_AGENT_WORKFLOW"
 
 
 def test_independent_capability_roles_become_multi_agent_workflow() -> None:
@@ -445,7 +540,7 @@ def test_golden_normalized_shapes() -> None:
         TRANSLATION: "PURE_AGENT",
         RESEARCH: "PURE_AGENT",
         WORKSPACE: "PURE_AGENT",
-        SECONDHAND: "AGENT_WORKFLOW",
+        SECONDHAND: "MULTI_AGENT_WORKFLOW",
         GIFT: "AGENT_WORKFLOW",
         DOCUMENT: "AGENT_WORKFLOW",
         ENGINEER: "PURE_AGENT",

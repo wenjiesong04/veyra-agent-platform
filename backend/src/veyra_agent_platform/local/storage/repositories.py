@@ -1285,14 +1285,16 @@ class LocalRepository:
         input_digest: str,
         receipt: dict[str, Any] | None,
         created_at: str,
+        tool_call_id: str | None = None,
     ) -> None:
         connection.execute(
             """INSERT INTO runtime_tool_calls(
                  tool_call_id, run_id, node_id, tool_reference, authorization,
                  decision_code, decision_reason, input_digest, receipt_json, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(tool_call_id) DO NOTHING""",
             (
-                new_uuid7(),
+                tool_call_id or new_uuid7(),
                 run_id,
                 node_id,
                 tool_reference,

@@ -108,6 +108,8 @@
 .workflow-app-run-copy small { color: var(--muted); font-size: 10px; }
 .workflow-app-run-list a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-strong); }
 .workflow-app-shell .agent-app-approval { max-width: none; padding: 16px; border-radius: 12px; }
+.workflow-app-approval-preview { max-height: 320px; overflow: auto; min-width: 0; }
+.workflow-app-approval-preview pre { overflow-wrap: anywhere; }
 .workflow-about-dialog { width: min(680px, calc(100% - 32px)); max-height: calc(100dvh - 48px); margin: auto; padding: 24px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: var(--shell-shadow); }
 .workflow-about-dialog::backdrop { background: rgb(0 0 0 / .35); }
 .workflow-about-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 20px; }

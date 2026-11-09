@@ -7,7 +7,6 @@ import "@veyra/ui/styles/primitives.css";
 import "@veyra/ui/styles/feedback.css";
 import "@veyra/connected-account/styles.css";
 import "./app.css";
-import "./showcase.css";
 import { CommunitySite } from "./site";
 
 const root = document.getElementById("root");

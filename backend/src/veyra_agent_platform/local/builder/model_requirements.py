@@ -12,6 +12,8 @@ from veyra_agent_platform.local.models.contracts import (
     ModelCapabilityRequirement,
 )
 
+from .product_shape import native_loop_verification
+
 _MODEL_ALIASES = {
     "image_understanding": "image_input",
     "vision": "image_input",
@@ -247,6 +249,24 @@ def derive_model_requirements(
                     source=boundary.source
                     or f"task_structure.boundaries.{boundary.stage}",
                 )
+        if boundary.kind == "verification" and native_loop_verification(
+            structure, boundary.stage
+        ):
+            for owner in targets:
+                output_fields = structure.outputs
+                if plan.product_shape != "PURE_AGENT":
+                    role = next(
+                        (actor for actor in structure.actors if actor.id == owner), None
+                    )
+                    output_fields = role.outputs if role is not None else ()
+                if any(item.type == "image" for item in output_fields):
+                    add(
+                        "image_input",
+                        actor_id=owner,
+                        required=True,
+                        reason="Inspect generated images before delivery",
+                        source="finalization.review_images",
+                    )
 
     for capability in plan.capabilities:
         add(

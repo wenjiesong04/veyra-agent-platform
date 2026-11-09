@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentVersionSnapshot, FlowNode, ProjectAgentRecord } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
@@ -31,8 +31,42 @@ const version: AgentVersionSnapshot = {
 };
 
 const node: FlowNode = { id: "call", component_type: "AgentCall" };
+afterEach(cleanup);
 
 describe("AgentCallInspector", () => {
+  it("preserves an existing intermediate value when opened and refreshed", async () => {
+    const current = { ...node, agent_ref: `${version.agent_id}@${version.version_id}`, input_mapping: { prompt: "analyze_analysis" } };
+    const onBind = vi.fn();
+    const onMapping = vi.fn();
+    const listAgentVersions = vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [version] });
+    const api = { listAgentVersions } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<ThemeProvider><AgentCallInspector node={current} agents={[agent]} api={api} projectId="project-1" zh workflowInputs={["rawmaterials"]} onBind={onBind} onMapping={onMapping} /></ThemeProvider>);
+    const mapping = await screen.findByRole("combobox", { name: "参数 prompt" });
+    expect(mapping).toHaveValue("analyze_analysis");
+    await user.click(screen.getByRole("button", { name: "刷新版本" }));
+    await waitFor(() => expect(listAgentVersions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "刷新版本" })).toBeEnabled());
+    expect(mapping).toHaveValue("analyze_analysis");
+    expect(onMapping).not.toHaveBeenCalled();
+    expect(onBind).not.toHaveBeenCalled();
+  });
+
+  it("binds a different immutable version only after explicit selection", async () => {
+    const newer = { ...version, version_id: "01900000-0000-7000-8000-000000000012", source_hash: "c".repeat(64) };
+    const onBind = vi.fn();
+    const onMapping = vi.fn();
+    const api = { listAgentVersions: vi.fn().mockResolvedValue({ schema_version: "1.0", versions: [version, newer] }) } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<ThemeProvider><AgentCallInspector node={{ ...node, agent_ref: `${version.agent_id}@${version.version_id}` }} agents={[agent]} api={api} projectId="project-1" zh onBind={onBind} onMapping={onMapping} /></ThemeProvider>);
+    const selection = await screen.findByRole("combobox", { name: "不可变版本" });
+    await waitFor(() => expect(selection).toBeEnabled());
+    expect(onBind).not.toHaveBeenCalled();
+    await user.selectOptions(selection, newer.version_id);
+    expect(onBind).toHaveBeenCalledWith(newer);
+    expect(onMapping).not.toHaveBeenCalled();
+  });
+
   it("binds the latest committed version when an Agent is selected", async () => {
     const onBind = vi.fn();
     const api = {

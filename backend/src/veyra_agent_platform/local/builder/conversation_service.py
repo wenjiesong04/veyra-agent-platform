@@ -20,6 +20,10 @@ from veyra_agent_platform.local.builder.component_planning import (
 from veyra_agent_platform.local.builder.conversation_store import (
     BuilderConversationStore,
 )
+from veyra_agent_platform.local.builder.generation_diagnostics import (
+    generation_failure_facts,
+    generation_feedback,
+)
 from veyra_agent_platform.local.builder.operation_events import (
     APPLY_COMPLETED,
     APPLY_STARTED,
@@ -34,6 +38,8 @@ from veyra_agent_platform.local.builder.operation_events import (
     PROPOSAL_CONFIRMED,
     PROPOSAL_READY,
     PROPOSAL_REJECTED,
+    SEMANTIC_PLAN_COMPLETED,
+    SEMANTIC_PLAN_STARTED,
     TEST_COMPLETED,
     TEST_FAILED,
     TEST_STARTED,
@@ -45,10 +51,14 @@ from veyra_agent_platform.local.builder.receipts import (
     HarnessReceiptRecorder,
     public_receipt,
 )
+from veyra_agent_platform.local.builder.requirement_context import (
+    user_requirement_context,
+)
 from veyra_agent_platform.local.builder.resolution import (
     BuilderMessage,
     BuilderResolutionService,
     BuilderTarget,
+    DirectComponentIntent,
     ResolveRequest,
 )
 from veyra_agent_platform.local.builder.test_run import (
@@ -57,7 +67,11 @@ from veyra_agent_platform.local.builder.test_run import (
     public_observation,
 )
 from veyra_agent_platform.local.factory.client import FactoryProviderError
-from veyra_agent_platform.local.factory.edit_service import EditProposalService
+from veyra_agent_platform.local.factory.edit_service import (
+    EditProposalService,
+    KnowledgeBindingUnresolved,
+    ResourceBindingUnresolved,
+)
 from veyra_agent_platform.local.factory.service import FactoryError, FactoryService
 from veyra_agent_platform.local.library.service import DraftConflict
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
@@ -141,6 +155,7 @@ _FORBIDDEN_PAYLOAD_KEYS = {
     "raw",
     "body",
     "reasoning",
+    "resolution_json",
 }
 _MESSAGE_KINDS = {
     "user",
@@ -169,6 +184,7 @@ _PROVIDER_STAGES = {
     "factory_request_invalid": "semantic_plan",
     "factory_unauthorized": "semantic_plan",
     "factory_rate_limited": "semantic_plan",
+    "factory_quota_exhausted": "semantic_plan",
     "factory_provider_error": "semantic_plan",
     "factory_timeout": "semantic_plan",
     "factory_unavailable": "semantic_plan",
@@ -184,15 +200,41 @@ class ClosedModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class _ResolutionTarget(BuilderTarget):
+    name: str
+    revision: int | None = Field(default=None, ge=0, strict=True)
+    etag: str | None = None
+
+
+class _SavedResolution(ClosedModel):
+    schema_version: Literal["1.0"]
+    status: Literal["resolved", "clarification", "unsupported"]
+    intent: Literal["create", "create_component", "edit", "discuss", "clarify"]
+    create_kind: Literal["agent", "workflow", "resource", "custom_component"] | None
+    message: str = Field(max_length=4_000)
+    instruction: str = Field(max_length=10_000)
+    plan: list[str] = Field(max_length=12)
+    targets: list[_ResolutionTarget] = Field(max_length=20)
+    component_plan: DirectComponentIntent | None = None
+    user_requested_surface: Literal["agent", "workflow", ""] | None = None
+    creation_scope: Literal["single_product", "independent_products"] | None = None
+    model_multi_object: bool | None = None
+    decision_reason: str | None = Field(default=None, max_length=80)
+
+
 class TurnRequest(ClosedModel):
     conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
     content: str | None = Field(default=None, max_length=10_000)
     focus: BuilderTarget | None = None
     locale: Literal["zh", "en"] = "en"
     retry_of: str | None = Field(default=None, min_length=1, max_length=64)
+    request_limit: int | None = Field(default=None, strict=True, ge=1)
+    resume_only: StrictBool = False
 
     @model_validator(mode="after")
     def require_content_or_retry(self) -> TurnRequest:
+        if self.resume_only and not self.retry_of:
+            raise ValueError("resume_only requires retry_of")
         if self.retry_of:
             if not self.conversation_id:
                 raise ValueError("retry_of requires conversation_id")
@@ -212,6 +254,7 @@ class TestRunRequest(ClosedModel):
 class TestRunCommandRequest(ClosedModel):
     command: Literal["approve", "reject", "stop"]
     locale: Literal["zh", "en"] = "en"
+    expected_request_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ComponentProposalCommandRequest(ClosedModel):
@@ -293,6 +336,7 @@ class BuilderConversationService:
         on_snapshot: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         self._require_project(project_id)
+        request_limit = self._generation_request_limit(request.request_limit)
         conversation_id, operation_id, content, locale, focus = self._begin(
             project_id, request, on_event=on_event
         )
@@ -301,13 +345,22 @@ class BuilderConversationService:
         try:
             if on_snapshot is not None:
                 on_snapshot(self.snapshot(project_id, conversation_id))
-            self._emit(
-                operation_id,
-                INTENT_STARTED,
-                locale,
-                on_event=on_event,
-            )
-            history = self._bounded_history(conversation_id, content)
+            resumed_session = None
+            if request.retry_of:
+                previous = self.store.operation(request.retry_of, conversation_id)
+                if (
+                    previous is not None
+                    and previous["kind"] in {"create_agent", "create_workflow"}
+                    and previous.get("factory_session_id")
+                ):
+                    resumed_session = self.factory.clone_generation_draft(
+                        project_id, str(previous["factory_session_id"])
+                    )
+            if request.resume_only and resumed_session is None:
+                raise FactoryError(
+                    "builder_draft_continuation_unavailable",
+                    "No compatible saved generation draft is available to continue.",
+                )
             receipts = HarnessReceiptRecorder(
                 self.store,
                 self.factory.harness,
@@ -315,18 +368,63 @@ class BuilderConversationService:
                 conversation_id=conversation_id,
                 operation_id=operation_id,
                 profile=self.factory.resolved_capability_profile(),
+                request_limit=request_limit,
+                timeout_seconds=self.factory.client.settings.generation_timeout_seconds,
+                allowed_output_contracts=frozenset({"TaskCoverageV1"})
+                if request.resume_only
+                else None,
             )
-            resolution = self.resolution.resolve(
-                project_id,
-                ResolveRequest(
-                    content=content,
-                    history=history,
-                    focus=focus,
-                    locale=locale,
-                ),
-                receipts=receipts,
-                on_visible=on_preview,
-            )
+            if resumed_session is not None:
+                shape = resumed_session.get("resumed_product_shape")
+                preview = resumed_session.get("proposal_preview") or {}
+                if not shape and isinstance(preview, Mapping):
+                    shape = preview.get("product_shape")
+                if isinstance(shape, Mapping):
+                    shape = shape.get("shape")
+                resolution = {
+                    "schema_version": "1.0",
+                    "status": "resolved",
+                    "intent": "create",
+                    "create_kind": "agent" if shape == "PURE_AGENT" else "workflow",
+                    "message": (
+                        "继续已保存的生成草稿。"
+                        if locale == "zh"
+                        else "Continuing the saved generation draft."
+                    ),
+                    "instruction": "",
+                    "plan": [],
+                    "targets": [],
+                }
+                self.store.update_operation(
+                    operation_id,
+                    status="in_progress",
+                    updated_at=_now(),
+                    factory_session_id=str(resumed_session["session_id"]),
+                )
+            else:
+                self._emit(
+                    operation_id,
+                    INTENT_STARTED,
+                    locale,
+                    on_event=on_event,
+                )
+                history = self._bounded_history(
+                    conversation_id, content, operation_id=operation_id
+                )
+                resolution = self.resolution.resolve(
+                    project_id,
+                    ResolveRequest(
+                        content=content,
+                        history=history,
+                        requirement_context=self._requirement_context(
+                            conversation_id, operation_id, content
+                        ),
+                        focus=focus,
+                        locale=locale,
+                    ),
+                    receipts=receipts,
+                    on_visible=on_preview,
+                )
             self._append_resolution(
                 conversation_id, operation_id, resolution, locale, on_event=on_event
             )
@@ -351,6 +449,7 @@ class BuilderConversationService:
                     locale,
                     on_event=on_event,
                     receipts=receipts,
+                    resumed_session=resumed_session,
                 )
             elif (
                 resolution.get("status") == "resolved"
@@ -368,7 +467,16 @@ class BuilderConversationService:
                 resolution.get("status") == "resolved"
                 and resolution.get("intent") == "edit"
             ):
-                self._complete_operation(operation_id, "waiting")
+                self._create_edit_proposal(
+                    project_id,
+                    conversation_id,
+                    operation_id,
+                    resolution,
+                    content,
+                    locale,
+                    receipts=receipts,
+                    on_event=on_event,
+                )
             else:
                 self._emit(operation_id, OPERATION_COMPLETED, locale, on_event=on_event)
                 self._complete_operation(operation_id, "succeeded")
@@ -392,8 +500,10 @@ class BuilderConversationService:
                 details={},
                 on_event=on_event,
             )
-        except (ProjectError, ContractValidationError) as exc:
+        except (ProjectError, ContractValidationError, DraftConflict) as exc:
             code = getattr(exc, "code", "builder_operation_failed")
+            if isinstance(exc, DraftConflict):
+                code = "draft_conflict"
             self._fail_operation(
                 conversation_id,
                 operation_id,
@@ -420,6 +530,15 @@ class BuilderConversationService:
             resolution=resolution,
             factory_session=factory_session,
         )
+
+    def _generation_request_limit(self, requested: int | None) -> int:
+        maximum = self.factory.client.settings.generation_max_requests
+        if requested is not None and requested > maximum:
+            raise BuilderConversationError(
+                "builder_request_limit_invalid",
+                "The request limit exceeds the configured generation maximum.",
+            )
+        return requested if requested is not None else maximum
 
     def get(self, project_id: str, conversation_id: str) -> dict[str, Any]:
         self._require_project(project_id)
@@ -569,6 +688,12 @@ class BuilderConversationService:
                 ) == input_payload.get("focus_kind") and canonical.get(
                     "target_id"
                 ) == input_payload.get("focus_id")
+                diagnostic = _load_object(operation.get("diagnostic_json"))
+                canonical_matches_operation = (
+                    operation.get("proposal_id") == request.proposal_id
+                    and canonical.get("target_kind") == diagnostic.get("target_kind")
+                    and canonical.get("target_id") == diagnostic.get("target_id")
+                )
                 if (
                     (
                         operation.get("proposal_id")
@@ -578,7 +703,11 @@ class BuilderConversationService:
                         canonical_operation is not None
                         and canonical_operation != operation_id
                     )
-                    or (canonical_operation is None and not canonical_matches_focus)
+                    or (
+                        canonical_operation is None
+                        and not canonical_matches_focus
+                        and not canonical_matches_operation
+                    )
                 ):
                     raise BuilderConversationError(
                         "builder_proposal_mismatch",
@@ -740,6 +869,7 @@ class BuilderConversationService:
                 )
             focus = _focus_from_input(payload)
             locale = "zh" if payload.get("locale") == "zh" else "en"
+            requirements = self._requirement_context(conversation_id, retry_of, content)
             operation_id = new_uuid7()
             self.store.commit_user_turn(
                 conversation_id=conversation_id,
@@ -749,7 +879,14 @@ class BuilderConversationService:
                 operation_id=operation_id,
                 kind=previous["kind"],
                 retry_of=retry_of,
-                input_payload=_input_payload(content, locale, focus),
+                input_payload=_input_payload(
+                    content,
+                    locale,
+                    focus,
+                    requirements,
+                    request_limit=request.request_limit,
+                    resume_only=request.resume_only,
+                ),
                 message_id=None,
                 content=None,
                 created_at=_now(),
@@ -777,6 +914,9 @@ class BuilderConversationService:
                 )
             title = conversation["title"]
         operation_id = new_uuid7()
+        requirements = user_requirement_context(
+            () if created else self.store.messages(conversation_id), content
+        )
         self.store.commit_user_turn(
             conversation_id=conversation_id,
             project_id=project_id,
@@ -785,7 +925,14 @@ class BuilderConversationService:
             operation_id=operation_id,
             kind="resolve",
             retry_of=None,
-            input_payload=_input_payload(content, locale, focus),
+            input_payload=_input_payload(
+                content,
+                locale,
+                focus,
+                requirements,
+                request_limit=request.request_limit,
+                resume_only=request.resume_only,
+            ),
             message_id=new_uuid7(),
             content=content,
             created_at=_now(),
@@ -795,11 +942,59 @@ class BuilderConversationService:
         self._emit(operation_id, OPERATION_STARTED, locale, on_event=on_event)
         return conversation_id, operation_id, content, locale, focus
 
+    def _requirement_context(
+        self, conversation_id: str, operation_id: str, content: str
+    ) -> str:
+        operation = self.store.operation(operation_id, conversation_id)
+        if operation is None:
+            raise BuilderConversationError(
+                "builder_operation_not_found", "Builder operation was not found"
+            )
+        saved = _load_object(operation["input_json"]).get("requirement_context")
+        if saved:
+            return saved
+        # Legacy retries must recover the source turn, not use later messages.
+        operation = self._origin_operation(conversation_id, operation_id)
+        return user_requirement_context(
+            self.store.messages(conversation_id),
+            content,
+            before=operation["created_at"],
+        )
+
+    def _origin_operation(
+        self, conversation_id: str, operation_id: str
+    ) -> dict[str, Any]:
+        operation = self.store.operation(operation_id, conversation_id)
+        visited: set[str] = set()
+        while operation is not None:
+            current = str(operation["operation_id"])
+            if current in visited:
+                break
+            visited.add(current)
+            source = operation.get("retry_of")
+            if not source:
+                return operation
+            operation = self.store.operation(str(source), conversation_id)
+        raise BuilderConversationError(
+            "builder_retry_invalid", "Retry source could not be recovered"
+        )
+
     def _bounded_history(
-        self, conversation_id: str, current_content: str
+        self,
+        conversation_id: str,
+        current_content: str,
+        *,
+        operation_id: str | None = None,
     ) -> list[BuilderMessage]:
+        cutoff = (
+            self._origin_operation(conversation_id, operation_id)["created_at"]
+            if operation_id is not None
+            else None
+        )
         selected: list[BuilderMessage] = []
         for row in self.store.messages(conversation_id):
+            if cutoff is not None and row["created_at"] > cutoff:
+                continue
             if row["kind"] not in _HISTORY_KINDS:
                 continue
             role: Literal["user", "assistant"] = (
@@ -826,6 +1021,7 @@ class BuilderConversationService:
         *,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
+        saved_resolution = _resolution_json(resolution)
         kind = (
             "clarification"
             if resolution.get("status") == "clarification"
@@ -836,6 +1032,8 @@ class BuilderConversationService:
                 "intent": str(resolution.get("intent") or ""),
                 "status": str(resolution.get("status") or ""),
                 "create_kind": str(resolution.get("create_kind") or ""),
+                "creation_scope": str(resolution.get("creation_scope") or ""),
+                "decision_reason": str(resolution.get("decision_reason") or ""),
                 "instruction": str(resolution.get("instruction") or "")[:500],
             }
         )
@@ -872,15 +1070,16 @@ class BuilderConversationService:
             operation_id,
             status="in_progress",
             updated_at=_now(),
-            diagnostic=_facts(
-                {
-                    "resolution_json": json.dumps(
-                        resolution, ensure_ascii=False, sort_keys=True
-                    )[:12_000],
-                    "intent": str(resolution.get("intent") or ""),
-                    "create_kind": str(resolution.get("create_kind") or ""),
-                }
-            ),
+            diagnostic={
+                **_facts(
+                    {
+                        "intent": str(resolution.get("intent") or ""),
+                        "create_kind": str(resolution.get("create_kind") or ""),
+                        **_resolution_target_facts(resolution),
+                    }
+                ),
+                "resolution_json": saved_resolution,
+            },
         )
         if (
             resolution.get("intent") == "create"
@@ -906,6 +1105,121 @@ class BuilderConversationService:
             self.store.update_operation(
                 operation_id, status="in_progress", updated_at=_now(), kind="edit"
             )
+
+    def _create_edit_proposal(
+        self,
+        project_id: str,
+        conversation_id: str,
+        operation_id: str,
+        resolution: dict[str, Any],
+        content: str,
+        locale: Literal["zh", "en"],
+        *,
+        receipts: HarnessReceiptRecorder,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        if self.edits is None:
+            raise FactoryError(
+                "builder_proposal_unavailable", "The proposal service is unavailable"
+            )
+        parsed = _SavedResolution.model_validate(resolution)
+        if len(parsed.targets) != 1:
+            raise FactoryError("builder_target_invalid", "One edit target is required")
+        target = parsed.targets[0]
+        if target.revision is None or not target.etag:
+            raise FactoryError(
+                "builder_target_invalid", "The resolved Draft revision is missing"
+            )
+        facts = _resolution_target_facts(resolution)
+        diagnostic = {
+            **facts,
+            "intent": "edit",
+            "stage": "edit_proposal",
+            "resolution_json": _resolution_json(resolution),
+        }
+        self.store.update_operation(
+            operation_id, status="in_progress", updated_at=_now(), diagnostic=diagnostic
+        )
+        self._emit(
+            operation_id,
+            SEMANTIC_PLAN_STARTED,
+            locale,
+            facts={**facts, "phase": "edit_proposal"},
+            on_event=on_event,
+        )
+        proposal = None
+        if target.kind == "agent":
+            try:
+                proposal = self.edits.create_resource_binding(
+                    project_id, target.target_id, content, target.revision, target.etag
+                )
+            except ResourceBindingUnresolved as exc:
+                if exc.status != "unresolved":
+                    raise FactoryError(
+                        f"resource_mention_{exc.status}",
+                        (
+                            "This Resource is in the Catalog but not this Project. "
+                            "Add it explicitly in Project Resources before this edit. "
+                            if exc.status == "unbound"
+                            else "Choose one exact Project Resource before this edit. "
+                        )
+                        + ", ".join(item["reference"] for item in exc.candidates),
+                    ) from exc
+            if proposal is None:
+                try:
+                    proposal = self.edits.create_knowledge_binding(
+                        project_id,
+                        target.target_id,
+                        parsed.instruction,
+                        target.revision,
+                        target.etag,
+                    )
+                except KnowledgeBindingUnresolved as exc:
+                    if exc.status != "unresolved":
+                        raise FactoryError(
+                            f"knowledge_mention_{exc.status}",
+                            "Choose one Project Knowledge document before this edit. "
+                            + ", ".join(item["name"] for item in exc.candidates),
+                        ) from exc
+                except FactoryError as exc:
+                    if exc.code != "knowledge_already_bound":
+                        raise
+        if proposal is None:
+            proposal = self.edits.create(
+                project_id,
+                target.kind,
+                target.target_id,
+                parsed.instruction,
+                target.revision,
+                target.etag,
+                receipts=receipts,
+            )
+        proposal_id = str(proposal["proposal_id"])
+        facts = {**facts, "proposal_id": proposal_id}
+        self.store.append_message(
+            message_id=new_uuid7(),
+            conversation_id=conversation_id,
+            sequence=self.store.next_sequence(conversation_id),
+            role="assistant",
+            kind="proposal_reference",
+            content=(
+                "修改提案已生成，请审查后确认应用。"
+                if locale == "zh"
+                else "The edit proposal is ready for review and explicit application."
+            ),
+            operation_id=operation_id,
+            payload=_facts(facts),
+            created_at=_now(),
+        )
+        self._emit(
+            operation_id,
+            SEMANTIC_PLAN_COMPLETED,
+            locale,
+            facts={**facts, "phase": "edit_proposal"},
+            on_event=on_event,
+        )
+        self._emit(operation_id, PROPOSAL_READY, locale, facts=facts, on_event=on_event)
+        self._complete_operation(operation_id, "waiting", proposal_id=proposal_id)
 
     def _requires_runtime_binding(self, project_id: str) -> bool:
         return bool(
@@ -935,22 +1249,22 @@ class BuilderConversationService:
             status="waiting",
             updated_at=_now(),
             kind=kind,
-            diagnostic=_facts(
-                {
-                    "waiting_for": waiting_for,
-                    "binding_slot": str(
-                        preflight.get("binding_slot") or "primary_model"
-                    ),
-                    "runtime_credentials_json": json.dumps(
-                        preflight.get("credentials") or [],
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )[:20_000],
-                    "resolution_json": json.dumps(
-                        resolution, ensure_ascii=False, sort_keys=True
-                    )[:12_000],
-                }
-            ),
+            diagnostic={
+                **_facts(
+                    {
+                        "waiting_for": waiting_for,
+                        "binding_slot": str(
+                            preflight.get("binding_slot") or "primary_model"
+                        ),
+                        "runtime_credentials_json": json.dumps(
+                            preflight.get("credentials") or [],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )[:20_000],
+                    }
+                ),
+                "resolution_json": _resolution_json(resolution),
+            },
         )
         if waiting_for == "waiting_for_runtime_credential":
             clarification = (
@@ -1056,9 +1370,25 @@ class BuilderConversationService:
                 binding_slot = binding.slot
             except ProviderCredentialError as exc:
                 raise BuilderConversationError(exc.code, str(exc)) from exc
-        resolution = _load_object(diagnostic.get("resolution_json"))
+        resolution = _saved_resolution(diagnostic.get("resolution_json")) or {}
         input_payload = _load_object(operation.get("input_json"))
         locale: Literal["zh", "en"] = request.locale
+        if not resolution.get("status"):
+            # Legacy display facts may contain truncated JSON. Creation intent
+            # is already pinned by the waiting operation; its full request is
+            # preserved separately, so no new classification is needed.
+            resolution = {
+                "schema_version": "1.0",
+                "status": "resolved",
+                "intent": "create",
+                "create_kind": "workflow"
+                if operation["kind"] == "create_workflow"
+                else "agent",
+                "instruction": "",
+                "message": _understood(locale),
+                "plan": [],
+                "targets": [],
+            }
         self.store.append_message(
             message_id=new_uuid7(),
             conversation_id=conversation_id,
@@ -1085,17 +1415,17 @@ class BuilderConversationService:
             operation_id,
             status="in_progress",
             updated_at=_now(),
-            diagnostic=_facts(
-                {
-                    "runtime_binding_status": "confirmed",
-                    "credential_id": request.credential_id,
-                    "model_id": request.model_id,
-                    "credential_scope": request.credential_scope,
-                    "resolution_json": json.dumps(
-                        resolution, ensure_ascii=False, sort_keys=True
-                    )[:12_000],
-                }
-            ),
+            diagnostic={
+                **_facts(
+                    {
+                        "runtime_binding_status": "confirmed",
+                        "credential_id": request.credential_id,
+                        "model_id": request.model_id,
+                        "credential_scope": request.credential_scope,
+                    }
+                ),
+                "resolution_json": _resolution_json(resolution),
+            },
         )
         content = str(input_payload.get("content") or "")
         receipts = HarnessReceiptRecorder(
@@ -1105,6 +1435,15 @@ class BuilderConversationService:
             conversation_id=conversation_id,
             operation_id=operation_id,
             profile=self.factory.resolved_capability_profile(),
+            request_limit=self._generation_request_limit(
+                int(input_payload["request_limit"])
+                if "request_limit" in input_payload
+                else None
+            ),
+            timeout_seconds=self.factory.client.settings.generation_timeout_seconds,
+            allowed_output_contracts=frozenset({"TaskCoverageV1"})
+            if input_payload.get("resume_only") == "True"
+            else None,
         )
         generate = self._generate_product
         try:
@@ -1116,6 +1455,13 @@ class BuilderConversationService:
                 content,
                 locale,
                 receipts=receipts,
+                resumed_session=(
+                    self.factory.get_session(
+                        project_id, operation["factory_session_id"]
+                    )
+                    if operation.get("factory_session_id")
+                    else None
+                ),
             )
         except FactoryProviderError as exc:
             self._fail_operation(
@@ -1148,17 +1494,24 @@ class BuilderConversationService:
         *,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         receipts: HarnessReceiptRecorder | None = None,
+        resumed_session: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        original = content.strip()
+        original = self._requirement_context(
+            conversation_id, operation_id, content
+        ).strip()
         clarified = str(resolution.get("instruction") or "").strip()
         goal = original
-        if clarified and clarified != original:
+        if clarified and clarified not in {original, content.strip()}:
             goal = (
                 f"{original}\n\nClarified requirement:\n{clarified}"
                 if original
                 else clarified
             )
-        session = self.factory.create_session(project_id, goal, receipts=receipts)
+        # Intent resolution already understood this request. Let task planning
+        # identify remaining questions rather than paying for another interview.
+        session = resumed_session or self.factory.create_session(
+            project_id, goal, receipts=receipts, interview=False
+        )
         session_id = str(session["session_id"])
         self.store.update_operation(
             operation_id,
@@ -1177,7 +1530,10 @@ class BuilderConversationService:
                     operation_id,
                     status="in_progress",
                     updated_at=_now(),
-                    diagnostic=_facts({"candidate_name": name[:80], **facts}),
+                    diagnostic={
+                        **_facts({"candidate_name": name[:80], **facts}),
+                        "resolution_json": _resolution_json(resolution),
+                    },
                 )
 
         generated = self.factory.generate(
@@ -1185,13 +1541,27 @@ class BuilderConversationService:
         )
         state = str(generated.get("state") or "")
         if generated.get("blocked_reason"):
+            issues = generated.get("diagnostics") or []
+            issue = next((item for item in issues if isinstance(item, str)), "")
+            io_issue = (
+                bool(re.search(r"\$\.(?:actors\[\d+\]\.)?(?:inputs|outputs)\[", issue))
+                or "TaskStructure I/O repair response is invalid" in issue
+            )
             self._fail_operation(
                 conversation_id,
                 operation_id,
                 locale,
                 code="factory_generation_blocked",
                 message=str(generated["blocked_reason"]),
-                details={"stage": "task_planning"},
+                details={
+                    "stage": "task_planning",
+                    "blocked_reason": str(generated["blocked_reason"]),
+                    "validation_issue": issue,
+                    "validation_kind": "task_io_invalid" if io_issue else "",
+                    **generation_failure_facts(
+                        issues, str(generated["blocked_reason"]), locale
+                    ),
+                },
                 on_event=on_event,
             )
             return generated
@@ -1963,17 +2333,39 @@ class BuilderConversationService:
         details: dict[str, str],
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
+        operation = self.store.operation(operation_id, conversation_id)
+        previous = _load_object(operation.get("diagnostic_json")) if operation else {}
         diagnostic = _facts(
             {
+                **{
+                    key: previous[key]
+                    for key in ("target_kind", "target_id", "agent_id", "workflow_id")
+                    if key in previous
+                },
                 "error_code": code,
-                "stage": _PROVIDER_STAGES.get(code, "builder"),
+                "stage": details.get("stage")
+                or (
+                    "edit_proposal"
+                    if previous.get("stage") == "edit_proposal"
+                    else _PROVIDER_STAGES.get(code, "builder")
+                ),
                 "http_status": details.get("http_status", ""),
                 "provider_error_type": details.get("provider_error_type", ""),
                 "provider_error_code": details.get("provider_error_code", ""),
+                "retry_after_seconds": details.get("retry_after_seconds", ""),
                 "rejected_field": details.get("rejected_field", ""),
-                "provider": "Kimi K3",
+                "provider": self.factory.client.settings.model_id,
+                "blocked_reason": details.get("blocked_reason", ""),
+                "validation_issue": details.get("validation_issue", ""),
+                "validation_kind": details.get("validation_kind", ""),
+                "validation_code": details.get("validation_code", ""),
+                "validation_summary": details.get("validation_summary", ""),
+                "prior_validation_issue": details.get("prior_validation_issue", ""),
             }
         )
+        saved = _saved_resolution(previous.get("resolution_json"))
+        if saved is not None:
+            diagnostic["resolution_json"] = _resolution_json(saved)
         self.store.update_operation(
             operation_id,
             status="failed",
@@ -2533,6 +2925,7 @@ class BuilderConversationService:
                 str(operation["run_id"]),
                 request.command,
                 new_uuid7(),
+                expected_request_id=request.expected_request_id,
             )
         except (ProjectError, RuntimeFailure) as exc:
             raise BuilderConversationError(exc.code, str(exc)) from exc
@@ -2761,7 +3154,51 @@ class BuilderConversationService:
 
     def _public_operation(self, row: dict[str, Any], project_id: str) -> dict[str, Any]:
         diagnostic = _load_object(row.get("diagnostic_json"))
+        saved = _saved_resolution(diagnostic.pop("resolution_json", None))
+        if saved is not None:
+            for key in ("creation_scope", "model_multi_object", "decision_reason"):
+                if saved.get(key) is not None:
+                    diagnostic[key] = str(saved[key])
+            diagnostic["resolution_status"] = str(saved["status"])
         payload = _load_object(row.get("input_json"))
+        receipts = self.store.receipts(
+            project_id=project_id,
+            conversation_id=str(row["conversation_id"]),
+            operation_id=str(row["operation_id"]),
+        )
+        feedback: list[str] = []
+        if row.get("error_code") == "factory_generation_blocked" and row.get(
+            "factory_session_id"
+        ):
+            session = self.factory.store.session(
+                str(row["factory_session_id"]), project_id
+            )
+            if session is not None:
+                try:
+                    issues = json.loads(session["diagnostics_json"] or "[]")
+                except (TypeError, ValueError):
+                    issues = []
+                if not isinstance(issues, list):
+                    issues = []
+                legacy_review_only = (
+                    payload.get("resume_only") == "True"
+                    and len(receipts) == 1
+                    and receipts[0]["status"] == "success"
+                    and receipts[0]["output_contract"] == "TaskCoverageV1"
+                )
+                feedback = generation_feedback(
+                    issues, legacy_review_only=legacy_review_only
+                )
+                diagnostic.update(
+                    generation_failure_facts(
+                        issues,
+                        str(
+                            diagnostic.get("blocked_reason", "product_fidelity_invalid")
+                        ),
+                        "zh" if payload.get("locale") == "zh" else "en",
+                        legacy_review_only=legacy_review_only,
+                    )
+                )
         events = [
             self._public_event(item) for item in self.store.events(row["operation_id"])
         ]
@@ -2770,7 +3207,7 @@ class BuilderConversationService:
         if kind == "create_workflow":
             target_kind = "workflow"
         if kind == "edit":
-            focus_kind = payload.get("focus_kind")
+            focus_kind = diagnostic.get("target_kind") or payload.get("focus_kind")
             if focus_kind in {"agent", "workflow"}:
                 target_kind = focus_kind
         locale: Literal["zh", "en"] = "zh" if payload.get("locale") == "zh" else "en"
@@ -2798,16 +3235,10 @@ class BuilderConversationService:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "diagnostic": _facts(diagnostic),
+            **({"generation_feedback": feedback} if feedback else {}),
             "has_request": bool(payload.get("content")),
             "events": events,
-            "receipts": [
-                public_receipt(item)
-                for item in self.store.receipts(
-                    project_id=project_id,
-                    conversation_id=str(row["conversation_id"]),
-                    operation_id=str(row["operation_id"]),
-                )
-            ],
+            "receipts": [public_receipt(item) for item in receipts],
             "run_observation": public_observation(observation),
         }
 
@@ -2949,12 +3380,26 @@ def _result_text(locale: Literal["zh", "en"], name: str, *, valid: bool) -> str:
 
 
 def _input_payload(
-    content: str, locale: Literal["zh", "en"], focus: BuilderTarget | None
-) -> dict[str, str]:
-    payload = {"content": content, "locale": locale}
+    content: str,
+    locale: Literal["zh", "en"],
+    focus: BuilderTarget | None,
+    requirement_context: str,
+    *,
+    request_limit: int | None = None,
+    resume_only: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "content": content,
+        "locale": locale,
+        "requirement_context": requirement_context,
+    }
     if focus is not None:
         payload["focus_kind"] = focus.kind
         payload["focus_id"] = focus.target_id
+    if request_limit is not None:
+        payload["request_limit"] = request_limit
+    if resume_only:
+        payload["resume_only"] = True
     return payload
 
 
@@ -2981,6 +3426,49 @@ def _load_object(raw: Any) -> dict[str, str]:
         str(key): str(value)
         for key, value in parsed.items()
         if isinstance(key, str) and value is not None
+    }
+
+
+def _resolution_json(resolution: dict[str, Any]) -> str:
+    try:
+        public = _SavedResolution.model_validate(resolution).model_dump(
+            exclude_unset=True
+        )
+    except ValueError as exc:
+        raise FactoryError(
+            "builder_resolution_invalid", "Builder returned an invalid resolution"
+        ) from exc
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, str):
+            return _SECRET.sub("<redacted>", value)
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, dict):
+            return {key: redact(item) for key, item in value.items()}
+        return value
+
+    return json.dumps(redact(public), ensure_ascii=False, sort_keys=True)
+
+
+def _saved_resolution(value: str | None) -> dict[str, Any] | None:
+    try:
+        return _SavedResolution.model_validate_json(value or "").model_dump(
+            exclude_unset=True
+        )
+    except ValueError:
+        return None
+
+
+def _resolution_target_facts(resolution: dict[str, Any]) -> dict[str, str]:
+    parsed = _SavedResolution.model_validate(resolution)
+    if len(parsed.targets) != 1:
+        return {}
+    target = parsed.targets[0]
+    return {
+        "target_kind": target.kind,
+        "target_id": target.target_id,
+        f"{target.kind}_id": target.target_id,
     }
 
 
@@ -3015,15 +3503,31 @@ def _failure_text(
     error_type = diagnostic.get("provider_error_type") or ""
     safe_message = _SECRET.sub("<redacted>", " ".join(message.split()))[:240]
     if code == "factory_generation_blocked":
+        cause = diagnostic.get("validation_summary") or (
+            "Veyra 生成的输入或输出定义存在错误。"
+            if diagnostic.get("validation_kind") == "task_io_invalid"
+            else "Veyra 生成的方案未通过检查。"
+        )
         return (
-            "还不能生成可运行方案。生成器未能完整表达这次需求，未创建 Agent。"
-            "请调整需求后重试；检查详情可帮助定位需要修复的能力。\n"
+            f"本次生成失败：{cause}"
+            "尚未创建 Agent 或 Workflow。原始需求已保留；可以重试，"
+            "或展开检查详情查看原因。\n"
             f"检查详情：{safe_message}"
             if locale == "zh"
-            else "A runnable proposal could not be generated. No Agent was created. "
-            "Revise the requirement and retry. Diagnostic: " + safe_message
+            else "Generation failed: Veyra's plan did not pass checks. "
+            "No Agent or Workflow was created. Your original "
+            "request is retained; retry or open the check details. Diagnostic: "
+            + safe_message
         )
     if code == "factory_rate_limited":
+        if error_type in {"exceeded_current_quota_error", "insufficient_quota"}:
+            return (
+                "服务商账户余额或配额不可用（HTTP 429），本次调用已停止；"
+                "请检查服务商账户，不要反复重试。"
+                if locale == "zh"
+                else "Provider account quota is unavailable. Requests stopped; "
+                "check the provider account before retrying."
+            )
         return (
             "服务商暂时限制了请求（HTTP 429），方案审查未完成。尚未创建 Agent。"
             "请稍后重试；不需要重新填写 API 密钥。"
@@ -3031,6 +3535,13 @@ def _failure_text(
             else "The provider temporarily limited requests. Review did not finish "
             "and no Agent was created. Retry later; "
             "your API key does not need changing."
+        )
+    if code == "factory_quota_exhausted":
+        return (
+            "服务商账户余额或配额不可用，本次调用已停止；原始需求已保留。请检查服务商账户，不要反复重试。"
+            if locale == "zh"
+            else "Provider account quota is unavailable. Requests stopped with "
+            "the original request retained. Check the provider account before retrying."
         )
     generated = "factory" in code or stage == "blueprint_generation"
     if locale == "zh":

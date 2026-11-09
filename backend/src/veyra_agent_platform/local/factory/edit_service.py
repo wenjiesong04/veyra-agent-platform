@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -31,6 +32,7 @@ from veyra_agent_platform.local.builder.knowledge_binding import (
     knowledge_readiness,
     resolve_knowledge,
 )
+from veyra_agent_platform.local.builder.receipts import HarnessReceiptRecorder
 from veyra_agent_platform.local.builder.resource_binding import (
     FILESYSTEM_READ_RESOURCE_ID,
     ResourceMutationError,
@@ -64,7 +66,7 @@ from veyra_agent_platform.local.resources.project import (
 )
 from veyra_agent_platform.local.resources.readiness import ResourceReadiness
 
-from .client import KimiClient
+from .client import FactoryProviderError, KimiClient
 from .edit_store import EditProposalStore
 from .service import FactoryError
 
@@ -411,6 +413,13 @@ class EditProposalService:
             AgentSource.from_dict(item)
             for item in proposal.get("candidate_companions") or []
         )
+        try:
+            for companion in companions:
+                pin_catalog_locks(
+                    self.project_resources, self.catalog, project_id, companion
+                )
+        except ProjectResourceError as exc:
+            raise FactoryError(exc.code, str(exc)) from exc
         entity_schema = proposal.get("entity_schema")
         if not isinstance(entity_schema, dict) or not entity_schema:
             entity_schema = None
@@ -754,6 +763,9 @@ class EditProposalService:
         instruction: str,
         expected_revision: int,
         expected_etag: str,
+        *,
+        receipts: HarnessReceiptRecorder | None = None,
+        on_visible: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         base = self.draft(project_id, kind, target_id)
         if base["revision"] != expected_revision or base["etag"] != expected_etag:
@@ -793,10 +805,43 @@ class EditProposalService:
         )
         self.client.ensure_model()
         messages.append({"role": "user", "content": instruction})
-        for _ in range(self.client.settings.repair_attempts):
-            completion = self.client.complete(
-                messages, response_format={"type": "json_object"}
-            )
+        attempts = self.client.settings.repair_attempts
+        if attempts is None:
+            attempts = self.client.settings.generation_max_requests
+        for attempt in range(attempts):
+            receipt_id = None
+            remaining = receipts.remaining_seconds() if receipts is not None else None
+            if receipts is not None:
+                receipt_id = receipts.begin(
+                    kind="semantic_plan_repair" if attempt else "semantic_plan",
+                    harness_mode="edit_source",
+                    structured_mode="json_object",
+                    output_contract="WorkflowSourceV1"
+                    if kind == "workflow"
+                    else "AgentSourceV1",
+                    schema=schema,
+                    messages=messages,
+                    history_message_count=0,
+                )
+            try:
+                options: dict[str, Any] = {}
+                if remaining is not None:
+                    options["read_timeout"] = min(
+                        self.client.settings.timeout_seconds, remaining
+                    )
+                if on_visible is not None:
+                    options["on_visible"] = on_visible
+                completion = self.client.complete(
+                    messages,
+                    response_format={"type": "json_object"},
+                    **options,
+                )
+            except FactoryProviderError as exc:
+                if receipts is not None and receipt_id is not None:
+                    receipts.fail(receipt_id, exc)
+                raise
+            if receipts is not None and receipt_id is not None:
+                receipts.succeed(receipt_id, provider_request_id=completion.request_id)
             try:
                 if len(completion.content.encode()) > MAX_SOURCE_BYTES:
                     raise ContractValidationError(
@@ -807,8 +852,9 @@ class EditProposalService:
                 parsed = _parse(kind, candidate).to_dict()
                 changes = _changes(base["source"], parsed)
                 if not changes:
-                    raise ContractValidationError(
-                        "The proposal does not change the source"
+                    raise FactoryError(
+                        "edit_generation_invalid",
+                        "The model returned unchanged source; no proposal was created",
                     )
             except (ValueError, TypeError, ProjectError) as exc:
                 messages.extend(
@@ -1227,11 +1273,25 @@ class EditProposalService:
         if kind != "custom_component":
             with suppress(DraftConflict):
                 self.draft(project_id, kind, target_id)
+        excluded_kinds = (
+            (
+                AGENT_CREATION_PROPOSAL_KIND,
+                WORKFLOW_CREATION_PROPOSAL_KIND,
+                COMPONENT_PROPOSAL_KIND,
+            )
+            if kind != "custom_component"
+            else ()
+        )
         return {
             "schema_version": "1.0",
             "proposals": [
                 self.get(project_id, item["proposal_id"])
-                for item in self.store.list(project_id, kind, target_id)
+                for item in self.store.list(
+                    project_id,
+                    kind,
+                    target_id,
+                    excluded_proposal_kinds=excluded_kinds,
+                )
             ],
         }
 

@@ -54,17 +54,17 @@ export function measureConversationCanvas(
   return { stacked, width, height, maxWidth, minWidth, maxHeight, minHeight };
 }
 
-export function readConversationCanvasLayout(): ConversationCanvasSizes {
+export function readConversationCanvasLayout(defaultWidth = CONVERSATION_CANVAS_WIDTH_DEFAULT): ConversationCanvasSizes {
   try {
     const raw = window.localStorage.getItem(CONVERSATION_CANVAS_STORAGE_KEY);
-    if (!raw) return { width: CONVERSATION_CANVAS_WIDTH_DEFAULT, height: 0 };
+    if (!raw) return { width: defaultWidth, height: 0 };
     const parsed = JSON.parse(raw) as { width?: unknown; height?: unknown };
     return {
-      width: typeof parsed.width === "number" && Number.isFinite(parsed.width) ? parsed.width : CONVERSATION_CANVAS_WIDTH_DEFAULT,
+      width: typeof parsed.width === "number" && Number.isFinite(parsed.width) ? parsed.width : defaultWidth,
       height: typeof parsed.height === "number" && Number.isFinite(parsed.height) ? parsed.height : 0,
     };
   } catch {
-    return { width: CONVERSATION_CANVAS_WIDTH_DEFAULT, height: 0 };
+    return { width: defaultWidth, height: 0 };
   }
 }
 

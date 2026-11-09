@@ -72,7 +72,7 @@ export type CommunityApi = {
   listRegistryModerationQueue: () => Promise<CommunityRegistryEntry[]>;
   moderateRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryModerationRequest) => Promise<CommunityRegistryEntry>;
   downloadRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
-  publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin) => Promise<CommunityRegistryEntry>;
+  publishRegistryAgent: (file: File, forkOf?: CommunityForkOrigin, options?: { expectedPublisherId: string }) => Promise<CommunityRegistryEntry>;
   starRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
   getRegistryStarStatus: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
   unstarRegistryAgent: (ownerHandle: string, slug: string, version: string) => Promise<CommunityRegistryFeedbackResponse>;
@@ -80,10 +80,11 @@ export type CommunityApi = {
   reviewRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReviewRequest) => Promise<CommunityRegistryFeedbackResponse & { review: CommunityRegistryReviewsResponse["reviews"][number] }>;
   reportRegistryAgent: (ownerHandle: string, slug: string, version: string, input: CommunityRegistryReportRequest) => Promise<CommunityRegistryReportResponse>;
   listRegistryPlugins: (query?: string) => Promise<CommunityPluginEntry[]>;
+  listMyRegistryPlugins: (limit?: number) => Promise<CommunityPluginEntry[]>;
   getRegistryPlugin: (ownerHandle: string, slug: string, version?: string) => Promise<CommunityPluginEntry>;
   listRegistryPluginVersions: (ownerHandle: string, slug: string) => Promise<CommunityPluginEntry[]>;
   downloadRegistryPlugin: (ownerHandle: string, slug: string, version: string) => Promise<Blob>;
-  publishRegistryPlugin: (file: File) => Promise<CommunityPluginEntry>;
+  publishRegistryPlugin: (file: File, options?: { expectedPublisherId: string }) => Promise<CommunityPluginEntry>;
   listRegistryPluginModerationQueue: () => Promise<CommunityPluginEntry[]>;
   moderateRegistryPlugin: (ownerHandle: string, slug: string, version: string, input: CommunityPluginModerationRequest) => Promise<CommunityPluginEntry>;
 };
@@ -309,9 +310,10 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
       return requestBlob(`/registry/agents/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
     },
 
-    async publishRegistryAgent(file, forkOf) {
+    async publishRegistryAgent(file, forkOf, options) {
       const body = new FormData();
       body.append("package", file, file.name);
+      if (options) body.append("expected_publisher_id", options.expectedPublisherId);
       if (forkOf) {
         body.append("fork_owner_handle", forkOf.owner_handle);
         body.append("fork_slug", forkOf.slug);
@@ -351,6 +353,11 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
       return response.entries.map(withOwnerAvatar);
     },
 
+    async listMyRegistryPlugins(limit = 100) {
+      const response = await request<CommunityPluginListResponse>(`/registry/mine/plugins?limit=${encodeURIComponent(String(limit))}`);
+      return response.entries.map(withOwnerAvatar);
+    },
+
     async getRegistryPlugin(ownerHandle, slug, version) {
       const path = version
         ? `/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`
@@ -367,9 +374,10 @@ export function createCommunityApi(options: CommunityApiOptions): CommunityApi {
       return requestBlob(`/registry/plugins/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/download`);
     },
 
-    async publishRegistryPlugin(file) {
+    async publishRegistryPlugin(file, options) {
       const body = new FormData();
       body.append("package", file, file.name);
+      if (options) body.append("expected_publisher_id", options.expectedPublisherId);
       return request<CommunityPluginEntry>("/registry/plugins", { method: "POST", body });
     },
 

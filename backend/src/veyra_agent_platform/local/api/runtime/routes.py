@@ -7,7 +7,7 @@ from typing import Any, TypeVar, cast
 
 from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from veyra_agent_platform.local.api.projects.routes import TypedApiError, _translate
 from veyra_agent_platform.local.runtime.profiles import (
@@ -39,6 +39,8 @@ class RunCommandRequest(BaseModel):
     command: str
     checkpoint_id: str | None = None
     inputs: dict[str, Any] | None = None
+    expected_request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    additional_turns: int | None = Field(default=None, strict=True, ge=1)
 
 
 class SetRuntimeApiProfileRequest(BaseModel):
@@ -276,6 +278,8 @@ def build_router() -> APIRouter:
                 idempotency_key,
                 checkpoint_id=payload.checkpoint_id,
                 inputs=payload.inputs,
+                expected_request_id=payload.expected_request_id,
+                additional_turns=payload.additional_turns,
             )
         )
 

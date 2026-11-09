@@ -109,12 +109,62 @@ class ScriptedKimiTransport:
                 plan_task_structure,
             )
 
-            requirement = str(messages[-1].get("content", ""))
-            planned = plan_task_structure(requirement)
-            assert planned.structure is not None, planned.diagnostics
-            return _completion(
-                json.dumps(_provider_projection(planned.structure.to_dict()))
+            previous = next(
+                (
+                    message
+                    for message in reversed(messages)
+                    if message.get("role") == "assistant"
+                ),
+                None,
             )
+            if previous is not None:
+                # Repair/grounding fixtures retain the original semantic plan;
+                # the diagnostic itself is never a new task request.
+                payload = json.loads(previous["content"])
+            else:
+                requirement = str(messages[-1].get("content", ""))
+                planned = plan_task_structure(requirement)
+                assert planned.structure is not None, planned.diagnostics
+                payload = planned.structure.to_dict()
+            context = json.loads(messages[1]["content"])
+            needed = {
+                cap for actor in payload["actors"] for cap in actor["capabilities"]
+            } | {row.get("capability") for row in payload["execution_boundaries"]}
+            choices = list(payload.get("skill_choices", []))
+            for capability in sorted(cap for cap in needed if cap):
+                method = next(
+                    (
+                        resource
+                        for resource in context["resources"]
+                        if resource["kind"] == "skill"
+                        and capability in resource["capabilities"]
+                    ),
+                    None,
+                )
+                if method is None or any(
+                    row["capability"] == capability for row in choices
+                ):
+                    continue
+                actor = next(
+                    (
+                        row
+                        for row in payload["actors"]
+                        if capability in row["capabilities"]
+                    ),
+                    payload["actors"][0],
+                )
+                if capability not in actor["capabilities"]:
+                    actor["capabilities"].append(capability)
+                choices.append(
+                    {
+                        "actor": actor["id"],
+                        "capability": capability,
+                        "reference": method["reference"],
+                        "reason": "Scripted method fixture",
+                    }
+                )
+            payload["skill_choices"] = choices
+            return _completion(json.dumps(_provider_projection(payload)))
         if (
             isinstance(messages, list)
             and messages
@@ -164,7 +214,20 @@ def _provider_projection(payload: dict[str, object]) -> dict[str, object]:
 
     def complete(item: object, schema: dict[str, object]) -> object:
         if "anyOf" in schema:
-            return None if item is None else complete(item, schema["anyOf"][0])
+            branches = schema["anyOf"]
+            if item is None and any(
+                branch.get("type") == "null" for branch in branches
+            ):
+                return None
+            branch = next(
+                (
+                    branch
+                    for branch in branches
+                    if isinstance(item, dict) and branch.get("type") == "object"
+                ),
+                branches[0],
+            )
+            return complete(item, branch)
         kind = schema.get("type")
         if isinstance(kind, list):
             if item is None and "null" in kind:

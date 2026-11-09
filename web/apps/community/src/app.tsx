@@ -1,17 +1,12 @@
-import { Compass } from "lucide-react";
 import { useEffect, useState } from "react";
-import { communityAuthRoutePaths, communityRoutePaths } from "@veyra/api-contracts";
-import { ApplicationShell, LinkButton, ThemeProvider, useLocale, type NavigationGroup } from "@veyra/ui";
-import { accountInitials, AuthProvider, ConnectedAccountPage, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth } from "@veyra/connected-account";
+import { LinkButton, ThemeProvider, useLocale } from "@veyra/ui";
+import { AuthProvider, ConnectedAccountPage, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunitySection } from "@veyra/connected-account";
 import { CatalogPage } from "./pages/catalog";
 import { EntryDetailPage } from "./pages/detail";
 import { CommunityNotFoundPage } from "./pages/not-found";
-
-const communityApi = createCommunityApi({ baseUrl: "/api/v1" });
-
-const navigation: NavigationGroup[] = [
-  { label: "Explore", items: [{ href: communityRoutePaths.catalog, label: "Catalog", icon: Compass }] },
-];
+import { CommunitySiteLayout } from "./community-layout";
+import { publicCommunityApi } from "./site-auth";
+import { MyCommunityPage } from "./pages/mine";
 
 function pathFromHash(): string {
   return window.location.hash.replace(/^#\/?/, "").split("?")[0] ?? "";
@@ -28,81 +23,48 @@ function useHashPath(): string {
 }
 
 type CommunityLocation =
-  | { kind: "catalog" }
-  | { kind: "account" }
-  | { kind: "login" }
-  | { kind: "register" }
-  | { kind: "forgot-password" }
-  | { kind: "entry"; owner: string; slug: string; versionId?: string }
-  | { kind: "not-found" };
+  | { kind: "catalog"; section: CommunitySection }
+  | { kind: "account" | "login" | "register" | "forgot-password" | "not-found" }
+  | { kind: "entry"; owner: string; slug: string; versionId?: string };
 
 function parseCommunityRoute(path: string): CommunityLocation {
-  const normalized = path.replace(/^#\/?/, "").replace(/^\/+|\/+$/g, "");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length === 0 || (parts.length === 1 && parts[0] === "community")) return { kind: "catalog" };
-  if (parts.length === 1 && parts[0] === "account") return { kind: "account" };
-  if (parts.length === 1 && parts[0] === "login") return { kind: "login" };
-  if (parts.length === 1 && parts[0] === "register") return { kind: "register" };
-  if (parts.length === 1 && parts[0] === "forgot-password") return { kind: "forgot-password" };
+  let parts: string[];
+  try {
+    parts = path.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return { kind: "not-found" };
+  }
+  if (!parts.length || (parts.length === 1 && parts[0] === "community")) return { kind: "catalog", section: "discover" };
+  if (parts.length === 1 && parts[0] === "account") return { kind: "catalog", section: "mine" };
+  if (parts.length === 1 && ["login", "register", "forgot-password"].includes(parts[0]!)) return { kind: parts[0] as "login" | "register" | "forgot-password" };
+  if (parts.length === 3 && parts[0] === "community" && parts[1] === "mine" && parts[2] === "settings") return { kind: "account" };
+  if (parts.length === 2 && parts[0] === "community" && ["published", "starred", "mine"].includes(parts[1]!)) return { kind: "catalog", section: parts[1] as CommunitySection };
   if (parts.length === 3 && parts[0] === "community" && parts[1] && parts[2]) return { kind: "entry", owner: parts[1], slug: parts[2] };
   if (parts.length === 5 && parts[0] === "community" && parts[1] && parts[2] && parts[3] === "versions" && parts[4]) return { kind: "entry", owner: parts[1], slug: parts[2], versionId: parts[4] };
   return { kind: "not-found" };
 }
 
-function CommunityWorkspace() {
+export function CommunityWorkspace() {
   const { locale } = useLocale();
-  const { account, logout } = useAuth();
-  const location = parseCommunityRoute(useHashPath());
-  const zh = locale === "zh";
-
+  const { account } = useAuth();
+  const path = useHashPath();
+  const location = parseCommunityRoute(path);
   if (location.kind === "login") return <LoginPage />;
   if (location.kind === "register") return <RegisterPage />;
   if (location.kind === "forgot-password") return <ForgotPasswordPage />;
 
-  const title = location.kind === "account" ? "Account" : location.kind === "entry" ? "Entry detail" : location.kind === "not-found" ? "Route not found" : "Community";
-  const activeHref = location.kind === "account" ? communityAuthRoutePaths.account : communityRoutePaths.catalog;
-  const browseLabel = zh ? "浏览目录" : "Browse catalog";
+  const section = location.kind === "catalog" ? location.section : location.kind === "account" ? "mine" : "discover";
   const content = location.kind === "account"
-    ? <ConnectedAccountPage />
+    ? <div className="community-page-stack"><LinkButton href="#/community/mine" variant="ghost">{locale === "zh" ? "返回我的" : "Back to Mine"}</LinkButton><ConnectedAccountPage key={account?.id ?? "anonymous"} /></div>
     : location.kind === "entry"
-      ? <EntryDetailPage owner={location.owner} slug={location.slug} versionId={location.versionId} />
+      ? <EntryDetailPage key={`${location.owner}/${location.slug}/${location.versionId ?? "latest"}`} owner={location.owner} slug={location.slug} versionId={location.versionId} />
       : location.kind === "not-found"
         ? <CommunityNotFoundPage />
-        : <CatalogPage />;
-
-  return (
-    <ApplicationShell
-      brand={{ name: "Veyra", subtitle: "Community", mark: "V" }}
-      navigation={navigation}
-      activeHref={activeHref}
-      eyebrow="Version-aware catalog"
-      title={title}
-      account={account ? {
-        displayName: account.display_name || account.handle,
-        detail: account.email,
-        initials: accountInitials(account.display_name, account.handle),
-        avatarUrl: account.avatar_url,
-        authenticated: true,
-        accountHref: communityAuthRoutePaths.account,
-        onSignOut: () => {
-          void logout().catch(() => {
-            window.location.hash = communityAuthRoutePaths.account;
-          });
-        },
-      } : {
-        displayName: zh ? "本机工作区" : "Local workspace",
-        detail: zh ? "未连接账号" : "Not signed in",
-        initials: zh ? "本" : "LW",
-        authenticated: false,
-        accountHref: communityAuthRoutePaths.account,
-      }}
-      headerActions={<LinkButton href={communityRoutePaths.catalog} icon={Compass} variant="primary">{browseLabel}</LinkButton>}
-    >
-      <div className="community-content">{content}</div>
-    </ApplicationShell>
-  );
+        : section === "mine" ? <MyCommunityPage key={account?.id ?? "anonymous"} /> : <CatalogPage key={`${account?.id ?? "anonymous"}:${section}`} section={section} />;
+  return <CommunitySiteLayout section={section} locationKey={path}>{content}</CommunitySiteLayout>;
 }
 
-export function CommunityApp() {
-  return <ThemeProvider><AuthProvider api={communityApi}><CommunityWorkspace /></AuthProvider></ThemeProvider>;
+export function CommunityApp({ embedded = false }: { embedded?: boolean }) {
+  const content = <AuthProvider api={publicCommunityApi}><CommunityWorkspace /></AuthProvider>;
+  return embedded ? content : <ThemeProvider>{content}</ThemeProvider>;
 }

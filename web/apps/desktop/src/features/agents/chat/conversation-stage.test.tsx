@@ -165,4 +165,14 @@ describe("ConversationStage canvas chrome", () => {
     fireEvent.click(screen.getByRole("button", { name: "Scroll to bottom" }));
     expect(screen.queryByRole("button", { name: "Scroll to bottom" })).not.toBeInTheDocument();
   });
+
+  it("keeps document reading at the current position instead of jumping to the last line", () => {
+    const view = render(<ThemeProvider><ConversationStage empty={false} canvasOpen={false} autoPin={false}><p>Report start</p></ConversationStage></ThemeProvider>);
+    const scroll = document.querySelector(".agent-convo-scroll") as HTMLDivElement;
+    const scrollTo = vi.fn();
+    scroll.scrollTo = scrollTo;
+    view.rerender(<ThemeProvider><ConversationStage empty={false} canvasOpen={false} autoPin={false}><p>Report start</p><p>Report end</p></ConversationStage></ThemeProvider>);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(screen.getByText("Report end")).toBeInTheDocument();
+  });
 });

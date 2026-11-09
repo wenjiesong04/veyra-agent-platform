@@ -183,6 +183,12 @@ class RuntimeWireContractTests(unittest.TestCase):
         )
 
     def test_every_event_kind_has_an_explicit_node_id_classification(self) -> None:
+        from jsonschema import Draft202012Validator, ValidationError
+
+        schema = json.loads(
+            (ROOT / "contracts/schemas/runtime-wire.schema.json").read_text()
+        )
+        validator = Draft202012Validator(schema)
         self.assertEqual(set(EVENT_NODE_ID_REQUIRED), set(RunEventKind))
         for kind, requires_node_id in EVENT_NODE_ID_REQUIRED.items():
             payload = {}
@@ -202,9 +208,12 @@ class RuntimeWireContractTests(unittest.TestCase):
             }
             with self.subTest(kind=kind.value, requires_node_id=requires_node_id):
                 self.assertEqual(RunEvent.from_dict(data).kind, kind)
+                validator.validate(data)
                 data["node_id"] = None if requires_node_id else "node_1"
                 with self.assertRaises(ContractValidationError):
                     RunEvent.from_dict(data)
+                with self.assertRaises(ValidationError):
+                    validator.validate(data)
 
     def test_state_changed_events_require_closed_known_state_payloads(self) -> None:
         run_event = {

@@ -84,6 +84,7 @@ def test_resource_routes_use_typed_errors_and_preserve_components(
             "HumanApproval",
             "Verifier",
             "Output",
+            "Stop",
             "CustomComponent",
             "AgentCall",
         ]

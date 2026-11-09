@@ -47,16 +47,29 @@ class EditProposalStore:
             return self._payload(dict(row)) if row else None
 
     def list(
-        self, project_id: str, target_kind: str, target_id: str
+        self,
+        project_id: str,
+        target_kind: str,
+        target_id: str,
+        *,
+        excluded_proposal_kinds: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
         with self.repository.transaction() as connection:
             rows = connection.execute(
                 """SELECT * FROM edit_proposals WHERE project_id = ?
                    AND target_kind = ? AND target_id = ?
-                   ORDER BY proposal_id DESC LIMIT 20""",
+                   ORDER BY proposal_id DESC""",
                 (project_id, target_kind, target_id),
-            ).fetchall()
-            return [self._payload(dict(row)) for row in rows]
+            )
+            proposals = []
+            for row in rows:
+                payload = self._payload(dict(row))
+                if payload.get("proposal_kind") in excluded_proposal_kinds:
+                    continue
+                proposals.append(payload)
+                if len(proposals) == 20:
+                    break
+            return proposals
 
     def get(self, project_id: str, proposal_id: str) -> dict[str, Any] | None:
         with self.repository.transaction() as connection:

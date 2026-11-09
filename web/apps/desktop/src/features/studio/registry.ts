@@ -21,6 +21,7 @@ export const studioComponents: StudioComponent[] = [
   { type: "HumanApproval", label: "Human approval", labelZh: "人工审批", detail: "Human decision", detailZh: "等待人工决策", ports: ["approved", "rejected"] },
   { type: "Verifier", label: "Verifier", labelZh: "验证器", detail: "Independent checks", detailZh: "独立结果检查", ports: ["passed", "failed"] },
   { type: "Output", label: "Output", labelZh: "输出", detail: "Named result", detailZh: "声明最终结果", ports: [] },
+  { type: "Stop", label: "Stop", labelZh: "停止", detail: "Cancel without delivery", detailZh: "停止流程，不交付业务结果", ports: [] },
 ];
 
 export function componentFor(type: FlowNode["component_type"]) {

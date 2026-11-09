@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from veyra_agent_platform.contracts.common import new_uuid7
+from veyra_agent_platform.local.builder.generation_budget import (
+    GenerationBudgetExceeded,
+)
 from veyra_agent_platform.local.builder.operation_events import (
     EVENT_KINDS,
     TERMINAL_EVENT_KINDS,
@@ -634,15 +638,24 @@ class BuilderConversationStore:
 
     def next_receipt_sequence(self, operation_id: str) -> int:
         with self.repository.transaction() as connection:
-            row = connection.execute(
-                """SELECT COALESCE(MAX(sequence), -1) AS last
-                   FROM builder_harness_receipts WHERE operation_id = ?""",
-                (operation_id,),
-            ).fetchone()
-            last = int(row["last"]) if row is not None else -1
-            return last + 1
+            return self.next_receipt_sequence_on(connection, operation_id)
 
-    def insert_receipt(self, payload: dict[str, Any]) -> None:
+    @staticmethod
+    def next_receipt_sequence_on(connection: Any, operation_id: str) -> int:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sequence), -1) AS last "
+            "FROM builder_harness_receipts WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        return int(row["last"]) + 1
+
+    def insert_receipt(
+        self,
+        payload: dict[str, Any],
+        *,
+        request_limit: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
         included = json.dumps(
             payload["included_categories"], ensure_ascii=False, sort_keys=True
         )
@@ -650,6 +663,45 @@ class BuilderConversationStore:
             payload["excluded_categories"], ensure_ascii=False, sort_keys=True
         )
         with self.repository.transaction() as connection:
+            if request_limit is not None or timeout_seconds is not None:
+                operation = connection.execute(
+                    "SELECT o.created_at FROM builder_operations o "
+                    "JOIN builder_conversations c USING(conversation_id) "
+                    "WHERE o.operation_id = ? AND o.conversation_id = ? "
+                    "AND c.project_id = ?",
+                    (
+                        payload["operation_id"],
+                        payload["conversation_id"],
+                        payload["project_id"],
+                    ),
+                ).fetchone()
+                if operation is None:
+                    raise ValueError(
+                        "The receipt owner does not belong to this Project"
+                    )
+                used = connection.execute(
+                    "SELECT COUNT(*) FROM builder_harness_receipts "
+                    "WHERE operation_id = ?",
+                    (payload["operation_id"],),
+                ).fetchone()[0]
+                if request_limit is not None and used >= request_limit:
+                    raise GenerationBudgetExceeded(
+                        "model_requests", used, request_limit
+                    )
+                if timeout_seconds is not None:
+                    started = datetime.fromisoformat(
+                        operation["created_at"].replace("Z", "+00:00")
+                    )
+                    if (datetime.now(UTC) - started).total_seconds() >= timeout_seconds:
+                        raise GenerationBudgetExceeded(
+                            "elapsed_time", used, request_limit
+                        )
+                payload = {
+                    **payload,
+                    "sequence": self.next_receipt_sequence_on(
+                        connection, payload["operation_id"]
+                    ),
+                }
             connection.execute(
                 """INSERT INTO builder_harness_receipts(
                     receipt_id, operation_id, conversation_id, project_id,

@@ -28,6 +28,7 @@ from .api.runtime import build_router as build_runtime_router
 from .api.runtime.credentials_routes import (
     build_router as build_runtime_credentials_router,
 )
+from .api.runtime.evaluations import build_router as build_evaluations_router
 from .api.secrets import build_router as build_secrets_router
 from .api.system import build_router as build_system_router
 from .api.trash import build_router as build_trash_router
@@ -66,6 +67,7 @@ from .runtime import (
 from .runtime.client import RuntimeModelTransport
 from .runtime.conversations import AgentConversationService
 from .runtime.credentials import ProviderCredentialService, ProviderCredentialStore
+from .runtime.evaluation import RunEvaluationService
 from .runtime.workflow_service import WorkflowRuntimeService
 from .secrets import DeviceSecretStore, SecretStore
 from .state import EntityStore
@@ -157,6 +159,9 @@ def create_app(
         application.state.library = LibraryService(
             repository, projects, catalog, custom_components
         )
+        application.state.run_evaluations = RunEvaluationService(
+            repository, application.state.library, application.state.artifacts
+        )
         application.state.conversations = AgentConversationService(
             repository, application.state.library
         )
@@ -217,6 +222,7 @@ def create_app(
                 adapters=tool_adapters,
                 secret_store=application.state.secrets,
                 entity_store=entity_store,
+                artifacts=application.state.artifacts,
             ),
             runtime_profiles,
             application.state.conversations,
@@ -225,6 +231,7 @@ def create_app(
             custom_components=custom_components,
             credentials=provider_credentials,
             model_registry=model_registry,
+            provider_capability_lookup=application.state.factory.profiles.get,
         )
         application.state.workflow_runtime = WorkflowRuntimeService(
             application.state.runtime
@@ -304,6 +311,7 @@ def create_app(
     application.include_router(build_agent_import_router())
     application.include_router(build_system_router(resolved_directory_picker))
     application.include_router(build_runtime_router())
+    application.include_router(build_evaluations_router())
     application.include_router(build_runtime_credentials_router())
     application.include_router(build_workflow_router())
     application.include_router(build_factory_router())

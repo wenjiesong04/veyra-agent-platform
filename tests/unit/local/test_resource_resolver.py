@@ -64,6 +64,14 @@ def test_exact_capability_match_selects_web_search() -> None:
     assert selected[0].bind_status == "will_bind"
 
 
+def test_initial_model_allowance_is_explicit_not_inferred_from_tool_presence() -> None:
+    plain_spec, plain, _ = _resolve(_TRANSLATE)
+    tool_spec, tools, _ = _resolve("创建一个助手，可以搜索公开网页。")
+    for spec, plan in ((plain_spec, plain), (tool_spec, tools)):
+        source = compose_loop_agent(spec, plan, initial_model_turns=13)
+        assert source.max_turns == 13
+
+
 def test_descriptor_input_types_select_and_bind_arithmetic_for_the_runtime() -> None:
     catalog = ResourceCatalog()
     spec = infer_agent_specification("核对金额和差额")
@@ -104,6 +112,30 @@ def test_already_bound_is_preferred_over_a_second_binding() -> None:
     assert skill_plan.bind_status == "already_bound"
     assert search_plan.content_hash == search["content_hash"]
     assert len(_by_capability(plan.selected, "web_search")) == 1
+
+
+def test_pinned_version_resolves_one_complete_descriptor() -> None:
+    catalog = ResourceCatalog()
+    pinned = catalog.detail("veyra.tool.tabular.compare", "1.0.0")
+    spec = infer_agent_specification("核对 CSV 金额")
+    plan = ResourceResolver(catalog).resolve(
+        spec,
+        (requirement_for("tabular_compare"),),
+        project_resources=[
+            {
+                **pinned,
+                "scope": "project",
+                "bound_content_hash": pinned["content_hash"],
+                "binding_status": "current",
+            }
+        ],
+    )
+    selected = _by_capability(plan.selected, "tabular_compare")[0]
+    assert selected.bind_status == "already_bound"
+    assert selected.reference == pinned["reference"]
+    assert selected.version == pinned["version"]
+    assert selected.content_hash == pinned["content_hash"]
+    assert selected.name == pinned["name"]
 
 
 def test_needs_configuration_for_github_without_secret() -> None:

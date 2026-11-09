@@ -13,6 +13,10 @@ from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 from veyra_agent_platform.contracts.agent import AgentSource, ComponentType
+from veyra_agent_platform.contracts.filesystem_scope import (
+    NATIVE_PROJECT_FILESYSTEM_ADAPTERS,
+    filesystem_roots_satisfied,
+)
 from veyra_agent_platform.contracts.resource import ResourceRef
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import ResourceCatalog, ResourceCatalogError
@@ -306,7 +310,9 @@ def _catalog_check(
         result["detail"] = "Discovered MCP tools must be reviewed before execution."
         return result
 
-    permission_detail = _permission_detail(source, resource["required_permissions"])
+    permission_detail = _permission_detail(
+        source, resource["required_permissions"], adapter=spec.get("adapter")
+    )
     if permission_detail is not None:
         result["status"] = "permission_denied"
         result["detail"] = permission_detail
@@ -414,7 +420,9 @@ def _allowed_kinds(expected_kinds: set[str]) -> set[str]:
     return expected_kinds & _CATALOG_KINDS
 
 
-def _permission_detail(source: AgentSource, required: Any) -> str | None:
+def _permission_detail(
+    source: AgentSource, required: Any, *, adapter: Any = None
+) -> str | None:
     if not isinstance(required, Mapping):
         return "Catalog resource permissions are invalid."
     checks = (
@@ -432,7 +440,18 @@ def _permission_detail(source: AgentSource, required: Any) -> str | None:
         ),
     )
     for field, granted, label in checks:
+        if field in {
+            "filesystem_read_roots",
+            "filesystem_write_roots",
+        } and filesystem_roots_satisfied(
+            required.get(field, []),
+            granted,
+            allow_subscopes=adapter in NATIVE_PROJECT_FILESYSTEM_ADAPTERS,
+        ):
+            continue
         missing = sorted(set(required.get(field, [])) - set(granted))
+        if field in {"filesystem_read_roots", "filesystem_write_roots"} and not missing:
+            missing = sorted(required.get(field, [])) or ["valid Project scope"]
         if missing:
             return (
                 f"Agent permissions do not include required {label}: "

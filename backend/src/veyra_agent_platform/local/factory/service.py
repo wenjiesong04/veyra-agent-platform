@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
+
 from veyra_agent_platform.contracts.agent import (
     AgentBlueprint,
     AgentSource,
@@ -26,6 +28,7 @@ from veyra_agent_platform.contracts.execution_plan import ExecutionPlan
 from veyra_agent_platform.contracts.resource_factory import ResourceFactoryPlan
 from veyra_agent_platform.contracts.resource_plan import ResourcePlan
 from veyra_agent_platform.contracts.semantic_plan import AgentSemanticPlanV1
+from veyra_agent_platform.contracts.task_structure import TaskStructure
 from veyra_agent_platform.local.builder.agent_composer import compose_loop_agent
 from veyra_agent_platform.local.builder.agent_loop_compiler import (
     loop_agent_blueprint_payload,
@@ -45,10 +48,18 @@ from veyra_agent_platform.local.builder.composite_apply import (
     apply_composite,
 )
 from veyra_agent_platform.local.builder.generate_product import (
+    GenerationProduct,
     generate_builder_product,
     proposal_preview,
 )
-from veyra_agent_platform.local.builder.harness import BuilderHarness, BuilderMode
+from veyra_agent_platform.local.builder.generation_diagnostics import (
+    redact_generation_diagnostic,
+)
+from veyra_agent_platform.local.builder.harness import (
+    BuilderHarness,
+    BuilderMode,
+    canonical_json_hash,
+)
 from veyra_agent_platform.local.builder.operation_events import (
     CAPABILITIES_RESOLVED,
     CAPABILITIES_STARTED,
@@ -59,6 +70,7 @@ from veyra_agent_platform.local.builder.operation_events import (
     VALIDATION_COMPLETED,
     VALIDATION_STARTED,
 )
+from veyra_agent_platform.local.builder.product_shape import decide_product_shape
 from veyra_agent_platform.local.builder.prompt import RUNNABLE_AGENT_PRIMITIVES
 from veyra_agent_platform.local.builder.quality import validate_agent_quality
 from veyra_agent_platform.local.builder.receipts import (
@@ -81,6 +93,15 @@ from veyra_agent_platform.local.builder.specification import (
     resolve_agent_specification,
 )
 from veyra_agent_platform.local.builder.target_kind import BuilderTargetClassification
+from veyra_agent_platform.local.builder.task_planner import (
+    normalize_task_structure,
+    validate_task_structure,
+)
+from veyra_agent_platform.local.builder.task_structure_schema import (
+    task_structure_json_intake_schema,
+    task_structure_payload,
+    task_structure_schema,
+)
 from veyra_agent_platform.local.builder.workflow_orchestration import (
     compile_workflow_orchestration,
 )
@@ -88,6 +109,7 @@ from veyra_agent_platform.local.library.resource_truth import (
     annotate_resource_plan,
     pin_catalog_locks,
 )
+from veyra_agent_platform.local.models.contracts import ModelResolutionStatus
 from veyra_agent_platform.local.models.registry import ModelRegistry
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
 from veyra_agent_platform.local.resources import (
@@ -204,6 +226,9 @@ class FactoryService:
         )
         self.profiles = profiles or ProviderCapabilityStore(store.database_path)
         self.harness = BuilderHarness(projects, catalog)
+        # Ephemeral protocol preference, scoped to endpoint/model/probe/schema.
+        # A new probe or process starts fresh; this grants no capability or effect.
+        self._json_mode_schema_hints: set[str] = set()
         self._writer_lock = threading.RLock()
         self.resource_factory = (
             ResourceFactory(workshop, catalog) if workshop is not None else None
@@ -219,7 +244,11 @@ class FactoryService:
             "model_base_url": settings.model_base_url,
             "model_api_key_env": settings.model_api_key_env,
             "reasoning_effort": settings.reasoning_effort,
+            "intent_reasoning_effort": settings.intent_reasoning_effort,
+            "schema_repair_reasoning_effort": settings.schema_repair_reasoning_effort,
             "repair_attempts": settings.repair_attempts,
+            "generation_max_requests": settings.generation_max_requests,
+            "generation_timeout_seconds": settings.generation_timeout_seconds,
             "executes_drafts": False,
             "capability_profile": profile.to_dict(),
         }
@@ -248,6 +277,7 @@ class FactoryService:
         goal: str | None = None,
         *,
         receipts: HarnessReceiptRecorder | None = None,
+        interview: bool = True,
     ) -> dict[str, Any]:
         self._require_project(project_id)
         session_id = new_uuid7()
@@ -275,7 +305,7 @@ class FactoryService:
                     content=clean_goal,
                     created_at=now,
                 )
-        if clean_goal:
+        if clean_goal and interview:
             self._append_interview(session_id, receipts=receipts)
         return self.get_session(project_id, session_id)
 
@@ -291,6 +321,11 @@ class FactoryService:
                 "factory_session_invalid", "Factory session has an invalid state"
             )
         payload = self.store.payload(row, self.store.messages(session_id))
+        payload["diagnostics"] = [
+            redact_generation_diagnostic(issue)
+            for issue in payload["diagnostics"]
+            if isinstance(issue, str)
+        ]
         record = _generation_record(row)
         if record.get("target_kind"):
             payload["target_kind"] = record["target_kind"]
@@ -314,6 +349,29 @@ class FactoryService:
         if _model_setup_required(record.get("proposal_preview")):
             payload["run_availability"] = "requires_configuration"
         return payload
+
+    def clone_generation_draft(
+        self, project_id: str, source_session_id: str
+    ) -> dict[str, Any] | None:
+        """Continue a failed creation in a new session, preserving its history."""
+        with self._writer_lock:
+            row = self._row(project_id, source_session_id)
+            requirement = self._session_requirement(source_session_id)
+            draft = _resumable_generation_draft(
+                row, requirement, self.catalog.resources()["resources"]
+            )
+            if draft is None:
+                return None
+            session = self.create_session(project_id, requirement, interview=False)
+            self.store.save_semantic_draft(session["session_id"], deepcopy(draft))
+            cloned = self.get_session(project_id, session["session_id"])
+            validated = draft.get("last_semantic_valid")
+            if isinstance(validated, dict):
+                structure = normalize_task_structure(
+                    TaskStructure.from_dict(task_structure_payload(validated))
+                )
+                cloned["resumed_product_shape"] = decide_product_shape(structure).shape
+            return cloned
 
     def compile_review_source(self, project_id: str, session_id: str) -> dict[str, Any]:
         """Compile the reviewed candidate without creating a Project Agent.
@@ -524,6 +582,46 @@ class FactoryService:
         receipts: HarnessReceiptRecorder | None = None,
     ) -> dict[str, Any]:
         stage(SPECIFICATION_STARTED)
+        requirement_hash = canonical_json_hash({"requirement": requirement})
+        schema_hash = canonical_json_hash(task_structure_schema())
+        resource_hashes = {
+            item["reference"]: item["content_hash"]
+            for item in self.catalog.resources()["resources"]
+        }
+        initial_draft = _resumable_generation_draft(
+            self._row(project_id, session_id),
+            requirement,
+            self.catalog.resources()["resources"],
+        )
+        current_draft = deepcopy(initial_draft) if initial_draft is not None else {}
+
+        def save_draft(payload: dict[str, Any], semantic_valid: bool) -> None:
+            nonlocal current_draft
+            draft = deepcopy(current_draft)
+            draft.update(
+                schema_version="1.0",
+                requirement_hash=requirement_hash,
+                schema_hash=schema_hash,
+                latest_schema_valid=payload,
+                stage="task_validated" if semantic_valid else "schema_validated",
+            )
+            draft.setdefault("first_schema_valid", deepcopy(payload))
+            if semantic_valid:
+                draft["last_semantic_valid"] = deepcopy(payload)
+                draft["resource_pins"] = {
+                    choice["reference"]: resource_hashes[choice["reference"]]
+                    for choice in payload.get("skill_choices", [])
+                    if choice["reference"] in resource_hashes
+                }
+            try:
+                self.store.save_semantic_draft(session_id, draft)
+            except Exception as exc:
+                raise FactoryError(
+                    "factory_draft_persistence_failed",
+                    "The generated task could not be saved; generation stopped",
+                ) from exc
+            current_draft = draft
+
         planner = (
             FactoryTaskStructurePlanner(
                 harness=self.harness,
@@ -533,6 +631,17 @@ class FactoryService:
                 receipts=receipts,
                 ensure_model=self.client.ensure_model,
                 max_repairs=self.client.settings.repair_attempts,
+                max_requests=min(
+                    self.client.settings.generation_max_requests,
+                    receipts.request_limit
+                    if receipts is not None and receipts.request_limit is not None
+                    else self.client.settings.generation_max_requests,
+                ),
+                max_seconds=self.client.settings.generation_timeout_seconds,
+                on_progress=lambda facts: stage(SPECIFICATION_STARTED, facts),
+                on_draft=save_draft,
+                initial_draft=initial_draft,
+                json_mode_schema_hints=self._json_mode_schema_hints,
             )
             if self.client.configured
             else None
@@ -548,8 +657,13 @@ class FactoryService:
             knowledge_inventory=knowledge,
             secret_configured=self._secret_configured,
             planner_provider=planner,
-            planner_repair=planner.repair if planner is not None else None,
+            planner_repair=planner.repair
+            if planner is not None
+            and (receipts is None or receipts.permits_contract("TaskStructureV1"))
+            else None,
             planner_review=planner.review_product if planner is not None else None,
+            initial_model_turns=self.client.settings.generated_agent_max_turns,
+            on_stage=stage,
             model_profiles=(
                 self.model_registry.list_profiles()
                 if self.model_registry is not None
@@ -653,6 +767,7 @@ class FactoryService:
         )
         plan_items = _merge_resolver_plan(resolver_items, component_plan)
         plan_items = _annotate_factory_missing(plan_items, factory_plans)
+        plan_items = _project_generation_model_readiness(product, plan_items)
         stage(
             CAPABILITIES_RESOLVED,
             {
@@ -865,7 +980,12 @@ class FactoryService:
             knowledge_inventory=knowledge,
             requirement_text=requirement,
         )
-        source = compose_loop_agent(spec, resolved, requirement=requirement)
+        source = compose_loop_agent(
+            spec,
+            resolved,
+            requirement=requirement,
+            initial_model_turns=self.client.settings.generated_agent_max_turns,
+        )
         blueprint_payload = loop_agent_blueprint_payload(source)
         blueprint = AgentBlueprint.from_dict(blueprint_payload)
         resolver_items = plan_factory_items(resolved)
@@ -1587,7 +1707,12 @@ class FactoryService:
                 knowledge_inventory=knowledge,
                 requirement_text=requirement,
             )
-            source = compose_loop_agent(spec, resolved, requirement=requirement)
+            source = compose_loop_agent(
+                spec,
+                resolved,
+                requirement=requirement,
+                initial_model_turns=self.client.settings.generated_agent_max_turns,
+            )
             blueprint_payload = loop_agent_blueprint_payload(source)
             resolver_items = plan_factory_items(resolved)
             component_plan = annotate_resource_plan(
@@ -1778,9 +1903,17 @@ class FactoryService:
         fallback_from: str | None = None,
         fallback_to: str | None = None,
         profile: ProviderCapabilityProfile | None = None,
+        read_timeout: float | None = None,
     ) -> KimiCompletion:
         receipt_id: str | None = None
         if receipts is not None:
+            remaining = receipts.remaining_seconds()
+            if remaining is not None:
+                read_timeout = (
+                    min(read_timeout, remaining)
+                    if read_timeout is not None
+                    else remaining
+                )
             receipt_id = receipts.begin(
                 kind=kind,
                 harness_mode=harness_mode,
@@ -1794,12 +1927,22 @@ class FactoryService:
                 profile=profile,
             )
         try:
-            plan_call = kind in {"semantic_plan", "semantic_plan_repair"}
-            completion = self.client.complete(
-                messages,
-                response_format=response_format,
-                **({"read_timeout": None} if plan_call else {}),
+            effort = (
+                self.client.settings.schema_repair_reasoning_effort
+                if output_contract in {"TaskStructureIORepairV1", "TaskStateRepairV1"}
+                else self.client.settings.reasoning_effort
             )
+            if read_timeout is not None:
+                completion = self.client.complete(
+                    messages,
+                    response_format=response_format,
+                    read_timeout=read_timeout,
+                    reasoning_effort=effort,
+                )
+            else:
+                completion = self.client.complete(
+                    messages, response_format=response_format, reasoning_effort=effort
+                )
         except FactoryProviderError as exc:
             if receipt_id is not None and receipts is not None:
                 receipts.fail(receipt_id, exc)
@@ -1955,6 +2098,19 @@ class FactoryService:
         if state not in _STATES:
             raise FactoryError("factory_state_invalid", "Factory state is invalid")
         with self.store.transaction() as connection:
+            specification = values.get("specification")
+            if isinstance(specification, Mapping):
+                row = connection.execute(
+                    "SELECT * FROM factory_sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is not None:
+                    draft = _generation_record(row).get("semantic_draft")
+                    if isinstance(draft, dict):
+                        values["specification"] = {
+                            **specification,
+                            "semantic_draft": draft,
+                        }
             self.store.update_session(
                 connection, session_id, state=state, updated_at=_now(), **values
             )
@@ -1964,6 +2120,52 @@ class FactoryService:
             raise FactoryError(
                 "factory_project_not_found", "Factory project was not found"
             )
+
+
+def _resumable_generation_draft(
+    row: Any, requirement: str, resources: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    record = _generation_record(row)
+    draft = record.get("semantic_draft")
+    hashes = {item["reference"]: item["content_hash"] for item in resources}
+    if (
+        row["state"] != "ready"
+        or record.get("status") == "complete"
+        or not isinstance(draft, dict)
+        or draft.get("requirement_hash")
+        != canonical_json_hash({"requirement": requirement})
+        or not isinstance(draft.get("first_schema_valid"), dict)
+        or not isinstance(draft.get("latest_schema_valid"), dict)
+        or not isinstance(draft.get("resource_pins", {}), dict)
+        or any(
+            hashes.get(reference) != content_hash
+            for reference, content_hash in draft.get("resource_pins", {}).items()
+        )
+    ):
+        return None
+    if draft.get("schema_hash") != canonical_json_hash(task_structure_schema()):
+        # Schema annotations can change without invalidating a retained task.
+        # Revalidate the actual data and semantics; never trust a stale hash alone.
+        validated = draft.get("last_semantic_valid")
+        if not isinstance(validated, dict):
+            return None
+        validator = Draft202012Validator(
+            task_structure_json_intake_schema(task_structure_schema())
+        )
+        if not all(
+            validator.is_valid(payload)
+            for payload in (draft["latest_schema_valid"], validated)
+        ):
+            return None
+        try:
+            validate_task_structure(
+                normalize_task_structure(
+                    TaskStructure.from_dict(task_structure_payload(validated))
+                )
+            )
+        except (ValueError, TypeError, KeyError):
+            return None
+    return draft
 
 
 def _session_identity(row: Any) -> dict[str, str]:
@@ -2005,6 +2207,7 @@ def _generation_record(row: Any) -> dict[str, Any]:
     )
     wrappers = extras.get("factory_wrappers") or record.get("factory_wrappers")
     return {
+        "semantic_draft": record.get("semantic_draft"),
         "specification": record.get("specification"),
         "status": record.get("status"),
         "missing": record.get("missing") or [],
@@ -2055,6 +2258,55 @@ def _model_setup_required(proposal_preview: Any) -> bool:
             # Runtime needs a profile or a separately compiled fallback first.
             return True
     return False
+
+
+def _project_generation_model_readiness(
+    product: GenerationProduct, plan: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Project verified role resolution over the builtin's static setup default."""
+    if (
+        product.source is None
+        or not product.source.is_loop
+        or product.plan is None
+        or product.plan.product_shape != "PURE_AGENT"
+        or not product.model_requirements
+    ):
+        return plan
+    requirements = {
+        (item.actor_id, item.slot): item for item in product.model_requirements
+    }
+    resolutions = {
+        (item.actor_id, item.slot): item for item in product.model_resolutions
+    }
+    if (
+        len(requirements) != len(product.model_requirements)
+        or len(resolutions) != len(product.model_resolutions)
+        or requirements.keys() != resolutions.keys()
+    ):
+        return plan
+    for key, requirement in requirements.items():
+        resolution = resolutions[key]
+        if (
+            resolution.status
+            not in {
+                ModelResolutionStatus.ALREADY_BOUND,
+                ModelResolutionStatus.WILL_BIND,
+            }
+            or not resolution.selected_model_profile_id
+            or resolution.issue is not None
+            or resolution.required != requirement.required
+            or resolution.optional != requirement.optional
+        ):
+            return plan
+    return [
+        {**item, "availability": "ready", "runtime_status": "supported"}
+        if item.get("kind") == "component"
+        and item.get("reference") == "veyra.component.model@1.0.0"
+        and item.get("availability") == "requires_configuration"
+        and item.get("runtime_status") == "runtime_not_configured"
+        else item
+        for item in plan
+    ]
 
 
 def _stored_specification(row: Any) -> dict[str, Any] | None:

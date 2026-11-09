@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -12,7 +13,10 @@ from veyra_agent_platform.contracts.common import (
     SCHEMA_VERSION,
     ContractValidationError,
 )
-from veyra_agent_platform.contracts.condition import parse_condition_expression
+from veyra_agent_platform.contracts.condition import (
+    ConditionValidationError,
+    parse_condition_expression,
+)
 from veyra_agent_platform.contracts.task_structure import (
     ExecutionBoundary,
     InteractionModeHint,
@@ -25,7 +29,10 @@ from veyra_agent_platform.contracts.task_structure import (
     TaskStructure,
 )
 
+from .product_shape import validate_business_gate_ownership
+from .task_bindings import validate_task_bindings
 from .task_structure_schema import task_structure_payload, task_structure_schema
+from .workflow_bindings import parse_verifier_check
 
 MAX_PLANNER_REPAIRS = 3
 
@@ -221,7 +228,10 @@ def plan_task_structure(
         return PlannerResult("ok", structure)
     last_error = "planner_invalid"
     payload: dict[str, Any] | None = None
-    for attempt in range(MAX_PLANNER_REPAIRS + 1):
+    repair_limit = getattr(provider, "max_repairs", MAX_PLANNER_REPAIRS)
+    if repair_limit is None:
+        repair_limit = getattr(provider, "max_requests", MAX_PLANNER_REPAIRS)
+    for attempt in range(repair_limit + 1):
         try:
             if attempt == 0:
                 payload = provider.complete_json(text, _PLANNER_SCHEMA)
@@ -234,8 +244,11 @@ def plan_task_structure(
             validate_task_structure(structure)
             return PlannerResult("ok", structure, repairs=attempt)
         except (ContractValidationError, ValueError, TypeError, KeyError) as exc:
+            diagnostic = getattr(exc, "safe_repair_diagnostic", None)
+            if getattr(exc, "repair_exhausted", False) and isinstance(diagnostic, str):
+                return PlannerResult("planner_invalid", None, (diagnostic,))
             last_error = str(exc)
-    return PlannerResult("planner_invalid", None, (last_error,), MAX_PLANNER_REPAIRS)
+    return PlannerResult("planner_invalid", None, (last_error,), repair_limit)
 
 
 def normalize_task_structure(structure: TaskStructure) -> TaskStructure:
@@ -296,6 +309,15 @@ def normalize_task_structure(structure: TaskStructure) -> TaskStructure:
         user_shape_override=structure.user_shape_override,
         constraints=structure.constraints,
         success_criteria=structure.success_criteria,
+        skill_choices=structure.skill_choices,
+        filesystem_write_roots=structure.filesystem_write_roots,
+        protect_input_files=structure.protect_input_files,
+        protected_input_fields=tuple(
+            {field.name: _normalize_io(field).name for field in structure.inputs}.get(
+                name, name
+            )
+            for name in structure.protected_input_fields
+        ),
     )
 
 
@@ -304,11 +326,26 @@ def validate_task_structure(structure: TaskStructure) -> None:
         raise ContractValidationError("task structure needs a goal")
     if not structure.outputs:
         raise ContractValidationError("task structure needs outputs")
+    actors = {actor.id: actor for actor in structure.actors}
+    chosen: set[tuple[str, str]] = set()
+    for choice in structure.skill_choices:
+        actor = actors.get(choice.actor)
+        if actor is None or choice.capability not in actor.capabilities:
+            raise ContractValidationError(
+                "Skill choice needs a declared actor capability"
+            )
+        key = (choice.actor, choice.capability)
+        if key in chosen:
+            raise ContractValidationError(
+                "Skill choice is ambiguous for this actor capability"
+            )
+        chosen.add(key)
     if structure.state is not None and structure.lifecycle.persistent:
         state = structure.state
         if state.identity not in state.fields and state.identity != "entity_id":
             raise ContractValidationError(
-                "state.identity must name a declared field or the platform entity_id; do not invent an undeclared identity"
+                "state.identity must name a declared field or the platform "
+                "entity_id; do not invent an undeclared identity"
             )
         if len(state.fields) > 24:
             raise ContractValidationError("state.fields exceed the platform limit")
@@ -326,19 +363,70 @@ def validate_task_structure(structure: TaskStructure) -> None:
             "ask_user and conversation context are native runtime actions, not "
             "Tool capabilities; use text_generation and human_input boundaries"
         )
-    for boundary in structure.execution_boundaries:
+    for index, boundary in enumerate(structure.execution_boundaries):
         if boundary.kind == "condition":
-            if not boundary.expression or len(boundary.branches) < 2:
-                raise ContractValidationError(
-                    "condition boundaries need an expression and branches"
+            location = f"execution_boundaries[{index}]"
+            if not boundary.expression:
+                raise ConditionValidationError(
+                    "expression_required", location + ".expression"
                 )
-            parse_condition_expression(boundary.expression)
+            if len(boundary.branches) != 2:
+                raise ConditionValidationError(
+                    "condition_needs_two_branches", location + ".branches"
+                )
+            parse_condition_expression(
+                boundary.expression, field_name=location + ".expression"
+            )
         if boundary.kind == "human_input" and not boundary.question:
             raise ContractValidationError("human_input needs a question")
         if boundary.kind == "human_approval" and not boundary.reason:
             raise ContractValidationError("human_approval needs a reason")
         if boundary.kind == "state" and not boundary.entity:
             raise ContractValidationError("state boundary needs an entity")
+        if boundary.kind == "verification":
+            for check in boundary.checks:
+                parse_verifier_check(check)
+    validate_business_gate_ownership(structure)
+    validate_task_bindings(structure)
+
+
+def required_task_duties(structure: TaskStructure) -> Counter[tuple[str, str]]:
+    """Retain task duties while allowing implementation bindings to be corrected."""
+    duties: Counter[tuple[str, str]] = Counter()
+    for boundary in structure.execution_boundaries:
+        if not boundary.required:
+            continue
+        material = boundary.to_dict()
+        # Placement, routing labels and check references implement the duty.
+        # Preserve its semantic intent and count rather than freezing those IDs.
+        for key in ("stage", "branches"):
+            material.pop(key, None)
+        if boundary.kind == "condition":
+            # Equivalent legacy quoting and typed-predicate serialization do
+            # not change a decision duty. Keep the parsed subject and meaning.
+            material["expression"] = parse_condition_expression(
+                boundary.expression
+            ).to_predicate()
+        if boundary.checks:
+            material["checks"] = sorted(_check_duty(check) for check in boundary.checks)
+        # A reason may be clarified when the original source is retained.
+        if boundary.source:
+            material.pop("reason", None)
+        duties[
+            ("boundary", json.dumps(material, sort_keys=True, ensure_ascii=False))
+        ] += 1
+    duties.update(("constraint", item) for item in structure.constraints)
+    duties.update(("success_criterion", item) for item in structure.success_criteria)
+    return duties
+
+
+def _check_duty(check: str) -> str:
+    """Keep check kinds/counts and predicates while allowing subject binding repair."""
+    kind, argument = parse_verifier_check(check)
+    if kind == "constraint_match":
+        condition = parse_condition_expression(argument)
+        return json.dumps([kind, condition.operator, condition.literal], sort_keys=True)
+    return kind
 
 
 def user_requested_surface(text: str) -> str:
@@ -1068,10 +1156,10 @@ def _normalize_boundary(item: ExecutionBoundary) -> ExecutionBoundary:
 def _dedupe_boundaries(
     items: tuple[ExecutionBoundary, ...],
 ) -> tuple[ExecutionBoundary, ...]:
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[str] = set()
     result: list[ExecutionBoundary] = []
     for item in items:
-        key = (item.kind, item.stage, item.capability or item.expression)
+        key = json.dumps(item.to_dict(), sort_keys=True, ensure_ascii=False)
         if key in seen:
             continue
         seen.add(key)

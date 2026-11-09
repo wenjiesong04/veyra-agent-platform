@@ -152,6 +152,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   window.location.hash = "";
   document.cookie = "veyra-csrf=; Max-Age=0; path=/";
 });
@@ -712,14 +714,15 @@ describe("desktop Project workspace", () => {
     const crumbs = screen.getByLabelText("Breadcrumb");
     expect(within(crumbs).getByRole("link", { name: "Home" })).toHaveAttribute("href", "#/projects");
     expect(within(crumbs).queryByRole("link", { name: "Breadcrumb Project" })).not.toBeInTheDocument();
-    expect(within(crumbs).getByText("Breadcrumb Project", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(within(crumbs).getByText("Breadcrumb Project").closest("[aria-current=page]")).toBeInTheDocument();
+    expect(within(crumbs).getByText("Breadcrumb Project")).toHaveAttribute("title", "Breadcrumb Project");
     expect(screen.queryByRole("link", { name: "Back" })).not.toBeInTheDocument();
     expect(within(crumbs).getAllByText("Breadcrumb Project")).toHaveLength(1);
     cleanup();
     window.location.hash = "#/projects";
     await renderApp(apiFor());
     const rootCrumbs = await screen.findByLabelText("Breadcrumb");
-    expect(within(rootCrumbs).getByText("New chat", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(within(rootCrumbs).getByText("New chat").closest("[aria-current=page]")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "New chat", level: 1 })).not.toBeInTheDocument();
     const menu = screen.getByRole("button", { name: "Open navigation" });
     await userEvent.click(menu);
@@ -831,15 +834,31 @@ describe("desktop Project workspace", () => {
     expect(screen.getByRole("tab", { name: "Components" })).toBeInTheDocument();
   });
 
-  it("uses the real Discover surface without inventing featured releases", async () => {
+  it("offers a website entry for old Community routes without rendering the local catalog", async () => {
     window.location.hash = "#/community";
-    await renderApp(apiFor());
-    expect(await screen.findByRole("link", { name: "Discover" })).toHaveAttribute("aria-current", "page");
+    const fetcher = signedInFetcher();
+    await renderApp(apiFor(), accountApi(fetcher));
+    expect(await screen.findByRole("heading", { name: "Community is on the web" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Community website" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Discover" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Community" })).not.toBeInTheDocument();
     expect(screen.queryByText("Veyra Community")).not.toBeInTheDocument();
     expect(screen.queryByText("Discover useful Agents, Workflows, Skills, and Tools from the community.")).not.toBeInTheDocument();
     expect(screen.queryByText("Research Brief")).not.toBeInTheDocument();
     expect(screen.queryByText("4.8")).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/registry/"))).toBe(false);
+  });
+
+  it("opens Community in the browser without leaving the current Desktop workspace", async () => {
+    vi.stubEnv("VITE_COMMUNITY_SITE_URL", "https://community.example/");
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const user = userEvent.setup();
+    await renderApp(apiFor());
+    const currentRoute = window.location.hash;
+    await user.click(screen.getByRole("link", { name: "Community" }));
+    expect(open).toHaveBeenCalledWith("https://community.example/?lang=en#/community", "_blank", "noopener,noreferrer");
+    expect(window.location.hash).toBe(currentRoute);
+    expect(screen.queryByRole("heading", { name: "Community is on the web" })).not.toBeInTheDocument();
   });
 
   it("renders nested Agent breadcrumbs as Home / Project / Agents / ancestry", async () => {
@@ -860,7 +879,7 @@ describe("desktop Project workspace", () => {
     expect(within(breadcrumbs).getByRole("link", { name: "Nested Project" })).toHaveAttribute("href", projectRoutePaths.project("nested-crumb"));
     expect(within(breadcrumbs).getByRole("link", { name: "Agents" })).toHaveAttribute("href", projectRoutePaths.agents("nested-crumb"));
     expect(within(breadcrumbs).getByRole("link", { name: "Parent Agent" })).toHaveAttribute("href", projectRoutePaths.agentDesign("nested-crumb", "parent"));
-    expect(within(breadcrumbs).getByText("Child Agent", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(within(breadcrumbs).getByText("Child Agent").closest("[aria-current=page]")).toBeInTheDocument();
   });
 
   it("keeps Workflow in the Agent breadcrumb when opening an AgentCall target", () => {
@@ -996,7 +1015,7 @@ describe("desktop Project workspace", () => {
     const menu = screen.getByRole("button", { name: "Open navigation" });
     await user.click(menu);
     await user.keyboard("{Escape}");
-    expect(menu).toHaveFocus();
+    await waitFor(() => expect(menu).toHaveFocus());
   });
 
   it("keeps the New chat surface and shell controls bilingual", async () => {
@@ -1023,7 +1042,7 @@ describe("desktop Project workspace", () => {
     expect(window.location.hash).toBe("#/runs");
     await waitFor(() => expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("aria-current", "page"));
     expect(screen.getByRole("link", { name: "History" })).toHaveClass("is-current");
-    expect(within(screen.getByLabelText("Breadcrumb")).getByText("History", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Breadcrumb")).getByText("History").closest("[aria-current=page]")).toBeInTheDocument();
 
     window.location.hash = projectRoutePaths.project("history-project");
     await waitFor(() => expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("history-project")));
@@ -1092,7 +1111,7 @@ describe("desktop Project workspace", () => {
     expect(screen.getByText("Agent 结构生成失败")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", projectRoutePaths.runs("dddd"));
     const crumbs = screen.getByLabelText("Breadcrumb");
-    expect(within(crumbs).getByText("礼物包装 Agent", { selector: "[aria-current=page]" })).toBeInTheDocument();
+    expect(within(crumbs).getByText("礼物包装 Agent").closest("[aria-current=page]")).toBeInTheDocument();
     expect(within(crumbs).getByText("Home")).toBeInTheDocument();
     expect(within(crumbs).getByText("dddd")).toBeInTheDocument();
     expect(within(crumbs).queryByText("New chat")).not.toBeInTheDocument();

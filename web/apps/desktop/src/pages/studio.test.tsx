@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSource, DraftResponse, ProjectResourceDescriptor, ProjectSummaryResponse, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
@@ -19,7 +19,9 @@ class TestResizeObserver {
 globalThis.ResizeObserver = TestResizeObserver;
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   window.localStorage.removeItem(STUDIO_RAILS_STORAGE_KEY);
+  window.history.replaceState(null, "", "/");
   Reflect.deleteProperty(window, "matchMedia");
 });
 
@@ -32,6 +34,7 @@ const source: AgentSource = {
 
 const project: ProjectSummaryResponse = { schema_version: "1.0", project_id: "project-1", root_path: "/tmp/project", name: "Project", description: "", pinned: false, pinned_at: null, indexed_at: "2026-08-28T00:00:00Z", manifest_hash: "hash", default_agent_id: null, agent_count: 0, agents: [] };
 const draft = (overrides: Partial<DraftResponse> = {}): DraftResponse => ({ schema_version: "1.0", draft_id: "draft-1", revision: 1, etag: '"etag-1"', source_file_hash: "file", source, ...overrides });
+const committedAgentVersions = { schema_version: "1.0", versions: [{ version_id: "version-1", agent_id: "agent-1", source_hash: "a".repeat(64), behavior_hash: "b".repeat(64), created_at: "2026-08-28T00:00:00Z", source, committed: true }] };
 
 function renderPage(api: LocalProjectApi, locale: "en" | "zh" = "en") {
   window.localStorage.setItem("veyra.language", locale);
@@ -77,8 +80,14 @@ describe("StudioPage source and conflict safety", () => {
     fireEvent.change(editor, { target: { value: '{"schema_version":"1.0"}' } });
     expect(await screen.findByText(/Source cannot be applied/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save draft" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Validate & commit" })).toBeDisabled();
+    const route = window.location.hash;
+    await user.click(screen.getByRole("link", { name: "Edit with Veyra" }));
+    expect(window.location.hash).toBe(route);
+    expect(editor).toHaveValue('{"schema_version":"1.0"}');
+    expect(await screen.findByText(/Correct this Draft or load the disk version before leaving Studio/)).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Canvas" }));
-    expect(screen.getByRole("button", { name: "Save draft" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save draft" })).not.toBeInTheDocument();
     expect(editor).toHaveValue('{"schema_version":"1.0"}');
   });
 
@@ -109,7 +118,7 @@ describe("StudioPage source and conflict safety", () => {
     await user.clear(screen.getByRole("textbox", { name: "Name" }));
     await user.type(screen.getByRole("textbox", { name: "Name" }), "Changed");
     await user.click(screen.getByRole("tab", { name: "Canvas" }));
-    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1), { timeout: 3500 });
     await user.click(await screen.findByRole("button", { name: "Load disk version" }));
     await waitFor(() => expect(reloadDraft).toHaveBeenCalledWith("project-1", "agent-1"));
   });
@@ -133,6 +142,62 @@ describe("StudioPage source and conflict safety", () => {
     expect(await screen.findByText("Saved")).toBeInTheDocument();
     expect(screen.queryByText("Draft saved with the current revision.")).not.toBeInTheDocument();
   }, 8000);
+
+  it.each(["Capabilities", "Source"])("autosaves edits and keeps explicit version commit available in %s without running the Agent", async (view) => {
+    const loopSource: AgentSource = {
+      ...source,
+      nodes: [{ id: "start", component_type: "Start" }, { id: "model", component_type: "Model", model_ref: "model.default", system_prompt: "Review the supplied options.", outputs: { result: "string" } }, { id: "out", component_type: "Output", output_name: "result" }],
+      transitions: [{ from: "start", port: "next", to: "model" }, { from: "model", port: "next", to: "out" }],
+      extensions: { veyra: { ...source.extensions.veyra, execution_kind: "loop", instructions: "Review the supplied options." } },
+      ui: { positions: { start: { x: 0, y: 0 }, model: { x: 100, y: 0 }, out: { x: 200, y: 0 } } },
+    };
+    const saveDraft = vi.fn(async (_projectId: string, _agentId: string, input: { source: AgentSource }) => draft({ source: input.source, revision: 2, etag: '"etag-2"' }));
+    const validate = vi.fn().mockResolvedValue({ schema_version: "1.0", valid: true, source_hash: "source-2", behavior_hash: "behavior-2", lock_hash: "lock-2" });
+    const commit = vi.fn().mockResolvedValue({ schema_version: "1.0", version_id: "version-2" });
+    const runAgent = vi.fn();
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft({ source: loopSource })),
+      saveDraft, validate, commit, runAgent,
+    } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("tab", { name: view }));
+    expect(screen.queryByRole("button", { name: "Save draft" })).not.toBeInTheDocument();
+    const commitButton = screen.getByRole("button", { name: "Validate & commit" });
+    if (view === "Source") {
+      fireEvent.change(screen.getByRole("textbox", { name: "Agent source" }), { target: { value: JSON.stringify({ ...loopSource, name: "Updated review" }) } });
+    } else {
+      fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Updated review" } });
+    }
+    expect(commitButton).toBeDisabled();
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledWith("project-1", "agent-1", { source: expect.objectContaining({ name: "Updated review" }), expected_revision: 1 }, { etag: '"etag-1"' }), { timeout: 3500 });
+    await waitFor(() => expect(commitButton).toBeEnabled());
+    expect(commit).not.toHaveBeenCalled();
+    await user.click(commitButton);
+    await waitFor(() => expect(commit).toHaveBeenCalledWith("project-1", "agent-1", { expectedRevision: 2, etag: '"etag-2"' }));
+    expect(validate).toHaveBeenCalledWith("project-1", "agent-1");
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("saves a dirty Draft before navigating to natural-language editing of the same Agent", async () => {
+    window.location.hash = "#/projects/project-1/agents/agent-1/design";
+    const saveDraft = vi.fn(async (_projectId: string, _agentId: string, input: { source: AgentSource }) => draft({ source: input.source, revision: 2, etag: '"etag-2"' }));
+    const commit = vi.fn();
+    const runAgent = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), saveDraft, commit, runAgent } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("tab", { name: "Form" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "My saved method" } });
+    const edit = screen.getByRole("link", { name: "Edit with Veyra" });
+    expect(edit).toHaveAttribute("href", "#/projects/project-1/chat?target=agent:agent-1");
+    await user.click(edit);
+    await waitFor(() => expect(window.location.hash).toBe("#/projects/project-1/chat?target=agent:agent-1"));
+    expect(saveDraft).toHaveBeenCalledWith("project-1", "agent-1", { source: expect.objectContaining({ name: "My saved method" }), expected_revision: 1 }, { etag: '"etag-1"' });
+    expect(commit).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
 
   it("keeps Open App disabled until a committed version exists and edits Agent interaction mode", async () => {
     const api = {
@@ -163,6 +228,155 @@ describe("StudioPage source and conflict safety", () => {
     const openApp = await screen.findByRole("link", { name: "Open App" });
     expect(openApp).toHaveAttribute("href", "#/projects/project-1/agents/agent-1");
   });
+
+  it("retries a failed autosave without retaining the old error or committing a version", async () => {
+    const saveDraft = vi.fn().mockRejectedValueOnce(new Error("Temporary disk failure")).mockImplementation(async (_projectId: string, _agentId: string, input: { source: AgentSource }) => draft({ source: input.source, revision: 2, etag: '"etag-2"' }));
+    const commit = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), saveDraft, commit } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("tab", { name: "Form" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Recovered method" } });
+    await waitFor(() => expect(screen.getByText("Temporary disk failure")).toBeInTheDocument(), { timeout: 3500 });
+    expect(screen.queryByRole("button", { name: "Save draft" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry save" }));
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Draft actions" })).getByRole("status")).toHaveTextContent("Saved"));
+    expect(screen.queryByText("Temporary disk failure")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry save" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Recovered method");
+    expect(saveDraft).toHaveBeenCalledTimes(2);
+    expect(commit).not.toHaveBeenCalled();
+  }, 8000);
+
+  it("blocks export while dirty or saving and preserves newer edits when an older save completes", async () => {
+    let finishFirstSave!: (saved: DraftResponse) => void;
+    const firstSave = new Promise<DraftResponse>((resolve) => { finishFirstSave = resolve; });
+    const saveDraft = vi.fn().mockImplementationOnce(() => firstSave).mockImplementation(async (_projectId: string, _agentId: string, input: { source: AgentSource }) => draft({ source: input.source, revision: 3, etag: '"etag-3"' }));
+    const exportAgent = vi.fn().mockResolvedValue({ source, source_text: "schema_version: 1.0" });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:studio-export");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), saveDraft, exportAgent } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    const exportButton = await screen.findByRole("button", { name: "Export Agent" });
+    expect(exportButton).toBeEnabled();
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "First method" } });
+    expect(exportButton).toBeDisabled();
+    await user.click(exportButton);
+    expect(exportAgent).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1), { timeout: 3500 });
+    expect(exportButton).toBeDisabled();
+    await user.click(exportButton);
+    expect(exportAgent).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Newer method" } });
+    await act(async () => { finishFirstSave(draft({ source: { ...source, name: "First method" }, revision: 2, etag: '"etag-2"' })); });
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Newer method");
+    expect(exportButton).toBeDisabled();
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(2), { timeout: 3500 });
+    expect(saveDraft).toHaveBeenLastCalledWith("project-1", "agent-1", { source: expect.objectContaining({ name: "Newer method" }), expected_revision: 2 }, { etag: '"etag-2"' });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    await user.click(exportButton);
+    expect(exportAgent).toHaveBeenCalledExactlyOnceWith("project-1", "agent-1");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:studio-export");
+  }, 10000);
+
+  it.each(["invalid buffer", "graph diagnostic"] as const)("does not export a draft with an %s", async (invalid) => {
+    const exportAgent = vi.fn();
+    const saveDraft = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), saveDraft, exportAgent } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    await user.click(await screen.findByRole("tab", { name: "Source" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent source" }), { target: { value: invalid === "invalid buffer" ? '{"schema_version":"1.0"}' : JSON.stringify({ ...source, nodes: source.nodes.filter((node) => node.id !== "start"), transitions: [] }) } });
+    if (invalid === "invalid buffer") expect(screen.getByText(/Source cannot be applied/)).toBeInTheDocument();
+    else expect(screen.getByText("Exactly one Start node is required.")).toBeInTheDocument();
+    const exportButton = screen.getByRole("button", { name: "Export Agent" });
+    expect(exportButton).toBeDisabled();
+    await user.click(exportButton);
+    expect(exportAgent).not.toHaveBeenCalled();
+    expect(saveDraft).not.toHaveBeenCalled();
+  });
+
+  it("flushes the draft before Open App navigation and never commits or runs it implicitly", async () => {
+    const designRoute = "#/projects/project-1/agents/agent-1/design";
+    window.location.hash = designRoute;
+    let finishSave!: (saved: DraftResponse) => void;
+    const pendingSave = new Promise<DraftResponse>((resolve) => { finishSave = resolve; });
+    const saveDraft = vi.fn(() => pendingSave);
+    const commit = vi.fn();
+    const validate = vi.fn();
+    const runAgent = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), listAgentVersions: vi.fn().mockResolvedValue(committedAgentVersions), saveDraft, commit, validate, runAgent } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    const openApp = await screen.findByRole("link", { name: "Open App" });
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "App method" } });
+    await user.click(openApp);
+    expect(saveDraft).toHaveBeenCalledWith("project-1", "agent-1", { source: expect.objectContaining({ name: "App method" }), expected_revision: 1 }, { etag: '"etag-1"' });
+    expect(window.location.hash).toBe(designRoute);
+    await act(async () => { finishSave(draft({ source: { ...source, name: "App method" }, revision: 2, etag: '"etag-2"' })); });
+    await waitFor(() => expect(window.location.hash).toBe("#/projects/project-1/agents/agent-1"));
+    expect(commit).not.toHaveBeenCalled();
+    expect(validate).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it.each(["offline", "conflict"] as const)("retains the draft and blocks Open App and export after a %s save failure", async (failure) => {
+    const designRoute = "#/projects/project-1/agents/agent-1/design";
+    window.location.hash = designRoute;
+    const saveDraft = vi.fn().mockRejectedValue(failure === "conflict" ? new LocalApiClientError("External edit", { status: 409, code: "draft_conflict" }) : new Error("Storage unavailable"));
+    const exportAgent = vi.fn();
+    const commit = vi.fn();
+    const validate = vi.fn();
+    const runAgent = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft()), listAgentVersions: vi.fn().mockResolvedValue(committedAgentVersions), reloadDraft: vi.fn(), saveDraft, exportAgent, commit, validate, runAgent } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    renderPage(api);
+    const openApp = await screen.findByRole("link", { name: "Open App" });
+    await user.click(screen.getByRole("tab", { name: "Form" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Unsaved method" } });
+    await user.click(openApp);
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Draft actions" })).getByRole("status")).toHaveTextContent(failure === "conflict" ? "Draft conflict" : "Save failed"));
+    expect(window.location.hash).toBe(designRoute);
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Unsaved method");
+    const exportButton = screen.getByRole("button", { name: "Export Agent" });
+    expect(exportButton).toBeDisabled();
+    await user.click(exportButton);
+    expect(exportAgent).not.toHaveBeenCalled();
+    if (failure === "conflict") {
+      expect(screen.getByRole("button", { name: "Load disk version" })).toBeInTheDocument();
+      await user.click(openApp);
+      expect(saveDraft).toHaveBeenCalledTimes(1);
+      expect(window.location.hash).toBe(designRoute);
+    }
+    expect(commit).not.toHaveBeenCalled();
+    expect(validate).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("autosaves Workflow edits with the Workflow revision and keeps commit explicit", async () => {
+    window.location.hash = "#/projects/project-1/workflows/wf-1/design";
+    const workflow: WorkflowSource = { schema_version: "1.0", component_type: "Workflow", workflow_id: "wf-1", slug: "review-path", name: "Review path", description: "", version: "1.0.0", inputs: {}, outputs: source.outputs, nodes: source.nodes, transitions: source.transitions, extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } }, ui: source.ui, lock: {} };
+    const saveDraft = vi.fn();
+    const saveWorkflowDraft = vi.fn(async (_projectId: string, _workflowId: string, input: { source: WorkflowSource }) => ({ ...draft(), source: input.source, revision: 2, etag: '"workflow-etag-2"' }));
+    const commitWorkflow = vi.fn();
+    const runWorkflow = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getWorkflowDraft: vi.fn().mockResolvedValue({ ...draft(), source: workflow, revision: 1, etag: '"workflow-etag-1"' }), saveDraft, saveWorkflowDraft, validateWorkflow: vi.fn(), commitWorkflow, runWorkflow } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={api}><StudioPage projectId="project-1" workflowId="wf-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    await user.click(await screen.findByRole("tab", { name: "Form" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Updated Workflow" } });
+    expect(screen.queryByRole("button", { name: "Save draft" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Validate & commit" })).toBeDisabled();
+    await waitFor(() => expect(saveWorkflowDraft).toHaveBeenCalledWith("project-1", "wf-1", { source: expect.objectContaining({ name: "Updated Workflow" }), expected_revision: 1 }, { etag: '"workflow-etag-1"' }), { timeout: 3500 });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Validate & commit" })).toBeEnabled());
+    expect(saveDraft).not.toHaveBeenCalled();
+    expect(commitWorkflow).not.toHaveBeenCalled();
+    expect(runWorkflow).not.toHaveBeenCalled();
+  }, 8000);
 
   it("renders stable graph diagnostic codes as localized Studio copy", async () => {
     const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }), getDraft: vi.fn().mockResolvedValue(draft({ source: { ...source, nodes: [{ id: "out", component_type: "Output", output_name: "result" }], transitions: [] } })) } as unknown as LocalProjectApi;
@@ -246,8 +460,7 @@ describe("StudioPage source and conflict safety", () => {
     expect(boundSource.lock[read.reference]).toBe(read.content_hash);
     expect(boundSource.ui.bindings).toBeUndefined();
     await user.click(screen.getByRole("tab", { name: "Canvas" }));
-    await user.dblClick(screen.getByRole("button", { name: "Save draft" }));
-    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1), { timeout: 3500 });
     expect(saveDraft).toHaveBeenCalledWith("project-1", "agent-1", { source: boundSource, expected_revision: 1 }, { etag: '"etag-1"' });
     page.unmount();
     listProjectResources.mockResolvedValue({ schema_version: "1.0", project_id: project.project_id, resources: [{ ...owned(read), content_hash: "b".repeat(64), binding_status: "stale" }], missing_references: [] });
@@ -260,10 +473,9 @@ describe("StudioPage source and conflict safety", () => {
     await user.click(screen.getByRole("tab", { name: "Canvas" }));
     expect(screen.getByRole("button", { name: /Read File/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Read File/ })).toHaveTextContent("Project pin stale");
-    await user.click(screen.getByRole("button", { name: "Save draft" }));
-    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(2), { timeout: 3500 });
     expect(disk.source).toEqual({ ...boundSource, name: "Stale draft edit" });
-  });
+  }, 10000);
 
   it.each([
     ["resource_unbound", "Not bound to Project"],
@@ -322,6 +534,54 @@ describe("StudioPage source and conflict safety", () => {
     expect(await screen.findByLabelText("Call slot")).toHaveValue("model.primary");
     expect(screen.getByText(/This is a call mapping/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add Provider" })).toBeInTheDocument();
+  });
+
+  it.each(["loop", "graph", "workflow"] as const)("binds a model selected through the %s Studio caller to its actual Runtime slot", async (kind) => {
+    const modelSource: AgentSource = {
+      ...source,
+      nodes: [{ id: "start", component_type: "Start" }, { id: "model", component_type: "Model", model_ref: "model.primary", system_prompt: "Review supplied material.", outputs: { result: "string" } }, { id: "out", component_type: "Output", output_name: "result" }],
+      transitions: [{ from: "start", port: "next", to: "model" }, { from: "model", port: "next", to: "out" }],
+      extensions: { veyra: { ...source.extensions.veyra, ...(kind === "loop" ? { execution_kind: "loop", instructions: "Review supplied material." } : {}) } },
+      ui: { positions: { start: { x: 0, y: 0 }, model: { x: 120, y: 0 }, out: { x: 240, y: 0 } } },
+    };
+    const workflowSource: WorkflowSource = {
+      schema_version: "1.0", component_type: "Workflow", workflow_id: "wf-1", slug: "review-path", name: "Review path", description: "", version: "1.0.0",
+      inputs: modelSource.inputs, outputs: modelSource.outputs, nodes: modelSource.nodes, transitions: modelSource.transitions,
+      extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+      ui: modelSource.ui, lock: {},
+    };
+    const credential = {
+      credential_id: "cred-1", provider_type: "openai_compatible", label: "Test Provider", status: "active", readiness: "ready", is_default: true,
+      capabilities: { models: ["current-model", "selected-model"] }, default_model_id: "current-model",
+    };
+    const agentId = kind === "workflow" ? undefined : "agent-1";
+    const slot = kind === "loop" ? "primary_model" : "node.model";
+    const getRuntimeBinding = vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: agentId ?? null, slot, binding: null, credential, explicit: null });
+    const setRuntimeBinding = vi.fn().mockResolvedValue({ schema_version: "1.0", project_id: "project-1", agent_id: agentId ?? null, slot, binding: null, credential, explicit: null });
+    const api = {
+      listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [project] }),
+      getDraft: vi.fn().mockResolvedValue(draft({ source: modelSource })),
+      getWorkflowDraft: vi.fn().mockResolvedValue({ ...draft(), source: workflowSource }),
+      listRuntimeCredentials: vi.fn().mockResolvedValue({ schema_version: "1.0", credentials: [credential] }),
+      getRuntimeBinding, setRuntimeBinding,
+    } as unknown as LocalProjectApi;
+    const user = userEvent.setup();
+    if (kind === "workflow") {
+      render(<ThemeProvider storageKey="studio-test-theme"><ProjectWorkspaceProvider api={api}><StudioPage projectId="project-1" workflowId="wf-1" /></ProjectWorkspaceProvider></ThemeProvider>);
+    } else {
+      renderPage(api);
+    }
+    await waitFor(() => expect(document.querySelector('[data-id="model"]')).not.toBeNull());
+    fireEvent.click(document.querySelector('[data-id="model"]')!);
+    const model = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(model).toHaveValue("current-model"));
+    expect(getRuntimeBinding).toHaveBeenCalledWith("project-1", agentId, kind === "loop" ? undefined : slot);
+    await user.selectOptions(model, "selected-model");
+    await waitFor(() => expect(setRuntimeBinding).toHaveBeenCalledWith(
+      "project-1", { credential_id: "cred-1", model_id: "selected-model", ...(kind === "loop" ? {} : { slot }) }, agentId,
+    ));
+    const selected = setRuntimeBinding.mock.calls.at(-1)?.[1] as { slot?: string };
+    expect(selected.slot ?? "primary_model").toBe(slot);
   });
 
   it("keeps compact viewports to one studio overlay so the canvas stays usable", async () => {

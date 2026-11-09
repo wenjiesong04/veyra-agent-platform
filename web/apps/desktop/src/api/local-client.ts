@@ -1,4 +1,4 @@
-import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersionsResponse } from "@veyra/api-contracts";
+import type { WorkflowRunResponse, ListAgentVersionsResponse, ListWorkflowVersionsResponse, EvaluationSpec, EvaluationReport, EvaluationReviewRequest, RunEvaluationsResponse } from "@veyra/api-contracts";
 import {
   LOCAL_API_SCHEMA_VERSION,
   MODEL_CAPABILITY_NAMES,
@@ -388,19 +388,26 @@ export type LocalProjectApi = {
   deleteMcpServer?(serverId: string): Promise<{ schema_version: "1.0"; server_id: string; deleted: boolean }>;
   orchestratorStatus?(): Promise<OrchestratorStatus>;
   listWorkItems?(projectId: string): Promise<ListWorkItemsResponse>;
-  createWorkItem?(projectId: string, input: { title: string; agent_id: string; description?: string; depends_on?: string[]; inputs?: JsonObject }): Promise<WorkItem>;
-  dispatchWorkItem?(workItemId: string): Promise<WorkItem>;
-  retryWorkItem?(workItemId: string): Promise<WorkItem>;
+  createWorkItem?(projectId: string, input: { title: string; agent_id: string; agent_version_id?: string; description?: string; depends_on?: string[]; inputs?: JsonObject }): Promise<WorkItem>;
+  updateWorkItem?(workItemId: string, input: { agent_version_id: string }): Promise<WorkItem>;
+  dispatchWorkItem?(workItemId: string, options: { idempotencyKey: string; expectedAttemptNumber: number }): Promise<WorkItem>;
+  retryWorkItem?(workItemId: string, options: { idempotencyKey: string; expectedAttemptNumber: number }): Promise<WorkItem>;
   cancelWorkItem?(workItemId: string): Promise<WorkItem>;
   recoverWorkItem?(workItemId: string): Promise<WorkItem>;
   runWorkflow?(projectId: string, workflowId: string, input: StartAgentRunRequest): Promise<WorkflowRunResponse>;
   getWorkflowRun?(projectId: string, workflowId: string, runId: string): Promise<WorkflowRunResponse>;
   listWorkflowRuns?(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }>;
-  commandWorkflowRun?(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" | "reply"; inputs?: Record<string, JsonValue> }): Promise<WorkflowRunResponse>;
+  commandWorkflowRun?(projectId: string, workflowId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<WorkflowRunResponse>;
   runAgent?(projectId: string, agentId: string, input: StartAgentRunRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   commandAgentRun?(projectId: string, agentId: string, runId: string, input: RunCommandRequest, options?: { idempotencyKey?: string }): Promise<AgentRunResponse>;
   listAgentRuns?(projectId: string, agentId: string): Promise<ListAgentRunsResponse>;
   getAgentRun?(projectId: string, agentId: string, runId: string): Promise<AgentRunResponse>;
+  getAgentRunEvaluations?(projectId: string, agentId: string, runId: string): Promise<RunEvaluationsResponse>;
+  evaluateAgentRun?(projectId: string, agentId: string, runId: string, spec: EvaluationSpec, options: { idempotencyKey: string }): Promise<EvaluationReport>;
+  getWorkflowRunEvaluations?(projectId: string, workflowId: string, runId: string): Promise<RunEvaluationsResponse>;
+  evaluateWorkflowRun?(projectId: string, workflowId: string, runId: string, spec: EvaluationSpec, options: { idempotencyKey: string }): Promise<EvaluationReport>;
+  reviewAgentRunEvaluation?(projectId: string, agentId: string, runId: string, evaluationId: string, input: EvaluationReviewRequest, options: { idempotencyKey: string }): Promise<EvaluationReport>;
+  reviewWorkflowRunEvaluation?(projectId: string, workflowId: string, runId: string, evaluationId: string, input: EvaluationReviewRequest, options: { idempotencyKey: string }): Promise<EvaluationReport>;
   listAgentConversations?(projectId: string, agentId: string): Promise<ListAgentConversationsResponse>;
   createAgentConversation?(projectId: string, agentId: string, input?: CreateAgentConversationRequest): Promise<AgentConversation>;
   getAgentConversation?(projectId: string, agentId: string, conversationId: string): Promise<AgentConversation>;
@@ -1404,6 +1411,10 @@ function builderConversationOperation(value: unknown, status: number): BuilderCo
     created_at: asString(record.created_at, "builder.operation.created_at", status),
     updated_at: asString(record.updated_at, "builder.operation.updated_at", status),
     diagnostic: stringFacts(record.diagnostic, "builder.diagnostic", status),
+    ...(record.generation_feedback === undefined ? {} : {
+      generation_feedback: asArray(record.generation_feedback, "builder.generation_feedback", status)
+        .map((item) => asString(item, "builder.generation_feedback.item", status)),
+    }),
     has_request: asBoolean(record.has_request, "builder.has_request", status),
     events: asArray(record.events ?? [], "builder.operation.events", status).map((item) => builderOperationEvent(item, status)),
     receipts: asArray(record.receipts ?? [], "builder.operation.receipts", status).map((item) => builderHarnessReceipt(item, status)),
@@ -1989,10 +2000,12 @@ const runtimeStatuses = new Set<ComponentDefinition["runtime_status"]>([
 const runtimeEventKinds = new Set<NonNullable<AgentRunResponse["events"]>[number]["kind"]>([
   "run.created", "run.state_changed", "run.started", "run.completed", "run.interrupted", "run.failed", "run.cancelled",
   "node.queued", "node.state_changed", "node.started", "node.output", "node.waiting", "node.completed", "node.failed", "node.skipped", "node.cancelled",
-  "tool.requested", "tool.started", "tool.completed", "tool.failed", "model.delta", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
-  "tool.input_rejected", "model.output_rejected",
-  "artifact.created", "checkpoint.created", "verification.completed", "verifier.result",
+  "tool.requested", "tool.started", "tool.completed", "tool.failed", "model.delta", "model.progress", "approval.requested", "approval.resolved", "input.requested", "input.resolved",
+  "tool.input_rejected", "model.output_rejected", "agent.plan_updated", "agent.budget_updated", "agent.budget_insufficient",
+  "finalization.started", "finalization.progress", "finalization.failed", "finalization.completed", "finalization.rejected", "finalization.accepted", "image.response_received",
+  "artifact.created", "checkpoint.created", "verification.completed", "evaluation.completed", "evaluation.reviewed", "verifier.result",
   "skill.loaded", "knowledge.retrieved", "policy.partial",
+  "input.protected", "input.output_created",
 ]);
 
 function componentDefinition(value: unknown, status = 502): ComponentDefinition {
@@ -2614,7 +2627,7 @@ function deletedMcpServer(value: unknown, status = 502): { schema_version: "1.0"
   };
 }
 
-const workItemStatuses = new Set(["backlog", "ready", "running", "waiting", "done", "failed", "cancelled"]);
+const workItemStatuses = new Set(["backlog", "ready", "running", "waiting", "cancelling", "done", "failed", "cancelled"]);
 
 function workItem(value: unknown, status = 502): WorkItem {
   const record = schemaRecord(value, status);
@@ -2629,6 +2642,9 @@ function workItem(value: unknown, status = 502): WorkItem {
     title: asString(record.title, "work_item.title", status),
     description: asText(record.description, "work_item.description", status),
     agent_id: asString(record.agent_id, "work_item.agent_id", status),
+    agent_version_id: record.agent_version_id == null ? null : asString(record.agent_version_id, "work_item.agent_version_id", status),
+    agent_source_hash: record.agent_source_hash == null ? null : asString(record.agent_source_hash, "work_item.agent_source_hash", status),
+    binding_required: record.binding_required === undefined ? record.agent_version_id == null : asBoolean(record.binding_required, "work_item.binding_required", status),
     depends_on: asArray(record.depends_on, "work_item.depends_on", status).map((item) => asString(item, "work_item.depends_on", status)),
     inputs: asRecord(record.inputs, status) as JsonObject,
     status: itemStatus as WorkItem["status"],
@@ -2649,6 +2665,9 @@ function workItemAttempt(value: unknown, status = 502): WorkItemAttempt {
   return {
     attempt_id: asString(record.attempt_id, "work_item.attempt_id", status),
     attempt_number: asNumber(record.attempt_number, "work_item.attempt_number", status),
+    operation: record.operation == null ? null : record.operation === "start" || record.operation === "retry" ? record.operation : (() => { throw new LocalApiClientError("Invalid WorkItem operation", { status, code: "invalid_response" }); })(),
+    previous_run_id: record.previous_run_id == null ? null : asString(record.previous_run_id, "work_item.previous_run_id", status),
+    error_code: record.error_code == null ? null : asString(record.error_code, "work_item.attempt_error_code", status),
     run_id: record.run_id === null ? null : asString(record.run_id, "work_item.run_id", status),
     status: asString(record.status, "work_item.attempt_status", status),
     failure_class: record.failure_class === null ? null : asString(record.failure_class, "work_item.attempt_failure_class", status),
@@ -2871,7 +2890,9 @@ function factoryStatus(value: unknown, status = 502): FactoryStatus {
     model_base_url: asString(record.model_base_url, "factory.model_base_url", status),
     model_api_key_env: asString(record.model_api_key_env, "factory.model_api_key_env", status),
     reasoning_effort: effort,
-    repair_attempts: asNumber(record.repair_attempts, "factory.repair_attempts", status),
+    repair_attempts: record.repair_attempts === null ? null : asNumber(record.repair_attempts, "factory.repair_attempts", status),
+    ...(record.generation_max_requests === undefined ? {} : { generation_max_requests: asNumber(record.generation_max_requests, "factory.generation_max_requests", status) }),
+    ...(record.generation_timeout_seconds === undefined ? {} : { generation_timeout_seconds: asNumber(record.generation_timeout_seconds, "factory.generation_timeout_seconds", status) }),
     executes_drafts: false,
     capability_profile: providerCapabilityProfile(record.capability_profile, status),
   };
@@ -3292,6 +3313,11 @@ function workflowRun(value: unknown, status = 502): WorkflowRunResponse {
       ...(waiting.expected_fields === undefined ? {} : { expected_fields: asArray(waiting.expected_fields, "waiting.expected_fields", status).map((field) => asString(field, "waiting field", status)) }),
       ...(waiting.agent_id === undefined ? {} : { agent_id: asString(waiting.agent_id, "waiting.agent_id", status) }),
       ...(waiting.child_run_id === undefined ? {} : { child_run_id: asString(waiting.child_run_id, "waiting.child_run_id", status) }),
+      ...(waiting.request_id === undefined ? {} : { request_id: waiting.request_id === null ? null : asString(waiting.request_id, "waiting.request_id", status) }),
+      ...(waiting.input_schema === undefined ? {} : { input_schema: typedFields(waiting.input_schema, "waiting.input_schema", status) }),
+      ...(waiting.context === undefined ? {} : { context: asJsonValue(waiting.context, "waiting.context", status) }),
+      ...(waiting.tool_reference === undefined ? {} : { tool_reference: asString(waiting.tool_reference, "waiting.tool_reference", status) }),
+      ...(waiting.approval_summary === undefined ? {} : { approval_summary: asJsonValue(asRecord(waiting.approval_summary, status), "waiting.approval_summary", status) as JsonObject }),
     } : null,
     children: asArray(record.children, "children", status).map((value) => {
       const child = asRecord(value, status);
@@ -3300,6 +3326,91 @@ function workflowRun(value: unknown, status = 502): WorkflowRunResponse {
       return { node_id: asString(child.node_id, "child.node_id", status), agent_id: asString(child.agent_id, "child.agent_id", status), version_id: asString(child.version_id, "child.version_id", status), child_run_id: child.child_run_id === null ? null : asString(child.child_run_id, "child.run_id", status), status: childStatus as WorkflowRunResponse["children"][number]["status"] };
     }),
   };
+}
+
+function evaluationReport(value: unknown, status = 502): EvaluationReport {
+  const record = schemaRecord(value, status);
+  const invalid = () => new LocalApiClientError("The local service returned an invalid evaluation report.", { status, code: "invalid_response" });
+  const choice = <T extends string>(item: unknown, allowed: readonly T[]): T => {
+    if (typeof item !== "string" || !allowed.includes(item as T)) throw invalid();
+    return item as T;
+  };
+  const hash = (item: unknown): string => {
+    if (typeof item !== "string" || !/^[0-9a-f]{64}$/.test(item)) throw invalid();
+    return item;
+  };
+  const methods = ["equals", "number_equals", "set_equals", "artifact_integrity", "human_review"] as const;
+  const baseline = (item: unknown) => {
+    const source = asRecord(item, status);
+    return { kind: choice(source.kind, ["user", "fixture", "reference", "model"] as const), reference: asString(source.reference, "baseline.reference", status), revision: asString(source.revision, "baseline.revision", status) };
+  };
+  const reviewDecision = (item: unknown) => {
+    const row = asRecord(item, status);
+    return { check_id: asString(row.check_id, "review.check_id", status), outcome: choice(row.outcome, ["pass", "fail", "unknown"] as const), reason: asString(row.reason, "review.reason", status) };
+  };
+  const humanReview = (item: unknown) => {
+    const row = asRecord(item, status);
+    return { ...reviewDecision(row), review_id: asString(row.review_id, "review.id", status), source: choice(row.source, ["local_user"] as const), created_at: asString(row.created_at, "review.created_at", status), base_evaluation_id: asString(row.base_evaluation_id, "review.base_evaluation_id", status) };
+  };
+  const path = (item: unknown) => {
+    const parts = asArray(item, "evaluation.path", status).map((part) => asText(part, "evaluation.path segment", status));
+    if (!parts.length || parts[0].startsWith("$")) throw invalid();
+    return parts;
+  };
+  const specValue = asRecord(record.spec, status);
+  const spec: EvaluationSpec = {
+    version: choice(specValue.version, ["1"] as const), version_id: asString(specValue.version_id, "evaluation.version_id", status),
+    checks: asArray(specValue.checks, "evaluation.spec.checks", status).map((item) => {
+      const check = asRecord(item, status);
+      const method = choice(check.method, methods);
+      const comparison = ["equals", "number_equals", "set_equals"].includes(method);
+      if (comparison && (!("expected" in check) || check.baseline == null)) throw invalid();
+      if (method === "number_equals" && typeof check.expected !== "string") throw invalid();
+      if (method === "set_equals" && !Array.isArray(check.expected)) throw invalid();
+      return { id: asString(check.id, "evaluation.check.id", status), label: asString(check.label, "evaluation.check.label", status), required: asBoolean(check.required, "evaluation.check.required", status), path: path(check.path), method,
+        ...(comparison ? { expected: asJsonValue(check.expected, "evaluation.expected", status), baseline: baseline(check.baseline) } : {}) };
+    }),
+  };
+  const checks: EvaluationReport["checks"] = asArray(record.checks, "evaluation.checks", status).map((item) => {
+    const finding = asRecord(item, status);
+    return { id: asString(finding.id, "evaluation.finding.id", status), label: asString(finding.label, "evaluation.finding.label", status), required: asBoolean(finding.required, "evaluation.finding.required", status), path: path(finding.path), method: choice(finding.method, methods),
+      status: choice(finding.status, ["pass", "fail", "unknown", "not_evaluated", "awaiting_human"] as const), code: asString(finding.code, "evaluation.finding.code", status), baseline: finding.baseline === null ? null : baseline(finding.baseline),
+      ...(finding.actual_hash === undefined ? {} : { actual_hash: hash(finding.actual_hash) }), ...(finding.expected_hash === undefined ? {} : { expected_hash: hash(finding.expected_hash) }),
+      ...("actual_value" in finding ? { actual_value: asJsonValue(finding.actual_value, "evaluation.actual_value", status) } : {}),
+      ...(finding.human_review === undefined ? {} : { human_review: humanReview(finding.human_review) }),
+      evidence: asArray(finding.evidence, "evaluation.evidence", status).map((item) => {
+        const evidence = asRecord(item, status);
+        return { kind: choice(evidence.kind, ["artifact"] as const), artifact_id: asString(evidence.artifact_id, "evaluation.artifact_id", status), sha256: hash(evidence.sha256), size_bytes: asNumber(evidence.size_bytes, "evaluation.size_bytes", status), source_run_id: evidence.source_run_id === null ? null : asString(evidence.source_run_id, "evaluation.source_run_id", status) };
+      }),
+    };
+  });
+  const decision = choice(record.decision, ["accepted", "rejected", "inconclusive"] as const);
+  const outputContract = choice(record.output_contract, ["pass", "fail", "not_evaluated"] as const);
+  const versionId = asString(record.version_id, "evaluation.version_id", status);
+  const evaluationId = asString(record.evaluation_id, "evaluation.id", status);
+  let review: EvaluationReport["review"];
+  if (record.review !== undefined) {
+    const row = asRecord(record.review, status);
+    review = { review_id: asString(row.review_id, "review.id", status), source: choice(row.source, ["local_user"] as const), created_at: asString(row.created_at, "review.created_at", status), base_evaluation_id: asString(row.base_evaluation_id, "review.base_evaluation_id", status), supersedes_review_id: row.supersedes_review_id === null ? null : asString(row.supersedes_review_id, "review.supersedes_review_id", status), decisions: asArray(row.decisions, "review.decisions", status).map(reviewDecision) };
+    if (record.evaluator_version !== "2" || !record.root_evaluation_id || !record.parent_evaluation_id || record.parent_evaluation_id !== review.base_evaluation_id || evaluationId === record.parent_evaluation_id || !review.decisions.length || new Set(review.decisions.map((entry) => entry.check_id)).size !== review.decisions.length
+      || review.decisions.some((entry) => { const finding = checks.find((item) => item.id === entry.check_id); return !finding?.human_review || finding.human_review.review_id !== review!.review_id || finding.human_review.outcome !== entry.outcome || finding.human_review.reason !== entry.reason || finding.human_review.created_at !== review!.created_at || finding.human_review.base_evaluation_id !== review!.base_evaluation_id; })) throw invalid();
+  } else if (record.root_evaluation_id !== undefined || record.parent_evaluation_id !== undefined || checks.some((entry) => entry.human_review)) throw invalid();
+  if (!checks.length || checks.length !== spec.checks.length || new Set(spec.checks.map((check) => check.id)).size !== checks.length || spec.version_id !== versionId
+    || checks.some((finding, index) => { const check = spec.checks[index]; const proof = finding.human_review; return finding.id !== check.id || finding.label !== check.label || finding.required !== check.required || finding.method !== check.method || JSON.stringify(finding.path) !== JSON.stringify(check.path) || JSON.stringify(finding.baseline) !== JSON.stringify(check.baseline ?? null) || (finding.baseline?.kind === "model" && finding.status === "pass") || (finding.method === "human_review" && ["pass", "unknown"].includes(finding.status) && !proof) || (proof && (finding.method !== "human_review" || !finding.actual_hash || proof.check_id !== finding.id || proof.outcome !== finding.status || proof.base_evaluation_id === evaluationId || finding.code !== { pass: "user_review_accepted", fail: "user_review_rejected", unknown: "user_review_uncertain" }[proof.outcome])) || (finding.code.startsWith("user_review_") && !proof) || (finding.method === "artifact_integrity" && finding.status === "pass" && !finding.evidence.length); })
+    || (decision === "accepted" && (outputContract !== "pass" || !checks.some((finding) => finding.required) || checks.some((finding) => finding.required && finding.status !== "pass")))) throw invalid();
+  if ((record.input_evidence === "persisted") !== (record.input_hash !== null) || (outputContract === "pass" && (record.result_hash === null || !["verified", "unverified"].includes(String(record.run_status))))) throw invalid();
+  return {
+    schema_version: "1.0", evaluator_version: choice(record.evaluator_version, ["1", "2"] as const), scope: choice(record.scope, ["declared_checks"] as const),
+    evaluation_id: evaluationId, project_id: asString(record.project_id, "evaluation.project_id", status), target_kind: choice(record.target_kind, ["agent", "workflow"] as const), target_id: asString(record.target_id, "evaluation.target_id", status), run_id: asString(record.run_id, "evaluation.run_id", status), version_id: versionId,
+    run_status: choice(record.run_status, ["verified", "unverified", "failed", "interrupted", "cancelled"] as const), source_hash: hash(record.source_hash), behavior_hash: hash(record.behavior_hash), lock_hash: hash(record.lock_hash), spec_hash: hash(record.spec_hash), input_hash: record.input_hash === null ? null : hash(record.input_hash), input_evidence: choice(record.input_evidence, ["persisted", "not_saved"] as const), result_hash: record.result_hash === null ? null : hash(record.result_hash), created_at: asString(record.created_at, "evaluation.created_at", status),
+    spec, decision, checks, output_contract: outputContract, independent_scope: choice(record.independent_scope, review ? ["baseline_comparison_artifact_integrity_and_user_review"] as const : ["baseline_comparison_and_artifact_integrity_only"] as const),
+    ...(review ? { review, root_evaluation_id: asString(record.root_evaluation_id, "evaluation.root_evaluation_id", status), parent_evaluation_id: asString(record.parent_evaluation_id, "evaluation.parent_evaluation_id", status) } : {}),
+  };
+}
+
+function runEvaluations(value: unknown, status = 502): RunEvaluationsResponse {
+  const record = schemaRecord(value, status);
+  return { schema_version: "1.0", reports: asArray(record.reports, "evaluation.reports", status).map((item) => evaluationReport(item, status)) };
 }
 
 function listedAgentRuns(value: unknown, status = 502): ListAgentRunsResponse {
@@ -4599,17 +4710,21 @@ export class LocalApiClient {
 
   createWorkItem(
     projectId: string,
-    input: { title: string; agent_id: string; description?: string; depends_on?: string[]; inputs?: JsonObject },
+    input: { title: string; agent_id: string; agent_version_id?: string; description?: string; depends_on?: string[]; inputs?: JsonObject },
   ): Promise<WorkItem> {
     return this.request(`projects/${encodeURIComponent(projectId)}/work-items`, workItem, { method: "POST", body: input });
   }
 
-  dispatchWorkItem(workItemId: string): Promise<WorkItem> {
-    return this.request(`work-items/${encodeURIComponent(workItemId)}/dispatch`, workItem, { method: "POST" });
+  updateWorkItem(workItemId: string, input: { agent_version_id: string }): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}`, workItem, { method: "PATCH", body: input });
   }
 
-  retryWorkItem(workItemId: string): Promise<WorkItem> {
-    return this.request(`work-items/${encodeURIComponent(workItemId)}/retry`, workItem, { method: "POST" });
+  dispatchWorkItem(workItemId: string, options: { idempotencyKey: string; expectedAttemptNumber: number }): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}/dispatch`, workItem, { method: "POST", body: { expected_attempt_number: options.expectedAttemptNumber }, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
+  }
+
+  retryWorkItem(workItemId: string, options: { idempotencyKey: string; expectedAttemptNumber: number }): Promise<WorkItem> {
+    return this.request(`work-items/${encodeURIComponent(workItemId)}/retry`, workItem, { method: "POST", body: { expected_attempt_number: options.expectedAttemptNumber }, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
   }
 
   cancelWorkItem(workItemId: string): Promise<WorkItem> {
@@ -4629,8 +4744,8 @@ export class LocalApiClient {
   listWorkflowRuns(projectId: string, workflowId: string): Promise<{ schema_version: "1.0"; runs: WorkflowRunResponse[] }> {
     return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs`, (value, status) => { const record = schemaRecord(value, status); return { schema_version: "1.0", runs: asArray(record.runs, "runs", status).map((item) => workflowRun(item, status)) }; });
   }
-  commandWorkflowRun(projectId: string, workflowId: string, runId: string, input: { command: "approve" | "reject" | "stop" | "reply"; inputs?: Record<string, JsonValue> }): Promise<WorkflowRunResponse> {
-    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/commands`, workflowRun, { method: "POST", body: input, requireIdempotencyKey: true });
+  commandWorkflowRun(projectId: string, workflowId: string, runId: string, input: RunCommandRequest, options: { idempotencyKey?: string } = {}): Promise<WorkflowRunResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/commands`, workflowRun, { method: "POST", body: input, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
   }
 
   runAgent(
@@ -4685,6 +4800,30 @@ export class LocalApiClient {
       `projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}`,
       agentRun,
     );
+  }
+
+  getAgentRunEvaluations(projectId: string, agentId: string, runId: string): Promise<RunEvaluationsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/evaluations`, runEvaluations);
+  }
+
+  evaluateAgentRun(projectId: string, agentId: string, runId: string, spec: EvaluationSpec, options: { idempotencyKey: string }): Promise<EvaluationReport> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/evaluations`, evaluationReport, { method: "POST", body: { spec }, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
+  }
+
+  getWorkflowRunEvaluations(projectId: string, workflowId: string, runId: string): Promise<RunEvaluationsResponse> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/evaluations`, runEvaluations);
+  }
+
+  evaluateWorkflowRun(projectId: string, workflowId: string, runId: string, spec: EvaluationSpec, options: { idempotencyKey: string }): Promise<EvaluationReport> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/evaluations`, evaluationReport, { method: "POST", body: { spec }, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
+  }
+
+  reviewAgentRunEvaluation(projectId: string, agentId: string, runId: string, evaluationId: string, input: EvaluationReviewRequest, options: { idempotencyKey: string }): Promise<EvaluationReport> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/evaluations/${encodeURIComponent(evaluationId)}/reviews`, evaluationReport, { method: "POST", body: input, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
+  }
+
+  reviewWorkflowRunEvaluation(projectId: string, workflowId: string, runId: string, evaluationId: string, input: EvaluationReviewRequest, options: { idempotencyKey: string }): Promise<EvaluationReport> {
+    return this.request(`projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/evaluations/${encodeURIComponent(evaluationId)}/reviews`, evaluationReport, { method: "POST", body: input, idempotencyKey: options.idempotencyKey, requireIdempotencyKey: true });
   }
 
   commandAgentRun(

@@ -7,12 +7,34 @@ export type AppActivityItem = {
 
 type Locale = "zh" | "en";
 
+const modelProgressLabels: Record<string, [string, string]> = {
+  connected: ["已连接模型服务", "Connected to model service"],
+  receiving: ["正在接收模型响应", "Receiving model response"],
+  receiving_result: ["正在接收模型结果", "Receiving model result"],
+  completed: ["模型响应接收完成", "Model response received"],
+};
+
 export function appActivity(events: RuntimeEvent[] | undefined, locale: Locale): AppActivityItem[] {
   const items: AppActivityItem[] = [];
+  const progressIndexes = new Map<string, number>();
   let skills = 0;
   for (const event of events ?? []) {
     if (event.kind === "skill.loaded") {
       skills += 1;
+      continue;
+    }
+    if (event.kind === "model.progress") {
+      const turn = typeof event.payload.turn === "number" && Number.isSafeInteger(event.payload.turn) && event.payload.turn >= 0
+        ? event.payload.turn : "unknown";
+      const id = `model-progress:${event.node_id ?? "model"}:${turn}`;
+      const item = { id, label: modelProgressLabel(event.payload.status, locale) };
+      const index = progressIndexes.get(id);
+      if (index === undefined) {
+        progressIndexes.set(id, items.length);
+        items.push(item);
+      } else {
+        items[index] = item;
+      }
       continue;
     }
     const label = activityLabel(event, locale);
@@ -25,6 +47,12 @@ export function appActivity(events: RuntimeEvent[] | undefined, locale: Locale):
     });
   }
   return items;
+}
+
+function modelProgressLabel(status: unknown, locale: Locale): string {
+  return typeof status === "string" && Object.hasOwn(modelProgressLabels, status)
+    ? modelProgressLabels[status]![locale === "zh" ? 0 : 1]
+    : (locale === "zh" ? "模型响应传输中" : "Model response transport in progress");
 }
 
 export function knowledgeSources(events: RuntimeEvent[] | undefined, locale: Locale): string[] {
@@ -48,7 +76,7 @@ export function approvalCard(run: AgentRunResponse | null): {
 } | null {
   if (run?.status !== "waiting") return null;
   const event = [...(run.events ?? [])].reverse().find((item) => item.kind === "approval.requested");
-  if (!event) return null;
+  if (!event || event.payload.kind === "input" || event.payload.kind === "budget") return null;
   const summary = asRecord(event.payload.approval_summary);
   const prompt = typeof event.payload.prompt === "string" ? event.payload.prompt : "";
   return {
@@ -68,6 +96,7 @@ function activityLabel(event: RuntimeEvent, locale: Locale): string | null {
   if (event.kind === "knowledge.retrieved") {
     return zh ? "正在阅读知识" : "Reading Knowledge";
   }
+  if (event.kind === "approval.requested" && event.payload.kind === "budget") return zh ? "等待追加执行轮次" : "Waiting for additional execution turns";
   if (event.kind === "approval.requested") return event.payload.kind === "input"
     ? (zh ? "等待你的回答" : "Waiting for your reply")
     : (zh ? "等待审批" : "Waiting for approval");

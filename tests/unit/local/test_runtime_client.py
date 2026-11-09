@@ -152,6 +152,65 @@ def test_malformed_completion_still_returns_a_safe_provider_failure() -> None:
     assert "private" not in str(caught.value)
 
 
+def test_review_uses_separate_read_timeout_on_the_same_transport() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "synthetic-model"}]})
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+        )
+
+    transport = _image_transport(
+        "https://api.moonshot.cn/v1",
+        handler,
+        timeout_seconds=11,
+        review_timeout_seconds=27,
+    )
+    client = RuntimeModelClient(transport.settings, transport=transport)
+    messages = [{"role": "user", "content": "Synthetic structured assessment"}]
+    client.complete_action(messages)
+    client.complete_review(messages)
+    client.complete_action(messages)
+    assert [request.extensions["timeout"]["read"] for request in requests] == [
+        11,
+        27,
+        11,
+    ]
+    assert all(request.extensions["timeout"]["connect"] == 11 for request in requests)
+    bodies = [json.loads(request.content) for request in requests]
+    assert all(body.pop("stream") is True for body in bodies)
+    assert bodies[0] == bodies[1] == bodies[2]
+    assert json.loads(requests[1].content)["response_format"] == {"type": "json_object"}
+
+
+def test_review_timeout_is_safe_and_does_not_retry() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "synthetic-model"}]})
+        calls.append(request)
+        raise httpx.ReadTimeout("private credential and request body", request=request)
+
+    transport = _image_transport("https://api.moonshot.cn/v1", handler)
+    client = RuntimeModelClient(transport.settings, transport=transport)
+    with pytest.raises(RuntimeProviderError) as caught:
+        client.complete_review([{"role": "user", "content": "Synthetic"}])
+    assert caught.value.code == "runtime_timeout"
+    assert caught.value.diagnostic == {
+        "timeout_phase": "read",
+        "timeout_seconds": 180.0,
+        "event_count": 0,
+        "content_bytes": 0,
+    }
+    assert "private" not in str(caught.value)
+    assert len(calls) == 1
+
+
 def test_http_transport_sends_json_object_response_format() -> None:
     captured: list[httpx.Request] = []
 
@@ -234,7 +293,9 @@ def test_action_completion_uses_known_json_protocol_without_forcing_unknown_endp
     assert bodies[0].get("response_format") == expected
 
 
-@pytest.mark.parametrize("operation", ["complete", "stream", "stream_fallback"])
+@pytest.mark.parametrize(
+    "operation", ["complete", "review", "stream", "stream_fallback"]
+)
 def test_adapter_internal_type_error_never_resends_a_model_request(
     operation: str,
 ) -> None:
@@ -256,12 +317,16 @@ def test_adapter_internal_type_error_never_resends_a_model_request(
     with pytest.raises(TypeError, match="failure after a request was sent"):
         if operation == "complete":
             client.complete_action(messages)
+        elif operation == "review":
+            client.complete_review(messages)
         else:
             list(client.stream(messages, response_format={"type": "json_object"}))
     assert calls == [{"type": "json_object"}]
 
 
-@pytest.mark.parametrize("operation", ["complete", "stream", "stream_fallback"])
+@pytest.mark.parametrize(
+    "operation", ["complete", "review", "stream", "stream_fallback"]
+)
 def test_legacy_adapter_without_response_format_still_sends_exactly_one_request(
     operation: str,
 ) -> None:
@@ -285,6 +350,8 @@ def test_legacy_adapter_without_response_format_still_sends_exactly_one_request(
     messages = [{"role": "user", "content": "Return a synthetic JSON object"}]
     if operation == "complete":
         assert client.complete_action(messages).content == '{"ok":true}'
+    elif operation == "review":
+        assert client.complete_review(messages).content == '{"ok":true}'
     else:
         assert list(
             client.stream(messages, response_format={"type": "json_object"})

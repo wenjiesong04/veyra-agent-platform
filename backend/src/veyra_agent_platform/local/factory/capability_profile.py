@@ -1,9 +1,8 @@
-"""Factory provider request-protocol facts for one Provider + Model + Endpoint.
+"""Request-protocol facts for one Provider + Model + Endpoint.
 
 This module answers only: what structured-output request protocol does this
-configured Factory endpoint accept? It does not define Veyra Agent semantics.
-Canonical Agent meaning remains AgentSemanticPlanV1 → SemanticPlanCompiler →
-AgentBlueprint / AgentSource.
+configured endpoint accept? Factory and Runtime share these protocol facts;
+they do not define Veyra Agent semantics or grant execution capabilities.
 
 `/models` listing only proves a model id is visible. It is not evidence of
 strict JSON Schema, `json_object`, `reasoning_effort`, or any schema keyword.
@@ -14,10 +13,9 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
-from .config import FactorySettings
 from .structured_schema import project_moonshot_json_schema
 
 PROBE_VERSION = "semantic-plan-ok-v1"
@@ -190,8 +188,13 @@ class ProviderCapabilityProfile:
         }
 
 
+class ModelEndpointSettings(Protocol):
+    model_base_url: str
+    model_id: str
+
+
 def derive_provider_capability_profile(
-    settings: FactorySettings,
+    settings: ModelEndpointSettings,
 ) -> ProviderCapabilityProfile:
     fingerprint = base_url_fingerprint(settings.model_base_url)
     if _moonshot_host(settings.model_base_url):

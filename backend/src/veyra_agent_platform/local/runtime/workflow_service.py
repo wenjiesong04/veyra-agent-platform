@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
-from veyra_agent_platform.contracts.agent import ComponentType
+from veyra_agent_platform.contracts.agent import ComponentType, FlowNode
 from veyra_agent_platform.contracts.canonical import sha256_digest
 from veyra_agent_platform.contracts.common import (
     ContractValidationError,
@@ -23,6 +23,7 @@ from veyra_agent_platform.local.library.workflow_dependencies import (
 )
 from veyra_agent_platform.local.projects.service import ProjectError
 
+from .input_protection import InputProtectionScope
 from .service import (
     RuntimeError,
     RuntimeService,
@@ -32,7 +33,9 @@ from .service import (
     _sse_frame,
     _transform_value,
 )
+from .tools import ToolRuntimeError
 from .workflow_store import WorkflowRunStore, utc_now
+from .workflow_tools import tool_snapshot, tool_waiting, workflow_tool_arguments
 
 
 class WorkflowRuntimeService:
@@ -53,7 +56,83 @@ class WorkflowRuntimeService:
             or row["workflow_id"] != workflow_id
         ):
             raise RuntimeError("workflow_run_not_found", "Workflow run not found")
+        self._sync_child_wait(run_id)
         return self.store.detail(run_id)
+
+    def _sync_child_wait(self, run_id: str) -> None:
+        """Project direct child replies, and continue only the already-started flow."""
+        with self._commands:
+            row = self.store.row(run_id)
+            if row is None or row["status"] != "waiting":
+                return
+            context = json.loads(row["context_json"])
+            waiting = context.get("waiting") or {}
+            if not waiting.get("child_run_id") or not waiting.get("agent_id"):
+                if waiting and not waiting.get("request_id"):
+                    with self.repository.transaction() as connection:
+                        current = connection.execute(
+                            "SELECT * FROM workflow_runs WHERE run_id = ?", (run_id,)
+                        ).fetchone()
+                        latest = json.loads(current["context_json"])
+                        if (
+                            current["status"] == "waiting"
+                            and latest.get("waiting") == waiting
+                        ):
+                            latest["waiting"] = {**waiting, "request_id": new_uuid7()}
+                            connection.execute(
+                                "UPDATE workflow_runs SET context_json = ? "
+                                "WHERE run_id = ?",
+                                (json.dumps(latest), run_id),
+                            )
+                            self.store.event(
+                                connection,
+                                run_id,
+                                waiting["node_id"],
+                                "node.waiting",
+                                latest["waiting"],
+                            )
+                return
+            child = self.runtime.run_detail(
+                row["project_id"], waiting["agent_id"], waiting["child_run_id"]
+            )
+            refreshed = (
+                _child_waiting(waiting["node_id"], waiting["agent_id"], child)
+                if child["status"] == "waiting"
+                else None
+            )
+            if refreshed == waiting:
+                return
+            wake = False
+            with self.repository.transaction() as connection:
+                current = connection.execute(
+                    "SELECT * FROM workflow_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                latest = json.loads(current["context_json"])
+                if current["status"] != "waiting" or latest.get("waiting") != waiting:
+                    return
+                latest["waiting"] = refreshed
+                if refreshed is None:
+                    latest["deadline"] = time.time() + latest["remaining_seconds"]
+                    wake = True
+                connection.execute(
+                    "UPDATE workflow_runs SET context_json = ?, status = ? "
+                    "WHERE run_id = ?",
+                    (json.dumps(latest), "running" if wake else "waiting", run_id),
+                )
+                self.store.event(
+                    connection,
+                    run_id,
+                    waiting["node_id"],
+                    "checkpoint.created" if wake else "node.waiting",
+                    refreshed
+                    or {
+                        "waiting_kind": "execution",
+                        "child_run_id": child["run_id"],
+                        "child_status": child["status"],
+                    },
+                )
+            if wake:
+                self._schedule(run_id)
 
     def runs(self, project_id: str, workflow_id: str) -> dict[str, Any]:
         self.library._workflow_in_project(project_id, workflow_id)
@@ -68,7 +147,7 @@ class WorkflowRuntimeService:
             ]
         return {
             "schema_version": "1.0",
-            "runs": [self.store.detail(run_id) for run_id in ids],
+            "runs": [self.detail(project_id, workflow_id, run_id) for run_id in ids],
         }
 
     def readiness(
@@ -354,7 +433,18 @@ class WorkflowRuntimeService:
                         utc_now(),
                     ),
                 )
-                self.store.event(connection, run_id, None, "run.created", {})
+                protection = (
+                    InputProtectionScope(project_id, "workflow", run_id)
+                    if workflow_source.permissions.protect_input_files
+                    else None
+                )
+                self.store.event(
+                    connection,
+                    run_id,
+                    None,
+                    "run.created",
+                    {"input_protection": protection.to_dict()} if protection else {},
+                )
                 self.store.event(connection, run_id, None, "run.started", {})
                 self.repository.remember_response(
                     connection, scope, key, request_digest, {"run_id": run_id}
@@ -401,18 +491,7 @@ class WorkflowRuntimeService:
         for node in source.nodes:
             if node.component_type is not ComponentType.TOOL:
                 continue
-            mapped = {
-                name: values.get(source_name)
-                for name, source_name in (node.input_mapping or {}).items()
-            }
-            if not mapped.get("entity_type"):
-                mapped["entity_type"] = values.get("entity_type") or "ProjectEntity"
-            if not mapped.get("status"):
-                mapped["status"] = values.get("status") or "active"
-            if mapped.get("payload") is None:
-                mapped["payload"] = values.get("result") or dict(values)
-            if not mapped.get("entity_id") and values.get("entity_id"):
-                mapped["entity_id"] = values["entity_id"]
+            mapped = workflow_tool_arguments(self.runtime.tools, node, values)
             authorization = self.runtime.tools.authorize(
                 source=host,  # type: ignore[arg-type]
                 node=node,
@@ -422,13 +501,6 @@ class WorkflowRuntimeService:
                 ready = False
                 code = authorization.code
                 detail = authorization.reason
-            elif authorization.approval_required:
-                ready = False
-                code = "workflow_tool_approval_not_supported"
-                detail = (
-                    "This Workflow Tool requires approval, but no verified "
-                    "Tool approval gate is available for Workflow execution."
-                )
             else:
                 ready = True
                 code = "ready"
@@ -525,6 +597,26 @@ class WorkflowRuntimeService:
                     {"status": status, **(error or {})},
                 )
 
+    def _stop_at_node(self, run_id: str, node_id: str, context: dict[str, Any]) -> None:
+        context = {**context, "waiting": None}
+        with self.repository.transaction() as connection:
+            changed = connection.execute(
+                "UPDATE workflow_runs SET status = 'cancelled', result_json = NULL, "
+                "error_json = NULL, context_json = ?, finished_at = ? "
+                "WHERE run_id = ? AND status = 'running'",
+                (json.dumps(context), utc_now(), run_id),
+            )
+            if not changed.rowcount:
+                return
+            self.store.event(connection, run_id, node_id, "node.completed", {})
+            self.store.event(
+                connection,
+                run_id,
+                node_id,
+                "run.cancelled",
+                {"reason": "workflow_stop"},
+            )
+
     def _execute(self, run_id: str) -> None:
         current: str | None = None
         try:
@@ -534,6 +626,19 @@ class WorkflowRuntimeService:
             )
             calls = resolve_workflow_calls(self.repository, row["project_id"], source)
             context = json.loads(row["context_json"])
+            protection = self.runtime.tools.protection_scope(
+                row["project_id"], "workflow", run_id
+            )
+            project = self.repository.project(row["project_id"])
+            if project is None:
+                raise RuntimeError("project_invalid", "Project is unavailable")
+            self.runtime.tools.protect_inputs(
+                row["project_id"],
+                self.runtime.projects._existing_root(project["root_path"]),
+                source,
+                context["values"],
+                protection,
+            )
             nodes = {node.id: node for node in source.nodes}
             edges = {
                 (edge.from_node, edge.port.value): edge.to_node
@@ -573,13 +678,16 @@ class WorkflowRuntimeService:
                         "true" if _condition(node.expression or "", values) else "false"
                     )
                 elif node.component_type is ComponentType.VERIFIER:
-                    outputs = self.runtime._prepare_outputs(
-                        row["project_id"], source, values
+                    outputs = self.runtime._verifier_values(
+                        row["project_id"], source, node, values
                     )
                     passed = all(
                         _check(
                             check,
-                            values if check.startswith("artifact_exists:") else outputs,
+                            values
+                            if node.input_mapping is None
+                            and check.startswith("artifact_exists:")
+                            else outputs,
                         )
                         for check in (node.checks or ())
                     )
@@ -601,68 +709,15 @@ class WorkflowRuntimeService:
                         "node_id": current,
                         "prompt": _interpolate(node.prompt or "", values),
                         "expected_fields": expected,
+                        "request_id": new_uuid7(),
                     }
                     self._checkpoint(run_id, context, "waiting")
                     return
                 elif node.component_type is ComponentType.TOOL:
-                    mapped = {
-                        name: values.get(source_name)
-                        for name, source_name in (node.input_mapping or {}).items()
-                    }
-                    if "entity_type" not in mapped or not mapped.get("entity_type"):
-                        mapped["entity_type"] = (
-                            values.get("entity_type") or "ProjectEntity"
-                        )
-                    if "status" not in mapped or not mapped.get("status"):
-                        mapped["status"] = values.get("status") or "active"
-                    if "payload" not in mapped or mapped.get("payload") is None:
-                        mapped["payload"] = values.get("result") or dict(values)
-                    # Mapping keys must be hyphenated slugs, so entity_id can
-                    # only reach entity tools through this default.
-                    if not mapped.get("entity_id") and values.get("entity_id"):
-                        mapped["entity_id"] = values["entity_id"]
-                    host = _workflow_tool_host(source)
-                    authorization = self.runtime.tools.authorize(
-                        source=host,  # type: ignore[arg-type]
-                        node=node,
-                        values=mapped,
-                    )
-                    if authorization.decision != "allowed":
-                        raise RuntimeError(authorization.code, authorization.reason)
-                    if authorization.approval_required:
-                        raise RuntimeError(
-                            "workflow_tool_approval_not_supported",
-                            "Workflow Tool approval is required, but no verified "
-                            "Tool approval gate is available for Workflow execution",
-                        )
-                    project = self.runtime.repository.project(row["project_id"])
-                    if project is None:
-                        raise RuntimeError("project_invalid", "Project is unavailable")
-                    execution = self.runtime.tools.execute(
-                        project_root=self.runtime.projects._existing_root(
-                            project["root_path"]
-                        ),
-                        source=host,  # type: ignore[arg-type]
-                        node=node,
-                        values=mapped,
-                        authorization=authorization,
-                        approved=False,
-                        project_id=row["project_id"],
-                    )
-                    values.update(
-                        {
-                            target: execution.output.get(name)
-                            for name, target in (node.output_mapping or {}).items()
-                        }
-                    )
-                    if not node.output_mapping:
-                        values.update(
-                            {
-                                key: value
-                                for key, value in execution.output.items()
-                                if isinstance(key, str)
-                            }
-                        )
+                    if not self._execute_tool(
+                        run_id, row, source, node, context, protection
+                    ):
+                        return
                 elif node.component_type is ComponentType.AGENT_CALL:
                     call = calls[current]
                     inputs = {
@@ -705,13 +760,9 @@ class WorkflowRuntimeService:
                             )
                         return
                     if child["status"] == "waiting":
-                        context["waiting"] = {
-                            "kind": "agent",
-                            "node_id": current,
-                            "agent_id": call.agent_id,
-                            "child_run_id": child["run_id"],
-                            "prompt": "Agent requires approval",
-                        }
+                        context["waiting"] = _child_waiting(
+                            current, call.agent_id, child
+                        )
                         self._checkpoint(run_id, context, "waiting")
                         return
                     if child["status"] not in {"verified", "unverified"}:
@@ -725,6 +776,9 @@ class WorkflowRuntimeService:
                             for name, target in (node.output_mapping or {}).items()
                         }
                     )
+                elif node.component_type is ComponentType.STOP:
+                    self._stop_at_node(run_id, current, context)
+                    return
                 elif node.component_type is ComponentType.OUTPUT:
                     result = self.runtime._prepare_outputs(
                         row["project_id"], source, values
@@ -756,12 +810,12 @@ class WorkflowRuntimeService:
         except Exception as exc:
             code = (
                 exc.code
-                if isinstance(exc, RuntimeError)
+                if isinstance(exc, RuntimeError | ToolRuntimeError)
                 else "workflow_execution_failed"
             )
             message = (
                 str(exc)
-                if isinstance(exc, RuntimeError)
+                if isinstance(exc, RuntimeError | ToolRuntimeError)
                 else "Workflow execution failed"
             )
             with self.repository.transaction() as connection:
@@ -770,6 +824,164 @@ class WorkflowRuntimeService:
                         connection, run_id, current, "node.failed", {"code": code}
                     )
             self._finish(run_id, "failed", error={"code": code, "message": message})
+
+    def _execute_tool(
+        self,
+        run_id: str,
+        row: Any,
+        source: WorkflowSource,
+        node: FlowNode,
+        context: dict[str, Any],
+        protection: InputProtectionScope | None,
+    ) -> bool:
+        from .agent_loop import _tool_input_error
+
+        values = context["values"]
+        mapped = workflow_tool_arguments(self.runtime.tools, node, values)
+        host = _workflow_tool_host(source)
+        authorization = self.runtime.tools.authorize(
+            source=host,  # type: ignore[arg-type]
+            node=node,
+            values=mapped,
+        )
+        if authorization.decision != "allowed":
+            raise RuntimeError(authorization.code, authorization.reason)
+        input_error = _tool_input_error(authorization.resource, mapped)
+        if input_error:
+            raise RuntimeError("tool_input_schema_invalid", input_error)
+        snapshot = tool_snapshot(source, node, authorization, mapped)
+        approved = context.pop("approved_tool", None)
+        if approved is not None and any(
+            approved.get(key) != value for key, value in snapshot.items()
+        ):
+            raise RuntimeError(
+                "workflow_tool_snapshot_changed",
+                "The approved Tool parameters or version changed",
+            )
+        if authorization.approval_required and approved is None:
+            waiting, pending = tool_waiting(source, node, authorization, mapped)
+            context.update(waiting=waiting, pending_tool=pending)
+            self._checkpoint(run_id, context, "waiting")
+            return False
+        with self.repository.transaction() as connection:
+            current = connection.execute(
+                "SELECT status FROM workflow_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if current["status"] != "running":
+                return False
+            started = connection.execute(
+                "SELECT 1 FROM workflow_run_events WHERE run_id = ? "
+                "AND node_id = ? AND kind = 'tool.started'",
+                (run_id, node.id),
+            ).fetchone()
+            if started:
+                raise RuntimeError(
+                    "workflow_tool_replay_blocked",
+                    "A started Workflow Tool cannot be replayed automatically",
+                )
+            if approved is not None:
+                resolved = connection.execute(
+                    "SELECT payload_json FROM workflow_run_events WHERE run_id = ? "
+                    "AND node_id = ? AND kind = 'approval.resolved' "
+                    "ORDER BY sequence DESC LIMIT 1",
+                    (run_id, node.id),
+                ).fetchone()
+                receipt = json.loads(resolved["payload_json"]) if resolved else {}
+                if receipt.get("decision") != "approve" or receipt.get(
+                    "request_id"
+                ) != approved.get("request_id"):
+                    raise RuntimeError(
+                        "workflow_tool_snapshot_changed",
+                        "The Tool approval receipt does not match",
+                    )
+            connection.execute(
+                "UPDATE workflow_runs SET context_json = ? WHERE run_id = ?",
+                (json.dumps(context), run_id),
+            )
+            self.store.event(
+                connection,
+                run_id,
+                node.id,
+                "tool.requested",
+                {
+                    "tool_reference": node.uses,
+                    "input_digest": authorization.input_digest,
+                    "authorization": authorization.decision,
+                },
+            )
+            self.store.event(
+                connection,
+                run_id,
+                node.id,
+                "tool.started",
+                {
+                    "tool_reference": node.uses,
+                    "input_digest": authorization.input_digest,
+                    "snapshot_digest": snapshot["snapshot_digest"],
+                    "request_id": approved.get("request_id") if approved else None,
+                },
+            )
+        project = self.repository.project(row["project_id"])
+        if project is None:
+            raise RuntimeError("project_invalid", "Project is unavailable")
+        try:
+            execution = self.runtime.tools.execute(
+                project_root=self.runtime.projects._existing_root(project["root_path"]),
+                source=host,  # type: ignore[arg-type]
+                node=node,
+                values=mapped,
+                authorization=authorization,
+                approved=approved is not None,
+                project_id=row["project_id"],
+                input_protection_scope=protection,
+                input_files={
+                    name: value
+                    for name, value in values.items()
+                    if name in source.inputs and source.inputs[name].is_artifact()
+                },
+            )
+        except ToolRuntimeError as exc:
+            with self.repository.transaction() as connection:
+                self.store.event(
+                    connection,
+                    run_id,
+                    node.id,
+                    "tool.failed",
+                    {
+                        **(exc.receipt or {}),
+                        "tool_reference": node.uses,
+                        "input_digest": authorization.input_digest,
+                        "code": exc.code,
+                    },
+                )
+            raise
+        with self.repository.transaction() as connection:
+            self.store.event(
+                connection,
+                run_id,
+                node.id,
+                "tool.completed",
+                {
+                    **execution.receipt,
+                    "snapshot_digest": snapshot["snapshot_digest"],
+                    "request_id": approved.get("request_id") if approved else None,
+                },
+            )
+        if execution.produced_artifacts:
+            raise RuntimeError(
+                "workflow_tool_artifacts_unsupported",
+                "This Tool's produced artifacts require an Agent host",
+            )
+        if node.output_mapping:
+            values.update(
+                {
+                    target: execution.output.get(name)
+                    for name, target in node.output_mapping.items()
+                }
+            )
+        else:
+            values.update(execution.output)
+        return True
 
     def _child(
         self,
@@ -795,7 +1007,14 @@ class WorkflowRuntimeService:
         if not self._running(run_id):
             raise RuntimeError("workflow_cancelled", "Workflow was cancelled")
         child = self.runtime.run_version(
-            project_id, agent_id, version_id, inputs, row["dispatch_key"]
+            project_id,
+            agent_id,
+            version_id,
+            inputs,
+            row["dispatch_key"],
+            input_protection_scope=self.runtime.tools.protection_scope(
+                project_id, "workflow", run_id
+            ),
         )
         with self.repository.transaction() as connection:
             connection.execute(
@@ -813,15 +1032,52 @@ class WorkflowRuntimeService:
         command: str,
         key: str,
         inputs: dict[str, Any] | None = None,
+        expected_request_id: str | None = None,
+        additional_turns: int | None = None,
     ) -> dict[str, Any]:
         IdempotencyKey("1.0", key)
-        if command not in {"approve", "reject", "stop", "reply"}:
+        if command not in {"approve", "reject", "stop", "reply", "extend_budget"}:
             raise RuntimeError(
                 "command_invalid",
-                "Workflow supports approve, reject, reply, and stop",
+                "Unsupported Workflow command",
+            )
+        if (additional_turns is not None) != (command == "extend_budget"):
+            raise RuntimeError(
+                "command_invalid", "Only Extend Budget accepts additional turns"
+            )
+        if command == "extend_budget" and not expected_request_id:
+            raise RuntimeError(
+                "command_request_required",
+                "Budget continuation requires the current request ID",
             )
         scope = f"workflow-command:{run_id}"
-        digest = sha256_digest({"command": command, "inputs": inputs or {}})
+        digest = sha256_digest(
+            {
+                "command": command,
+                "inputs": inputs or {},
+                **(
+                    {"additional_turns": additional_turns}
+                    if additional_turns is not None
+                    else {}
+                ),
+            }
+        )
+        if expected_request_id is not None:
+            if command not in {
+                "approve",
+                "reject",
+                "reply",
+                "extend_budget",
+                "stop",
+            } or (
+                not isinstance(expected_request_id, str)
+                or not expected_request_id.strip()
+                or len(expected_request_id) > 128
+            ):
+                raise RuntimeError("command_invalid", "Invalid waiting request binding")
+            digest = sha256_digest(
+                {"command_digest": digest, "expected_request_id": expected_request_id}
+            )
         with self._commands:
             self.detail(project_id, workflow_id, run_id)
             with self.repository.transaction() as connection:
@@ -833,6 +1089,15 @@ class WorkflowRuntimeService:
             row = self.store.row(run_id)
             context = json.loads(row["context_json"])
             if command == "stop":
+                if expected_request_id is not None and (
+                    row["status"] != "waiting"
+                    or expected_request_id
+                    != (context.get("waiting") or {}).get("request_id")
+                ):
+                    raise RuntimeError(
+                        "command_request_changed",
+                        "The waiting request changed before Stop",
+                    )
                 with self.repository.transaction() as connection:
                     changed = connection.execute(
                         "UPDATE workflow_runs SET status = 'cancelled', finished_at "
@@ -860,7 +1125,109 @@ class WorkflowRuntimeService:
                         "command_not_applicable",
                         "Workflow is not waiting for approval or input",
                     )
-                if command == "reply":
+                if (
+                    expected_request_id is not None
+                    and expected_request_id != waiting.get("request_id")
+                ):
+                    raise RuntimeError(
+                        "command_request_changed",
+                        "The waiting request changed; review the current request "
+                        "before replying",
+                    )
+                if waiting.get("child_run_id") and waiting.get("agent_id"):
+                    if (waiting.get("kind") == "budget") != (
+                        command == "extend_budget"
+                    ):
+                        raise RuntimeError(
+                            "command_not_applicable",
+                            "Use Extend Budget for child budget requests",
+                        )
+                    if (waiting.get("kind") == "input") != (command == "reply"):
+                        raise RuntimeError(
+                            "command_not_applicable",
+                            "Use reply for child Agent input and approve/reject "
+                            "for effects",
+                        )
+                    self.runtime.command(
+                        project_id,
+                        waiting["agent_id"],
+                        waiting["child_run_id"],
+                        command,
+                        # Both command records commit together; direct child UI
+                        # actions must not collide with a parent's key.
+                        new_uuid7(),
+                        inputs=inputs,
+                        expected_request_id=waiting.get("request_id"),
+                        additional_turns=additional_turns,
+                        _on_approval_resolved=lambda connection: self._consume_wait(
+                            connection,
+                            run_id,
+                            waiting,
+                            context,
+                            command,
+                            scope,
+                            key,
+                            digest,
+                        ),
+                    )
+                    self._schedule(run_id)
+                    return self.store.detail(run_id)
+                elif command == "extend_budget":
+                    raise RuntimeError(
+                        "command_not_applicable",
+                        "This Workflow is not waiting for a child budget",
+                    )
+                elif (waiting.get("context") or {}).get("kind") == "tool_permission":
+                    if command not in {"approve", "reject"}:
+                        raise RuntimeError(
+                            "command_not_applicable",
+                            "Tool effects require approve or reject",
+                        )
+                    pending = context.pop("pending_tool", None)
+                    if not isinstance(pending, dict) or pending.get(
+                        "request_id"
+                    ) != waiting.get("request_id"):
+                        raise RuntimeError(
+                            "workflow_tool_snapshot_changed",
+                            "The pending Tool snapshot does not match",
+                        )
+                    if command == "approve":
+                        context["approved_tool"] = pending
+                        port = None
+                    else:
+                        with self.repository.transaction() as connection:
+                            self._consume_wait(
+                                connection,
+                                run_id,
+                                waiting,
+                                context,
+                                command,
+                                scope,
+                                key,
+                                digest,
+                            )
+                            connection.execute(
+                                "UPDATE workflow_runs SET status = 'cancelled', "
+                                "finished_at = ? WHERE run_id = ? "
+                                "AND status = 'running'",
+                                (utc_now(), run_id),
+                            )
+                            self.store.event(
+                                connection,
+                                run_id,
+                                waiting["node_id"],
+                                "node.cancelled",
+                                {"code": "tool_approval_rejected"},
+                            )
+                            self.store.event(
+                                connection,
+                                run_id,
+                                None,
+                                "run.cancelled",
+                                {"code": "tool_approval_rejected"},
+                            )
+                        return self.store.detail(run_id)
+                elif command == "reply":
                     if waiting.get("kind") != "input":
                         raise RuntimeError(
                             "command_not_applicable",
@@ -899,15 +1266,6 @@ class WorkflowRuntimeService:
                         "command_not_applicable",
                         "Use reply to provide the requested inputs",
                     )
-                elif waiting["kind"] == "agent":
-                    self.runtime.command(
-                        project_id,
-                        waiting["agent_id"],
-                        waiting["child_run_id"],
-                        command,
-                        key,
-                    )
-                    port = None
                 else:
                     port = "approved" if command == "approve" else "rejected"
                 if port is not None:
@@ -923,24 +1281,72 @@ class WorkflowRuntimeService:
                 context["waiting"] = None
                 context["deadline"] = time.time() + context["remaining_seconds"]
                 with self.repository.transaction() as connection:
-                    connection.execute(
-                        "UPDATE workflow_runs SET status = 'running', context_json = "
-                        "? WHERE run_id = ? AND status = 'waiting'",
-                        (json.dumps(context), run_id),
-                    )
-                    self.store.event(
+                    self._consume_wait(
                         connection,
                         run_id,
-                        waiting["node_id"],
-                        "approval.resolved",
-                        {"decision": command},
+                        waiting,
+                        context,
+                        command,
+                        scope,
+                        key,
+                        digest,
                     )
                 self._schedule(run_id)
+                return self.store.detail(run_id)
             with self.repository.transaction() as connection:
                 self.repository.remember_response(
                     connection, scope, key, digest, {"run_id": run_id}
                 )
             return self.store.detail(run_id)
+
+    def _consume_wait(
+        self,
+        connection: Any,
+        run_id: str,
+        waiting: dict[str, Any],
+        context: dict[str, Any],
+        command: str,
+        scope: str,
+        key: str,
+        digest: str,
+    ) -> None:
+        current = connection.execute(
+            "SELECT * FROM workflow_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if current["status"] != "waiting" or (
+            json.loads(current["context_json"]).get("waiting") != waiting
+        ):
+            raise RuntimeError(
+                "command_request_changed",
+                "The waiting request changed; review the current request "
+                "before replying",
+            )
+        context = dict(context)
+        context["waiting"] = None
+        context["deadline"] = time.time() + context["remaining_seconds"]
+        connection.execute(
+            "UPDATE workflow_runs SET status = 'running', context_json = ? "
+            "WHERE run_id = ?",
+            (json.dumps(context), run_id),
+        )
+        self.store.event(
+            connection,
+            run_id,
+            waiting["node_id"],
+            "approval.resolved",
+            {"decision": command, "request_id": waiting.get("request_id")},
+        )
+        if context["node_id"] != waiting["node_id"]:
+            self.store.event(
+                connection,
+                run_id,
+                waiting["node_id"],
+                "node.completed",
+                {"port": "rejected" if command == "reject" else "approved"},
+            )
+        self.repository.remember_response(
+            connection, scope, key, digest, {"run_id": run_id}
+        )
 
     def follow_events(self, run_id: str, after: int) -> Iterator[str]:
         sequence = after
@@ -955,6 +1361,44 @@ class WorkflowRuntimeService:
                 return
             if not events:
                 time.sleep(0.05)
+
+
+def _child_waiting(
+    node_id: str, agent_id: str, child: dict[str, Any]
+) -> dict[str, Any]:
+    request = next(
+        (
+            event
+            for event in reversed(child.get("events", []))
+            if event["kind"] == "approval.requested"
+        ),
+        None,
+    )
+    payload = request["payload"] if request else {}
+    awaiting_input = payload.get("kind") == "input"
+    return {
+        "kind": "input"
+        if awaiting_input
+        else "budget"
+        if payload.get("kind") == "budget"
+        else "agent",
+        "node_id": node_id,
+        "agent_id": agent_id,
+        "child_run_id": child["run_id"],
+        "prompt": payload.get("prompt") or "Agent requires approval",
+        "request_id": payload.get("request_id")
+        or (request["event_id"] if request else None),
+        **(
+            {"input_schema": {"reply": "string"}, "expected_fields": ["reply"]}
+            if awaiting_input
+            else {}
+        ),
+        **{
+            key: payload[key]
+            for key in ("context", "tool_reference", "approval_summary")
+            if key in payload
+        },
+    }
 
 
 def _permission_gaps(parent: WorkflowSource, child: Any) -> list[dict[str, Any]]:

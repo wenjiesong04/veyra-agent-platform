@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -204,6 +205,34 @@ class FactorySessionRepository:
             values,
         )
 
+    def save_semantic_draft(self, session_id: str, draft: Mapping[str, Any]) -> None:
+        """Merge a semantic draft without changing candidate or session state."""
+        if not isinstance(draft, Mapping):
+            raise TypeError("semantic draft must be a mapping")
+        with self.transaction() as connection:
+            current = connection.execute(
+                "SELECT specification_json FROM factory_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("unknown Factory session")
+            specification = json.loads(current["specification_json"] or "{}")
+            if not isinstance(specification, dict):
+                raise ValueError("Factory specification must be an object")
+            specification["semantic_draft"] = dict(draft)
+            serialized = json.dumps(
+                specification, ensure_ascii=False, sort_keys=True, allow_nan=False
+            )
+            connection.execute(
+                """UPDATE factory_sessions SET specification_json = ?,
+                   revision = revision + 1, updated_at = ? WHERE session_id = ?""",
+                (
+                    serialized,
+                    datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    session_id,
+                ),
+            )
+
     @staticmethod
     def payload(row: sqlite3.Row, messages: list[sqlite3.Row]) -> dict[str, Any]:
         record = _specification_record(row)
@@ -305,6 +334,9 @@ def _specification_record(row: sqlite3.Row) -> dict[str, Any]:
         "status": status if isinstance(status, str) else None,
         "missing": [str(item) for item in missing if isinstance(item, str)],
         "specification": specification if isinstance(specification, dict) else None,
+        "semantic_draft": parsed.get("semantic_draft")
+        if isinstance(parsed.get("semantic_draft"), dict)
+        else None,
         "extras": extras,
         "compiled_source": parsed.get("compiled_source"),
         "target_kind": parsed.get("target_kind"),

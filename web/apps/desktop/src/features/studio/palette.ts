@@ -23,7 +23,7 @@ export type PaletteItem = {
 };
 
 const COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
-  "Start", "Agent", "Model", "AgentCall", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
+  "Start", "Agent", "Model", "AgentCall", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output", "Stop",
 ]);
 
 const AGENT_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
@@ -31,7 +31,7 @@ const AGENT_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
 ]);
 
 const WORKFLOW_COMPONENT_TYPES = new Set<FlowNode["component_type"]>([
-  "Start", "AgentCall", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
+  "Start", "AgentCall", "Condition", "Transform", "HumanApproval", "Verifier", "Output", "Stop",
 ]);
 
 const ZH_TITLE: Record<string, string> = {
@@ -46,6 +46,7 @@ const ZH_TITLE: Record<string, string> = {
   Approval: "审批",
   Verifier: "验证器",
   Output: "输出",
+  Stop: "停止",
   Note: "文字卡片",
   "Read File": "读取文件",
   "List Files": "列出文件",

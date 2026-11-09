@@ -1,7 +1,8 @@
 """On-disk Project layout: one folder per resource kind.
 
 `resources/` remains a legacy raw-file bucket so existing file tools keep
-working. New raw files belong in `assets/`; documents belong in `knowledge/`.
+working. Raw inputs belong in `assets/`; generated deliverables in `reports/`;
+reference documents belong in `knowledge/`.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ PROJECT_LAYOUT_DIRECTORIES: tuple[Path, ...] = (
     Path("components") / "composite",
     Path("knowledge"),
     Path("assets"),
+    Path("reports"),
     Path("tests"),
     Path("resources"),
 )
@@ -37,6 +39,7 @@ INDEXED_ROOT_DIRECTORIES: tuple[Path, ...] = (
     Path("components"),
     Path("knowledge"),
     Path("assets"),
+    Path("reports"),
     Path("tests"),
     Path("resources"),
 )
@@ -47,6 +50,7 @@ ARCHIVE_PREFIXES: tuple[str, ...] = (
     "components/",
     "knowledge/",
     "assets/",
+    "reports/",
     "tests/",
     "resources/",
 )

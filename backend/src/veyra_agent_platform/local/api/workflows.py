@@ -94,6 +94,8 @@ def build_router() -> APIRouter:
                 payload.command,
                 idempotency_key,
                 inputs=payload.inputs,
+                expected_request_id=payload.expected_request_id,
+                additional_turns=payload.additional_turns,
             )
         )
 

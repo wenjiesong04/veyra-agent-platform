@@ -1,0 +1,6 @@
+.showcase .showcase-account { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 5px 11px; margin-left: 12px; border: 1px solid color-mix(in srgb, var(--showcase-ink) 14%, transparent); border-radius: 22px; background: var(--showcase-white); font-size: 12px; white-space: nowrap; }
+.showcase-account > img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
+.showcase-account > span { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+.showcase-account > i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.showcase .showcase-account:hover { border-color: var(--showcase-accent); color: var(--showcase-accent); }
+@media (max-width: 760px) { .showcase .showcase-account { width: 36px; height: 36px; padding: 5px; margin-left: 0; flex: 0 0 36px; }.showcase-account > span { display: none; }.showcase-account > i { position: absolute; right: 1px; bottom: 2px; border: 2px solid var(--showcase-paper); width: 9px; height: 9px; } }

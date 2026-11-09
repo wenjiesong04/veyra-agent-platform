@@ -30,7 +30,14 @@ def test_platform_node_packages_are_the_only_catalog_source() -> None:
     packages = load_node_packages()
 
     assert not (root / "catalog.v1.json").exists()
-    assert len(packages) == 41
+    assert len(packages) == 44
+    stop = node_definition("veyra.component.stop", "1.0.0")
+    assert stop["runtime_status"] == "supported"
+    assert stop["spec"]["output_ports"] == []
+    assert stop["required_permissions"]["tools"] == []
+    assert node_definition("veyra.tool.tabular.compare", "1.2.0")["version"] == "1.2.0"
+    assert node_definition("veyra.tool.tabular.compare", "1.1.0")["version"] == "1.1.0"
+    assert node_definition("veyra.tool.tabular.compare", "1.0.0")["version"] == "1.0.0"
     assert node_definition("veyra.tool.entity.query", "1.0.0")["capabilities"] == [
         "entity_query"
     ]

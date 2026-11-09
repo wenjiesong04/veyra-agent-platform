@@ -43,6 +43,7 @@ _PROVIDER_UNAVAILABLE = {
     "factory_unavailable",
     "factory_timeout",
 }
+_STREAM_HEARTBEAT_SECONDS = 15.0
 
 
 def build_router() -> APIRouter:
@@ -342,7 +343,12 @@ def _turn_stream(
 
     def frames() -> Iterator[str]:
         while True:
-            item = outgoing.get()
+            try:
+                item = outgoing.get(timeout=_STREAM_HEARTBEAT_SECONDS)
+            except queue.Empty:
+                # Keep idle planning requests open without inventing progress.
+                yield ": keep-alive\n\n"
+                continue
             if item is None:
                 break
             kind, data = item

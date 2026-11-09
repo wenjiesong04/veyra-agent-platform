@@ -50,4 +50,12 @@ describe("conversation canvas layout", () => {
     window.localStorage.setItem(CONVERSATION_CANVAS_STORAGE_KEY, "{not-json");
     expect(readConversationCanvasLayout()).toEqual({ width: CONVERSATION_CANVAS_WIDTH_DEFAULT, height: 0 });
   });
+
+  it("allows a report-first default without overriding a user's saved width", () => {
+    expect(readConversationCanvasLayout(720)).toEqual({ width: 720, height: 0 });
+    writeConversationCanvasLayout({ width: 560, height: 300 });
+    expect(readConversationCanvasLayout(720)).toEqual({ width: 560, height: 300 });
+    window.localStorage.setItem(CONVERSATION_CANVAS_STORAGE_KEY, "{not-json");
+    expect(readConversationCanvasLayout(720)).toEqual({ width: 720, height: 0 });
+  });
 });

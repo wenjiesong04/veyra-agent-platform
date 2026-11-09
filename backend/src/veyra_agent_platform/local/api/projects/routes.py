@@ -1218,9 +1218,14 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
     except ProjectError as exc:
         status_code = (
             409
-            if exc.code == "knowledge_in_use"
+            if exc.code
+            in {
+                "knowledge_in_use",
+                "evaluation_review_conflict",
+                "evaluation_snapshot_changed",
+            }
             else 404
-            if exc.code == "artifact_not_found"
+            if exc.code in {"artifact_not_found", "evaluation_report_not_found"}
             else 422
         )
         raise TypedApiError(

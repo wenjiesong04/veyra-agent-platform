@@ -2,126 +2,99 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ShowcaseApp } from "./showcase";
-import { CommunitySite } from "./site";
+import { CommunitySite, isCommunitySitePath } from "./site";
 
 beforeEach(() => {
   window.localStorage.clear();
-  window.history.replaceState(null, "", "#home");
+  window.history.replaceState(null, "", "/#home");
   vi.stubGlobal("fetch", vi.fn());
 });
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  window.history.replaceState(null, "", "#home");
+  window.history.replaceState(null, "", "/#home");
 });
 
 describe("Veyra public showcase", () => {
-  it("renders product information without exposing Community workspace controls", () => {
+  it("shows the product without exposing account or workspace controls", () => {
     render(<ShowcaseApp />);
-
-    expect(screen.getByRole("heading", { level: 1, name: "Build, inspect, run and share AI agents from a local-first workspace." })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "A reviewable path, not a black box." })).toBeInTheDocument();
-    expect(screen.getByText("Local-first does not mean network-free.")).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "A workflow you can inspect" })).toBeInTheDocument();
-    expect(screen.getByText("Structure illustration only. No live Project or Run data.")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Published" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Starred" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Following" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /Describe a task\.\s*Build your Agent\./ })).toBeInTheDocument();
+    expect(screen.getByText("Veyra / AI studio")).toBeInTheDocument();
+    expect(screen.getByText(/Your workspace is local/)).toBeInTheDocument();
+    expect(screen.getByText(/existing outputs from one gift-packaging case/)).toBeInTheDocument();
+    expect(screen.queryByText(/CSV reconciliation|60\.10/)).not.toBeInTheDocument();
+    expect([...document.querySelectorAll('img[src^="/showcase/"]')].every((image) => image.getAttribute("src")?.startsWith("/showcase/gift-"))).toBe(true);
     expect(screen.queryByRole("link", { name: /sign in|register|publish|import/i })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    expect(screen.queryByRole("contentinfo")).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("does not contact Community APIs during initial render", () => {
-    render(<ShowcaseApp />);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it("provides working section links and real repository/document targets", () => {
+  it("keeps the original section deep links and real documentation targets", () => {
     render(<ShowcaseApp />);
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
-    expect(within(navigation).getByRole("link", { name: "Product" })).toHaveAttribute("href", "#product");
-    expect(within(navigation).getByRole("link", { name: "How it works" })).toHaveAttribute("href", "#how-it-works");
-    expect(within(navigation).getByRole("link", { name: "Safety" })).toHaveAttribute("href", "#safety");
-    expect(within(navigation).getByRole("link", { name: "Docs" })).toHaveAttribute("href", "#docs");
-    expect(within(navigation).getByRole("link", { name: "Download" })).toHaveAttribute("href", "#download");
-    expect(screen.getByRole("link", { name: "Build from source" })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/codex/agent-platform/docs/desktop_packaging.md");
-    expect(screen.getByRole("link", { name: "README and setup" })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/codex/agent-platform/README.md");
+    expect(within(navigation).getAllByRole("link").map((link) => link.textContent)).toEqual(["Demo", "Product", "Control", "Docs", "Community"]);
+    for (const [name, href] of [["Demo", "#demo"], ["Product", "#product"], ["Control", "#safety"], ["Docs", "#/docs"], ["Community", "#/community"]]) {
+      expect(within(navigation).getByRole("link", { name })).toHaveAttribute("href", href);
+    }
+    for (const anchor of ["product", "how-it-works", "safety", "docs", "download", "experience", "control", "start"]) {
+      expect(document.getElementById(anchor)).toBeInTheDocument();
+    }
+    expect(screen.getByRole("link", { name: /Desktop build guide/ })).toHaveAttribute("href", "https://github.com/wenjiesong04/veyra-agent-platform/blob/codex/agent-platform/docs/desktop_packaging.md");
+    const buildLinks = screen.getAllByRole("link", { name: "Build" });
+    expect(buildLinks).toHaveLength(2);
+    for (const link of buildLinks) expect(link).toHaveAttribute("href", "#/docs/get-started");
+    expect(screen.getByRole("link", { name: "Explore the case" })).toHaveAttribute("href", "#product");
   });
 
-  it("renders complete Chinese content and can switch back to English", async () => {
+  it("switches the complete page language using the existing preference", async () => {
     const user = userEvent.setup();
     render(<ShowcaseApp />);
     await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
-
-    expect(await screen.findByRole("heading", { level: 1, name: "在本机优先的工作空间中构建、检查、运行和分享 Agent。" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "本机优先，不代表完全离线。" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "目前尚无公开安装包。" })).toBeInTheDocument();
-
+    expect(await screen.findByRole("heading", { level: 1, name: /描述任务，\s*创建你的 Agent。/ })).toBeInTheDocument();
+    expect(screen.getByText("Veyra / AI 工作室")).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("link", { name: "社区" })).toHaveAttribute("href", "#/community");
+    expect(screen.getByText(/公开安装包尚未通过发布验收/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "切换到英文" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Build, inspect, run and share AI agents from a local-first workspace." })).toBeInTheDocument();
-  });
-
-  it("supports theme switching and an accessible mobile navigation toggle", async () => {
-    const user = userEvent.setup();
-    render(<ShowcaseApp />);
-    const menu = screen.getByRole("button", { name: "Open navigation" });
-    expect(menu).toHaveAttribute("aria-expanded", "false");
-    await user.click(menu);
-    expect(screen.getByRole("button", { name: "Close navigation" })).toHaveAttribute("aria-expanded", "true");
-    await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));
-    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
-  });
-
-  it.each(["#/community/published", "#/community/starred", "#/community/following", "#/login", "#/register"]) (
-    "redirects legacy workspace URL %s to the public home without rendering management UI",
-    async (legacyHash) => {
-      window.history.replaceState(null, "", legacyHash);
-      render(<ShowcaseApp />);
-      expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
-      expect(screen.queryByRole("heading", { name: /published|starred|following|sign in|register/i })).not.toBeInTheDocument();
-      await waitFor(() => expect(window.location.hash).toBe("#home"));
-      expect(globalThis.fetch).not.toHaveBeenCalled();
-    },
-  );
-
-  it("normalizes an in-page legacy Registry hash without loading a workspace", async () => {
-    render(<ShowcaseApp />);
-    window.location.hash = "#/community/published";
-    await waitFor(() => expect(window.location.hash).toBe("#home"));
-    expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Published" })).not.toBeInTheDocument();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(await screen.findByText("Veyra / AI studio")).toBeInTheDocument();
   });
 });
 
-describe("5174 community and showcase", () => {
-  beforeEach(() => {
-    window.localStorage.clear();
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } })));
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.unstubAllGlobals();
-    window.history.replaceState(null, "", "#home");
-  });
-
-  it("opens the public showcase without the cloud workspace", async () => {
-    window.history.replaceState(null, "", "#/projects");
+describe("5174 community and showcase routing", () => {
+  it("normalizes an unknown legacy workspace route to the normal homepage", async () => {
+    window.history.replaceState(null, "", "/?lang=zh#/projects");
     render(<CommunitySite />);
-    expect(await screen.findByRole("heading", { level: 1, name: "Build, inspect, run and share AI agents from a local-first workspace." })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Your Veyra workspace" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Chat" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /描述任务，\s*创建你的 Agent。/ })).toBeInTheDocument();
     await waitFor(() => expect(window.location.hash).toBe("#home"));
+    expect(window.location.search).toBe("?lang=zh");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("opens the community catalog instead of a cloud project workspace", async () => {
-    window.history.replaceState(null, "", "#/community");
+  it.each(["community", "/community/published", "/account", "/login", "/register", "/forgot-password"])(
+    "preserves the Community route %s",
+    (path) => expect(isCommunitySitePath(path)).toBe(true),
+  );
+
+  it("opens the Community catalog from the homepage without rewriting its URL", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } })));
     render(<CommunitySite />);
+    await user.click(within(screen.getByRole("navigation", { name: "Primary navigation" })).getByRole("link", { name: "Community" }));
     expect(await screen.findByRole("heading", { name: "Discover" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Your Veyra workspace" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 1, name: /local-first workspace/ })).not.toBeInTheDocument();
+    expect(window.location.hash).toBe("#/community");
+    expect(screen.queryByText("Veyra / AI studio")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
+    expect(screen.getAllByRole("navigation", { name: "Primary navigation" })).toHaveLength(1);
+    expect(within(screen.getByRole("banner")).getByRole("link", { name: "Community" })).toHaveAttribute("aria-current", "location");
+    const sidebar = screen.getByRole("navigation", { name: "Community pages" });
+    expect(within(sidebar).getAllByRole("link").map((link) => link.textContent)).toEqual(["Discover", "Published", "Starred", "Mine"]);
+    for (const [name, href] of [["Discover", "#/community"], ["Published", "#/community/published"], ["Starred", "#/community/starred"], ["Mine", "#/community/mine"]]) {
+      expect(within(sidebar).getByRole("link", { name })).toHaveAttribute("href", href);
+    }
+    await user.click(within(sidebar).getByRole("link", { name: "Published" }));
+    expect(await screen.findByRole("heading", { name: "Published" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/community/published");
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
   });
 });

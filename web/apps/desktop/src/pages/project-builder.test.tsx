@@ -610,6 +610,119 @@ function durableSnapshot(overrides: Partial<BuilderConversationSnapshot> = {}): 
 }
 
 describe("Durable Project Chat", () => {
+  it("continues applying the same reviewed Workflow after an apply failure without model resubmission", async () => {
+    const failed = durableSnapshot({
+      operations: [{
+        ...durableSnapshot().operations[0], kind: "create_workflow", target_kind: "workflow",
+        error_code: "resource_unbound", proposal_id: "workflow-proposal", factory_session_id: "session-1",
+        diagnostic: { stage: "agent_creation_apply" },
+        events: [{ event_id: "proposal", operation_id: "op-1", sequence: 0, kind: "builder.proposal.ready", label: "Review", summary: "", facts: { proposal_kind: "create_workflow", proposal_id: "workflow-proposal" }, created_at: "2026-09-18T00:00:00Z" }],
+      }],
+      factory_session: { ...factoryReviewSession(), target_kind: "workflow" },
+    });
+    const finished = durableSnapshot({
+      ...failed,
+      operations: [{ ...failed.operations[0], status: "succeeded", error_code: null, diagnostic: { workflow_id: "workflow-new" } }],
+      factory_session: { ...failed.factory_session!, state: "completed" },
+    });
+    const { api } = setup("agent", [], false);
+    const submitBuilderTurn = vi.fn().mockResolvedValue(failed);
+    const command = vi.fn().mockResolvedValue(finished);
+    Object.assign(api, { submitBuilderTurn, commandBuilderAgentCreationProposal: command });
+    await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Create a reviewed Workflow" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review and create Draft" }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith("project-1", "conv-1", "op-1", "workflow-proposal", { command: "apply", confirm: true, locale: "en" }));
+    expect(submitBuilderTurn).toHaveBeenCalledTimes(1);
+    expect(api.resolveBuilderIntent).not.toHaveBeenCalled();
+    expect(failed.operations[0].status).toBe("failed");
+  });
+
+  it("displays the server-owned edit proposal without generating a second candidate", async () => {
+    const { api } = setup("agent", [], true);
+    const snapshot = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "waiting" },
+      messages: [{ message_id: "m-edit", conversation_id: "conv-1", sequence: 0, role: "assistant", kind: "assistant", content: "Edit proposal is ready", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:01Z" }],
+      operations: [{ ...durableSnapshot().operations[0], kind: "edit", status: "waiting", error_code: null, proposal_id: "proposal-1", diagnostic: { agent_id: "agent-1" } }],
+      resolution: { schema_version: "1.0", intent: "edit", create_kind: null, status: "resolved", message: "Edit proposal is ready", instruction: "Rename", plan: [], targets: [{ kind: "agent", target_id: "agent-1", name: "Review", revision: 1, etag: '"etag-1"' }] },
+    });
+    Object.assign(api, { submitBuilderTurn: vi.fn().mockResolvedValue(snapshot) });
+    await ready();
+    api.listEditProposals.mockResolvedValue({ schema_version: "1.0", proposals: [editProposal()] });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Rename the draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("button", { name: "Confirm apply proposal" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: "Refresh proposals" })).toHaveLength(1);
+    expect(api.createEditProposal).not.toHaveBeenCalled();
+    expect(api.resolveBuilderIntent).not.toHaveBeenCalled();
+    expect(api.commandEditProposal).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a persisted edit proposal after background completion and remount", async () => {
+    const { api, wrapper } = setup("agent", [], false);
+    const base = durableSnapshot();
+    const messages: BuilderConversationSnapshot["messages"] = [{ message_id: "m-edit", conversation_id: "conv-1", sequence: 0, role: "user", kind: "user", content: "Rename the draft", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:00Z" }];
+    const operation = { ...base.operations[0], kind: "edit" as const, status: "in_progress" as const, error_code: null, diagnostic: { agent_id: "agent-1" } };
+    let snapshot = durableSnapshot({
+      conversation: { ...base.conversation, last_operation_status: "in_progress" },
+      messages, operations: [operation],
+    });
+    const submitBuilderTurn = vi.fn();
+    Object.assign(api, { submitBuilderTurn, getBuilderConversation: vi.fn().mockImplementation(async () => snapshot) });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    const page = render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    await ready();
+    expect(screen.queryByText(/Reload the current Draft and resolve the conflict/)).not.toBeInTheDocument();
+    api.listEditProposals.mockResolvedValue({ schema_version: "1.0", proposals: [editProposal()] });
+    snapshot = durableSnapshot({
+      conversation: { ...base.conversation, last_operation_status: "waiting", updated_at: "2026-09-18T00:00:02Z" },
+      messages, operations: [{ ...operation, status: "waiting", proposal_id: "proposal-1", updated_at: "2026-09-18T00:00:02Z" }],
+    });
+    expect(await screen.findByRole("button", { name: "Confirm apply proposal" }, { timeout: 3000 })).toBeEnabled();
+    page.unmount();
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByRole("button", { name: "Confirm apply proposal" })).toBeEnabled();
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    expect(api.createEditProposal).not.toHaveBeenCalled();
+    expect(submitBuilderTurn).not.toHaveBeenCalled();
+    expect(api.commandEditProposal).not.toHaveBeenCalled();
+  });
+
+  it("clears a streamed interpretation when generation fails even without a matching saved reply", async () => {
+    const { api } = setup("agent", [], false);
+    Object.assign(api, {
+      submitBuilderTurn: vi.fn().mockImplementation(async (_project, _input, handlers) => {
+        handlers.onPreview("I will build a complete reconciliation report.");
+        return durableSnapshot();
+      }),
+    });
+    await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Create a reconciliation assistant" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByRole("button", { name: "Build Agent · failed" });
+    expect(screen.queryByText("I will build a complete reconciliation report.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  });
+
+  it("does not attach the previous failed session to a retry before its session exists", async () => {
+    const previous = { ...durableSnapshot().operations[0], factory_session_id: "session-1", error_code: "factory_generation_blocked" };
+    const snapshot = durableSnapshot({
+      conversation: { ...durableSnapshot().conversation, last_operation_status: "in_progress" },
+      operations: [previous, { ...previous, operation_id: "op-retry", retry_of: previous.operation_id, status: "in_progress", error_code: null, factory_session_id: null, diagnostic: {}, events: [] }],
+      factory_session: { ...factoryReviewSession(), state: "ready", blocked_reason: "planner_invalid", blueprint: null },
+    });
+    const { api, wrapper } = setup("agent", [], false, "zh");
+    Object.assign(api, { getBuilderConversation: vi.fn().mockResolvedValue(snapshot) });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByRole("button", { name: "正在构建 Agent" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "方案暂时无法生成" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "工作台" })).toHaveClass("is-live");
+  });
+
   it("keeps an old blocked turn still while a later turn owns the current session", async () => {
     const previous = durableSnapshot().operations[0];
     const snapshot = durableSnapshot({
@@ -639,7 +752,7 @@ describe("Durable Project Chat", () => {
     cleanup();
     window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
     render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
-    expect(await screen.findByRole("button", { name: "构建 Agent · 已阻塞" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "构建 Agent · 生成失败" })).toBeInTheDocument();
     expect(screen.queryByText("已完成")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "方案暂时无法生成" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "正在生成方案" })).toBeInTheDocument();
@@ -805,8 +918,59 @@ describe("Durable Project Chat", () => {
       retry_of: "op-1",
     }), expect.objectContaining({ onEvent: expect.any(Function) })));
     expect(submitBuilderTurn.mock.calls[0][1].content).toBeUndefined();
+    expect(submitBuilderTurn.mock.calls[0][1]).not.toHaveProperty("resume_only");
+    expect(submitBuilderTurn.mock.calls[0][1]).not.toHaveProperty("request_limit");
     expect(await screen.findByText("我理解为创建一个新的礼物包装 Agent。")).toBeInTheDocument();
     expect(screen.getByText(/Agent 结构生成失败/)).toBeInTheDocument();
+  });
+
+  it.each(["factory_generation_blocked", "factory_quota_exhausted"])("checks a retained creation plan after %s without sending or clearing the pending message", async (code) => {
+    const base = durableSnapshot();
+    const failed = durableSnapshot({
+      operations: [{ ...base.operations[0], factory_session_id: "retained-session", error_code: code, diagnostic: { blocked_reason: "compose_failed" } }],
+    });
+    const { api, wrapper } = setup("agent", [], false);
+    let finish!: (snapshot: BuilderConversationSnapshot) => void;
+    const submitBuilderTurn = vi.fn().mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    Object.assign(api, { submitBuilderTurn, getBuilderConversation: vi.fn().mockResolvedValue(failed) });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    const label = code === "factory_quota_exhausted" ? "Check plan after account recovery" : "Check retained plan";
+    const check = await screen.findByRole("button", { name: label });
+    if (code === "factory_quota_exhausted") expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    const message = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(message, { target: { value: "Keep this unsent correction" } });
+    fireEvent.click(check);
+    await waitFor(() => expect(submitBuilderTurn).toHaveBeenCalledWith("project-1", {
+      content: undefined, conversation_id: "conv-1", focus: null, locale: "en", retry_of: "op-1", resume_only: true, request_limit: 1,
+    }, expect.objectContaining({ onEvent: expect.any(Function), onSnapshot: expect.any(Function) })));
+    expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
+    expect(message).toHaveValue("Keep this unsent correction");
+    expect(screen.getAllByText("帮我生成礼物包装 Agent")).toHaveLength(1);
+    expect(api.resolveBuilderIntent).not.toHaveBeenCalled();
+    await act(async () => { finish(failed); });
+    expect(await screen.findByRole("button", { name: label })).toBeEnabled();
+    expect(submitBuilderTurn).toHaveBeenCalledTimes(1);
+    expect(message).toHaveValue("Keep this unsent correction");
+  });
+
+  it("reports an unavailable retained plan without falling back to a fresh generation", async () => {
+    const base = durableSnapshot();
+    const failed = durableSnapshot({ operations: [{ ...base.operations[0], factory_session_id: "retained-session" }] });
+    const { api, wrapper } = setup("agent", [], false);
+    const submitBuilderTurn = vi.fn().mockRejectedValue(new LocalApiClientError("No compatible saved generation draft is available to continue.", { status: 422, code: "builder_draft_continuation_unavailable" }));
+    Object.assign(api, { submitBuilderTurn, getBuilderConversation: vi.fn().mockResolvedValue(failed) });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    fireEvent.click(await screen.findByRole("button", { name: "Check retained plan" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("No compatible saved generation draft is available to continue.");
+    expect(await screen.findByRole("button", { name: "Check retained plan" })).toBeEnabled();
+    expect(submitBuilderTurn).toHaveBeenCalledTimes(1);
+    expect(submitBuilderTurn.mock.calls[0][1]).toMatchObject({ resume_only: true, request_limit: 1, retry_of: "op-1" });
+    expect(api.resolveBuilderIntent).not.toHaveBeenCalled();
+    expect(screen.getAllByText("帮我生成礼物包装 Agent")).toHaveLength(1);
   });
 
   it("puts copy and time on every message and retry only on the last turn", async () => {
@@ -1119,6 +1283,73 @@ describe("Durable Project Chat", () => {
     });
     expect(screen.getByText("Specifying Agent").closest("li")).toHaveAttribute("data-state", "current");
     expect(getBuilderConversation.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("accepts slow progress queries and keeps their terminal state after an older stream closes", async () => {
+    const base = durableSnapshot();
+    const early = durableSnapshot({
+      conversation: { ...base.conversation, last_operation_status: "in_progress" },
+      operations: [{ ...base.operations[0], status: "in_progress", error_code: null, diagnostic: {}, events: [], updated_at: "2026-09-18T00:00:01Z" }],
+    });
+    const failed = durableSnapshot({
+      ...early,
+      conversation: { ...early.conversation, last_operation_status: "failed", updated_at: "2026-09-18T00:00:02Z" },
+      messages: [...early.messages, { message_id: "m-final", conversation_id: "conv-1", sequence: 10, role: "assistant", kind: "failure", content: "The plan could not preserve the required confirmation.", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:02Z" }],
+      operations: [{ ...early.operations[0], status: "failed", error_code: "factory_generation_blocked", updated_at: "2026-09-18T00:00:02Z" }],
+    });
+    const { api } = setup("agent", [], false);
+    let finish!: (snapshot: BuilderConversationSnapshot) => void;
+    const submitBuilderTurn = vi.fn().mockImplementation((_projectId: string, _input: unknown, options: { onSnapshot?: (snapshot: BuilderConversationSnapshot) => void }) => {
+      options.onSnapshot?.(early);
+      return new Promise<BuilderConversationSnapshot>((resolve) => { finish = resolve; });
+    });
+    const getBuilderConversation = vi.fn().mockImplementation(() => new Promise<BuilderConversationSnapshot>((resolve) => { window.setTimeout(() => resolve(failed), 1500); }));
+    Object.assign(api, { submitBuilderTurn, getBuilderConversation });
+    fireEvent.change(await screen.findByRole("textbox", { name: "Message" }), { target: { value: "Build a reconciliation assistant" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("The plan could not preserve the required confirmation.", {}, { timeout: 3500 })).toBeInTheDocument();
+    expect(getBuilderConversation).toHaveBeenCalledTimes(1);
+    expect(window.location.hash).toContain("conversation=conv-1");
+    await act(async () => { finish(early); });
+    expect(screen.getByText("The plan could not preserve the required confirmation.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Building Agent/ })).not.toBeInTheDocument();
+  });
+
+  it("recovers a live conversation whose first restored snapshot has no operations", async () => {
+    const base = durableSnapshot();
+    const early = durableSnapshot({ conversation: { ...base.conversation, last_operation_status: "in_progress" }, operations: [], messages: [] });
+    const final = durableSnapshot({ messages: [{ message_id: "m-final", conversation_id: "conv-1", sequence: 0, role: "assistant", kind: "failure", content: "Recovered terminal result", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:02Z" }] });
+    const { api, wrapper } = setup("agent", [], false);
+    const getBuilderConversation = vi.fn().mockResolvedValueOnce(early).mockResolvedValue(final);
+    Object.assign(api, { submitBuilderTurn: vi.fn(), getBuilderConversation });
+    cleanup();
+    window.location.hash = "#/projects/project-1/chat?conversation=conv-1";
+    render(wrapper(<ProjectChatPage projectId="project-1" conversationId="conv-1" />));
+    expect(await screen.findByText("Recovered terminal result")).toBeInTheDocument();
+    expect(getBuilderConversation.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("starts durable recovery when a stream event precedes the persisted identity snapshot", async () => {
+    const base = durableSnapshot();
+    const early = durableSnapshot({ conversation: { ...base.conversation, last_operation_status: "in_progress" }, operations: [] });
+    const final = durableSnapshot({ messages: [{ message_id: "m-final", conversation_id: "conv-1", sequence: 0, role: "assistant", kind: "failure", content: "Recovered after stream event", operation_id: "op-1", payload: {}, created_at: "2026-09-18T00:00:02Z" }] });
+    const { api } = setup("agent", [], false);
+    let finish!: (snapshot: BuilderConversationSnapshot) => void;
+    Object.assign(api, {
+      getBuilderConversation: vi.fn().mockResolvedValue(final),
+      submitBuilderTurn: vi.fn().mockImplementation((_projectId: string, _input: unknown, options: { onEvent?: (event: BuilderOperationEvent) => void; onSnapshot?: (snapshot: BuilderConversationSnapshot) => void }) => {
+        options.onEvent?.({ event_id: "e-early", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" });
+        options.onSnapshot?.(early);
+        return new Promise<BuilderConversationSnapshot>((resolve) => { finish = resolve; });
+      }),
+    });
+    final.operations[0].events = [{ event_id: "e-early", operation_id: "op-1", sequence: 0, kind: "builder.operation.started", label: "Started", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" }];
+    fireEvent.change(await screen.findByRole("textbox", { name: "Message" }), { target: { value: "Create an assistant" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Recovered after stream event")).toBeInTheDocument();
+    await act(async () => { finish(early); });
+    expect(screen.getByText("Recovered after stream event")).toBeInTheDocument();
   });
 
   it.each(["create_agent", "create_workflow"] as const)("shows runtime binding while the %s stream is still open", async (kind) => {

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Eye, FileText, Upload, X } from "lucide-react";
 import {
   acceptedMediaTypes,
   compactFieldType,
@@ -126,6 +127,7 @@ export function RuntimeInputForm({
   locale = "en",
   projectId,
   api,
+  presentation = "default",
 }: {
   schema: TypedFields;
   values: Record<string, JsonValue>;
@@ -135,6 +137,7 @@ export function RuntimeInputForm({
   locale?: Locale;
   projectId?: string;
   api?: Pick<LocalProjectApi, "uploadArtifact" | "artifactContent">;
+  presentation?: "default" | "workspace";
 }) {
   const text = copy[locale];
   const entries = Object.entries(schema);
@@ -152,6 +155,7 @@ export function RuntimeInputForm({
           locale={locale}
           projectId={projectId}
           api={api}
+          presentation={presentation}
         />
       ))}
       {!entries.length ? <p>{emptyLabel ?? text.empty}</p> : null}
@@ -169,6 +173,7 @@ function RuntimeInputField({
   locale,
   projectId,
   api,
+  presentation,
 }: {
   name: string;
   spec: TypedFieldSpec;
@@ -179,7 +184,9 @@ function RuntimeInputField({
   locale: Locale;
   projectId?: string;
   api?: Pick<LocalProjectApi, "uploadArtifact" | "artifactContent">;
+  presentation: "default" | "workspace";
 }) {
+  const inputId = React.useId();
   const type = compactFieldType(spec);
   const text = copy[locale];
   const [error, setError] = React.useState("");
@@ -191,6 +198,8 @@ function RuntimeInputField({
     : undefined;
   const description = typeof spec === "string" ? "" : spec.description?.trim() ?? "";
   const typeLabel = inputTypeLabel(type, locale);
+  const workspace = presentation === "workspace";
+  const refs = type === "collection" && isArtifactCollection(value) ? value.items : refsOf(value, multiple);
 
   const setValue = (next: JsonValue | undefined) => {
     if (next === undefined) {
@@ -250,8 +259,8 @@ function RuntimeInputField({
   };
 
   return (
-    <label className="runtime-input-field" data-field-type={type}>
-      <span className="runtime-input-field-head">
+    <div className={`runtime-input-field${workspace ? " is-workspace" : ""}`} data-field-type={type}>
+      <label className="runtime-input-field-head" htmlFor={inputId}>
         <strong className="runtime-input-field-name">{name}</strong>
         <span className="runtime-input-field-meta">
           <small className="runtime-input-type">{typeLabel}</small>
@@ -259,10 +268,12 @@ function RuntimeInputField({
             {fieldIsRequired(spec) ? text.required : text.optional}
           </small>
         </span>
-      </span>
+      </label>
       {description ? <small className="runtime-input-description">{description}</small> : null}
       {type === "boolean" ? (
         <select
+          id={inputId}
+          name={name}
           aria-label={name}
           value={String(value ?? false)}
           onChange={(event) => setValue(event.target.value === "true")}
@@ -272,6 +283,9 @@ function RuntimeInputField({
         </select>
       ) : type === "object" || type === "array" || type === "table" ? (
         <textarea
+          id={inputId}
+          name={name}
+          autoComplete="off"
           rows={3}
           aria-label={name}
           value={typeof value === "string" ? String(value) : JSON.stringify(value ?? (type === "object" ? {} : []), null, 2)}
@@ -290,8 +304,11 @@ function RuntimeInputField({
         />
       ) : isArtifactCompactType(type) ? (
         <div className="runtime-artifact-input">
-          <small className="runtime-input-file-help">{text.fileHelp[type]}</small>
+          {!workspace || !description ? <small className="runtime-input-file-help">{text.fileHelp[type]}</small> : null}
           <input
+            id={inputId}
+            name={name}
+            className={workspace ? "runtime-file-native" : undefined}
             type="file"
             aria-label={name}
             accept={accept || undefined}
@@ -302,20 +319,38 @@ function RuntimeInputField({
               event.currentTarget.value = "";
             }}
           />
-          {busy ? <small>{text.uploading}</small> : null}
+          {workspace ? <label className={`runtime-file-picker${busy ? " is-busy" : ""}`} htmlFor={inputId}>
+            <Upload size={16} aria-hidden="true" />
+            {busy ? text.uploading : refs.length && !multiple && type !== "collection" ? (locale === "zh" ? "更换文件" : "Replace file") : (locale === "zh" ? "选择文件" : "Choose file")}
+          </label> : null}
+          {busy ? <small role="status">{text.uploading}</small> : null}
           {multiple || type === "collection" ? <small className="runtime-input-multiple">{text.multiple}</small> : null}
           <ArtifactPreviewList
-            refs={type === "collection" && isArtifactCollection(value) ? value.items : refsOf(value, multiple)}
+            refs={refs}
             locale={locale}
             projectId={projectId}
             api={api}
             onRemove={removeAt}
+            compact={workspace}
           />
-          {error ? <small className="runtime-io-error">{error}</small> : null}
+          {error ? <small className="runtime-io-error" role="alert">{error}</small> : null}
         </div>
+      ) : type === "string" && !listId ? (
+        <textarea
+          id={inputId}
+          name={name}
+          autoComplete="off"
+          rows={3}
+          aria-label={name}
+          value={String(value ?? "")}
+          onChange={(event) => setValue(event.target.value)}
+        />
       ) : (
         <>
           <input
+            id={inputId}
+            name={name}
+            autoComplete="off"
             type={type === "integer" || type === "number" ? "number" : "text"}
             step={type === "integer" ? "1" : "any"}
             list={listId}
@@ -333,7 +368,7 @@ function RuntimeInputField({
           {listId ? <datalist id={listId}>{fileOptions.slice(0, 100).map((path) => <option value={path} key={path} />)}</datalist> : null}
         </>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -343,12 +378,14 @@ function ArtifactPreviewList({
   projectId,
   api,
   onRemove,
+  compact = false,
 }: {
   refs: ArtifactRef[];
   locale: Locale;
   projectId?: string;
   api?: Pick<LocalProjectApi, "artifactContent">;
   onRemove: (index: number) => void;
+  compact?: boolean;
 }) {
   const text = copy[locale];
   if (!refs.length) return null;
@@ -356,8 +393,8 @@ function ArtifactPreviewList({
     <ul className="runtime-artifact-list">
       {refs.map((item, index) => (
         <li key={`${item.artifact_id}:${index}`}>
-          <ArtifactCard item={item} locale={locale} projectId={projectId} api={api} />
-          <button type="button" onClick={() => onRemove(index)}>{text.remove}</button>
+          <ArtifactCard item={item} locale={locale} projectId={projectId} api={api} compact={compact} />
+          <button type="button" aria-label={compact ? `${text.remove} ${item.filename}` : undefined} title={compact ? `${text.remove} ${item.filename}` : undefined} onClick={() => onRemove(index)}>{compact ? <X size={16} aria-hidden="true" /> : text.remove}</button>
         </li>
       ))}
     </ul>
@@ -386,11 +423,13 @@ export function ArtifactCard({
   locale,
   projectId,
   api,
+  compact = false,
 }: {
   item: ArtifactRef;
   locale: Locale;
   projectId?: string;
   api?: Pick<LocalProjectApi, "artifactContent">;
+  compact?: boolean;
 }) {
   const zh = locale === "zh";
   const [url, setUrl] = React.useState<string | null>(null);
@@ -426,12 +465,13 @@ export function ArtifactCard({
   };
 
   return (
-    <div className="runtime-artifact-card">
+    <div className={`runtime-artifact-card${compact ? " is-compact" : ""}`}>
+      {compact && !item.media_type.startsWith("image/") ? <FileText size={18} aria-hidden="true" /> : null}
       {item.media_type.startsWith("image/") && url ? <img src={url} alt={item.filename} /> : null}
       <strong>{item.filename}</strong>
       <small>{item.media_type}</small>
       {api?.artifactContent && projectId ? (
-        <button type="button" onClick={() => void open()}>{zh ? "查看" : "Open"}</button>
+        <button type="button" aria-label={compact ? `${zh ? "查看" : "Open"} ${item.filename}` : undefined} title={compact ? `${zh ? "查看" : "Open"} ${item.filename}` : undefined} onClick={() => void open()}>{compact ? <Eye size={16} aria-hidden="true" /> : zh ? "查看" : "Open"}</button>
       ) : null}
     </div>
   );

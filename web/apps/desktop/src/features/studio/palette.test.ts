@@ -169,6 +169,26 @@ describe("Studio catalog palette", () => {
     expect(paletteForMode(items, "workflow")[0]?.componentType).toBe("AgentCall");
   });
 
+  it("offers terminal Stop nodes only in Workflow palettes without effect permissions", () => {
+    const stop: ResourceDescriptor = {
+      ...tool("Stop", "stop", "ready"),
+      resource_id: "veyra.component.stop",
+      reference: "veyra.component.stop@1.0.0",
+      kind: "component",
+      component_class: "primitive",
+      factory_selectable: false,
+      required_permissions: { network_hosts: [], tools: [], filesystem_read_roots: [], filesystem_write_roots: [], shell_workspace_only: false },
+      spec: { fields: [], output_ports: [], ui: { category: "core", icon: "square", title: "Stop" } },
+    };
+    for (const items of [fallbackPalette(), paletteFromCatalog([stop])]) {
+      const item = paletteForMode(items, "workflow").find((entry) => entry.componentType === "Stop");
+      expect(item).toMatchObject({ componentType: "Stop", titleZh: "停止", ports: [], draggable: true, runtimeStatus: "supported" });
+      expect(newCatalogNode(item!, "stop")).toEqual({ id: "stop", component_type: "Stop" });
+      expect(paletteForMode(items, "agent").some((entry) => entry.componentType === "Stop")).toBe(false);
+      expect(paletteForMode(items, "loop").some((entry) => entry.componentType === "Stop")).toBe(false);
+    }
+  });
+
   it("projects Project Agents as Workflow AgentCall shortcuts", () => {
     const agent = { agent_id: "01900000-0000-7000-8000-000000000001", slug: "translation", name: "translation", description: "", pinned: false, source_path: "agents/translation/agent.vagent.yaml", source_file_hash: "f".repeat(64) };
     const items = workflowAgentPalette([agent]);

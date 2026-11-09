@@ -1,0 +1,10 @@
+.work-item-row { flex-wrap: wrap; border-radius: 8px; }
+.work-item-row > .row-copy { flex: 1 1 280px; }
+.work-item-row small, .work-item-row code, .work-item-row a { overflow-wrap: anywhere; }
+.work-item-row .work-item-warning { color: var(--muted); }
+.work-item-row [role="alert"] { color: var(--danger); }
+.work-item-binding { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 8px; min-width: 0; }
+.work-item-binding label { display: grid; gap: 4px; flex: 1 1 200px; min-width: 0; }
+.work-item-binding select { width: 100%; min-width: 0; }
+.work-item-attempts { flex-basis: 100%; min-width: 0; }
+.work-item-attempts > span { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }

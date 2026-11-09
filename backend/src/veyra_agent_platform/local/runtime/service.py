@@ -9,6 +9,7 @@ import time
 from base64 import b64encode
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -65,7 +66,12 @@ from veyra_agent_platform.local.runtime.dataflow import DataflowStore
 from veyra_agent_platform.local.storage.repositories import LocalRepository
 
 from .agent_loop import AgentLoopRuntime, loop_image_outputs, loop_tool_references
-from .client import GeneratedImage, RuntimeModelClient, RuntimeProviderError
+from .client import (
+    CapabilityProfileLookup,
+    GeneratedImage,
+    RuntimeModelClient,
+    RuntimeProviderError,
+)
 from .config import RuntimeSettings
 from .conversations import AgentConversationService
 from .credentials import (
@@ -75,6 +81,8 @@ from .credentials import (
     RuntimeBinding,
     node_binding_slot,
 )
+from .effect_dispatch import has_dispatched_effect
+from .input_protection import InputProtectionScope, InputProtectionStore
 from .model_capabilities import (
     RuntimeModelCapabilities,
     runtime_model_capabilities,
@@ -99,6 +107,11 @@ _MAX_IMAGES_PER_STEP = 4
 class _RunAbandoned(Exception):
     """The run left the running state before the executor could finish."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[tuple[str | None, str, dict[str, Any]]] = []
+        self.tool_calls: tuple[_ToolCallRecord, ...] = ()
+
 
 class RuntimeError(ProjectError):
     """A typed terminal runtime failure."""
@@ -119,6 +132,7 @@ class _ToolCallRecord:
     decision_reason: str
     input_digest: str
     receipt: dict[str, Any] | None
+    call_id: str = dataclass_field(default_factory=new_uuid7)
 
 
 @dataclass(frozen=True)
@@ -156,10 +170,16 @@ class RuntimeService(AgentLoopRuntime):
         custom_components: CustomComponentService | None = None,
         credentials: ProviderCredentialStore | None = None,
         model_registry: Any | None = None,
+        provider_capability_lookup: CapabilityProfileLookup | None = None,
     ) -> None:
         self.repository, self.projects, self.library = repository, projects, library
-        self.model = model or RuntimeModelClient(RuntimeSettings())
+        self.model = model or RuntimeModelClient(
+            RuntimeSettings(), provider_capability_lookup=provider_capability_lookup
+        )
+        self.provider_capability_lookup = provider_capability_lookup
         self.tools = tools or ToolRuntime(ResourceCatalog())
+        if self.tools.input_protection is None:
+            self.tools.input_protection = InputProtectionStore(repository)
         self.custom_components = custom_components or CustomComponentService(
             projects, self.tools.catalog
         )
@@ -216,6 +236,51 @@ class RuntimeService(AgentLoopRuntime):
             for item in self.credentials.list()
             if item.readiness == "ready"
         ]
+        if self.model_registry is not None:
+            registry = self.model_registry
+            bindings = registry.runtime_binding_profiles(project_id)
+            defaults = tuple(
+                item
+                for item in registry.list_defaults()
+                if item.role in {"primary", "primary_model", "text_generation"}
+            )
+            # Existing Project selection takes precedence, including a stale
+            # slot. Without one, reuse only a default the user has selected.
+            project_binding = bindings.get("project", {}).get(RUNTIME_BINDING_SLOT)
+            approved_ids = (
+                {project_binding}
+                if project_binding is not None
+                else {item.model_profile_id for item in defaults}
+            )
+            profiles = tuple(
+                item
+                for item in registry.list_profiles()
+                if item.model_profile_id in approved_ids
+            )
+            resolution = ModelResolver.resolve(
+                (
+                    ModelCapabilityRequirement(
+                        slot=RUNTIME_BINDING_SLOT,
+                        required=("text_generation",),
+                        reason="Builder reuses an existing verified Runtime choice",
+                        source="builder_runtime_preflight",
+                    ),
+                ),
+                profiles,
+                bindings,
+                defaults,
+            )[0]
+            if resolution.status.value in {"already_bound", "will_bind"}:
+                return {
+                    "status": "ready",
+                    "credentials": credentials,
+                    "binding_slot": RUNTIME_BINDING_SLOT,
+                    "project_id": project_id,
+                    "model_profile_id": resolution.selected_model_profile_id,
+                    "binding_source": "project"
+                    if project_binding is not None
+                    else "user_default",
+                }
         return {
             "status": "waiting_for_runtime_binding"
             if credentials
@@ -685,7 +750,9 @@ class RuntimeService(AgentLoopRuntime):
 
         if source.is_loop:
             require(RUNTIME_BINDING_SLOT, "text_generation")
-            if _fields_include_image(source.inputs):
+            if _fields_include_image(source.inputs) or (
+                source.finalization is not None and source.finalization.review_images
+            ):
                 require(RUNTIME_BINDING_SLOT, "image_input")
 
         model_nodes = [
@@ -1371,7 +1438,14 @@ class RuntimeService(AgentLoopRuntime):
             self.repository.add_run_events(
                 connection,
                 run_id,
-                [(None, "run.created", {}), (None, "run.started", {})],
+                [
+                    (
+                        None,
+                        "run.created",
+                        self._protection_payload(project_id, run_id, source),
+                    ),
+                    (None, "run.started", {}),
+                ],
             )
             started = self._row_payload(
                 connection.execute(
@@ -1409,6 +1483,7 @@ class RuntimeService(AgentLoopRuntime):
         version_id: str | None = None,
         conversation_id: str | None = None,
         append_user: bool = True,
+        _on_run_created: Callable[[Any, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Execute a committed Agent version. Never reads the current draft."""
 
@@ -1454,6 +1529,8 @@ class RuntimeService(AgentLoopRuntime):
                 connection, scope, idempotency_key, digest
             )
             if replay is not None:
+                if _on_run_created is not None:
+                    _on_run_created(connection, replay)
                 return replay
             run_id = new_uuid7()
             conversation_context = ""
@@ -1490,13 +1567,22 @@ class RuntimeService(AgentLoopRuntime):
             self.repository.add_run_events(
                 connection,
                 run_id,
-                [(None, "run.created", {}), (None, "run.started", {})],
+                [
+                    (
+                        None,
+                        "run.created",
+                        self._protection_payload(project_id, run_id, source),
+                    ),
+                    (None, "run.started", {}),
+                ],
             )
             started = self._row_payload(
                 connection.execute(
                     "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
                 ).fetchone()
             )
+            if _on_run_created is not None:
+                _on_run_created(connection, started)
             self.repository.remember_response(
                 connection, scope, idempotency_key, digest, started
             )
@@ -1656,6 +1742,8 @@ class RuntimeService(AgentLoopRuntime):
         version_id: str,
         inputs: dict[str, Any],
         idempotency_key: str,
+        *,
+        input_protection_scope: InputProtectionScope | None = None,
     ) -> dict[str, Any]:
         """Execute a pinned snapshot without inspecting or changing its draft."""
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
@@ -1673,7 +1761,17 @@ class RuntimeService(AgentLoopRuntime):
         inputs = self._prepare_inputs(project_id, source, inputs)
         self._require_runtime_modalities(project_id, agent_id, source)
         scope = f"run-version:{project_id}:{agent_id}:{version_id}"
-        digest = sha256_digest({"version_id": version_id, "inputs": inputs})
+        digest_payload: dict[str, Any] = {"version_id": version_id, "inputs": inputs}
+        if input_protection_scope is not None:
+            if input_protection_scope.project_id != project_id:
+                raise RuntimeError(
+                    "input_protection_invalid",
+                    "Input protection Project does not match",
+                )
+            assert self.tools.input_protection is not None
+            self.tools.input_protection.validate_scope(input_protection_scope)
+            digest_payload["input_protection"] = input_protection_scope.to_dict()
+        digest = sha256_digest(digest_payload)
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, digest
@@ -1693,7 +1791,16 @@ class RuntimeService(AgentLoopRuntime):
             self.repository.add_run_events(
                 connection,
                 run_id,
-                [(None, "run.created", {}), (None, "run.started", {})],
+                [
+                    (
+                        None,
+                        "run.created",
+                        self._protection_payload(
+                            project_id, run_id, source, input_protection_scope
+                        ),
+                    ),
+                    (None, "run.started", {}),
+                ],
             )
             started = self._row_payload(
                 connection.execute(
@@ -1730,6 +1837,10 @@ class RuntimeService(AgentLoopRuntime):
         checkpoint_id: str | None = None,
         comment: str | None = None,
         inputs: dict[str, Any] | None = None,
+        expected_request_id: str | None = None,
+        additional_turns: int | None = None,
+        _on_approval_resolved: Callable[[Any], None] | None = None,
+        _on_run_created: Callable[[Any, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         IdempotencyKey(SCHEMA_VERSION, idempotency_key)
         self.library._agent_in_project(project_id, agent_id)
@@ -1740,8 +1851,29 @@ class RuntimeService(AgentLoopRuntime):
             or row["project_id"] != project_id
         ):
             raise ProjectError("unknown Agent run")
-        if command not in {"approve", "reject", "stop", "resume", "retry", "reply"}:
+        if command not in {
+            "approve",
+            "reject",
+            "stop",
+            "resume",
+            "retry",
+            "reply",
+            "extend_budget",
+        }:
             raise RuntimeError("command_invalid", "Unsupported run command")
+        if _on_run_created is not None and command != "retry":
+            raise RuntimeError(
+                "command_invalid", "Run creation binding is only valid for Retry"
+            )
+        if (additional_turns is not None) != (command == "extend_budget"):
+            raise RuntimeError(
+                "command_invalid", "Only Extend Budget accepts additional turns"
+            )
+        if command == "extend_budget" and not expected_request_id:
+            raise RuntimeError(
+                "command_request_required",
+                "Budget continuation requires the current request ID",
+            )
         note = (comment or "").strip()
         if note and command not in {"approve", "reject"}:
             raise RuntimeError(
@@ -1766,7 +1898,15 @@ class RuntimeService(AgentLoopRuntime):
                 "inputs_invalid", "Reply must contain a non-empty reply string"
             )
         digest = sha256_digest(
-            {"command": command, **({"inputs": inputs} if inputs is not None else {})}
+            {
+                "command": command,
+                **({"inputs": inputs} if inputs is not None else {}),
+                **(
+                    {"additional_turns": additional_turns}
+                    if additional_turns is not None
+                    else {}
+                ),
+            }
         )
         if note:
             digest = sha256_digest({"command": command, "comment": note})
@@ -1776,19 +1916,45 @@ class RuntimeService(AgentLoopRuntime):
                     "command_invalid", "Only Resume accepts a checkpoint"
                 )
             digest = sha256_digest({"command": command, "checkpoint_id": checkpoint_id})
+        if expected_request_id is not None:
+            if command not in {
+                "approve",
+                "reject",
+                "reply",
+                "extend_budget",
+                "stop",
+            } or (
+                not isinstance(expected_request_id, str)
+                or not expected_request_id.strip()
+                or len(expected_request_id) > 128
+            ):
+                raise RuntimeError("command_invalid", "Invalid waiting request binding")
+            digest = sha256_digest(
+                {"command_digest": digest, "expected_request_id": expected_request_id}
+            )
         with self.repository.transaction() as connection:
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, digest
             )
             if replay is not None:
+                if _on_run_created is not None:
+                    _on_run_created(connection, replay)
                 return replay
         if command == "retry":
             return self._retry_run(
-                row, scope=scope, idempotency_key=idempotency_key, digest=digest
+                row,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+                on_created=_on_run_created,
             )
         if command == "stop":
             return self._stop_run(
-                row, scope=scope, idempotency_key=idempotency_key, digest=digest
+                row,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+                expected_request_id=expected_request_id,
             )
         if command == "resume":
             return self._resume_run(
@@ -1797,6 +1963,19 @@ class RuntimeService(AgentLoopRuntime):
                 scope=scope,
                 idempotency_key=idempotency_key,
                 digest=digest,
+            )
+        if command == "extend_budget":
+            from .budget_commands import extend_runtime_budget
+
+            return extend_runtime_budget(
+                self,
+                row,
+                additional_turns=additional_turns,
+                expected_request_id=expected_request_id,
+                scope=scope,
+                idempotency_key=idempotency_key,
+                digest=digest,
+                on_resolved=_on_approval_resolved,
             )
         return self._resolve_approval(
             row,
@@ -1808,6 +1987,8 @@ class RuntimeService(AgentLoopRuntime):
             scope=scope,
             idempotency_key=idempotency_key,
             digest=digest,
+            expected_request_id=expected_request_id,
+            on_resolved=_on_approval_resolved,
         )
 
     def runs(self, project_id: str, agent_id: str) -> dict[str, Any]:
@@ -1983,6 +2164,7 @@ class RuntimeService(AgentLoopRuntime):
         digest: str | None,
     ) -> dict[str, Any]:
         now = _now()
+        approval_id = new_uuid7()
         with self.repository.transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
@@ -1992,7 +2174,7 @@ class RuntimeService(AgentLoopRuntime):
             self._store_tool_calls(connection, run_id, pause.tool_calls)
             self.repository.insert_approval_request(
                 connection,
-                approval_id=new_uuid7(),
+                approval_id=approval_id,
                 run_id=run_id,
                 node_id=pause.node_id,
                 prompt=pause.prompt,
@@ -2008,7 +2190,11 @@ class RuntimeService(AgentLoopRuntime):
                 created_at=now,
             )
             self.repository.set_run_status(connection, run_id, status="waiting")
-            requested = {"prompt": pause.prompt, **dict(pause.details or {})}
+            requested = {
+                "prompt": pause.prompt,
+                **dict(pause.details or {}),
+                "request_id": approval_id,
+            }
             self.repository.add_run_events(
                 connection,
                 run_id,
@@ -2017,8 +2203,8 @@ class RuntimeService(AgentLoopRuntime):
                         pause.node_id,
                         "node.waiting",
                         {
-                            "reason": "input"
-                            if (pause.details or {}).get("kind") == "input"
+                            "reason": (pause.details or {}).get("kind")
+                            if (pause.details or {}).get("kind") in {"input", "budget"}
                             else "approval"
                         },
                     ),
@@ -2078,7 +2264,21 @@ class RuntimeService(AgentLoopRuntime):
                 input_digest=record.input_digest,
                 receipt=record.receipt,
                 created_at=now,
+                tool_call_id=record.call_id,
             )
+
+    def _store_abandoned_loop_calls(
+        self, run_id: str, records: tuple[_ToolCallRecord, ...]
+    ) -> None:
+        """Retain the current execution segment without changing a terminal run."""
+        if not records:
+            return
+        with self.repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT status FROM runtime_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is not None and row["status"] in {"cancelled", "interrupted"}:
+                self._store_tool_calls(connection, run_id, records)
 
     def _recovery_identity(
         self, project_id: str, source: AgentSource
@@ -2160,6 +2360,20 @@ class RuntimeService(AgentLoopRuntime):
                 created_at=_now(),
             )
 
+    @staticmethod
+    def _require_unmanaged_run(connection: Any, run_id: str) -> None:
+        owner = connection.execute(
+            "SELECT 1 FROM work_item_attempts WHERE run_id = ? "
+            "OR previous_run_id = ? LIMIT 1",
+            (run_id, run_id),
+        ).fetchone()
+        if owner is not None:
+            raise RuntimeError(
+                "work_item_command_required",
+                "This Run is managed by a WorkItem. Use Monitor to retry it "
+                "so its version, concurrency and execution history stay linked.",
+            )
+
     def _resume_run(
         self,
         row: Any,
@@ -2192,6 +2406,7 @@ class RuntimeService(AgentLoopRuntime):
         self._require_runtime_modalities(row["project_id"], row["agent_id"], source)
         now, command_id, run_id = _now(), new_uuid7(), new_uuid7()
         with self.repository.transaction() as connection:
+            self._require_unmanaged_run(connection, row["run_id"])
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, digest
             )
@@ -2234,15 +2449,12 @@ class RuntimeService(AgentLoopRuntime):
                 )
                 return response
             state = json.loads(checkpoint["values_json"])
-            dispatched = connection.execute(
-                "SELECT 1 FROM runtime_run_events WHERE run_id = ? "
-                "AND sequence > ? AND kind = 'tool.started' LIMIT 1",
-                (row["run_id"], state["sequence"]),
-            ).fetchone()
-            if dispatched is not None:
+            if has_dispatched_effect(
+                connection, row["run_id"], source, after_sequence=state["sequence"]
+            ):
                 raise RuntimeError(
                     "resume_effect_unsafe",
-                    "A Tool was dispatched after this checkpoint; "
+                    "An effect was dispatched after this checkpoint; "
                     "reconcile its effects before recovery",
                 )
             if state["identity"] != self._recovery_identity(row["project_id"], source):
@@ -2294,6 +2506,9 @@ class RuntimeService(AgentLoopRuntime):
                             "version_id": row["version_id"],
                             "inputs": inputs,
                             "recovery_identity": state["identity"],
+                            **self._inherited_protection_payload(
+                                row["project_id"], row["run_id"]
+                            ),
                         },
                     ),
                     (None, "run.started", {}),
@@ -2364,6 +2579,7 @@ class RuntimeService(AgentLoopRuntime):
         scope: str,
         idempotency_key: str,
         digest: str,
+        on_created: Callable[[Any, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if row["status"] not in {"failed", "interrupted", "cancelled"}:
             raise RuntimeError(
@@ -2392,24 +2608,24 @@ class RuntimeService(AgentLoopRuntime):
         conversation_id = row["conversation_id"]
         conversation_context = ""
         with self.repository.transaction() as connection:
+            if on_created is None:
+                self._require_unmanaged_run(connection, row["run_id"])
             replay = self.repository.idempotent_response(
                 connection, scope, idempotency_key, digest
             )
             if replay is not None:
+                if on_created is not None:
+                    on_created(connection, replay)
                 return replay
             # Receipts are stored at outcome/pause; absence cannot prove no effect.
             # The durable pre-dispatch event also covers cancellation and process loss.
             ancestor_id = row["run_id"]
             while ancestor_id:
-                dispatched = connection.execute(
-                    "SELECT 1 FROM runtime_run_events WHERE run_id = ? "
-                    "AND kind = 'tool.started' LIMIT 1",
-                    (ancestor_id,),
-                ).fetchone()
-                if dispatched is not None:
+                if has_dispatched_effect(connection, ancestor_id, source):
                     raise RuntimeError(
                         "retry_effect_unsafe",
-                        "Retry blocked: a Tool may have produced external effects. "
+                        "Retry blocked: a Tool or image request may have "
+                        "produced external effects. "
                         "Inspect the original run and reconcile effects manually "
                         "before a new run.",
                     )
@@ -2468,6 +2684,9 @@ class RuntimeService(AgentLoopRuntime):
                         {
                             "retry_of_run_id": row["run_id"],
                             "retry_command_id": command_id,
+                            **self._inherited_protection_payload(
+                                row["project_id"], row["run_id"]
+                            ),
                             "version_id": row["version_id"],
                             "inputs": inputs,
                         },
@@ -2480,6 +2699,8 @@ class RuntimeService(AgentLoopRuntime):
                     "SELECT * FROM runtime_runs WHERE run_id = ?", (run_id,)
                 ).fetchone()
             )
+            if on_created is not None:
+                on_created(connection, response)
             self.repository.remember_response(
                 connection, scope, idempotency_key, digest, response
             )
@@ -2508,6 +2729,7 @@ class RuntimeService(AgentLoopRuntime):
         scope: str,
         idempotency_key: str,
         digest: str,
+        expected_request_id: str | None = None,
     ) -> dict[str, Any]:
         now = _now()
         command_id = new_uuid7()
@@ -2524,6 +2746,17 @@ class RuntimeService(AgentLoopRuntime):
                 raise RuntimeError(
                     "command_not_applicable", "Stop is only available for active runs"
                 )
+            if expected_request_id is not None:
+                pending = self.repository.pending_approval(connection, row["run_id"])
+                if (
+                    row["status"] != "waiting"
+                    or pending is None
+                    or pending["approval_id"] != expected_request_id
+                ):
+                    raise RuntimeError(
+                        "command_request_changed",
+                        "The waiting request changed before Stop",
+                    )
             self.repository.remember_response(
                 connection, scope, idempotency_key, digest, self._row_payload(row)
             )
@@ -2571,6 +2804,8 @@ class RuntimeService(AgentLoopRuntime):
         digest: str,
         comment: str = "",
         input_reply: str | None = None,
+        expected_request_id: str | None = None,
+        on_resolved: Callable[[Any], None] | None = None,
     ) -> dict[str, Any]:
         if row["status"] != "waiting":
             raise RuntimeError(
@@ -2597,6 +2832,23 @@ class RuntimeService(AgentLoopRuntime):
                 raise RuntimeError(
                     "command_not_applicable", "No pending approval checkpoint"
                 )
+            active_request = connection.execute(
+                "SELECT event_id FROM runtime_run_events WHERE run_id = ? "
+                "AND kind = 'approval.requested' ORDER BY sequence DESC LIMIT 1",
+                (row["run_id"],),
+            ).fetchone()
+            if expected_request_id is not None and (
+                expected_request_id != pending["approval_id"]
+                and (
+                    active_request is None
+                    or active_request["event_id"] != expected_request_id
+                )
+            ):
+                raise RuntimeError(
+                    "command_request_changed",
+                    "The waiting request changed; review the current request "
+                    "before replying",
+                )
             version = connection.execute(
                 "SELECT * FROM agent_versions WHERE version_id = ?",
                 (row["version_id"],),
@@ -2611,6 +2863,11 @@ class RuntimeService(AgentLoopRuntime):
                 )
             values = json.loads(checkpoint["values_json"])
             loop_state = values.get("$agent_loop") or {}
+            if loop_state.get("pending_budget"):
+                raise RuntimeError(
+                    "command_not_applicable",
+                    "Use Extend Budget or Stop for a budget pause",
+                )
             awaiting_input = source.is_loop and bool(loop_state.get("pending_input"))
             if awaiting_input != (input_reply is not None):
                 raise RuntimeError(
@@ -2669,6 +2926,42 @@ class RuntimeService(AgentLoopRuntime):
                 values = _bind_blank_approval_condition(
                     source, next_node, decision, values
                 )
+            if on_resolved is not None:
+                on_resolved(connection)
+            if awaiting_input and row["conversation_id"]:
+                conversation = connection.execute(
+                    "SELECT agent_version_id FROM agent_conversations "
+                    "WHERE conversation_id = ? AND project_id = ? AND agent_id = ?",
+                    (row["conversation_id"], row["project_id"], row["agent_id"]),
+                ).fetchone()
+                if conversation is None:
+                    raise RuntimeError(
+                        "conversation_not_found", "Agent conversation was not found"
+                    )
+                if conversation["agent_version_id"] not in (None, row["version_id"]):
+                    raise RuntimeError(
+                        "conversation_version_mismatch",
+                        "This conversation is pinned to a different Agent version",
+                    )
+                sequence = connection.execute(
+                    "SELECT COUNT(*) FROM agent_conversation_messages "
+                    "WHERE conversation_id = ?",
+                    (row["conversation_id"],),
+                ).fetchone()[0]
+                assert input_reply is not None
+                self.repository.append_agent_conversation_message(
+                    connection,
+                    message_id=new_uuid7(),
+                    conversation_id=row["conversation_id"],
+                    sequence=sequence,
+                    role="user",
+                    content=input_reply,
+                    run_id=row["run_id"],
+                    created_at=now,
+                )
+                self.repository.touch_agent_conversation(
+                    connection, row["conversation_id"], now
+                )
             self.repository.remember_response(
                 connection, scope, idempotency_key, digest, self._row_payload(row)
             )
@@ -2697,6 +2990,7 @@ class RuntimeService(AgentLoopRuntime):
             )
             resolved_payload: dict[str, Any] = {
                 "decision": "replied" if awaiting_input else decision,
+                "request_id": pending["approval_id"],
                 **({"kind": "input"} if awaiting_input else {}),
             }
             if comment:
@@ -2814,6 +3108,17 @@ class RuntimeService(AgentLoopRuntime):
         verified: bool = False,
     ) -> None:
         try:
+            protection = self.tools.protection_scope(project_id, "agent", run_id)
+            project = self.repository.project(project_id)
+            if project is None:
+                raise RuntimeError("project_invalid", "Project is unavailable")
+            self.tools.protect_inputs(
+                project_id,
+                self.projects._existing_root(project["root_path"]),
+                source,
+                inputs,
+                protection,
+            )
             if self.credentials is not None:
                 resolved = self.credentials.effective_credential(
                     project_id, source.agent_id
@@ -2840,8 +3145,10 @@ class RuntimeService(AgentLoopRuntime):
                 verified=verified,
             )
             if not self._is_running(run_id):
+                if source.is_loop:
+                    self._store_abandoned_loop_calls(run_id, outcome.tool_calls)
                 return
-            self._commit_outcome(
+            committed = self._commit_outcome(
                 run_id,
                 outcome,
                 scope=scope,
@@ -2849,7 +3156,11 @@ class RuntimeService(AgentLoopRuntime):
                 digest=digest,
                 conversation_id=conversation_id,
             )
-        except _RunAbandoned:
+            if source.is_loop and committed["status"] in {"cancelled", "interrupted"}:
+                self._store_abandoned_loop_calls(run_id, outcome.tool_calls)
+        except _RunAbandoned as exc:
+            if source.is_loop:
+                self._store_abandoned_loop_calls(run_id, exc.tool_calls)
             return
         except (RuntimeProviderError, ToolRuntimeError) as exc:
             if self._is_running(run_id):
@@ -2869,10 +3180,30 @@ class RuntimeService(AgentLoopRuntime):
                     idempotency_key=idempotency_key,
                     digest=digest,
                 )
+            if source.is_loop:
+                self._store_abandoned_loop_calls(run_id, exc.tool_calls)
 
     def _is_running(self, run_id: str) -> bool:
         row = self.repository.run(run_id)
         return row is not None and row["status"] == "running"
+
+    @staticmethod
+    def _protection_payload(
+        project_id: str,
+        run_id: str,
+        source: AgentSource,
+        inherited: InputProtectionScope | None = None,
+    ) -> dict[str, Any]:
+        protection = inherited
+        if protection is None and source.permissions.protect_input_files:
+            protection = InputProtectionScope(project_id, "agent", run_id)
+        return {"input_protection": protection.to_dict()} if protection else {}
+
+    def _inherited_protection_payload(
+        self, project_id: str, run_id: str
+    ) -> dict[str, Any]:
+        protection = self.tools.protection_scope(project_id, "agent", run_id)
+        return {"input_protection": protection.to_dict()} if protection else {}
 
     def _run_response(self, run_id: str) -> dict[str, Any]:
         row = self.repository.run(run_id)
@@ -2905,6 +3236,11 @@ class RuntimeService(AgentLoopRuntime):
         source: AgentSource | WorkflowSource, inputs: dict[str, Any]
     ) -> None:
         declared = source.inputs
+        if any(name.startswith("$") for name in inputs):
+            raise RuntimeError(
+                "inputs_invalid",
+                "Reserved Runtime state cannot be supplied as task inputs",
+            )
         extra = set(inputs) - set(declared)
         missing = {
             name
@@ -2948,6 +3284,20 @@ class RuntimeService(AgentLoopRuntime):
             else "output_invalid"
         )
         return self._bind_typed_values(project_id, source.outputs, result, error_code)
+
+    def _verifier_values(
+        self,
+        project_id: str,
+        source: AgentSource | WorkflowSource,
+        node: FlowNode,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """A scoped check reads its bound subjects without demanding future outputs."""
+        if node.input_mapping is None:
+            return self._prepare_outputs(project_id, source, values)
+        return {
+            name: values.get(variable) for name, variable in node.input_mapping.items()
+        }
 
     def _bind_typed_values(
         self,
@@ -3168,7 +3518,7 @@ class RuntimeService(AgentLoopRuntime):
                     port = "true" if _condition(node.expression, values) else "false"
                 elif node.component_type is ComponentType.VERIFIER:
                     assert node.checks is not None
-                    result = self._prepare_outputs(project_id, source, values)
+                    result = self._verifier_values(project_id, source, node, values)
                     verifier_passed = all(
                         _check(check, result) for check in node.checks
                     )
@@ -3232,6 +3582,10 @@ class RuntimeService(AgentLoopRuntime):
                         authorization=authorization,
                         approved=approved,
                         project_id=project_id,
+                        input_files=inputs,
+                        input_protection_scope=self.tools.protection_scope(
+                            project_id, "agent", run_id
+                        ),
                     )
                     produced = self._materialize_produced_artifacts(
                         project_id,
@@ -3808,6 +4162,9 @@ class RuntimeService(AgentLoopRuntime):
             authorization=authorization,
             approved=approved,
             project_id=project_id,
+            input_protection_scope=self.tools.protection_scope(
+                project_id, "agent", run_id
+            ),
         )
         produced_artifacts = self._materialize_produced_artifacts(
             project_id,
@@ -4122,8 +4479,14 @@ class RuntimeService(AgentLoopRuntime):
         )
         count = 2 if field.multiple else 1
         generated: list[GeneratedImage] = []
+
+        def check_running() -> None:
+            if run_id is not None and not self._is_running(run_id):
+                raise _RunAbandoned()
+
         try:
             while len(generated) < count:
+                check_running()
                 # Bindings, credentials, and verified capability snapshots can
                 # change during a long-running Agent. Recheck the exact client
                 # immediately before every Provider generation request.
@@ -4140,7 +4503,19 @@ class RuntimeService(AgentLoopRuntime):
                         "The image-generation Provider credential is no longer "
                         "available.",
                     )
+                if emit is not None:
+                    emit(
+                        node.id, "node.started", {"phase": "image", "output_name": name}
+                    )
+                check_running()
                 batch = client.generate_images(prompt, count=count - len(generated))
+                if emit is not None:
+                    emit(
+                        node.id,
+                        "image.response_received",
+                        {"image_count": len(batch), "published": False},
+                    )
+                check_running()
                 if not batch:
                     break
                 generated.extend(batch)
@@ -4150,18 +4525,20 @@ class RuntimeService(AgentLoopRuntime):
             raise RuntimeError(
                 "image_generation_empty", "The image model returned no image"
             )
-        refs = [
-            self._store_artifact(
-                project_id,
-                run_id,
-                node.id,
-                f"{name}-{index}{image.suffix}",
-                image.contents,
-                image.media_type,
-                emit,
+        refs = []
+        for index, image in enumerate(generated[:_MAX_IMAGES_PER_STEP], start=1):
+            check_running()
+            refs.append(
+                self._store_artifact(
+                    project_id,
+                    run_id,
+                    node.id,
+                    f"{name}-{index}{image.suffix}",
+                    image.contents,
+                    image.media_type,
+                    emit,
+                )
             )
-            for index, image in enumerate(generated[:_MAX_IMAGES_PER_STEP], start=1)
-        ]
         result: dict[str, Any] = {name: refs if field.multiple else refs[0]}
         for other, other_field in fields.items():
             if other != name and other_field.compact_type == "string":
@@ -4216,6 +4593,7 @@ class RuntimeService(AgentLoopRuntime):
         *,
         current_node: str | None = None,
         fields: Mapping[str, TypedField] | None = None,
+        image_limit: int | None = _MAX_PROMPT_IMAGES,
     ) -> str | list[dict[str, Any]]:
         declared = fields or source.inputs
         extracted: dict[str, str] = {}
@@ -4257,6 +4635,7 @@ class RuntimeService(AgentLoopRuntime):
             current_node=current_node,
             documents=documents,
             fields=declared,
+            image_limit=image_limit,
         )
 
     def _artifact_plain_text(
@@ -4363,6 +4742,7 @@ class RuntimeService(AgentLoopRuntime):
                     transport=self.model.transport,
                     secret_store=self.model.secret_store,
                     secret_ref=self.credentials.secret_ref(credential.credential_id),
+                    provider_capability_lookup=self.provider_capability_lookup,
                 )
         # Injected transports are test/runtime adapters and do not carry a
         # process credential. Keep them usable for deterministic local tests.
@@ -4378,6 +4758,7 @@ class RuntimeService(AgentLoopRuntime):
             transport=None,
             secret_store=self.model.secret_store,
             secret_ref=f"runtime.unbound.{project_id}.{agent_id}.{slot}",
+            provider_capability_lookup=self.provider_capability_lookup,
         )
 
     def _model_evidence(
@@ -4610,6 +4991,7 @@ def _agent_user_content(
     current_node: str | None = None,
     documents: Mapping[str, str] | None = None,
     fields: Mapping[str, TypedField] | None = None,
+    image_limit: int | None = _MAX_PROMPT_IMAGES,
 ) -> str | list[dict[str, Any]]:
     image_parts: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -4619,7 +5001,7 @@ def _agent_user_content(
         artifact_id = artifact_id_from_value(item)
         if not artifact_id or artifact_id in seen:
             return
-        if len(image_parts) >= _MAX_PROMPT_IMAGES:
+        if image_limit is not None and len(image_parts) >= image_limit:
             return
         if capabilities.image_input != "supported":
             if required:

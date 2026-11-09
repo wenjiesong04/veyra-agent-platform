@@ -100,7 +100,7 @@ export function TestRunPanel({ api, projectId, agentId, source, disabled, locale
             {run?.status === "running" ? <Button variant="ghost" size="sm" disabled={live.busy} onClick={() => void live.sendCommand("stop")}>{zh ? "停止运行" : "Stop Run"}</Button> : null}
             {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => live.clear()}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
-          <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
+          <RunApprovalBar run={run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} onExtendBudget={(turns) => void live.sendCommand("extend_budget", undefined, turns)} />
           {disabled ? <Alert type="warning" title={zh ? "请先保存并通过校验。" : "Save the draft and resolve diagnostics first."} /> : null}
           {!api.runAgent ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
           {(api.runtimeStatus || api.runtimeReadiness) && !disabled ? <RuntimeKeyNote api={api} projectId={projectId} agentId={agentId} locale={locale} /> : null}

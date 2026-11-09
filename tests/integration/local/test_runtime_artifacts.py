@@ -283,6 +283,8 @@ def test_pdf_string_output_is_invalid_and_tool_emits_artifact_created(
         {"text": "string"},
     )
     real["outputs"] = {"report": "pdf"}
+    # The scripted adapter must still receive the bound Tool's path contract.
+    real["inputs"]["path"] = "string"
     real["extensions"]["veyra"]["permissions"] = {
         "network_hosts": [],
         "tools": ["veyra.tool.filesystem.read"],
@@ -329,11 +331,11 @@ def test_pdf_string_output_is_invalid_and_tool_emits_artifact_created(
         )
         started = client.post(
             url,
-            json={"inputs": {"text": "Write a report"}},
+            json={"inputs": {"text": "Write a report", "path": "assets/source.txt"}},
             headers={"Idempotency-Key": new_uuid7()},
         )
         done = _await_run(client, url, started.json()["run_id"])
-        assert done["status"] == "unverified"
+        assert done["status"] == "unverified", done
         result = done["result"]["report"]
         assert result["kind"] == "artifact"
         assert result["media_type"] == "application/pdf"
@@ -352,7 +354,7 @@ def test_pdf_string_output_is_invalid_and_tool_emits_artifact_created(
         assert "%PDF" not in blob
         assert _PNG.hex() not in blob
         stored = client.app.state.runtime.repository.run_inputs(done["run_id"])
-        assert stored == {"text": "Write a report"}
+        assert stored == {"text": "Write a report", "path": "assets/source.txt"}
         record, contents = client.app.state.artifacts.read_bytes(
             project["project_id"], result["artifact_id"]
         )

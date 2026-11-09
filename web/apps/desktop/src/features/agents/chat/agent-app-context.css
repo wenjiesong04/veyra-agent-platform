@@ -1,0 +1,43 @@
+.agent-app-context {
+  flex: 0 0 328px;
+  width: 328px;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--ink);
+}
+.agent-app-context > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 16px 20px; }
+.agent-app-context > header h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.agent-app-context-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 20px 24px; }
+.agent-app-context section { padding: 20px 0; border-top: 1px solid var(--line); }
+.agent-app-context h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.agent-app-context h3 > span { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; }
+.agent-app-context dl { margin: 0; font-size: 13px; }
+.agent-app-context dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.agent-app-context dt { color: var(--muted); }
+.agent-app-context dd { margin: 0; }
+.agent-app-context .agent-app-description { max-height: none; overflow: visible; margin-top: 12px; }
+.agent-app-context .agent-app-description summary { position: static; background: transparent; }
+.agent-app-context .agent-app-description[open] summary span { display: inline; }
+.agent-app-context .agent-app-description p { display: block; margin: 12px 0 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-app-context-run { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.agent-app-context time, .agent-app-context small { color: var(--muted); font-size: 12px; }
+.agent-app-context ul, .agent-app-context ol { margin: 0; padding: 0; list-style: none; }
+.agent-app-context-files { display: grid; gap: 12px; }
+.agent-app-shell .agent-app-context-files .runtime-artifact-card { padding: 0; border: 0; background: transparent; }
+.agent-app-context-conversations button { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 12px; border: 0; border-radius: 6px; padding: 8px; color: var(--ink); background: transparent; text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
+.agent-app-context-conversations button > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-app-context-conversations button > small { flex: none; }
+.agent-app-context-conversations button:hover, .agent-app-context-conversations button[aria-current="true"] { background: var(--surface); }
+.agent-app-context-history a { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; border-radius: 6px; padding: 8px; color: var(--ink); text-decoration: none; }
+.agent-app-context-history a:hover { background: var(--surface); }
+.agent-app-context-empty { color: var(--muted); font-size: 13px; margin: 0; }
+.agent-app-context:is(dialog):not([open]) { display: none; }
+@media (max-width: 1100px) {
+  .agent-app-context { position: fixed; inset: 0 0 0 auto; width: min(340px, calc(100% - 24px)); height: 100dvh; max-width: none; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--line-strong); background: var(--surface); }
+  .agent-app-context::backdrop { background: rgb(0 0 0 / 0.2); }
+  .agent-app-context > header .ui-icon-button { width: 44px; height: 44px; }
+}

@@ -7,6 +7,8 @@ const stateLabels: Record<NodeExecutionState, { zh: string; en: string }> = {
   queued: { zh: "排队中", en: "Queued" },
   running: { zh: "运行中", en: "Running" },
   waiting_approval: { zh: "等待批准", en: "Waiting for approval" },
+  waiting_budget: { zh: "等待追加轮次", en: "Waiting for additional turns" },
+  waiting_input: { zh: "等待输入", en: "Waiting for input" },
   completed: { zh: "已完成", en: "Completed" },
   failed: { zh: "失败", en: "Failed" },
   stopped: { zh: "已停止", en: "Stopped" },

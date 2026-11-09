@@ -45,7 +45,20 @@ class RunEventKind(StrEnum):
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
     TOOL_FAILED = "tool.failed"
+    TOOL_INPUT_REJECTED = "tool.input_rejected"
+    MODEL_OUTPUT_REJECTED = "model.output_rejected"
+    AGENT_PLAN_UPDATED = "agent.plan_updated"
+    AGENT_BUDGET_UPDATED = "agent.budget_updated"
+    AGENT_BUDGET_INSUFFICIENT = "agent.budget_insufficient"
+    FINALIZATION_STARTED = "finalization.started"
+    FINALIZATION_PROGRESS = "finalization.progress"
+    FINALIZATION_COMPLETED = "finalization.completed"
+    FINALIZATION_REJECTED = "finalization.rejected"
+    FINALIZATION_ACCEPTED = "finalization.accepted"
+    FINALIZATION_FAILED = "finalization.failed"
+    IMAGE_RESPONSE_RECEIVED = "image.response_received"
     MODEL_DELTA = "model.delta"
+    MODEL_PROGRESS = "model.progress"
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_RESOLVED = "approval.resolved"
     INPUT_REQUESTED = "input.requested"
@@ -53,10 +66,14 @@ class RunEventKind(StrEnum):
     ARTIFACT_CREATED = "artifact.created"
     CHECKPOINT_CREATED = "checkpoint.created"
     VERIFICATION_COMPLETED = "verification.completed"
+    EVALUATION_COMPLETED = "evaluation.completed"
+    EVALUATION_REVIEWED = "evaluation.reviewed"
     VERIFIER_RESULT = "verifier.result"
     SKILL_LOADED = "skill.loaded"
     KNOWLEDGE_RETRIEVED = "knowledge.retrieved"
     POLICY_PARTIAL = "policy.partial"
+    INPUT_PROTECTED = "input.protected"
+    INPUT_OUTPUT_CREATED = "input.output_created"
 
 
 class RunCommandKind(StrEnum):
@@ -70,6 +87,7 @@ class RunCommandKind(StrEnum):
     RESUME = "run.resume"
     RESUME_CHECKPOINT = "run.resume_checkpoint"
     RETRY_SAFE_NODE = "run.retry_safe_node"
+    EXTEND_BUDGET = "run.extend_budget"
 
 
 class RunState(StrEnum):
@@ -126,7 +144,20 @@ EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
     RunEventKind.TOOL_STARTED: True,
     RunEventKind.TOOL_COMPLETED: True,
     RunEventKind.TOOL_FAILED: True,
+    RunEventKind.TOOL_INPUT_REJECTED: True,
+    RunEventKind.MODEL_OUTPUT_REJECTED: True,
+    RunEventKind.AGENT_PLAN_UPDATED: True,
+    RunEventKind.AGENT_BUDGET_UPDATED: True,
+    RunEventKind.AGENT_BUDGET_INSUFFICIENT: True,
+    RunEventKind.FINALIZATION_STARTED: True,
+    RunEventKind.FINALIZATION_PROGRESS: True,
+    RunEventKind.FINALIZATION_COMPLETED: True,
+    RunEventKind.FINALIZATION_REJECTED: True,
+    RunEventKind.FINALIZATION_ACCEPTED: True,
+    RunEventKind.FINALIZATION_FAILED: True,
+    RunEventKind.IMAGE_RESPONSE_RECEIVED: True,
     RunEventKind.MODEL_DELTA: True,
+    RunEventKind.MODEL_PROGRESS: True,
     RunEventKind.APPROVAL_REQUESTED: True,
     RunEventKind.APPROVAL_RESOLVED: True,
     RunEventKind.INPUT_REQUESTED: True,
@@ -134,10 +165,14 @@ EVENT_NODE_ID_REQUIRED: Mapping[RunEventKind, bool] = {
     RunEventKind.ARTIFACT_CREATED: True,
     RunEventKind.CHECKPOINT_CREATED: True,
     RunEventKind.VERIFICATION_COMPLETED: True,
+    RunEventKind.EVALUATION_COMPLETED: False,
+    RunEventKind.EVALUATION_REVIEWED: False,
     RunEventKind.VERIFIER_RESULT: True,
     RunEventKind.SKILL_LOADED: True,
     RunEventKind.KNOWLEDGE_RETRIEVED: True,
     RunEventKind.POLICY_PARTIAL: True,
+    RunEventKind.INPUT_PROTECTED: False,
+    RunEventKind.INPUT_OUTPUT_CREATED: False,
 }
 
 COMMAND_NODE_ID_REQUIRED: Mapping[RunCommandKind, bool] = {
@@ -151,6 +186,7 @@ COMMAND_NODE_ID_REQUIRED: Mapping[RunCommandKind, bool] = {
     RunCommandKind.RESUME: True,
     RunCommandKind.RESUME_CHECKPOINT: False,
     RunCommandKind.RETRY_SAFE_NODE: True,
+    RunCommandKind.EXTEND_BUDGET: True,
 }
 
 

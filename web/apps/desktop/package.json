@@ -11,19 +11,21 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.85.5",
-    "@xyflow/react": "^12.8.6",
     "@veyra/api-contracts": "0.1.0",
     "@veyra/connected-account": "0.1.0",
     "@veyra/ui": "0.1.0",
+    "@xyflow/react": "^12.8.6",
     "lucide-react": "^0.555.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.1.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.2"
   }

@@ -141,6 +141,43 @@ def test_semantic_roles_receive_full_goal_and_typed_handoff() -> None:
     assert materialized.outputs["result"].compact_type == "object"
 
 
+@pytest.mark.parametrize("reference", ["input.uploaded_image", "inputs.uploaded_image"])
+def test_declared_input_aliases_resolve_to_the_same_typed_field(reference: str) -> None:
+    payload = design_plan()
+    payload["inputs"][0]["name"] = "uploaded_image"
+    payload["stages"][0]["input_sources"]["image"] = reference
+    product = generate_builder_product(
+        REQUIREMENT, ResourceCatalog(), planner_provider=Planner(payload)
+    )
+    assert product.status == "review", product.diagnostics
+    assert product.orchestration is not None
+    draft = next(
+        n for n in product.orchestration.workflow["nodes"] if n["id"] == "draft"
+    )
+    assert draft["input_mapping"]["image"] == "uploadedimage"
+
+
+@pytest.mark.parametrize(
+    "reference, diagnostic",
+    [
+        ("inputs.missing", "undeclared task input"),
+        ("inputs../uploaded_image", "declared input or stage.port"),
+    ],
+)
+def test_input_aliases_cannot_create_unknown_fields_or_accept_path_expressions(
+    reference: str,
+    diagnostic: str,
+) -> None:
+    payload = design_plan()
+    payload["stages"][0]["input_sources"]["image"] = reference
+    product = generate_builder_product(
+        REQUIREMENT, ResourceCatalog(), planner_provider=Planner(payload)
+    )
+    assert product.status == "blocked" and product.source is None
+    assert product.blocked_reason == "planner_invalid"
+    assert any(diagnostic in item for item in product.diagnostics)
+
+
 @pytest.mark.parametrize(
     "reference", ["missing.options", "draft.missing", "render.result"]
 )
@@ -218,7 +255,11 @@ def test_coverage_gap_requires_repair_instead_of_review() -> None:
 
     def repair(previous: str, diagnostic: str) -> dict[str, Any]:
         repairs.append(diagnostic)
-        return design_plan()
+        updated = design_plan()
+        updated["success_criteria"] = [
+            "Every option includes its computed budget evidence"
+        ]
+        return updated
 
     product = generate_builder_product(
         REQUIREMENT,
@@ -232,7 +273,66 @@ def test_coverage_gap_requires_repair_instead_of_review() -> None:
     assert "budget evidence" in repairs[0]
 
 
-def test_repair_cannot_remove_a_required_human_duty() -> None:
+def test_unchanged_coverage_repair_stops_without_another_model_review() -> None:
+    calls = []
+
+    def review(requirement: str, candidate: dict[str, Any]) -> tuple[str, ...]:
+        calls.append(candidate)
+        return ("Required budget evidence is missing",)
+
+    product = generate_builder_product(
+        REQUIREMENT,
+        ResourceCatalog(),
+        planner_provider=Planner(design_plan()),
+        planner_repair=lambda previous, diagnostic: design_plan(),
+        planner_review=review,
+    )
+    assert product.status == "blocked"
+    assert "planner_repair_no_progress" in product.diagnostics
+    assert len(calls) == 1
+
+
+def test_pure_agent_retains_actor_only_image_inputs_in_its_actual_source() -> None:
+    payload = {
+        "schema_version": "1.0",
+        "goal": "Inspect a supplied product image",
+        "summary": "A single autonomous role asks missing dimensions and designs",
+        "actors": [
+            {
+                "id": "designer",
+                "role": "Designer",
+                "capabilities": ["text_generation"],
+                "reason": "Inspect the supplied optional image",
+                "inputs": [{"name": "item_image", "type": "image", "required": False}],
+                "outputs": [{"name": "result", "type": "object"}],
+            }
+        ],
+        "inputs": [{"name": "request", "type": "string"}],
+        "outputs": [{"name": "result", "type": "object"}],
+        "lifecycle": {"persistent": False, "interaction": "multi_turn"},
+        "stages": [],
+        "execution_boundaries": [],
+    }
+    product = generate_builder_product(
+        "Inspect a supplied product image",
+        ResourceCatalog(),
+        planner_provider=Planner(payload),
+    )
+    assert product.status == "review", product.diagnostics
+    assert product.source is not None and product.orchestration is None
+    fields = product.source.inputs
+    assert fields["request"].compact_type == "string"
+    images = [field for field in fields.values() if field.artifact_kind == "image"]
+    assert len(images) == 1 and not images[0].required
+
+
+def test_semantic_repair_cannot_publish_a_still_missing_user_choice() -> None:
+    reviews = []
+
+    def review(requirement: str, candidate: dict[str, Any]) -> tuple[str, ...]:
+        reviews.append(candidate)
+        return ("Missing choice",)
+
     def repair(previous: str, diagnostic: str) -> dict[str, Any]:
         payload = design_plan()
         payload["execution_boundaries"] = [
@@ -247,16 +347,42 @@ def test_repair_cannot_remove_a_required_human_duty() -> None:
         ResourceCatalog(),
         planner_provider=Planner(design_plan()),
         planner_repair=repair,
-        planner_review=lambda requirement, candidate: ("Missing choice",),
+        planner_review=review,
     )
     assert product.status == "blocked"
-    assert "repair_removed_required_duty" in product.diagnostics
+    assert "planner_repair_invalid; retained_ir=last_validated" in product.diagnostics
     assert "Missing choice" in product.diagnostics
+    assert len(reviews) == 1
+    assert product.source is None
 
 
-def test_repair_rephrasing_keeps_original_obligations_in_compiled_instructions() -> (
-    None
-):
+@pytest.mark.parametrize("failure_type", [ValueError, TypeError, KeyError])
+def test_coverage_repair_failure_preserves_a_safe_terminal_diagnostic(
+    failure_type: type[Exception],
+) -> None:
+    private = "sk-private-repair-body"
+
+    def repair(previous: str, diagnostic: str):
+        raise failure_type(private)
+
+    product = generate_builder_product(
+        REQUIREMENT,
+        ResourceCatalog(),
+        planner_provider=Planner(design_plan()),
+        planner_repair=repair,
+        planner_review=lambda requirement, candidate: ("Missing writer",),
+    )
+    assert product.status == "blocked"
+    assert product.diagnostics[0] == (
+        "planner_repair_invalid; retained_ir=last_validated"
+    )
+    assert "Missing writer" in product.diagnostics
+    assert private not in " ".join(product.diagnostics)
+    assert product.structure is not None
+    assert product.source is None and product.orchestration is None
+
+
+def test_semantic_correction_rechecks_the_original_task_with_revised_obligations():
     original = design_plan()
     repaired = design_plan()
     repaired["constraints"] = ["Use the revised budget throughout the options"]
@@ -279,12 +405,17 @@ def test_repair_rephrasing_keeps_original_obligations_in_compiled_instructions()
         agent.instructions for agent in product.orchestration.companions
     )
     for duty in (
-        *original.get("constraints", []),
-        *original.get("success_criteria", []),
         *repaired["constraints"],
         *repaired["success_criteria"],
     ):
         assert duty in instructions
+    assert len(reviews) == 2
+    for agent in product.orchestration.companions:
+        assert REQUIREMENT in agent.instructions
+    assert any(
+        node.get("review") == "input"
+        for node in product.orchestration.workflow["nodes"]
+    )
 
 
 def test_same_run_context_does_not_require_an_entity_tool() -> None:

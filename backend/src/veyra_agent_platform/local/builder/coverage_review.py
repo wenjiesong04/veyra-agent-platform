@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from veyra_agent_platform.contracts.common import ContractValidationError
@@ -30,10 +31,15 @@ COVERAGE_SCHEMA: dict[str, Any] = {
 
 
 def coverage_gaps(value: dict[str, Any]) -> tuple[str, ...]:
-    if set(value) != {"verdict", "gaps"} or value["verdict"] not in {
-        "covered",
-        "incomplete",
-    }:
+    if (
+        set(value) != {"verdict", "gaps"}
+        or not isinstance(value["verdict"], str)
+        or value["verdict"]
+        not in {
+            "covered",
+            "incomplete",
+        }
+    ):
         raise ContractValidationError("Coverage review has an invalid contract")
     gaps = value["gaps"]
     if not isinstance(gaps, list) or len(gaps) > 24:
@@ -52,7 +58,13 @@ def coverage_gaps(value: dict[str, Any]) -> tuple[str, ...]:
             raise ContractValidationError(
                 "Coverage gap requires a requirement and reason"
             )
-        diagnostics.append(f"{requirement[:400]}: {reason[:400]}")
+        diagnostics.append(
+            "coverage_gap: "
+            + json.dumps(
+                {"requirement": requirement[:400], "reason": reason[:400]},
+                ensure_ascii=False,
+            )
+        )
     if (value["verdict"] == "covered") != (not diagnostics):
         raise ContractValidationError("Coverage verdict contradicts its gaps")
     return tuple(diagnostics)

@@ -482,7 +482,7 @@ def test_secondhand_partial_flow_pauses_for_human_input(tmp_path: Path) -> None:
     with _client(tmp_path, runtime=transport) as client:
         project_id = _project(client)
         session = _generate(client, project_id, SECONDHAND)
-        assert session.get("product_shape") == "AGENT_WORKFLOW"
+        assert session.get("product_shape") == "MULTI_AGENT_WORKFLOW"
         types = [node["component_type"] for node in session["blueprint"]["nodes"]]
         assert types.count("AgentCall") >= 2
         assert "Condition" in types

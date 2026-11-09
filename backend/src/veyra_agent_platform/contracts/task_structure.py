@@ -17,6 +17,7 @@ from .common import (
     require_string,
     thaw_json,
 )
+from .filesystem_scope import normalize_project_scope
 
 BoundaryKind = Literal[
     "reasoning",
@@ -476,6 +477,44 @@ class TaskLifecycle:
 
 
 @dataclass(frozen=True)
+class SkillChoice:
+    """A proposed method; the server still resolves its pin and permissions."""
+
+    actor: str
+    capability: str
+    reference: str
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "actor": self.actor,
+            "capability": self.capability,
+            "reference": self.reference,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any, field: str) -> SkillChoice:
+        item = require_mapping(data, field)
+        require_keys(
+            item,
+            allowed={"actor", "capability", "reference", "reason"},
+            required={"actor", "capability", "reference", "reason"},
+        )
+        values = {
+            key: require_string(item[key], f"{field}.{key}")
+            for key in ("actor", "capability", "reference", "reason")
+        }
+        for key, value in values.items():
+            limit = 512 if key == "reference" else _MAX_TEXT if key == "reason" else 80
+            if not value.strip() or value != value.strip() or len(value) > limit:
+                raise ContractValidationError(f"{field}.{key} is invalid")
+        if values["reference"].count("@") != 1:
+            raise ContractValidationError(f"{field}.reference needs an exact version")
+        return cls(**values)
+
+
+@dataclass(frozen=True)
 class TaskStructure:
     schema_version: str
     goal: str
@@ -494,6 +533,10 @@ class TaskStructure:
     user_shape_override: str = ""
     constraints: tuple[str, ...] = ()
     success_criteria: tuple[str, ...] = ()
+    skill_choices: tuple[SkillChoice, ...] = ()
+    filesystem_write_roots: tuple[str, ...] = ()
+    protect_input_files: bool = False
+    protected_input_fields: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -516,6 +559,14 @@ class TaskStructure:
             payload["constraints"] = list(self.constraints)
         if self.success_criteria:
             payload["success_criteria"] = list(self.success_criteria)
+        if self.skill_choices:
+            payload["skill_choices"] = [item.to_dict() for item in self.skill_choices]
+        if self.filesystem_write_roots:
+            payload["filesystem_write_roots"] = list(self.filesystem_write_roots)
+        if self.protect_input_files:
+            payload["protect_input_files"] = True
+        if self.protected_input_fields:
+            payload["protected_input_fields"] = list(self.protected_input_fields)
         if self.state is not None:
             payload["state"] = self.state.to_dict()
         if self.user_requested_surface:
@@ -547,6 +598,10 @@ class TaskStructure:
                 "user_shape_override",
                 "constraints",
                 "success_criteria",
+                "skill_choices",
+                "filesystem_write_roots",
+                "protect_input_files",
+                "protected_input_fields",
             },
             required={"schema_version", "goal", "summary", "lifecycle"},
         )
@@ -555,6 +610,39 @@ class TaskStructure:
         if complexity not in _COMPLEXITY:
             raise ContractValidationError("orchestration_complexity is invalid")
         state_raw = item.get("state")
+        choices = require_list(item.get("skill_choices") or [], "skill_choices")
+        if len(choices) > 8:
+            raise ContractValidationError("skill_choices exceeds 8 items")
+        write_roots = require_list(
+            item.get("filesystem_write_roots") or [], "filesystem_write_roots"
+        )
+        if len(write_roots) > 8:
+            raise ContractValidationError("filesystem_write_roots exceeds 8 items")
+        roots = tuple(
+            dict.fromkeys(
+                normalize_project_scope(require_string(value, "filesystem_write_roots"))
+                for value in write_roots
+            )
+        )
+        protect_input_files = item.get("protect_input_files", False)
+        if not isinstance(protect_input_files, bool):
+            raise ContractValidationError("protect_input_files must be boolean")
+        protected_input_fields = _string_list(
+            item.get("protected_input_fields") or [], "protected_input_fields"
+        )
+        if protected_input_fields and not protect_input_files:
+            raise ContractValidationError(
+                "protected_input_fields requires protect_input_files"
+            )
+        input_names = {
+            value.get("name")
+            for value in item.get("inputs", [])
+            if isinstance(value, Mapping)
+        }
+        if set(protected_input_fields) - input_names:
+            raise ContractValidationError(
+                "protected_input_fields must name task inputs"
+            )
         return cls(
             schema_version=SCHEMA_VERSION,
             goal=_clip(require_string(item["goal"], "goal")),
@@ -608,6 +696,13 @@ class TaskStructure:
             success_criteria=_string_list(
                 item.get("success_criteria") or [], "success_criteria"
             ),
+            skill_choices=tuple(
+                SkillChoice.from_dict(value, f"skill_choices[{index}]")
+                for index, value in enumerate(choices)
+            ),
+            filesystem_write_roots=roots,
+            protect_input_files=protect_input_files,
+            protected_input_fields=protected_input_fields,
         )
 
     def boundaries_of(self, kind: BoundaryKind) -> tuple[ExecutionBoundary, ...]:

@@ -1,9 +1,29 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSource, AgentVersionSnapshot, ResourceDescriptor, WorkflowSource } from "@veyra/api-contracts";
 import { agentCallRef } from "./agent-call";
-import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, FLOW_NODE_ID_RE, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, isLoopAgent, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
+import { attachFlowNodeOnEdge, autoLayoutCanvasNodes, defaultSpliceEdgeId, FLOW_NODE_ID_RE, flowNodeOutgoingPort, graphDiagnostics, insertFlowNodeOnEdge, isAgentSourceCandidate, isLoopAgent, isWorkflowSourceCandidate, newFlowNodeId, portHandleTop, repairInvalidNodeIds, shouldSplicePaletteItem, sourceWithGraph, toCanvas } from "./graph";
 
 const source: AgentSource = { schema_version: "1.0", agentspec_version: "26.1", component_type: "Flow", agent_id: "agent-1", slug: "review", name: "Review", description: "", inputs: {}, outputs: {}, nodes: [{ id: "start", component_type: "Start" }, { id: "out", component_type: "Output", output_name: "result" }], transitions: [{ from: "start", port: "next", to: "out" }], extensions: { veyra: { runtime_profile: "guarded", secret_refs: [], permissions: { network_hosts: [], tools: [] }, verification: { required: true, checks: [] } } }, ui: { positions: { start: { x: 1, y: 2 }, out: { x: 3, y: 4 } } }, lock: {} };
+
+const stopWorkflow: WorkflowSource = {
+  schema_version: "1.0", component_type: "Workflow", workflow_id: "01900000-0000-7000-8000-000000000080",
+  slug: "reviewed-delivery", name: "Reviewed delivery", description: "Deliver only after approval.",
+  inputs: { result: "string" }, outputs: { result: "string" },
+  nodes: [
+    { id: "start", component_type: "Start" },
+    { id: "confirm", component_type: "HumanApproval", prompt: "Deliver this reviewed report?" },
+    { id: "out", component_type: "Output", output_name: "result" },
+    { id: "stop", component_type: "Stop" },
+  ],
+  transitions: [
+    { from: "start", port: "next", to: "confirm" },
+    { from: "confirm", port: "approved", to: "out" },
+    { from: "confirm", port: "rejected", to: "stop" },
+  ],
+  extensions: { veyra: { permissions: { network_hosts: [], tools: [] }, verification: { required: false, checks: [] } } },
+  ui: { positions: { start: { x: 0, y: 0 }, confirm: { x: 200, y: 0 }, out: { x: 400, y: 0 }, stop: { x: 400, y: 160 } } },
+  lock: {},
+};
 
 describe("Studio graph adapter", () => {
   it("round-trips positions and exact transition port handles", () => {
@@ -12,6 +32,52 @@ describe("Studio graph adapter", () => {
     const next = sourceWithGraph(source, moved, graph.edges);
     expect(next.ui.positions.start).toEqual({ x: 45, y: 56 });
     expect(next.transitions).toEqual([{ from: "start", port: "next", to: "out" }]);
+  });
+
+  it("imports and round-trips an explicit rejected-to-Stop Workflow without inventing an output", () => {
+    const parsed: unknown = JSON.parse(JSON.stringify(stopWorkflow));
+    expect(isWorkflowSourceCandidate(parsed)).toBe(true);
+    expect(graphDiagnostics(stopWorkflow)).toEqual([]);
+    const graph = toCanvas(stopWorkflow);
+    expect(graph.nodes.find((node) => node.id === "stop")?.data.flow).toEqual({ id: "stop", component_type: "Stop" });
+    expect(graph.edges.filter((edge) => edge.source === "stop")).toEqual([]);
+    const moved = graph.nodes.map((node) => node.id === "stop" ? { ...node, position: { x: 520.4, y: 180.8 } } : node);
+    const next = sourceWithGraph(stopWorkflow, moved, graph.edges);
+    expect(next.nodes).toEqual(stopWorkflow.nodes);
+    expect(next.transitions).toEqual(stopWorkflow.transitions);
+    expect(next.ui.positions.stop).toEqual({ x: 520, y: 181 });
+    expect(next.outputs).toEqual({ result: "string" });
+    expect(next.extensions).toEqual(stopWorkflow.extensions);
+    expect(graphDiagnostics(next)).toEqual([]);
+  });
+
+  it.each(["graph", "loop"] as const)("rejects Stop in an Agent %s even when the source parses", (executionKind) => {
+    const agent: AgentSource = {
+      ...source,
+      inputs: stopWorkflow.inputs,
+      outputs: stopWorkflow.outputs,
+      nodes: stopWorkflow.nodes,
+      transitions: stopWorkflow.transitions,
+      extensions: { veyra: { ...source.extensions.veyra, execution_kind: executionKind, verification: { required: false, checks: [] } } },
+    };
+    expect(graphDiagnostics(agent)).toContainEqual({
+      code: "node_context_invalid", params: { nodeId: "stop", componentType: "Stop", context: "Flow" },
+    });
+  });
+
+  it("keeps Stop terminal instead of splicing it into a continuing edge", () => {
+    expect(flowNodeOutgoingPort("Stop")).toBeNull();
+    expect(shouldSplicePaletteItem("Stop", "component")).toBe(false);
+    const invalid: WorkflowSource = {
+      ...stopWorkflow,
+      transitions: [...stopWorkflow.transitions, { from: "stop", port: "next", to: "out" }],
+    };
+    expect(graphDiagnostics(invalid)).toEqual(expect.arrayContaining([
+      { code: "transition_invalid_port", params: { port: "next", nodeId: "stop" } },
+      { code: "node_ports_incomplete", params: { nodeId: "stop" } },
+    ]));
+    const graph = toCanvas(invalid);
+    expect(sourceWithGraph(invalid, graph.nodes, graph.edges).transitions).toEqual(stopWorkflow.transitions);
   });
 
   it("blocks persistence for incomplete local graphs", () => {

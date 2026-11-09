@@ -41,7 +41,23 @@ function renderPage(api: LocalProjectApi) {
 afterEach(() => cleanup());
 
 describe("ProjectDetailPage", () => {
+  it.each(["en", "zh"] as const)("offers a scoped create-in-chat link for an empty Project in %s without sending a request", async (locale) => {
+    window.localStorage.setItem("veyra.language", locale);
+    const summary = project({ agents: [], agent_count: 0, default_agent_id: null });
+    const submitBuilderTurn = vi.fn();
+    const createFactorySession = vi.fn();
+    const api = { listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [summary] }), getProject: vi.fn().mockResolvedValue(summary), submitBuilderTurn, createFactorySession } as unknown as LocalProjectApi;
+    renderPage(api);
+    const action = await screen.findByRole("link", { name: locale === "zh" ? "用对话创建 Agent" : "Create an Agent in chat" });
+    expect(action).toHaveAttribute("href", "#/projects/project-1/chat");
+    action.focus();
+    expect(action).toHaveFocus();
+    expect(submitBuilderTurn).not.toHaveBeenCalled();
+    expect(createFactorySession).not.toHaveBeenCalled();
+  });
+
   it("renders a nested Agent file tree and parent_agent_id collaboration edges", async () => {
+    window.localStorage.setItem("veyra.language", "en");
     const summary = project();
     const api = {
       listProjects: vi.fn().mockResolvedValue({ schema_version: "1.0", projects: [summary] }),

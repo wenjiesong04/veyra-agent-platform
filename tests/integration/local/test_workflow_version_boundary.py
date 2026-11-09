@@ -490,7 +490,7 @@ def test_workflow_app_rejects_foreign_or_tampered_versions(client: TestClient):
     assert client.get(f"{url}/runs").json()["runs"] == []
 
 
-def test_workflow_tool_approval_requirement_fails_before_creating_run(
+def test_workflow_tool_approval_requirement_waits_before_effect(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
     project = client.post("/api/v1/projects", json={"name": "Approval flow"})
@@ -547,19 +547,19 @@ def test_workflow_tool_approval_requirement_fails_before_creating_run(
     tool_check = next(
         item for item in readiness.json()["checks"] if item["id"] == "tools"
     )
-    assert tool_check["ready"] is False
-    assert (
-        readiness.json()["tools"][0]["code"] == "workflow_tool_approval_not_supported"
-    )
+    assert tool_check["ready"] is True
+    assert readiness.json()["tools"][0]["approval_required"] is True
 
     started = client.post(
         f"{url}/run",
         json={"inputs": {"message": "track this"}},
         headers={"Idempotency-Key": new_uuid7()},
     )
-    assert started.status_code == 422, started.text
-    assert started.json()["code"] == "workflow_tool_approval_not_supported"
-    assert client.get(f"{url}/runs").json()["runs"] == []
+    assert started.status_code == 200, started.text
+    waiting = await_workflow(client, url, started.json()["run_id"])
+    assert waiting["status"] == "waiting", waiting
+    assert waiting["waiting"]["context"]["kind"] == "tool_permission"
+    assert len(client.get(f"{url}/runs").json()["runs"]) == 1
     with client.app.state.library.repository._connect() as connection:
         assert (
             connection.execute(

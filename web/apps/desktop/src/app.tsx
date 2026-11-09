@@ -9,13 +9,14 @@ import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-wor
 import { desktopHeader } from "./desktop-header";
 import { isAgentContextRoute, projectContextActiveHref, projectContextNavigation, projectTreeSelection, workspaceNavRoute } from "./features/agents/agent-navigation";
 import { useRecentConversationNavigation } from "./features/builder/recent-conversations";
+import { CommunityWebsiteBoundary, CommunityWebsitePage } from "./features/community/community-website-entry";
+import { isCommunityWebsiteRoute } from "./features/community/community-website";
 import { resourceLibraryHref, rememberProjectId } from "./features/resources/library-navigation";
 import { AccountPage } from "./pages/account";
 import { AgentAnalysisPage } from "./pages/agent-analysis";
 import { AgentRunPage } from "./pages/agent-run";
 import { AgentDetailPage } from "./pages/agent-detail";
 import { AgentVersionPage } from "./pages/agent-version";
-import { CommunityPage } from "./pages/community";
 import { ComponentsPage } from "./pages/components";
 import { FilesPage } from "./pages/files";
 import { FactoryPage } from "./pages/factory";
@@ -151,16 +152,10 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   if (route.kind === "file") return <FilesPage fileId={route.fileId} />;
   if (route.kind === "runs") return <RunsPage />;
   if (route.kind === "monitor") return <MonitorPage />;
-  if (route.kind === "community") return <CommunityPage section="discover" />;
-  if (route.kind === "community-published") return <CommunityPage section="published" />;
-  if (route.kind === "community-starred") return <CommunityPage section="starred" />;
-  if (route.kind === "community-mine") return <CommunityPage section="mine" />;
-  if (route.kind === "community-entry") return <CommunityPage section="discover" owner={route.owner} slug={route.slug} />;
-  if (route.kind === "community-version") return <CommunityPage section="discover" owner={route.owner} slug={route.slug} versionId={route.versionId} />;
+  if (isCommunityWebsiteRoute(route.path)) return <CommunityWebsitePage route={route} />;
   if (route.kind === "account") return <AccountPage />;
   if (route.kind === "settings") return <SettingsPage />;
   if (route.kind === "trash") return <TrashPage />;
-  if (route.kind === "not-found" && route.path.startsWith("#/community")) return <NotFoundPage backHref={desktopRoutePaths.community} backLabel={zh ? "返回社区" : "Back to Community"} />;
   if (route.kind === "not-found" && route.path.startsWith("#/components")) return <NotFoundPage backHref={desktopRoutePaths.components} backLabel={zh ? "返回组件库" : "Back to Components"} />;
   if (route.kind === "not-found" && route.path.startsWith("#/files")) return <NotFoundPage backHref={desktopRoutePaths.files} backLabel={zh ? "返回文件" : "Back to Files"} />;
   return <NotFoundPage />;
@@ -258,13 +253,15 @@ export function DesktopApp({ api, communityApi }: DesktopAppProps = {}) {
   const accountApi = React.useMemo(() => communityApi ?? desktopCommunityApi, [communityApi]);
   return (
     <ThemeProvider>
-      <AuthProvider api={accountApi}>
-        <DesktopSession>
-          <ProjectWorkspaceProvider api={projectApi} cloudApi={accountApi}>
-            <DesktopWorkspace />
-          </ProjectWorkspaceProvider>
-        </DesktopSession>
-      </AuthProvider>
+      <CommunityWebsiteBoundary>
+        <AuthProvider api={accountApi}>
+          <DesktopSession>
+            <ProjectWorkspaceProvider api={projectApi} cloudApi={accountApi}>
+              <DesktopWorkspace />
+            </ProjectWorkspaceProvider>
+          </DesktopSession>
+        </AuthProvider>
+      </CommunityWebsiteBoundary>
     </ThemeProvider>
   );
 }

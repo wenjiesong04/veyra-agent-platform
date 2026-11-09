@@ -1,10 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BuilderConversationOperation, BuilderHarnessReceipt, FactorySession } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import { BuilderActivityBlock } from "./BuilderActivityBlock";
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 function operation(overrides: Partial<BuilderConversationOperation> = {}): BuilderConversationOperation {
   return {
@@ -29,6 +29,100 @@ function operation(overrides: Partial<BuilderConversationOperation> = {}): Build
 }
 
 describe("BuilderActivityBlock", () => {
+  it("keeps total elapsed time increasing when a repair restarts a stage", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-18T00:05:00Z"));
+    const first = operation({
+      events: [{ event_id: "stage1", operation_id: "op-1", sequence: 0, kind: "builder.specification.started", label: "Planning", summary: "", facts: {}, created_at: "2026-09-18T00:04:45Z" }],
+      receipts: [receipt(), receipt({ receipt_id: "r2", sequence: 1 })],
+    });
+    const view = render(<ThemeProvider><BuilderActivityBlock operation={first} locale="zh" /></ThemeProvider>);
+    expect(screen.getByText("总耗时 5:00 · 2 次模型请求")).toBeInTheDocument();
+    const repaired = { ...first, events: [...first.events, { ...first.events[0], event_id: "stage2", sequence: 1, created_at: "2026-09-18T00:04:59Z" }], receipts: [...first.receipts, receipt({ receipt_id: "r3", sequence: 2 })] };
+    view.rerender(<ThemeProvider><BuilderActivityBlock operation={repaired} locale="zh" /></ThemeProvider>);
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.getByText("总耗时 5:02 · 3 次模型请求")).toBeInTheDocument();
+  });
+  it.each(["factory_quota_exhausted", "factory_rate_limited"])("keeps %s historical quota evidence and offers only a manual retained-plan recovery", (code) => {
+    const onRetry = vi.fn();
+    const onContinueReview = vi.fn();
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", error_code: code, diagnostic: { http_status: "429", provider_error_type: "exceeded_current_quota_error" } })} locale="zh" onRetry={onRetry} onContinueReview={onContinueReview} /></ThemeProvider>);
+    expect(screen.getByText("服务商账户余额或配额不可用，请检查账户后再继续")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "继续检查保留方案" })).not.toBeInTheDocument();
+    expect(onContinueReview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "账户恢复后继续检查" }));
+    expect(onContinueReview).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(screen.getByText("服务商账户余额或配额不可用，请检查账户后再继续")).toBeInTheDocument();
+    expect(screen.queryByText("服务商暂时限流")).not.toBeInTheDocument();
+  });
+  it.each(["create_agent", "create_workflow"] as const)("offers an explicit retained-plan check next to Retry for failed %s", (kind) => {
+    const onRetry = vi.fn();
+    const onContinueReview = vi.fn();
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ kind, status: "failed", error_code: "factory_generation_blocked" })} locale="zh" onRetry={onRetry} onContinueReview={onContinueReview} /></ThemeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "继续检查保留方案" }));
+    expect(onContinueReview).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onContinueReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer model regeneration while a reviewed proposal can continue applying", () => {
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", error_code: "resource_unbound", proposal_id: "proposal-1", diagnostic: { stage: "agent_creation_apply" } })} factorySession={{ session_id: "session-1", state: "review" } as FactorySession} locale="en" onRetry={vi.fn()} onContinueReview={vi.fn()} /></ThemeProvider>);
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check retained plan" })).not.toBeInTheDocument();
+  });
+
+  it.each<Partial<BuilderConversationOperation>>([
+    { kind: "edit" as const },
+    { kind: "test_agent" as const },
+    { factory_session_id: null },
+    { status: "in_progress" as const },
+    { status: "waiting" as const },
+    { diagnostic: { blocked_reason: "unsupported_shape" } },
+    { diagnostic: { resolution_status: "unsupported" } },
+  ])("does not offer a retained-plan check for an ineligible operation %j", (overrides) => {
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", error_code: "factory_generation_blocked", ...overrides })} locale="en" onRetry={vi.fn()} onContinueReview={vi.fn()} /></ThemeProvider>);
+    expect(screen.queryByRole("button", { name: "Check retained plan" })).not.toBeInTheDocument();
+  });
+  it("shows a specific failure and model cost evidence without expanding details", () => {
+    const cause = "The plan needs saved project state but has no executable state contract.";
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", error_code: "factory_generation_blocked", diagnostic: { validation_code: "persistent_state_not_represented", validation_summary: cause }, receipts: [receipt(), receipt({ receipt_id: "r2", sequence: 1 })] })} locale="en" /></ThemeProvider>);
+    expect(screen.getByText(cause)).toBeInTheDocument();
+    expect(screen.getByText(/2 model requests/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build Agent · generation failed" })).toHaveAttribute("aria-expanded", "false");
+  });
+  it("shows the complete review feedback and keeps a successful model request distinct from the failed build", () => {
+    const feedback = `No executable repair and recheck path. ${"The failed check currently routes directly to output. ".repeat(8)}\nCheck the final design and revise it before publishing.`;
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({
+      status: "failed", error_code: "factory_generation_blocked",
+      diagnostic: { stage: "coverage_review", validation_code: "coverage_review_incomplete", validation_summary: "Review found an executable repair gap." },
+      generation_feedback: [feedback, "Budget and dimensions are only written in instructions.\nCheck dimensions and total cost."],
+      receipts: [receipt({ output_contract: "TaskCoverageV1" })],
+    })} locale="en" /></ThemeProvider>);
+    expect(screen.getByText("Review found an executable repair gap.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Build Agent · generation failed" }));
+    expect(screen.getByText("Plan review").closest("li")).toHaveAttribute("data-state", "failed");
+    fireEvent.click(screen.getByRole("button", { name: "Build details" }));
+    expect(screen.getByText("Requirement coverage review")).toBeInTheDocument();
+    expect(screen.getByText("Review feedback 1").nextElementSibling?.textContent).toBe(feedback);
+    expect(screen.getByText("Review feedback 2").nextElementSibling?.textContent).toBe("Budget and dimensions are only written in instructions.\nCheck dimensions and total cost.");
+    expect(screen.getByText("Success")).toBeInTheDocument();
+  });
+  it("keeps an unsupported task distinct from a retryable generator check failure", () => {
+    const onRetry = vi.fn();
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", error_code: "factory_generation_blocked", diagnostic: { blocked_reason: "unsupported_shape" } })} locale="en" onRetry={onRetry} /></ThemeProvider>);
+    expect(screen.getByText("Task support limitation")).toBeInTheDocument();
+    expect(screen.getByText(/This task is not fully supported yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Build Agent · generation failed" }));
+    fireEvent.click(screen.getByRole("button", { name: "Build details" }));
+    expect(screen.getByText(/Review Project resources for available capabilities/)).toBeInTheDocument();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   it.each(["succeeded", "failed"] as const)("labels a %s but blocked generation truthfully and stops its stale plan stage", (status) => {
     const onRetry = vi.fn();
     render(
@@ -37,6 +131,7 @@ describe("BuilderActivityBlock", () => {
           operation={operation({
             status,
             error_code: status === "failed" ? "factory_generation_blocked" : null,
+            diagnostic: status === "failed" ? { validation_kind: "task_io_invalid", validation_issue: "$.outputs[0]: required: name" } : {},
             events: [
               { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.semantic_plan.started", label: "Planning", summary: "", facts: {}, created_at: "2026-09-18T00:00:00Z" },
               { event_id: "e2", operation_id: "op-1", sequence: 1, kind: status === "failed" ? "builder.operation.failed" : "builder.operation.completed", label: "Ended", summary: "", facts: {}, created_at: "2026-09-18T00:00:18Z" },
@@ -48,17 +143,34 @@ describe("BuilderActivityBlock", () => {
         />
       </ThemeProvider>,
     );
-    const toggle = screen.getByRole("button", { name: "构建 Agent · 已阻塞" });
+    const toggle = screen.getByRole("button", { name: "构建 Agent · 生成失败" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByText("已阻塞")).toBeInTheDocument();
-    expect(screen.getByText(/请调整任务要求后，在消息框重新发送/)).toBeInTheDocument();
+    expect(screen.getByText("生成失败")).toBeInTheDocument();
+    expect(screen.getByText(/原始需求已保留，可以重试或展开构建详情/)).toBeInTheDocument();
     expect(screen.queryByText("已完成")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
     fireEvent.click(toggle);
     expect(screen.getByText("整理规格").closest("li")).toHaveAttribute("data-state", "failed");
     expect(screen.queryByText("验证通过")).not.toBeInTheDocument();
     expect(document.querySelector(".builder-activity-pulse")).toBeNull();
+    if (status === "failed") {
+      fireEvent.click(screen.getByRole("button", { name: "构建详情" }));
+      expect(screen.getByText("生成的输入或输出定义存在错误，自动修复未完成。")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "技术详情" }));
+      expect(screen.getByText("$.outputs[0]: required: name")).toBeInTheDocument();
+    }
     expect(onRetry).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a compilation failure at compilation rather than task planning", () => {
+    render(<ThemeProvider><BuilderActivityBlock operation={operation({ status: "failed", error_code: "factory_generation_blocked", diagnostic: { blocked_reason: "compose_failed" }, events: [
+      { event_id: "e1", operation_id: "op-1", sequence: 0, kind: "builder.specification.completed", label: "Ended", summary: "", facts: { target_kind: "blocked", blocked_reason: "compose_failed" }, created_at: "2026-09-18T00:00:18Z" },
+    ] })} locale="zh" /></ThemeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "构建 Agent · 生成失败" }));
+    expect(screen.getByText("编译").closest("li")).toHaveAttribute("data-state", "failed");
+    expect(screen.getByText("整理规格").closest("li")).toHaveAttribute("data-state", "done");
   });
 
   it("does not pulse an unfinished stage after a terminal failure", () => {
@@ -75,7 +187,7 @@ describe("BuilderActivityBlock", () => {
       { event_id: "e2", operation_id: "op-1", sequence: 1, kind: "builder.specification.completed", label: "Resolved", summary: "", facts: { target_kind: "blocked", blocked_reason: "State requirement cannot be represented" }, created_at: "2026-09-18T00:00:18Z" },
       { event_id: "e3", operation_id: "op-1", sequence: 2, kind: "builder.operation.completed", label: "Ended", summary: "", facts: {}, created_at: "2026-09-18T00:00:18Z" },
     ] })} locale="zh" /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: "构建 Agent · 已阻塞" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "构建 Agent · 生成失败" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("已完成")).not.toBeInTheDocument();
     expect(document.querySelector(".builder-activity-pulse")).toBeNull();
   });

@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-HEAD_REVISION = "local_0037_entity_revision_history"
+HEAD_REVISION = "local_0038_work_item_version_binding"
 _MIGRATIONS = Path(__file__).resolve().parents[4] / "migrations" / "local"
 
 

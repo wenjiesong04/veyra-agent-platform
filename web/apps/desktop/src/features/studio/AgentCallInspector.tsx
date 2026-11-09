@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentVersionSnapshot, FlowNode, ProjectAgentRecord } from "@veyra/api-contracts";
 import { Button } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
-import { latestAgentVersion, mapAgentCallValue, parseAgentCallRef } from "./agent-call";
+import { latestAgentVersion, parseAgentCallRef } from "./agent-call";
 
 export function AgentCallInspector({
   node, agents, api, projectId, zh, initialAgentId = "", workflowInputs = [], workflowOutputs = [], onBind, onMapping, onOpenAgent, onAttachToFlow, canAttachToFlow = false,
@@ -29,8 +29,6 @@ export function AgentCallInspector({
   const [refresh, setRefresh] = useState(0);
   const onBindRef = useRef(onBind);
   onBindRef.current = onBind;
-  const onMappingRef = useRef(onMapping);
-  onMappingRef.current = onMapping;
   useEffect(() => { setAgentId(parseAgentCallRef(node.agent_ref)?.agentId ?? initialAgentId); }, [node.id, node.agent_ref, initialAgentId]);
   useEffect(() => {
     let cancelled = false;
@@ -52,14 +50,6 @@ export function AgentCallInspector({
   }, [api, projectId, agentId, zh, refresh, node.agent_ref]);
   const selected = versions.find((item) => item.version_id === reference?.versionId && item.agent_id === reference.agentId);
   const agent = agents.find((item) => item.agent_id === agentId);
-  const availableInputs = workflowInputs.join("\0");
-  useEffect(() => {
-    if (!selected) return;
-    const available = availableInputs ? availableInputs.split("\0") : [];
-    const current = node.input_mapping ?? {};
-    const next = Object.fromEntries(Object.keys(selected.source.inputs).map((name) => [name, mapAgentCallValue(name, current[name], available)]));
-    if (Object.entries(next).some(([name, value]) => value && value !== (current[name] ?? ""))) onMappingRef.current("input_mapping", next);
-  }, [selected, node.input_mapping, availableInputs]);
   return <>
     <label>{zh ? "Agent" : "Agent"}<select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
       <option value="">{zh ? "选择 Agent" : "Select Agent"}</option>
@@ -97,7 +87,7 @@ export function AgentCallInspector({
           <label key={name}>{zh ? `参数 ${name}` : name}
             <select value={node.input_mapping?.[name] ?? ""} onChange={(event) => onMapping("input_mapping", { ...node.input_mapping, [name]: event.target.value })}>
               <option value="">{zh ? "选择工作流输入" : "Choose a Workflow input"}</option>
-              {workflowInputs.map((value) => <option key={value} value={value}>{value}</option>)}
+              {[...new Set([...workflowInputs, node.input_mapping?.[name] ?? ""].filter(Boolean))].map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>
         ))}

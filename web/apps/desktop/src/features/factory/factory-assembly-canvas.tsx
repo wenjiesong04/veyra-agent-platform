@@ -3,6 +3,7 @@ import { LayoutPanelTop, X } from "lucide-react";
 import { Background, ConnectionLineType, Controls, MarkerType, ReactFlow, type Edge, type Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { FactoryResourcePlanItem, FactorySession, FlowNode, JsonObject, ResourceFactoryPlan, StudioNoteColor } from "@veyra/api-contracts";
+import { projectRoutePaths } from "@veyra/api-contracts";
 import { Alert, Button, IconButton, LinkButton, StatusBadge } from "@veyra/ui";
 import { blueprintGraph, blueprintPresentation } from "./factory-blueprint";
 import { ModelRequirementCard, proposalModels } from "./ModelRequirementCard";
@@ -11,7 +12,7 @@ import { CanvasEdgeActionsProvider, FlowEdge, type FlowEdgeData } from "../studi
 import { studioNodeTypes } from "../studio/canvas-nodes";
 import type { CanvasNodeData } from "../studio/graph";
 import { centerNoteAboveGraph, labeledNodeSize, layoutExecutionGraph } from "../studio/graph-layout";
-import { componentFor } from "../studio/registry";
+import { componentFor, studioComponents } from "../studio/registry";
 
 type Locale = "zh" | "en";
 type Busy = "message" | "generate" | "apply" | "draft" | null;
@@ -30,7 +31,7 @@ const copy = {
     blocked: "方案暂时无法生成",
     failed: "方案生成失败",
     finished: "本轮已结束",
-    blockedHint: "这一轮已停止，尚未创建 Agent 或 Workflow。可补充你希望它如何工作，再重新发送；查看原因了解当前限制。",
+    blockedHint: "这轮生成的方案未通过检查，尚未创建 Agent 或 Workflow。原始需求已保留；可以重试，或展开检查详情查看原因。",
     failedHint: "这一轮已停止。请查看上方的错误提示，处理原因后重新发送任务。",
     finishedHint: "这一轮已结束。请查看上方的回复，再补充或调整任务要求。",
     blockedDetails: "查看阻塞原因",
@@ -70,7 +71,7 @@ const copy = {
     blocked: "Plan blocked",
     failed: "Plan generation failed",
     finished: "This turn has ended",
-    blockedHint: "This turn has stopped without creating an Agent or Workflow. Clarify how you want it to work and send it again. Review the reason to understand the current limitation.",
+    blockedHint: "The generated plan did not pass checks, so no Agent or Workflow was created. Your original request is retained. Retry or open the check details to inspect the cause.",
     failedHint: "This turn has stopped. Review the error above, address its cause, and send the task again.",
     finishedHint: "This turn has ended. Review the reply above, then clarify or adjust the task.",
     blockedDetails: "Review blocking reason",
@@ -126,9 +127,7 @@ function availabilityTone(value: FactorySession["run_availability"]): "good" | "
   return value === "ready" ? "good" : value === "unavailable" ? "bad" : "warn";
 }
 
-const flowComponentTypes = new Set<FlowNode["component_type"]>([
-  "Start", "Agent", "Model", "AgentCall", "Tool", "CustomComponent", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
-]);
+const flowComponentTypes = new Set(studioComponents.map((component) => component.type));
 
 function flowComponentType(value: string): FlowNode["component_type"] {
   return flowComponentTypes.has(value as FlowNode["component_type"]) ? value as FlowNode["component_type"] : "Transform";
@@ -642,6 +641,7 @@ export function FactoryAssemblyCanvas({
 }) {
   const text = copy[locale];
   const blockedReason = session?.blocked_reason || planSummary?.blocked_reason;
+  const unsupported = blockedReason === "unsupported_shape" || blockedReason === "State requirement cannot be represented";
   const resolvedPhase = createdAgentId || session?.state === "completed" ? "completed"
     : session?.state === "missing_capability" ? "missing"
     : isBlockedCreation(undefined, session) ? "blocked"
@@ -680,8 +680,13 @@ export function FactoryAssemblyCanvas({
         </ol> : null}
         {resolvedPhase === "blocked" || resolvedPhase === "failed" || resolvedPhase === "finished" ? (
           <div className="factory-canvas-terminal" role="status" aria-live="polite">
-            <p>{resolvedPhase === "blocked" ? text.blockedHint : resolvedPhase === "failed" ? text.failedHint : text.finishedHint}</p>
+            <p>{resolvedPhase === "blocked"
+              ? unsupported
+                ? (locale === "zh" ? "当前还不能完整实现这类任务，尚未创建 Agent 或 Workflow。原始需求已保留；请查看原因了解缺少的能力或支持范围。" : "This task is not fully supported yet, so no Agent or Workflow was created. Your original request is retained. Review the reason for the missing capability or limitation.")
+                : text.blockedHint
+              : resolvedPhase === "failed" ? text.failedHint : text.finishedHint}</p>
             {blockedReason ? <details><summary>{text.blockedDetails}</summary><p>{blockedReasonLabel(blockedReason, locale)}</p></details> : null}
+            {unsupported ? <LinkButton size="sm" href={session?.project_id ? projectRoutePaths.projectResources(session.project_id) : "#/resources"}>{locale === "zh" ? "查看可用资源" : "View available resources"}</LinkButton> : null}
           </div>
         ) : null}
         {clock ? <p className="factory-canvas-live" role="status">{stageLabel(resolvedPhase, locale)} · {clock}。{text.waiting}</p> : null}

@@ -163,7 +163,7 @@ describe("RunExecutionCanvas", () => {
       screen.getByRole("button", { name: "Approve" }).click();
     });
 
-    expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve" });
+    expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve", expected_request_id: "event-5" });
     expect(document.querySelector('[data-id="out"] .agent-flow-node')).toHaveAttribute("data-state", "running");
     expect(screen.getByText("Running")).toBeInTheDocument();
   });
@@ -179,5 +179,35 @@ describe("RunExecutionCanvas", () => {
     expect(await screen.findByRole("heading", { name: "Could not restore the Run canvas" })).toBeInTheDocument();
     expect(screen.getByText(/immutable Agent version for this Run is unavailable/)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Approval flow" })).not.toBeInTheDocument();
+  });
+
+  it("shows budget continuation instead of approval and preserves pinned Run identity", async () => {
+    const budgetRun: AgentRunResponse = { ...waitingRun, events: [...waitingRun.events!, event("approval.requested", 6, "approval", { kind: "budget", request_id: "budget-current", context: { budget: { scope: "run_model_turns", used: 14, limit: 16, remaining: 2 }, required_remaining: 4, max_additional_turns: 32, suggested_additional_turns: 8 } })] };
+    const commandAgentRun = vi.fn().mockRejectedValue(new Error("Response unknown"));
+    renderCanvas(apiFor({ getAgentRun: vi.fn().mockResolvedValue(budgetRun), commandAgentRun }));
+    await screen.findByRole("button", { name: "Continue" });
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(document.querySelector('[data-id="approval"] .agent-flow-node')).toHaveAttribute("data-state", "waiting_budget");
+    await act(async () => { screen.getByRole("button", { name: "Continue" }).click(); });
+    await screen.findByText("Response unknown");
+    expect(commandAgentRun).toHaveBeenCalledTimes(1);
+    expect(commandAgentRun.mock.calls[0].slice(0, 4)).toEqual(["project-1", "agent-1", "run-1", { command: "extend_budget", expected_request_id: "budget-current", additional_turns: 8 }]);
+  });
+
+  it("refreshes changed approval data after a rejected command without automatically approving it", async () => {
+    const newer: AgentRunResponse = { ...waitingRun, events: [...waitingRun.events!, event("approval.requested", 6, "approval", { prompt: "Review a different action", request_id: "request-new" })] };
+    let current = waitingRun;
+    const commandAgentRun = vi.fn().mockImplementation(async () => {
+      if (current === waitingRun) { current = newer; throw new Error("Request changed"); }
+      return current;
+    });
+    renderCanvas(apiFor({ commandAgentRun, getAgentRun: vi.fn().mockImplementation(async () => current) }));
+    await screen.findByRole("button", { name: "Approve" });
+    await act(async () => { screen.getByRole("button", { name: "Approve" }).click(); });
+    expect(await screen.findByText("Review a different action")).toBeInTheDocument();
+    expect(commandAgentRun).toHaveBeenCalledTimes(1);
+    expect(commandAgentRun).toHaveBeenLastCalledWith("project-1", "agent-1", "run-1", { command: "approve", expected_request_id: "event-5" });
+    await act(async () => { screen.getByRole("button", { name: "Reject" }).click(); });
+    expect(commandAgentRun).toHaveBeenLastCalledWith("project-1", "agent-1", "run-1", { command: "reject", expected_request_id: "request-new" });
   });
 });

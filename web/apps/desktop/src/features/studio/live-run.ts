@@ -1,7 +1,20 @@
 import * as React from "react";
-import type { AgentRunResponse, JsonValue, RuntimeEvent, RuntimeRunStatus } from "@veyra/api-contracts";
+import type { AgentRunResponse, JsonValue, RuntimeEvent, RuntimeRunStatus, WorkflowRunResponse } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { persistRunId } from "../runs/run-location";
+import { newUuidV7 } from "../../api/uuid";
+import { isBudgetWaiting } from "./BudgetContinuation";
+
+export type LiveRunCommand = "approve" | "reject" | "stop" | "reply" | "extend_budget";
+
+export function runCommandKey(keys: Map<string, string>, run: AgentRunResponse | WorkflowRunResponse, command: string, additionalTurns?: number): string {
+  const identity = `${run.project_id}:${run.run_id}:${command}:${approvalRequestId(run) ?? ""}:${additionalTurns ?? ""}`;
+  const existing = keys.get(identity);
+  if (existing) return existing;
+  const key = newUuidV7();
+  keys.set(identity, key);
+  return key;
+}
 
 export type NodeRunState = "pending" | "running" | "waiting" | "completed" | "failed";
 
@@ -16,7 +29,7 @@ export type LiveRunSession = {
   error: string;
   busy: boolean;
   start: (inputs: Record<string, JsonValue>, options?: StartLiveRunOptions) => Promise<void>;
-  sendCommand: (command: "approve" | "reject" | "stop" | "reply", inputs?: Record<string, JsonValue>) => Promise<void>;
+  sendCommand: (command: LiveRunCommand, inputs?: Record<string, JsonValue>, additionalTurns?: number) => Promise<void>;
   restore: (runId: string) => Promise<void>;
   clear: () => void;
 };
@@ -79,6 +92,30 @@ export function approvalPrompt(run: AgentRunResponse | null): string {
   return typeof prompt === "string" ? prompt : "";
 }
 
+export function approvalRequestId(run: AgentRunResponse | WorkflowRunResponse | null): string | undefined {
+  if (run?.status !== "waiting") return undefined;
+  if ("workflow_id" in run) {
+    const id = run.waiting?.request_id;
+    return typeof id === "string" && id.trim() ? id : undefined;
+  }
+  const request = [...(run.events ?? [])].reverse().find((event) => event.kind === "approval.requested");
+  const id = request?.payload.request_id;
+  return typeof id === "string" && id.trim() ? id : request?.payload.kind === "budget" ? undefined : request?.event_id;
+}
+
+export function approvalRequestBinding(run: AgentRunResponse | WorkflowRunResponse | null, command: string): { expected_request_id?: string } {
+  if (command === "extend_budget" || (command === "stop" && isBudgetWaiting(run))) {
+    if (!isBudgetWaiting(run)) throw new Error("The current budget request is unavailable. Refresh the run before responding.");
+    const id = approvalRequestId(run);
+    if (!id) throw new Error("The current budget request is unavailable. Refresh the run before responding.");
+    return { expected_request_id: id };
+  }
+  if (!["approve", "reject", "reply"].includes(command)) return {};
+  const id = approvalRequestId(run);
+  if (!id) throw new Error("The current request is unavailable. Refresh the run before responding.");
+  return { expected_request_id: id };
+}
+
 function useLiveRunSession({
   api,
   projectId,
@@ -95,6 +132,10 @@ function useLiveRunSession({
   const [run, setRun] = React.useState<AgentRunResponse | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const commandKeys = React.useRef(new Map<string, string>());
+  const pendingCommand = React.useRef(false);
+  const restoreEpoch = React.useRef(0);
+  React.useEffect(() => () => { restoreEpoch.current += 1; }, [api, projectId, agentId, inactive]);
 
   const adopt = React.useCallback((next: AgentRunResponse, previous: AgentRunResponse | null = null) => {
     const bySequence = new Map<number, RuntimeEvent>();
@@ -112,6 +153,7 @@ function useLiveRunSession({
 
   const start = React.useCallback(async (inputs: Record<string, JsonValue>, options: StartLiveRunOptions = {}) => {
     if (inactive || !api.runAgent || busy) return;
+    restoreEpoch.current += 1;
     setBusy(true);
     setError("");
     try {
@@ -133,35 +175,48 @@ function useLiveRunSession({
     }
   }, [inactive, api, projectId, agentId, busy, adopt, locale]);
 
-  const sendCommand = React.useCallback(async (command: "approve" | "reject" | "stop" | "reply", inputs?: Record<string, JsonValue>) => {
-    if (inactive || !run || !api.commandAgentRun || busy) return;
+  const sendCommand = React.useCallback(async (command: LiveRunCommand, inputs?: Record<string, JsonValue>, additionalTurns?: number) => {
+    if (inactive || !run || !api.commandAgentRun || busy || pendingCommand.current) return;
+    pendingCommand.current = true;
     setBusy(true);
     setError("");
     try {
-      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command, ...(inputs ? { inputs } : {}) });
+      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command, ...approvalRequestBinding(run, command), ...(inputs ? { inputs } : {}), ...(command === "extend_budget" ? { additional_turns: additionalTurns } : {}) }, ...(isBudgetWaiting(run) ? [{ idempotencyKey: runCommandKey(commandKeys.current, run, command, additionalTurns) }] as const : [] as const));
+      if (updated.run_id !== run.run_id || updated.project_id !== projectId || updated.agent_id !== agentId) throw new Error("Runtime run identity mismatch");
       const detailed = api.getAgentRun
         ? await api.getAgentRun(projectId, agentId, updated.run_id)
         : updated;
+      if (detailed.run_id !== run.run_id || detailed.project_id !== projectId || detailed.agent_id !== agentId) throw new Error("Runtime run identity mismatch");
       setRun((current) => adopt(detailed, current?.run_id === detailed.run_id ? current : updated));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (locale === "zh" ? "运行命令失败。" : "The run command failed."));
+      if (api.getAgentRun) {
+        const detailed = await api.getAgentRun(projectId, agentId, run.run_id).catch(() => null);
+        if (detailed?.run_id === run.run_id && detailed.project_id === projectId && detailed.agent_id === agentId) {
+          setRun((current) => current?.run_id === run.run_id ? adopt(detailed, current) : current);
+        }
+      }
     } finally {
+      pendingCommand.current = false;
       setBusy(false);
     }
   }, [inactive, run, api, projectId, agentId, busy, adopt, locale]);
 
   const restore = React.useCallback(async (runId: string) => {
     if (inactive || !api.getAgentRun) return;
+    const epoch = ++restoreEpoch.current;
     try {
       const detailed = await api.getAgentRun(projectId, agentId, runId);
+      if (epoch !== restoreEpoch.current) return;
       if (detailed.run_id !== runId || detailed.project_id !== projectId || detailed.agent_id !== agentId) throw new Error("Runtime run identity mismatch");
       setRun((current) => adopt(detailed, current?.run_id === runId ? current : null));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not restore the active run");
+      if (epoch === restoreEpoch.current) setError(cause instanceof Error ? cause.message : "Could not restore the active run");
     }
   }, [inactive, api, projectId, agentId, adopt]);
 
   const clear = React.useCallback(() => {
+    restoreEpoch.current += 1;
     setRun(null);
     setError("");
     if (!inactive && window.location.hash.split("?")[0]?.endsWith("/design")) persistRunId(null);

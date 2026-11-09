@@ -20,7 +20,7 @@ from veyra_agent_platform.local.factory.service import FactoryError
 from veyra_agent_platform.local.resources import ResourceCatalog
 
 
-def _product() -> Any:
+def _product(*, image_outputs: bool = False) -> Any:
     requirement = "保存任务，下次先找到同一任务再更新，不能重复创建，周总结前先问我。"
     payload = {
         "schema_version": "1.0",
@@ -36,7 +36,14 @@ def _product() -> Any:
         "stages": [{"id": "manage", "actor": "manager", "summary": requirement}],
         "inputs": [field("request", "string")],
         "outputs": [field("result", "object")],
-        "execution_boundaries": [],
+        "execution_boundaries": [
+            {
+                "kind": "state",
+                "stage": "manage",
+                "entity": "tasks",
+                "reason": "The autonomous role manages its declared records",
+            }
+        ],
         "uncertainty": [],
         "lifecycle": {"persistent": True, "interaction": "persistent_task"},
         "state": {
@@ -48,6 +55,12 @@ def _product() -> Any:
             "revision": True,
         },
     }
+    if image_outputs:
+        payload["outputs"].extend(
+            field(name, "image")
+            for name in ("view-front", "view-side", "view-open", "view-inside")
+        )
+        payload["state"]["fields"]["generated_images"] = "array"
     product = generate_builder_product(
         requirement, ResourceCatalog(), planner_provider=Planner(payload)
     )
@@ -192,3 +205,123 @@ def test_state_scope_rejection_is_repaired_before_write_and_query_finds_the_reco
         )["records"]
         assert len(rows) == 1 and rows[0]["data"]["owner"] == "小夏"
         assert rows[0]["revision"] == 1
+
+
+def test_generated_native_state_reuses_the_record_in_a_second_committed_run(
+    tmp_path: Path,
+) -> None:
+    product = _product()
+
+    def action(tool: str, arguments: dict[str, Any]) -> str:
+        return json.dumps({"action": "tool", "tool": tool, "arguments": arguments})
+
+    query = action(
+        "veyra.tool.entity.query@1.0.0",
+        {"entity_type": "tasks", "filters": {"title": "retained task"}},
+    )
+    complete = json.dumps({"action": "final", "outputs": {"result": {"saved": True}}})
+    transport = ScriptedRuntimeTransport(
+        [
+            query,
+            action(
+                "veyra.tool.entity.write@1.0.0",
+                {
+                    "entity_type": "tasks",
+                    "payload": {
+                        "title": "retained task",
+                        "owner": "user",
+                        "status": "open",
+                    },
+                    "status": "open",
+                },
+            ),
+            complete,
+        ]
+    )
+    settings = LocalSettings(
+        database_url=f"sqlite:///{tmp_path / 'db.sqlite3'}",
+        project_storage_root=tmp_path / "projects",
+    )
+    with verified_client(settings, transport) as client:
+        pid = _project(client)
+        edits = client.app.state.edit_proposals
+        proposal = edits.create_agent_proposal(
+            pid,
+            candidate={
+                "source": product.source.to_dict(),
+                "execution_plan": product.plan.to_dict(),
+            },
+            conversation_id="reuse-conversation",
+            operation_id="reuse-operation",
+            factory_session_id="reuse-factory",
+        )
+        edits.apply_agent_creation_proposal(pid, proposal["proposal_id"], confirm=True)
+        url = f"/api/v1/projects/{pid}/agents/{product.source.agent_id}"
+        draft = client.get(url + "/draft").json()
+        committed = client.post(
+            url + "/commit",
+            headers={"If-Match": draft["etag"], "Idempotency-Key": new_uuid7()},
+            json={"expected_revision": draft["revision"]},
+        )
+        assert committed.status_code == 200, committed.text
+        version_id = committed.json()["version_id"]
+
+        def run(request: str) -> dict[str, Any]:
+            started = client.post(
+                url + "/run",
+                json={
+                    "inputs": {"request": request},
+                    "source": "committed",
+                    "version_id": version_id,
+                },
+                headers={"Idempotency-Key": new_uuid7()},
+            )
+            assert started.status_code == 200, started.text
+            return _await_run(client, url + "/run", started.json()["run_id"])
+
+        first = run("Create the task")
+        assert first["status"] == "unverified", first.get("error")
+        store = client.app.state.entity_store
+        rows = store.query(project_id=pid, entity_type="tasks")["records"]
+        assert len(rows) == 1 and rows[0]["revision"] == 1
+        entity_id = rows[0]["entity_id"]
+        transport.script.extend(
+            [
+                query,
+                action(
+                    "veyra.tool.entity.write@1.0.0",
+                    {
+                        "entity_type": "tasks",
+                        "entity_id": entity_id,
+                        "payload": {
+                            "title": "retained task",
+                            "owner": "user",
+                            "status": "done",
+                        },
+                        "status": "done",
+                    },
+                ),
+                complete,
+            ]
+        )
+        second = run("Find the same task and mark it done")
+        assert second["status"] == "unverified", second.get("error")
+        assert second["run_id"] != first["run_id"]
+        rows = store.query(project_id=pid, entity_type="tasks")["records"]
+        assert len(rows) == 1 and rows[0]["entity_id"] == entity_id
+        assert rows[0]["revision"] == 2 and rows[0]["status"] == "done"
+        second_call = transport.calls[3]
+        assert any(
+            entity_id in str(message["content"]) for message in transport.calls[4]
+        )
+        assert "retained task" in str(second_call)
+        assert (
+            len(
+                [
+                    event
+                    for event in second["events"]
+                    if event["kind"] == "tool.completed"
+                ]
+            )
+            == 2
+        )

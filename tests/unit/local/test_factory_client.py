@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 import httpx
+import pytest
 
 from veyra_agent_platform.local.factory.client import (
     FactoryProviderError,
@@ -132,6 +134,37 @@ def test_http_transport_maps_rate_limit_without_leaking_bodies() -> None:
         raise AssertionError("expected FactoryProviderError")
 
 
+def test_rate_limit_preserves_safe_type_code_and_wait_hint_without_raw_body() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "60"},
+            json={
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "tokens_per_minute",
+                    "message": "private request text sk-secret must not be retained",
+                }
+            },
+        )
+
+    transport = _transport(handler)
+    try:
+        transport.complete([{"role": "user", "content": "hello"}])
+    except FactoryProviderError as exc:
+        assert exc.code == "factory_rate_limited"
+        assert exc.details == {
+            "http_status": "429",
+            "provider_error_type": "rate_limit_error",
+            "provider_error_code": "tokens_per_minute",
+            "retry_after_seconds": "60",
+        }
+        assert "private request text" not in str(exc.details)
+        assert "sk-secret" not in str(exc.details)
+    else:
+        raise AssertionError("expected FactoryProviderError")
+
+
 def test_http_transport_maps_provider_failure() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={"error": {"message": "upstream boom"}})
@@ -228,6 +261,45 @@ def test_streamed_completion_publishes_the_visible_reply() -> None:
 def test_semantic_plan_read_is_not_cut_off() -> None:
     assert completion_timeout(None).read is None
     assert completion_timeout(90).read == 90
+
+
+def test_quota_exhaustion_is_not_reported_as_transient_rate_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "type": "exceeded_current_quota_error",
+                    "message": "private account value",
+                }
+            },
+        )
+
+    with pytest.raises(FactoryProviderError) as caught:
+        _transport(handler).complete([{"role": "user", "content": "hello"}])
+    assert caught.value.code == "factory_quota_exhausted"
+    assert (caught.value.details or {})[
+        "provider_error_type"
+    ] == "exceeded_current_quota_error"
+    assert "private account" not in str(caught.value)
+
+
+def test_purpose_effort_override_preserves_the_default_semantic_effort() -> None:
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        )
+
+    transport = _transport(handler)
+    transport.complete(
+        [{"role": "user", "content": "classify"}], reasoning_effort="low"
+    )
+    transport.complete([{"role": "user", "content": "plan"}])
+    assert bodies[0]["reasoning_effort"] == "low"
+    assert bodies[1]["reasoning_effort"] == "high"
 
 
 def _transport(

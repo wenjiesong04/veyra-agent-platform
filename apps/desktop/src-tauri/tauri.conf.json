@@ -18,7 +18,7 @@
     "frontendDist": "../../../web/apps/desktop/dist"
   },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "security": {
       "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     },
@@ -34,9 +34,14 @@
       }
     ]
   },
+  "plugins": {
+    "shell": {
+      "open": "https?://(?:\\[[0-9A-Fa-f:]+\\]|[A-Za-z0-9][A-Za-z0-9.-]*)(?::[0-9]{1,5})?(?:[/?#][^\\s]*)?"
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": ["dmg"],
+    "targets": ["app", "dmg"],
     "icon": [
       "icons/icon.icns",
       "icons/icon.png",

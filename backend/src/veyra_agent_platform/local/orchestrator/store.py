@@ -44,6 +44,8 @@ class OrchestratorStore:
         title: str,
         description: str,
         agent_id: str,
+        agent_version_id: str,
+        agent_source_hash: str,
         depends_on: list[str],
         inputs: dict[str, Any],
         status: str,
@@ -52,14 +54,17 @@ class OrchestratorStore:
         connection.execute(
             """INSERT INTO work_items(
                 work_item_id, project_id, title, description, agent_id,
+                agent_version_id, agent_source_hash,
                 depends_on_json, inputs_json, status, run_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
             (
                 work_item_id,
                 project_id,
                 title,
                 description,
                 agent_id,
+                agent_version_id,
+                agent_source_hash,
                 json.dumps(depends_on, ensure_ascii=False),
                 json.dumps(inputs, ensure_ascii=False, sort_keys=True),
                 status,
@@ -97,11 +102,12 @@ class OrchestratorStore:
         connection: sqlite3.Connection, project_id: str
     ) -> tuple[int, int]:
         global_count = connection.execute(
-            "SELECT COUNT(*) FROM work_items WHERE status IN ('running', 'waiting')"
+            "SELECT COUNT(*) FROM work_items "
+            "WHERE status IN ('running', 'waiting', 'cancelling')"
         ).fetchone()[0]
         project_count = connection.execute(
             "SELECT COUNT(*) FROM work_items "
-            "WHERE project_id = ? AND status IN ('running', 'waiting')",
+            "WHERE project_id = ? AND status IN ('running', 'waiting', 'cancelling')",
             (project_id,),
         ).fetchone()[0]
         return int(global_count), int(project_count)
@@ -118,6 +124,8 @@ class OrchestratorStore:
             "title": "title",
             "description": "description",
             "agent_id": "agent_id",
+            "agent_version_id": "agent_version_id",
+            "agent_source_hash": "agent_source_hash",
             "status": "status",
             "run_id": "run_id",
             "attempt_number": "attempt_number",
@@ -156,13 +164,17 @@ class OrchestratorStore:
         lease_token: str,
         claimed_at: str,
         created_at: str,
+        operation: str,
+        previous_run_id: str | None,
+        request_key: str,
     ) -> None:
         connection.execute(
             "INSERT INTO work_item_attempts("
             "attempt_id, work_item_id, attempt_number, run_id, status, "
             "lease_token, failure_class, claimed_at, started_at, finished_at, "
-            "created_at"
-            ") VALUES (?, ?, ?, NULL, 'dispatching', ?, NULL, ?, NULL, NULL, ?)",
+            "created_at, operation, previous_run_id, request_key"
+            ") VALUES (?, ?, ?, NULL, 'dispatching', ?, NULL, ?, "
+            "NULL, NULL, ?, ?, ?, ?)",
             (
                 attempt_id,
                 work_item_id,
@@ -170,6 +182,9 @@ class OrchestratorStore:
                 lease_token,
                 claimed_at,
                 created_at,
+                operation,
+                previous_run_id,
+                request_key,
             ),
         )
 
@@ -182,12 +197,14 @@ class OrchestratorStore:
         lease_token: str,
         lease_expires_at: str,
         updated_at: str,
+        expected_attempt_number: int,
+        expected_status: str,
     ) -> bool:
         cursor = connection.execute(
             "UPDATE work_items SET status = 'running', run_id = NULL, "
             "attempt_number = ?, lease_token = ?, lease_expires_at = ?, "
             "failure_class = NULL, updated_at = ? "
-            "WHERE work_item_id = ? AND status IN ('backlog', 'ready') "
+            "WHERE work_item_id = ? AND status = ? AND attempt_number = ? "
             "AND lease_token IS NULL",
             (
                 attempt_number,
@@ -195,6 +212,8 @@ class OrchestratorStore:
                 lease_expires_at,
                 updated_at,
                 work_item_id,
+                expected_status,
+                expected_attempt_number,
             ),
         )
         return cursor.rowcount == 1
@@ -211,8 +230,8 @@ class OrchestratorStore:
         cursor = connection.execute(
             "UPDATE work_items SET run_id = ?, updated_at = ? "
             "WHERE work_item_id = ? AND status = 'running' "
-            "AND lease_token = ? AND run_id IS NULL",
-            (run_id, updated_at, work_item_id, lease_token),
+            "AND lease_token = ? AND (run_id IS NULL OR run_id = ?)",
+            (run_id, updated_at, work_item_id, lease_token, run_id),
         )
         return cursor.rowcount == 1
 
@@ -234,7 +253,7 @@ class OrchestratorStore:
             conditions += " AND run_id = ?"
             parameters.append(run_id)
         cursor = connection.execute(
-            "UPDATE work_items SET status = 'failed', run_id = NULL, "
+            "UPDATE work_items SET status = 'failed', "
             "lease_token = NULL, lease_expires_at = NULL, failure_class = ?, "
             f"updated_at = ? WHERE {conditions}",
             [failure_class, updated_at, *parameters],
@@ -293,6 +312,7 @@ class OrchestratorStore:
             "run_id": "run_id",
             "status": "status",
             "failure_class": "failure_class",
+            "error_code": "error_code",
             "started_at": "started_at",
             "finished_at": "finished_at",
         }
@@ -320,6 +340,9 @@ class OrchestratorStore:
             "title": row["title"],
             "description": row["description"],
             "agent_id": row["agent_id"],
+            "agent_version_id": row["agent_version_id"],
+            "agent_source_hash": row["agent_source_hash"],
+            "binding_required": row["agent_version_id"] is None,
             "depends_on": json.loads(row["depends_on_json"]),
             "inputs": json.loads(row["inputs_json"]),
             "status": row["status"],
@@ -336,6 +359,9 @@ class OrchestratorStore:
         return {
             "attempt_id": row["attempt_id"],
             "attempt_number": int(row["attempt_number"]),
+            "operation": row["operation"],
+            "previous_run_id": row["previous_run_id"],
+            "error_code": row["error_code"],
             "run_id": row["run_id"],
             "status": row["status"],
             "failure_class": row["failure_class"],

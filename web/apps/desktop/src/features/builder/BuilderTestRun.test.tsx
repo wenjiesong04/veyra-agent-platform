@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BuilderConversationOperation, BuilderConversationSnapshot } from "@veyra/api-contracts";
+import type { AgentRunResponse, BuilderConversationOperation, BuilderConversationSnapshot } from "@veyra/api-contracts";
 import { ThemeProvider } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { editAgent, editDraft } from "../../test/edit-proposals";
@@ -102,6 +102,50 @@ function apiFor(overrides: Partial<LocalProjectApi> = {}): LocalProjectApi {
 }
 
 describe("BuilderTestRun", () => {
+  it.each(["approve", "reject", "stop"] as const)("binds Builder test %s to the displayed Runtime approval", async (command) => {
+    const waiting = operation({ status: "waiting", run_observation: observation({ status: "waiting", approval_required: true, output_summary: null }) });
+    const detail: AgentRunResponse = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", run_id: "run-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: waiting.created_at, finished_at: null,
+      events: [{ schema_version: "1.0", event_id: "event-old", run_id: "run-1", sequence: 1, kind: "approval.requested", node_id: "write", payload: { request_id: "builder-request-1", prompt: "Write the reviewed report?" }, timestamp: waiting.created_at }] };
+    const commandBuilderTestRun = vi.fn().mockResolvedValue(snapshotFor(operation()));
+    render(<ThemeProvider><BuilderTestRun api={apiFor({ getAgentRun: vi.fn().mockResolvedValue(detail), commandBuilderTestRun })} projectId="project-1" agentId="agent-1" workspaceId="workspace-1" conversationId="conv-1" locale="en" operation={waiting} onSnapshot={vi.fn()} /></ThemeProvider>);
+    await screen.findByText("Write the reviewed report?");
+    fireEvent.click(screen.getByRole("button", { name: command === "approve" ? "Approve" : command === "reject" ? "Reject" : "Stop" }));
+    await waitFor(() => expect(commandBuilderTestRun).toHaveBeenCalledWith("project-1", "conv-1", "op-test", { command, locale: "en", ...(command !== "stop" ? { expected_request_id: "builder-request-1" } : {}) }));
+  });
+
+  it("refreshes a stale Builder approval without substituting the new nonce into its action", async () => {
+    const waiting = operation({ status: "waiting", run_observation: observation({ status: "waiting", approval_required: true, output_summary: null }) });
+    const detail: AgentRunResponse = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", run_id: "run-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: waiting.created_at, finished_at: null,
+      events: [{ schema_version: "1.0", event_id: "event-old", run_id: "run-1", sequence: 1, kind: "approval.requested", node_id: "write", payload: { request_id: "request-old", prompt: "First approval" }, timestamp: waiting.created_at }] };
+    const newer = { ...detail, events: [{ ...detail.events![0], event_id: "event-new", payload: { request_id: "request-new", prompt: "Second approval" } }] };
+    let current = detail;
+    const commandBuilderTestRun = vi.fn().mockImplementation(async () => {
+      if (current === detail) { current = newer; throw new Error("Request changed"); }
+      return snapshotFor(operation());
+    });
+    render(<ThemeProvider><BuilderTestRun api={apiFor({ getAgentRun: vi.fn().mockImplementation(async () => current), getBuilderConversation: vi.fn().mockResolvedValue(snapshotFor(waiting)), commandBuilderTestRun })} projectId="project-1" agentId="agent-1" workspaceId="workspace-1" conversationId="conv-1" locale="en" operation={waiting} onSnapshot={vi.fn()} /></ThemeProvider>);
+    await screen.findByText("First approval");
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Second approval")).toBeInTheDocument();
+    expect(commandBuilderTestRun).toHaveBeenCalledTimes(1);
+    expect(commandBuilderTestRun).toHaveBeenLastCalledWith("project-1", "conv-1", "op-test", { command: "approve", locale: "en", expected_request_id: "request-old" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(commandBuilderTestRun).toHaveBeenLastCalledWith("project-1", "conv-1", "op-test", { command: "reject", locale: "en", expected_request_id: "request-new" });
+  });
+
+  it("routes budget waits to Run Detail without presenting Builder tool approval", async () => {
+    const waiting = operation({ status: "waiting", run_observation: observation({ status: "waiting", approval_required: true, output_summary: null }) });
+    const detail: AgentRunResponse = { schema_version: "1.0", project_id: "project-1", agent_id: "agent-1", run_id: "run-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: waiting.created_at, finished_at: null,
+      events: [{ schema_version: "1.0", event_id: "budget-1", run_id: "run-1", sequence: 1, kind: "approval.requested", node_id: "model", payload: { kind: "budget", request_id: "budget-current", prompt: "More turns needed" }, timestamp: waiting.created_at }] };
+    const commandBuilderTestRun = vi.fn();
+    render(<ThemeProvider><BuilderTestRun api={apiFor({ getAgentRun: vi.fn().mockResolvedValue(detail), getBuilderConversation: vi.fn().mockResolvedValue(snapshotFor(waiting)), commandBuilderTestRun })} projectId="project-1" agentId="agent-1" workspaceId="workspace-1" conversationId="conv-1" locale="en" operation={waiting} onSnapshot={vi.fn()} /></ThemeProvider>);
+    expect(await screen.findByRole("link", { name: "Open Run Detail to add turns" })).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/run?run_id=run-1");
+    expect(screen.getByText("Waiting for additional turns")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(commandBuilderTestRun).not.toHaveBeenCalled();
+  });
+
   it("starts an explicit Runtime run and shows the actual Runtime model", async () => {
     const started = operation({ status: "succeeded" });
     const startBuilderTestRun = vi.fn().mockResolvedValue(snapshotFor(started));

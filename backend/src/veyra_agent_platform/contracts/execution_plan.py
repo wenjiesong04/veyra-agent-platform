@@ -37,6 +37,7 @@ PlanStepKind = Literal[
     "verifier",
     "transform",
     "output",
+    "stop",
 ]
 DecisionStatus = Literal["decided", "blocked", "needs_user_decision"]
 
@@ -58,6 +59,7 @@ _STEP_KINDS = {
     "verifier",
     "transform",
     "output",
+    "stop",
 }
 _STATUSES = {"decided", "blocked", "needs_user_decision"}
 _MAX_STEPS = 32

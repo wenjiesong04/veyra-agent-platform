@@ -3,7 +3,8 @@ import { PanelBottomClose, PanelBottomOpen, Play, RotateCcw } from "lucide-react
 import type { JsonValue, WorkflowRunResponse, WorkflowSource } from "@veyra/api-contracts";
 import { Alert, Button, Panel, StatusBadge } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
-import { nodeRunStates, type NodeRunState } from "./live-run";
+import { approvalRequestBinding, nodeRunStates, runCommandKey, type LiveRunCommand, type NodeRunState } from "./live-run";
+import { isBudgetWaiting } from "./BudgetContinuation";
 import { RunApprovalBar } from "./RunApprovalBar";
 import { WorkflowInputReplyBar } from "./WorkflowInputReplyBar";
 import { RunEvidence } from "../runs/RunDetail";
@@ -48,6 +49,8 @@ export function WorkflowRunPanel({
   const [runSource, setRunSource] = React.useState<WorkflowSource | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const commandKeys = React.useRef(new Map<string, string>());
+  const pendingCommand = React.useRef(false);
   const zh = locale === "zh";
   const inFlight = busy || run?.status === "running" || run?.status === "waiting";
   const collapsed = chrome.runCollapsed;
@@ -93,15 +96,25 @@ export function WorkflowRunPanel({
     }
   };
 
-  const command = async (value: "approve" | "reject" | "stop" | "reply", inputs?: Record<string, JsonValue>) => {
-    if (!run || !api.commandWorkflowRun || busy) return;
+  const command = async (value: LiveRunCommand, inputs?: Record<string, JsonValue>, additionalTurns?: number) => {
+    if (!run || !api.commandWorkflowRun || busy || pendingCommand.current) return;
+    pendingCommand.current = true;
     setBusy(true);
     setError("");
     try {
-      setRun(await api.commandWorkflowRun(projectId, workflowId, run.run_id, { command: value, ...(inputs ? { inputs } : {}) }));
+      const updated = await api.commandWorkflowRun(projectId, workflowId, run.run_id, { command: value, ...approvalRequestBinding(run, value), ...(inputs ? { inputs } : {}), ...(value === "extend_budget" ? { additional_turns: additionalTurns } : {}) }, ...(isBudgetWaiting(run) ? [{ idempotencyKey: runCommandKey(commandKeys.current, run, value, additionalTurns) }] as const : [] as const));
+      if (updated.run_id !== run.run_id || updated.project_id !== projectId || updated.workflow_id !== workflowId) throw new Error("Runtime run identity mismatch");
+      setRun(updated);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (zh ? "运行命令失败。" : "The run command failed."));
+      if (api.getWorkflowRun) {
+        const detail = await api.getWorkflowRun(projectId, workflowId, run.run_id).catch(() => null);
+        if (detail?.run_id === run.run_id && detail.project_id === projectId && detail.workflow_id === workflowId) {
+          setRun((current) => current?.run_id === run.run_id ? detail : current);
+        }
+      }
     } finally {
+      pendingCommand.current = false;
       setBusy(false);
     }
   };
@@ -147,7 +160,7 @@ export function WorkflowRunPanel({
             </Button>
             {run ? <Button icon={RotateCcw} variant="ghost" size="sm" onClick={() => { setRun(null); setRunSource(null); setError(""); persistRunId(null); }}>{zh ? "清除结果" : "Clear"}</Button> : null}
           </div>
-          {run?.waiting?.kind === "input" ? <WorkflowInputReplyBar run={run} schema={runSource?.nodes.find((node) => node.id === run.waiting?.node_id)?.inputs ?? {}} locale={locale} disabled={busy} api={api} projectId={projectId} onReply={(reply) => void command("reply", reply)} /> : <RunApprovalBar run={run ? workflowRunAsAgentRun(run) : null} locale={locale} disabled={busy} onCommand={(value) => void command(value)} />}
+          {run?.waiting?.kind === "input" ? <WorkflowInputReplyBar run={run} schema={runSource?.nodes.find((node) => node.id === run.waiting?.node_id)?.inputs ?? {}} locale={locale} disabled={busy} api={api} projectId={projectId} onReply={(reply) => void command("reply", reply)} /> : <RunApprovalBar run={run ? workflowRunAsAgentRun(run) : null} locale={locale} disabled={busy} onCommand={(value) => void command(value)} onExtendBudget={(turns) => void command("extend_budget", undefined, turns)} />}
           {disabled ? <Alert type="warning" title={zh ? "请先保存并通过图校验。" : "Save the draft and resolve graph diagnostics first."} /> : null}
           {!api.runWorkflow ? <Alert type="warning" title={zh ? "本地 Runtime 尚未连接。" : "The local Runtime is not connected."} /> : null}
           {(!disabled && (api.workflowRuntimeReadiness || api.runtimeStatus)) ? <WorkflowRuntimeNote api={api} projectId={projectId} workflowId={workflowId} locale={locale} /> : null}

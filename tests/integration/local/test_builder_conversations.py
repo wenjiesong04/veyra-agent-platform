@@ -271,8 +271,15 @@ def test_user_message_persists_before_model_call(tmp_path: Path) -> None:
         _assert_chat_kinds(payload)
 
 
+@pytest.mark.parametrize(
+    "issue,io_invalid",
+    [
+        ("unsupported_lifecycle", False),
+        ("Schema violations: $.actors[0].inputs[0]: required: name, type", True),
+    ],
+)
 def test_blocked_task_plan_is_a_failed_operation_not_completed_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, issue: str, io_invalid: bool
 ) -> None:
     transport = ScriptedKimiTransport(
         [
@@ -291,7 +298,7 @@ def test_blocked_task_plan_is_a_failed_operation_not_completed_generation(
                 "ready",
                 ready=True,
                 next_prompt="BLOCKED — Unsupported lifecycle",
-                diagnostics=["unsupported_lifecycle"],
+                diagnostics=[issue],
                 missing_capabilities=[],
                 resource_plan=[],
                 specification={
@@ -314,6 +321,13 @@ def test_blocked_task_plan_is_a_failed_operation_not_completed_generation(
             item for item in payload["messages"] if item["kind"] == "failure"
         )
         assert "未创建 Agent" in failure["content"]
+        assert "本次生成失败" in failure["content"]
+        assert "原始需求已保留" in failure["content"]
+        assert "调整需求" not in failure["content"]
+        assert operation["diagnostic"]["validation_issue"] == issue
+        if io_invalid:
+            assert operation["diagnostic"]["validation_kind"] == "task_io_invalid"
+            assert "输入或输出定义存在错误" in failure["content"]
         _assert_no_secrets(payload)
 
 
@@ -1023,7 +1037,7 @@ def test_create_agent_stays_a_loop_instead_of_repairing_a_branch_graph(
             locale="en",
         ).json()
 
-        assert len(transport.calls) == 4
+        assert len(transport.calls) == 3
         assert payload["operations"][0]["status"] == "waiting"
         assert payload["factory_session"]["state"] == "review"
         types = [
@@ -1064,7 +1078,7 @@ def test_loop_generate_does_not_exhaust_semantic_plan_repairs(
         assert payload["operations"][0]["status"] == "waiting"
         assert "builder.proposal.ready" in _event_kinds(payload)
         assert payload["factory_session"]["state"] == "review"
-        assert len(transport.calls) == 4
+        assert len(transport.calls) == 3
 
 
 def test_turn_sse_emits_real_operation_events(tmp_path: Path) -> None:
@@ -1094,7 +1108,11 @@ def test_turn_sse_emits_real_operation_events(tmp_path: Path) -> None:
 
 def test_turn_sse_publishes_initial_snapshot_before_slow_resolution(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from veyra_agent_platform.local.api.factory import builder_routes
+
+    monkeypatch.setattr(builder_routes, "_STREAM_HEARTBEAT_SECONDS", 0.01)
     transport = ScriptedKimiTransport(
         [_completion(json.dumps(intent(intent="create", create_kind="agent")))]
     )
@@ -1135,8 +1153,15 @@ def test_turn_sse_publishes_initial_snapshot_before_slow_resolution(
             assert "event: builder.snapshot\n" in initial_frame
             assert await asyncio.to_thread(resolution_started.wait, 2)
             assert not resolution_finished.is_set()
-            release_resolution.set()
             frames = [first, initial_frame]
+            idle_frame = await anext(iterator)
+            while idle_frame != ": keep-alive\n\n":
+                frames.append(idle_frame)
+                idle_frame = await anext(iterator)
+            assert idle_frame == ": keep-alive\n\n"
+            assert not resolution_finished.is_set()
+            release_resolution.set()
+            frames.append(idle_frame)
             async for frame in iterator:
                 frames.append(frame)
             return frames

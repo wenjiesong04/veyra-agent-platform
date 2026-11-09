@@ -17,6 +17,9 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.builder.conversation_store import (
     BuilderConversationStore,
 )
+from veyra_agent_platform.local.builder.generation_budget import (
+    GenerationRefinementNotAllowed,
+)
 from veyra_agent_platform.local.builder.harness import (
     EXCLUDED_CONTEXT_CATEGORIES,
     INCLUDED_CONTEXT_CATEGORIES,
@@ -94,6 +97,9 @@ class HarnessReceiptRecorder:
         conversation_id: str,
         operation_id: str,
         profile: ProviderCapabilityProfile,
+        request_limit: int | None = None,
+        timeout_seconds: float | None = None,
+        allowed_output_contracts: frozenset[str] | None = None,
     ) -> None:
         self.store = store
         self.harness = harness
@@ -101,6 +107,15 @@ class HarnessReceiptRecorder:
         self.conversation_id = conversation_id
         self.operation_id = operation_id
         self.profile = profile
+        self.request_limit = request_limit
+        self.timeout_seconds = timeout_seconds
+        self.allowed_output_contracts = allowed_output_contracts
+
+    def permits_contract(self, output_contract: str) -> bool:
+        return (
+            self.allowed_output_contracts is None
+            or output_contract in self.allowed_output_contracts
+        )
 
     def begin(
         self,
@@ -118,6 +133,8 @@ class HarnessReceiptRecorder:
     ) -> str:
         if kind not in INVOCATION_KINDS or structured_mode not in STRUCTURED_MODES:
             raise ValueError("unknown harness receipt kind")
+        if not self.permits_contract(output_contract):
+            raise GenerationRefinementNotAllowed()
         used = profile or self.profile
         snapshot = self.harness.snapshot_facts(self.project_id, harness_mode)
         included = list(INCLUDED_CONTEXT_CATEGORIES)
@@ -149,7 +166,7 @@ class HarnessReceiptRecorder:
             "included_categories": included,
             "excluded_categories": list(EXCLUDED_CONTEXT_CATEGORIES),
             "history_message_count": max(0, history_message_count),
-            "context_size_bytes": snapshot.context_size_bytes,
+            "context_size_bytes": _sent_context_size(messages, harness_mode),
             "request_size_bytes": _bounded_size(messages),
             "provider_id": used.provider_id,
             "model": used.model,
@@ -168,8 +185,23 @@ class HarnessReceiptRecorder:
             "updated_at": started_at,
         }
         assert_safe_receipt_payload(payload)
-        self.store.insert_receipt(payload)
+        self.store.insert_receipt(
+            payload,
+            request_limit=self.request_limit,
+            timeout_seconds=self.timeout_seconds,
+        )
         return receipt_id
+
+    def remaining_seconds(self) -> float | None:
+        if self.timeout_seconds is None:
+            return None
+        operation = self.store.operation(self.operation_id, self.conversation_id)
+        if operation is None:
+            return 0
+        started = datetime.fromisoformat(operation["created_at"].replace("Z", "+00:00"))
+        return max(
+            0, self.timeout_seconds - (datetime.now(UTC) - started).total_seconds()
+        )
 
     def succeed(
         self,
@@ -285,6 +317,24 @@ def assert_safe_receipt_payload(payload: Mapping[str, Any]) -> None:
         raise ValueError("harness receipt must not persist the Builder policy prompt")
     if _SECRET.search(encoded):
         raise ValueError("harness receipt must not persist credentials")
+
+
+def _sent_context_size(messages: Sequence[Mapping[str, Any]], mode: BuilderMode) -> int:
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, str):
+            continue
+        try:
+            value = json.loads(content)
+        except ValueError:
+            continue
+        if (
+            isinstance(value, dict)
+            and value.get("operation") == mode
+            and "project" in value
+        ):
+            return len(content.encode("utf-8"))
+    return 0
 
 
 def _bounded_size(messages: Sequence[Mapping[str, Any]]) -> int:

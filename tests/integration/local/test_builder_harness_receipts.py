@@ -109,7 +109,9 @@ def test_receipt_is_prepared_before_provider_request(tmp_path: Path) -> None:
         _assert_no_secrets(payload)
 
 
-def test_success_finalizes_resolve_and_interview(tmp_path: Path) -> None:
+def test_builder_reuses_understanding_without_an_extra_interview(
+    tmp_path: Path,
+) -> None:
     transport = ScriptedKimiTransport(
         [
             _completion(json.dumps(intent(intent="create", create_kind="agent"))),
@@ -122,11 +124,10 @@ def test_success_finalizes_resolve_and_interview(tmp_path: Path) -> None:
         receipts = _receipts(payload)
         assert _kinds(payload) == [
             "resolve_intent",
-            "interview",
             "semantic_plan",
             "semantic_plan",
         ]
-        assert [item["sequence"] for item in receipts] == [0, 1, 2, 3]
+        assert [item["sequence"] for item in receipts] == [0, 1, 2]
         assert {item["status"] for item in receipts} == {"success"}
         assert receipts[1]["output_contract"] != "AgentSemanticPlanV1"
         assert receipts[0]["provider_id"] == "moonshot"
@@ -172,7 +173,7 @@ def test_provider_failure_preserves_safe_receipt(
         receipts = _receipts(payload)
         assert [item["invocation_kind"] for item in receipts] == [
             "resolve_intent",
-            "interview",
+            "semantic_plan",
         ]
         failed = receipts[-1]
         assert failed["status"] == "failed"
@@ -210,7 +211,6 @@ def test_generate_records_planning_and_coverage_receipts(tmp_path: Path) -> None
         receipts = _receipts(payload)
         assert [item["invocation_kind"] for item in receipts] == [
             "resolve_intent",
-            "interview",
             "semantic_plan",
             "semantic_plan",
         ]
@@ -432,19 +432,32 @@ def test_task_planning_keeps_metadata_boundary_and_other_harness_modes(
             for item in client.app.state.factory.catalog.factory_snapshot()
         }
         other_contexts = [
-            harness.context_document(project_id, mode)
+            (mode, harness.context_document(project_id, mode))
             for mode in ("interview", "create_agent", "edit_source", "resolve_intent")
         ]
-        for context in other_contexts:
+        for mode, context in other_contexts:
             received = {item["reference"]: item for item in context["resources"]}
             assert received.keys() == original_resources.keys()
             assert "veyra.component.model@1.0.0" in received
             assert "veyra.component.transform@1.0.0" in received
             for reference, resource in received.items():
-                assert resource["spec"] == original_resources[reference]["spec"]
-                assert (
-                    resource["required_permissions"]
-                    == original_resources[reference]["required_permissions"]
+                if mode in {"resolve_intent", "interview"}:
+                    assert "spec" not in resource
+                    assert resource["name"] == original_resources[reference]["name"]
+                    assert resource["capabilities"] == list(
+                        harness.catalog.by_reference(reference)["capabilities"]
+                    )
+                else:
+                    assert resource["spec"] == original_resources[reference]["spec"]
+                if mode not in {"resolve_intent", "interview"}:
+                    assert (
+                        resource["required_permissions"]
+                        == original_resources[reference]["required_permissions"]
+                    )
+            if mode in {"resolve_intent", "interview"}:
+                complete = harness.context_document(project_id, "create_agent")
+                assert len(json.dumps(context).encode()) < len(
+                    json.dumps(complete).encode()
                 )
             for key in (
                 "project",

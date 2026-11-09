@@ -39,7 +39,7 @@ export function MiniRunCanvas({
           );
         })}
       </ol>
-      <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} />
+      <RunApprovalBar run={live.run} locale={locale} disabled={live.busy} onCommand={(command) => void live.sendCommand(command)} onExtendBudget={(turns) => void live.sendCommand("extend_budget", undefined, turns)} />
     </div>
   );
 }

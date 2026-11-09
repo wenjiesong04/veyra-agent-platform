@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AgentSource, BuilderConversationOperation, BuilderRunObservation, EditProposal, EditProposalCommand, JsonValue, RuntimeReadiness, ValidateResponse } from "@veyra/api-contracts";
+import type { AgentRunResponse, AgentSource, BuilderConversationOperation, BuilderRunObservation, EditProposal, EditProposalCommand, JsonValue, RuntimeReadiness, ValidateResponse } from "@veyra/api-contracts";
 import { compactFieldType, fieldIsMultiple, isArtifactCompactType, isArtifactRef, projectRoutePaths } from "@veyra/api-contracts";
 import { Alert, Button } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
@@ -7,6 +7,8 @@ import { runDetailHref } from "../runs/run-location";
 import { RuntimeInputForm } from "../runtime/RuntimeInputForm";
 import { RuntimeOutputView } from "../runtime/RuntimeOutputView";
 import { EditProposalPanel } from "./EditProposalPanel";
+import { approvalPrompt, approvalRequestBinding, approvalRequestId } from "../studio/live-run";
+import { approvalCard } from "../agents/app-activity";
 
 type Locale = "zh" | "en";
 
@@ -128,6 +130,7 @@ export function BuilderTestRun({
   const [incoming, setIncoming] = React.useState<EditProposal>();
   const [repaired, setRepaired] = React.useState(false);
   const [runResult, setRunResult] = React.useState<JsonValue | null>(null);
+  const [runDetail, setRunDetail] = React.useState<AgentRunResponse | null>(null);
   const inFlight = React.useRef(false);
 
   React.useEffect(() => {
@@ -155,16 +158,21 @@ export function BuilderTestRun({
   React.useEffect(() => {
     if (!observation?.run_id || !api.getAgentRun) {
       setRunResult(null);
+      setRunDetail(null);
       return;
     }
     let current = true;
+    setRunDetail((previous) => previous?.run_id === observation.run_id ? previous : null);
     void api.getAgentRun(projectId, agentId, observation.run_id).then((detail) => {
-      if (current) setRunResult(detail.result);
+      if (current && detail.run_id === observation.run_id && detail.project_id === projectId && detail.agent_id === agentId) {
+        setRunResult(detail.result);
+        setRunDetail(detail);
+      }
     }).catch(() => {
       if (current) setRunResult(null);
     });
     return () => { current = false; };
-  }, [api, projectId, agentId, observation?.run_id]);
+  }, [api, projectId, agentId, observation?.run_id, observation?.status, observation?.evidence_count, operation?.updated_at]);
 
   const model = readiness?.model;
   const runtimeConfigured = Boolean(model) && (!model?.required || model.configured);
@@ -207,13 +215,25 @@ export function BuilderTestRun({
 
   const command = async (command: "approve" | "reject" | "stop") => {
     if (!api.commandBuilderTestRun || !operation || inFlight.current) return;
+    if (command !== "stop" && !canApprove) return;
     inFlight.current = true;
     setBusy(true);
     setError("");
     try {
-      onSnapshot(await api.commandBuilderTestRun(projectId, conversationId, operation.operation_id, { command, locale }));
+      onSnapshot(await api.commandBuilderTestRun(projectId, conversationId, operation.operation_id, { command, locale, ...approvalRequestBinding(runDetail, command) }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+      if (observation?.run_id && api.getAgentRun) {
+        const detail = await api.getAgentRun(projectId, agentId, observation.run_id).catch(() => null);
+        if (detail?.run_id === observation.run_id && detail.project_id === projectId && detail.agent_id === agentId) {
+          setRunDetail(detail);
+          setRunResult(detail.result);
+        }
+      }
+      if (api.getBuilderConversation) {
+        const snapshot = await api.getBuilderConversation(projectId, conversationId).catch(() => null);
+        if (snapshot) onSnapshot(snapshot);
+      }
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -257,10 +277,14 @@ export function BuilderTestRun({
   if (!source) return <p className="factory-canvas-kicker">{text.loading}</p>;
   if (!showButton) return <p className="factory-canvas-kicker">{text.notValidated}</p>;
 
-  const statusLabel = waiting ? text.waiting : stopped ? text.stopped : operation?.status === "failed" ? text.failed : operation?.status === "succeeded" ? text.success : running ? text.running : "";
+  const request = runDetail?.events?.filter((event) => event.kind === "approval.requested").at(-1);
+  const waitingForBudget = request?.payload.kind === "budget" && runDetail?.status === "waiting";
+  const statusLabel = waitingForBudget ? (zh ? "等待追加轮次" : "Waiting for additional turns") : waiting ? text.waiting : stopped ? text.stopped : operation?.status === "failed" ? text.failed : operation?.status === "succeeded" ? text.success : running ? text.running : "";
   const runtimeModel = observation?.runtime_model_id || model?.model_id || "";
   const classifiedRepairable = observation?.classification === "repairable";
   const classifiedOtherFailure = operation?.status === "failed" && observation?.classification && observation.classification !== "repairable";
+  const canApprove = runDetail?.run_id === observation?.run_id && Boolean(approvalRequestId(runDetail)) && request?.payload.kind !== "input" && !waitingForBudget;
+  const card = approvalCard(runDetail);
 
   return (
     <section className="builder-test-run" aria-label={text.title}>
@@ -283,8 +307,14 @@ export function BuilderTestRun({
         {running ? <Button disabled={busy} onClick={() => void command("stop")}>{text.stop}</Button> : null}
         {waiting ? (
           <>
-            <Button disabled={busy} onClick={() => void command("approve")}>{text.approve}</Button>
-            <Button disabled={busy} onClick={() => void command("reject")}>{text.reject}</Button>
+            {runDetail?.run_id === observation?.run_id ? <div className="builder-test-run-request">
+              {approvalPrompt(runDetail) ? <p>{approvalPrompt(runDetail)}</p> : null}
+              {card?.target ? <p>{card.action}: {card.target}</p> : null}
+            </div> : null}
+            {waitingForBudget && runDetail ? <a href={`${projectRoutePaths.agentRun(projectId, agentId)}?run_id=${encodeURIComponent(runDetail.run_id)}`}>{zh ? "打开运行详情追加轮次" : "Open Run Detail to add turns"}</a> : <>
+              <Button disabled={busy || !canApprove} onClick={() => void command("approve")}>{text.approve}</Button>
+              <Button disabled={busy || !canApprove} onClick={() => void command("reject")}>{text.reject}</Button>
+            </>}
             <Button disabled={busy} onClick={() => void command("stop")}>{text.stop}</Button>
           </>
         ) : null}

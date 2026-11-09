@@ -6,7 +6,7 @@ export function connectionFailureMessage(code: string, locale: "zh" | "en"): str
     provider_endpoint_invalid: ["服务返回了网页而不是模型结果，请修正服务地址。", "The service returned a webpage instead of a model result. Correct the service address."],
     runtime_model_not_found: ["服务商没有找到这个模型。请从模型列表选择，或核对服务商提供的模型名称。", "The Provider could not find this model. Select one from its list or check the supplied model name."],
     runtime_unauthorized: ["密钥验证未通过，请重新粘贴完整密钥，并确认密钥与服务商、地区相匹配。", "The key was rejected. Paste the complete key and check that its Provider and region match."],
-    runtime_forbidden: ["这个密钥没有调用模型的权限，请在服务商账户中开通权限或更换密钥。", "This key lacks permission to call the model. Enable access in the Provider account or replace the key."],
+    runtime_forbidden: ["服务拒绝访问（HTTP 403）。仅凭该状态无法确定具体原因。请核对模型、地域、工作空间和密钥配置，并查看检查详情或已有运行的执行记录。", "The service refused access (HTTP 403). This status alone does not establish the cause. Check the model, region, workspace and key configuration, then inspect the check details or an existing Run's execution record."],
     runtime_quota_exhausted: ["服务商余额或可用额度不足，请在服务商账户中检查后重试。", "The Provider balance or quota is exhausted. Check your account before retrying."],
     runtime_rate_limited: ["服务商暂时限制了请求次数，请稍后重试。", "The Provider is limiting requests. Try again later."],
     runtime_parameter_invalid: ["服务商不接受当前测试参数。请检查接口格式，或使用服务商推荐的模型设置。", "The Provider rejected the test parameters. Check the API format or recommended model settings."],

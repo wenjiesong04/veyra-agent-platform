@@ -1,0 +1,202 @@
+# veyra.tool.tabular.compare@1.1.0 — immutable input sources
+availability: ready
+description: Compare original bytes from selected uploaded CSV Run inputs or relative
+  Project CSV paths. Use an input field name for an uploaded file; never ask users
+  for Artifact IDs or host paths. Compare two Project UTF-8 CSVs by chosen exact text
+  key and decimal amount columns. Exact full-file sums and counts come first, followed
+  by mismatch groups, multi-record groups, and blank-key rows with their own truncation
+  flags. Blank keys stay unmatched; absent sides have null amounts and differences.
+  Never guesses business meanings such as duplicate payment. Default result fits 7500
+  UTF-8 bytes; include_all_groups requests expanded details that Runtime may further
+  clip. Summary counts and totals always cover every parsed record.
+factory_selectable: true
+capabilities:
+- tabular_compare
+kind: tool
+name: CSV Group Comparison
+required_permissions:
+  filesystem_read_roots:
+  - project
+  filesystem_write_roots: []
+  network_hosts: []
+  shell_workspace_only: false
+  tools:
+  - veyra.tool.tabular.compare
+resource_id: veyra.tool.tabular.compare
+runtime_status: supported
+spec:
+  adapter: veyra.runtime.tabular.compare
+  approval_required: false
+  input_schema:
+    left_source:
+      type: object
+      description: 'Exactly {input: declared file input name} for an uploaded CSV,
+        or {path: relative Project path}.'
+    right_source:
+      type: object
+      description: 'Exactly {input: declared file input name} for an uploaded CSV,
+        or {path: relative Project path}.'
+    left_key:
+      type: string
+      description: Exact left CSV header name for the text grouping key.
+    right_key:
+      type: string
+      description: Exact right CSV header name for the text grouping key.
+    left_amount:
+      type: string
+      description: Exact left CSV header name for finite decimal amounts.
+    right_amount:
+      type: string
+      description: Exact right CSV header name for finite decimal amounts.
+    include_all_groups:
+      type: boolean
+      required: false
+      description: Defaults to false. Request bounded full group details in addition
+        to the compact mismatch and multi-record facts. Expanded results may be further
+        truncated by Runtime.
+  input_constraints:
+    left_key:
+      minLength: 1
+      maxLength: 256
+    right_key:
+      minLength: 1
+      maxLength: 256
+    left_amount:
+      minLength: 1
+      maxLength: 256
+    right_amount:
+      minLength: 1
+      maxLength: 256
+  output_constraints:
+    max_file_bytes: 1000000
+    max_records_per_file: 2000
+    max_columns: 50
+    max_cell_bytes: 4096
+    max_detail_groups: 200
+    max_row_references_per_group: 200
+    max_result_bytes: 500000
+    default_max_result_bytes: 7500
+  output_schema:
+    schema_version: string
+    left: object
+    right: object
+    counts: object
+    totals: object
+    mismatch_groups: array
+    mismatch_groups_truncated: boolean
+    multi_record_groups: array
+    multi_record_groups_truncated: boolean
+    groups: array
+    groups_requested: boolean
+    groups_truncated: boolean
+    blank_keys: object
+    blank_keys_truncated: object
+    summary_complete: boolean
+    truncated: boolean
+  tool_name: tabular.compare
+  ui:
+    category: table
+    icon: table
+    title: Compare CSV Groups
+  input_json_schema:
+    type: object
+    additionalProperties: false
+    required:
+    - left_source
+    - right_source
+    - left_key
+    - right_key
+    - left_amount
+    - right_amount
+    properties:
+      left_source: &id001
+        type: object
+        additionalProperties: false
+        minProperties: 1
+        maxProperties: 1
+        properties:
+          input:
+            type: string
+            minLength: 1
+            maxLength: 128
+          path:
+            type: string
+            minLength: 1
+            maxLength: 4096
+      right_source: *id001
+      left_key:
+        type: string
+        minLength: 1
+        maxLength: 256
+      right_key:
+        type: string
+        minLength: 1
+        maxLength: 256
+      left_amount:
+        type: string
+        minLength: 1
+        maxLength: 256
+      right_amount:
+        type: string
+        minLength: 1
+        maxLength: 256
+      include_all_groups:
+        type: boolean
+  output_json_schema:
+    type: object
+    additionalProperties: false
+    required:
+    - schema_version
+    - left
+    - right
+    - counts
+    - totals
+    - mismatch_groups
+    - mismatch_groups_truncated
+    - multi_record_groups
+    - multi_record_groups_truncated
+    - groups
+    - groups_requested
+    - groups_truncated
+    - blank_keys
+    - blank_keys_truncated
+    - summary_complete
+    - truncated
+    properties:
+      schema_version:
+        type: string
+      left:
+        type: object
+      right:
+        type: object
+      counts:
+        type: object
+      totals:
+        type: object
+      mismatch_groups:
+        type: array
+      mismatch_groups_truncated:
+        type: boolean
+      multi_record_groups:
+        type: array
+      multi_record_groups_truncated:
+        type: boolean
+      groups:
+        type: array
+      groups_requested:
+        type: boolean
+      groups_truncated:
+        type: boolean
+      blank_keys:
+        type: object
+      blank_keys_truncated:
+        type: object
+      summary_complete:
+        type: boolean
+      truncated:
+        type: boolean
+tags:
+- table
+- local
+- read-only
+version: 1.1.0

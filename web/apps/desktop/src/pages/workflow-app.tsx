@@ -14,7 +14,9 @@ import { requiredArtifactsReady, RuntimeInputForm } from "../features/runtime/Ru
 import { RuntimeSetupPanel } from "../features/runtime/RuntimeSetupPanel";
 import { RuntimeOutputView } from "../features/runtime/RuntimeOutputView";
 import { WorkflowInputReplyBar } from "../features/studio/WorkflowInputReplyBar";
-import { approvalPrompt, nodeRunStates } from "../features/studio/live-run";
+import { approvalPrompt, approvalRequestBinding, nodeRunStates, runCommandKey, type LiveRunCommand } from "../features/studio/live-run";
+import { BudgetContinuation, isBudgetWaiting } from "../features/studio/BudgetContinuation";
+import { approvalCard } from "../features/agents/app-activity";
 import { initialSourceInputs, nodeStateLabel, runStatusLabel, runTone, workflowRunAsAgentRun } from "../features/studio/studio-run-ui";
 import { productRunError } from "../features/agents/app-errors";
 import "./workflow-app.css";
@@ -316,6 +318,8 @@ export function WorkflowAppPage({ projectId, workflowId }: { projectId: string; 
   const [runError, setRunError] = React.useState("");
   const [submitted, setSubmitted] = React.useState<{ runId: string; inputs: InputValues } | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const commandKeys = React.useRef(new Map<string, string>());
+  const pendingCommand = React.useRef(false);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [retry, setRetry] = React.useState(0);
 
@@ -513,18 +517,28 @@ export function WorkflowAppPage({ projectId, workflowId }: { projectId: string; 
     }
   };
 
-  const command = async (value: "approve" | "reject" | "stop" | "reply", inputs?: InputValues) => {
-    if (!run || !api.commandWorkflowRun || busy) return;
+  const command = async (value: LiveRunCommand, inputs?: InputValues, additionalTurns?: number) => {
+    if (!run || !api.commandWorkflowRun || busy || pendingCommand.current) return;
+    pendingCommand.current = true;
     setBusy(true);
     setRunError("");
     try {
-      const updated = await api.commandWorkflowRun(projectId, workflowId, run.run_id, { command: value, ...(inputs ? { inputs } : {}) });
+      const updated = await api.commandWorkflowRun(projectId, workflowId, run.run_id, { command: value, ...approvalRequestBinding(run, value), ...(inputs ? { inputs } : {}), ...(value === "extend_budget" ? { additional_turns: additionalTurns } : {}) }, ...(isBudgetWaiting(run) ? [{ idempotencyKey: runCommandKey(commandKeys.current, run, value, additionalTurns) }] as const : [] as const));
+      if (updated.run_id !== run.run_id || updated.project_id !== projectId || updated.workflow_id !== workflowId) throw new Error("Runtime run identity mismatch");
       const detailed = api.getWorkflowRun ? await api.getWorkflowRun(projectId, workflowId, updated.run_id) : updated;
+      if (detailed.run_id !== run.run_id || detailed.project_id !== projectId || detailed.workflow_id !== workflowId) throw new Error("Runtime run identity mismatch");
       setRun(detailed);
       setRecentRuns((current) => orderedRuns([detailed, ...current.filter((item) => item.run_id !== detailed.run_id)]));
     } catch (cause) {
       setRunError(cause instanceof Error ? cause.message : (locale === "zh" ? "运行命令失败。" : "The run command failed."));
+      if (api.getWorkflowRun) {
+        const detail = await api.getWorkflowRun(projectId, workflowId, run.run_id).catch(() => null);
+        if (detail?.run_id === run.run_id && detail.project_id === projectId && detail.workflow_id === workflowId) {
+          setRun((current) => current?.run_id === run.run_id ? detail : current);
+        }
+      }
     } finally {
+      pendingCommand.current = false;
       setBusy(false);
     }
   };
@@ -606,7 +620,8 @@ export function WorkflowAppPage({ projectId, workflowId }: { projectId: string; 
   const doneCount = nodeStates.filter((node) => node.state === "completed").length;
   const replySchema = executionSource?.nodes.find((node) => node.id === run?.waiting?.node_id)?.inputs ?? {};
   const waitingForInput = run?.status === "waiting" && run.waiting?.kind === "input";
-  const waitingForApproval = run?.status === "waiting" && !waitingForInput;
+  const waitingForBudget = isBudgetWaiting(run);
+  const waitingForApproval = run?.status === "waiting" && !waitingForInput && !waitingForBudget;
   const failed = run?.status === "failed" || run?.status === "cancelled" || run?.status === "interrupted";
   const ownInputs = submitted && run && submitted.runId === run.run_id ? submitted.inputs : null;
   const canRetry = Boolean(
@@ -775,7 +790,7 @@ export function WorkflowAppPage({ projectId, workflowId }: { projectId: string; 
   const runPanel = run ? (
     <section className="workflow-app-run-panel" aria-label={text.runInProgress}>
       <header className="workflow-app-run-header">
-        <div><h2 aria-live="polite">{activeRun ? (waitingForInput ? (locale === "zh" ? "需要补充信息" : "More information needed") : waitingForApproval ? text.waitingApproval : (locale === "zh" ? "正在处理任务" : "Working on your task")) : run.status === "verified" || run.status === "unverified" ? (run.result != null ? (locale === "zh" ? "结果已生成" : "Result ready") : (locale === "zh" ? "任务已完成" : "Task completed")) : run.status === "cancelled" ? (locale === "zh" ? "任务已停止" : "Task stopped") : text.runError}</h2>{lastNodeLabel && activeRun ? <p>{locale === "zh" ? "当前步骤" : "Current step"} · {lastNodeLabel}</p> : null}<WorkflowRunClock startedAt={run.created_at} finishedAt={run.finished_at} active={Boolean(activeRun)} locale={locale} /></div>
+        <div><h2 aria-live="polite">{activeRun ? (waitingForInput ? (locale === "zh" ? "需要补充信息" : "More information needed") : waitingForBudget ? (locale === "zh" ? "等待追加轮次" : "Waiting for additional turns") : waitingForApproval ? text.waitingApproval : (locale === "zh" ? "正在处理任务" : "Working on your task")) : run.status === "verified" || run.status === "unverified" ? (run.result != null ? (locale === "zh" ? "结果已生成" : "Result ready") : (locale === "zh" ? "任务已完成" : "Task completed")) : run.status === "cancelled" ? (locale === "zh" ? "任务已停止" : "Task stopped") : text.runError}</h2>{lastNodeLabel && activeRun ? <p>{locale === "zh" ? "当前步骤" : "Current step"} · {lastNodeLabel}</p> : null}<WorkflowRunClock startedAt={run.created_at} finishedAt={run.finished_at} active={Boolean(activeRun)} locale={locale} /></div>
         {activeRun ? <Button icon={CircleStop} variant="secondary" size="sm" disabled={busy} onClick={() => void command("stop")}>{text.stop}</Button> : null}
       </header>
       {ownInputs ? (
@@ -790,6 +805,7 @@ export function WorkflowAppPage({ projectId, workflowId }: { projectId: string; 
         </article>
       ) : null}
       {activeRun ? runProgress : null}
+      {waitingForBudget ? <BudgetContinuation run={run} locale={locale} disabled={busy} onContinue={(turns) => void command("extend_budget", undefined, turns)} onStop={() => void command("stop")} /> : null}
       {waitingForInput ? (
         <div className="workflow-app-reply">
           <WorkflowInputReplyBar run={run} schema={replySchema} locale={locale} disabled={busy} onReply={(reply) => void command("reply", reply)} api={api} projectId={projectId} />
@@ -799,6 +815,13 @@ export function WorkflowAppPage({ projectId, workflowId }: { projectId: string; 
         <article className="agent-app-approval" role="region" aria-label={locale === "zh" ? "运行审批" : "Run approval"}>
           <strong>{text.waitingApproval}</strong>
           {approvalPrompt(workflowRunAsAgentRun(run)) ? <p>{approvalPrompt(workflowRunAsAgentRun(run))}</p> : null}
+          {approvalCard(workflowRunAsAgentRun(run))?.target ? <p>{approvalCard(workflowRunAsAgentRun(run))?.action}: {approvalCard(workflowRunAsAgentRun(run))?.target}</p> : null}
+          {typeof run.waiting?.approval_summary?.content_preview === "string" ? (
+            <div className="workflow-app-approval-preview">
+              <pre className="runtime-output-text">{run.waiting.approval_summary.content_preview}</pre>
+              {run.waiting.approval_summary.preview_truncated === true ? <small>{locale === "zh" ? "仅展示部分内容" : "Partial content preview"}</small> : null}
+            </div>
+          ) : null}
           <div className="agent-app-approval-actions">
             <Button variant="primary" disabled={busy} onClick={() => void command("approve")}>{text.approve}</Button>
             <Button variant="ghost" disabled={busy} onClick={() => void command("reject")}>{text.reject}</Button>

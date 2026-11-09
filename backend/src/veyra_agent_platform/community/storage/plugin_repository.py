@@ -86,6 +86,25 @@ class CommunityPluginRepository:
             )
         return list(session.execute(query).tuples().all())
 
+    def list_owned_versions(
+        self, session: Session, *, owner_id: str, limit: int
+    ) -> list[tuple[CommunityPlugin, CommunityPluginVersion, CommunityUser]]:
+        query = (
+            select(CommunityPlugin, CommunityPluginVersion, CommunityUser)
+            .join(
+                CommunityPluginVersion,
+                CommunityPluginVersion.plugin_id == CommunityPlugin.id,
+            )
+            .join(CommunityUser, CommunityUser.id == CommunityPlugin.owner_id)
+            .where(CommunityPlugin.owner_id == owner_id)
+            .order_by(
+                desc(CommunityPluginVersion.created_at),
+                desc(CommunityPluginVersion.id),
+            )
+            .limit(limit)
+        )
+        return list(session.execute(query).tuples().all())
+
     def list_public_versions(
         self, session: Session, *, owner_handle: str, slug: str
     ) -> list[tuple[CommunityPlugin, CommunityPluginVersion, CommunityUser]]:

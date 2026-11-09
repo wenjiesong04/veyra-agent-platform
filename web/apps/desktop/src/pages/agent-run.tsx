@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import type { ProjectSummaryResponse } from "@veyra/api-contracts";
 import { projectRoutePaths } from "@veyra/api-contracts";
-import { ErrorState, LinkButton, LoadingState, Panel, useLocale } from "@veyra/ui";
+import { ErrorState, LinkButton, LoadingState, useLocale } from "@veyra/ui";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { AgentChatSurface } from "../features/agents/chat/AgentChatSurface";
 import { RunDetail } from "../features/runs/RunDetail";
@@ -40,7 +40,7 @@ export function AgentRunPage({ projectId, agentId }: { projectId: string; agentI
   const agent = project?.agents.find((item) => item.agent_id === agentId);
   const copy = zh ? { back: "返回应用", missing: "找不到这个 Agent。" } : { back: "Back to Agent", missing: "This Agent was not found." };
 
-  if (runId) return <Panel><RunDetail api={api} projectId={projectId} agentId={agentId} runId={runId} locale={locale} /></Panel>;
+  if (runId) return <div className="run-detail-page"><RunDetail api={api} projectId={projectId} agentId={agentId} runId={runId} locale={locale} /></div>;
   if (loading && !agent) return <LoadingState label={zh ? "正在打开 Agent 应用…" : "Opening Agent App…"} />;
   if (error || !project || !agent) {
     return <div className="project-missing"><ErrorState message={error || copy.missing} onRetry={() => void load()} /><LinkButton href={project ? projectRoutePaths.agent(project.project_id, agentId) : "#/projects"} icon={ArrowLeft} variant="primary">{copy.back}</LinkButton></div>;

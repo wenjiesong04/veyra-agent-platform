@@ -7,10 +7,10 @@ import type {
   BuilderRunObservation,
   FactorySession,
 } from "@veyra/api-contracts";
-import { ChevronsDown, ChevronsRight, Circle, CircleAlert, CircleCheck } from "lucide-react";
+import { ChevronsDown, ChevronsRight, Circle, CircleAlert, CircleCheck, FileCheck2 } from "lucide-react";
 import { Button, StatusBadge } from "@veyra/ui";
 import { observationStatusLabel } from "./BuilderTestRun";
-import { isBlockedCreation, isUnsupportedCreate, openStageStartedAt, runningClock } from "./workbench-phase";
+import { isBlockedCreation, isCreationApplyFailure, isUnsupportedCreate, openStageStartedAt, runningClock } from "./workbench-phase";
 
 const STEP_ORDER = [
   "builder.intent.resolved",
@@ -59,6 +59,7 @@ const RATE_LIMIT_CODES = new Set([
 
 const PLAN_FAILURE_CODES = new Set([
   "factory_rate_limited",
+  "factory_quota_exhausted",
   "factory_request_invalid",
   "factory_unauthorized",
   "factory_provider_error",
@@ -94,6 +95,8 @@ function currentKind(events: BuilderOperationEvent[]): BuilderOperationEventKind
 function failedStepKind(operation: BuilderConversationOperation): StepKind | null {
   if (operation.status !== "failed") return null;
   const code = operation.error_code ?? operation.diagnostic.error_code ?? "";
+  if (code === "factory_generation_blocked" && operation.diagnostic.stage === "coverage_review") return "builder.validation.completed";
+  if (code === "factory_generation_blocked" && operation.diagnostic.blocked_reason === "compose_failed") return "builder.compile.completed";
   if (RATE_LIMIT_CODES.has(code) || PLAN_FAILURE_CODES.has(code)) return "builder.specification.completed";
   if (code === "factory_missing_capability") return "builder.capabilities.resolved";
   if (code === "builder_resolution_invalid") return "builder.intent.resolved";
@@ -105,7 +108,8 @@ function failedStepKind(operation: BuilderConversationOperation): StepKind | nul
 
 function failureSummary(operation: BuilderConversationOperation, locale: "zh" | "en" = "en"): string {
   const code = operation.error_code ?? operation.diagnostic.error_code ?? "";
-  if (code === "factory_generation_blocked") return locale === "zh" ? "方案暂时无法生成" : "Plan blocked";
+  if (code === "factory_quota_exhausted" || ["exceeded_current_quota_error", "insufficient_quota"].includes(operation.diagnostic.provider_error_type ?? "")) return locale === "zh" ? "服务商账户余额或配额不可用，请检查账户后再继续" : "Provider account quota unavailable; check the account before continuing";
+  if (code === "factory_generation_blocked") return operation.diagnostic.validation_summary || (locale === "zh" ? "生成方案未通过检查" : "Generated plan did not pass checks");
   if (code === "factory_rate_limited" || operation.diagnostic.http_status === "429") return locale === "zh" ? "服务商暂时限流" : "Rate limited";
   if (code === "factory_missing_capability") return "Missing capability";
   return "";
@@ -163,6 +167,8 @@ function visibleSteps(operation: BuilderConversationOperation, locale: "zh" | "e
       key: kind,
       label: unsupported && kind === "builder.operation.completed"
         ? { zh: "未生成方案", en: "No proposal created" }
+        : kind === "builder.validation.completed" && operation.diagnostic.stage === "coverage_review"
+          ? { zh: "方案审查", en: "Plan review" }
         : STEP_COPY[kind],
       state,
       summary: state === "failed" ? failureSummary(operation, locale) || capabilitySummary(kind, event) : capabilitySummary(kind, event),
@@ -288,7 +294,7 @@ function statusPresentation(operation: BuilderConversationOperation, locale: "zh
   }
   if (operation.status === "in_progress") return { label: zh ? "进行中" : "Running", tone: "neutral" };
   if (operation.status === "waiting") return { label: zh ? "等待确认" : "Waiting", tone: "warn" };
-  if (operation.error_code === "factory_generation_blocked") return { label: zh ? "已阻塞" : "Blocked", tone: "warn" };
+  if (operation.error_code === "factory_generation_blocked") return { label: zh ? "生成失败" : "Generation failed", tone: "bad" };
   if (operation.status === "failed") return { label: zh ? "失败" : "Failed", tone: "bad" };
   if (operation.status === "rejected") return { label: zh ? "已拒绝" : "Rejected", tone: "neutral" };
   if (isUnsupportedCreate(operation)) return { label: zh ? "未创建" : "Not created", tone: "warn" };
@@ -306,7 +312,7 @@ function headline(operation: BuilderConversationOperation, locale: "zh" | "en"):
     return zh ? "测试 Agent · 完成" : "Test Agent · completed";
   }
   const target = operation.target_kind === "workflow" ? "Workflow" : operation.target_kind === "agent" ? "Agent" : "";
-  if (operation.error_code === "factory_generation_blocked") return zh ? `${target ? `构建 ${target}` : "构建"} · 已阻塞` : `${target ? `Build ${target}` : "Build"} · blocked`;
+  if (operation.error_code === "factory_generation_blocked") return zh ? `${target ? `构建 ${target}` : "构建"} · 生成失败` : `${target ? `Build ${target}` : "Build"} · generation failed`;
   if (isUnsupportedCreate(operation)) return zh ? `${target ? `构建 ${target}` : "构建"} · 未创建` : `${target ? `Build ${target}` : "Build"} · not created`;
   if (!target) {
     if (operation.status === "in_progress") return zh ? "正在理解需求" : "Understanding request";
@@ -324,9 +330,11 @@ function headline(operation: BuilderConversationOperation, locale: "zh" | "en"):
 function BuilderBuildDetails({
   operation,
   locale,
+  blockedReason,
 }: {
   operation: BuilderConversationOperation;
   locale: "zh" | "en";
+  blockedReason?: string;
 }) {
   const zh = locale === "zh";
   const [open, setOpen] = React.useState(false);
@@ -342,6 +350,21 @@ function BuilderBuildDetails({
       </button>
       {open ? (
         <dl className="builder-build-details-facts">
+          {blockedReason ? <><dt>{zh ? "检查结果" : "Check result"}</dt><dd>{({
+            planner_invalid: zh ? "生成器返回的方案未通过结构检查。" : "The generated plan did not pass structural checks.",
+            product_fidelity_invalid: zh ? "生成的方案未完整保留你的要求，因此没有创建。" : "The generated plan did not preserve all your requirements, so nothing was created.",
+            compose_failed: zh ? "将方案转换为可运行内容时失败。" : "The plan could not be compiled into executable content.",
+            unsupported_shape: zh ? "当前尚不支持完整实现这类任务。可查看项目资源了解已有能力。" : "This task is not fully supported yet. Review Project resources for available capabilities.",
+            "State requirement cannot be represented": zh ? "当前无法按要求保存和恢复任务状态。" : "The requested task state cannot currently be saved and restored.",
+          } as Record<string, string>)[blockedReason] ?? blockedReason}</dd></> : null}
+          {operation.diagnostic.validation_kind === "task_io_invalid" ? <><dt>{zh ? "失败原因" : "Failure cause"}</dt><dd>{zh ? "生成的输入或输出定义存在错误，自动修复未完成。" : "The generated input or output definition is invalid; automatic repair did not finish."}</dd></> : null}
+          {operation.diagnostic.validation_summary ? <><dt>{zh ? "具体原因" : "Specific cause"}</dt><dd>{operation.diagnostic.validation_summary}</dd></> : null}
+          {operation.diagnostic.stage && !primary?.failure_stage ? <><dt>{zh ? "失败阶段" : "Failure stage"}</dt><dd>{failureStageLabel(operation.diagnostic.stage, locale)}</dd></> : null}
+          {operation.generation_feedback?.map((feedback, index) => <React.Fragment key={`${index}-${feedback}`}>
+            <dt>{zh ? `审查意见 ${index + 1}` : `Review feedback ${index + 1}`}</dt>
+            <dd style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", minWidth: 0 }}>{feedback}</dd>
+          </React.Fragment>)}
+          {operation.diagnostic.prior_validation_issue ? <><dt>{zh ? "此前的内部校验问题" : "Prior validation issue"}</dt><dd>{operation.diagnostic.prior_validation_issue}</dd></> : null}
           {primary ? (
             <>
               <dt>{zh ? "Provider" : "Provider"}</dt>
@@ -359,7 +382,7 @@ function BuilderBuildDetails({
               <dt>{zh ? "排除" : "Excluded"}</dt>
               <dd>{excludedLabel(primary.excluded_categories, locale)}</dd>
               <dt>{zh ? "状态" : "Status"}</dt>
-              <dd>{receiptStatusLabel(primary, operation, locale)}</dd>
+              <dd>{receiptStatusLabel(primary, locale)}</dd>
               {primary.failure_stage ? (
                 <>
                   <dt>{zh ? "失败阶段" : "Failure stage"}</dt>
@@ -394,6 +417,7 @@ function BuilderBuildDetails({
               <dl>
                 <dt>operation_id</dt>
                 <dd>{shortId(operation.operation_id)}</dd>
+                {operation.diagnostic.validation_issue ? <><dt>{zh ? "检查诊断" : "Validation diagnostic"}</dt><dd>{operation.diagnostic.validation_issue}</dd></> : null}
                 {primary ? (
                   <>
                     <dt>receipt_id</dt>
@@ -484,14 +508,16 @@ function excludedLabel(excluded: string[], locale: "zh" | "en"): string {
   return labels.join(", ");
 }
 
-function receiptStatusLabel(receipt: BuilderHarnessReceipt, operation: BuilderConversationOperation, locale: "zh" | "en"): string {
-  if (operation.status === "failed" || receipt.status === "failed") return locale === "zh" ? "失败" : "Failed";
+function receiptStatusLabel(receipt: BuilderHarnessReceipt, locale: "zh" | "en"): string {
+  if (receipt.status === "failed") return locale === "zh" ? "失败" : "Failed";
   if (receipt.status === "success") return locale === "zh" ? "成功" : "Success";
   return locale === "zh" ? "准备中" : "Prepared";
 }
 
 function failureStageLabel(stage: string, locale: "zh" | "en"): string {
   if (stage === "provider_request") return locale === "zh" ? "Provider 请求" : "Provider request";
+  if (stage === "coverage_review") return locale === "zh" ? "方案覆盖审查" : "Requirement coverage review";
+  if (stage === "task_planning") return locale === "zh" ? "任务规划" : "Task planning";
   return stage;
 }
 
@@ -525,25 +551,31 @@ export function BuilderActivityBlock({
   factorySession = null,
   locale,
   onRetry,
+  onContinueReview,
 }: {
   operation: BuilderConversationOperation;
   factorySession?: FactorySession | null;
   locale: "zh" | "en";
   onRetry?: () => void;
+  onContinueReview?: () => void;
 }) {
   const zh = locale === "zh";
   const blocked = isBlockedCreation(operation, factorySession);
+  const blockReason = factorySession?.blocked_reason || operation.diagnostic.blocked_reason
+    || [...operation.events].reverse().find((event) => event.facts.blocked_reason)?.facts.blocked_reason;
+  const unsupported = blockReason === "unsupported_shape" || blockReason === "State requirement cannot be represented";
   const displayOperation: BuilderConversationOperation = blocked
     ? { ...operation, status: "failed", error_code: "factory_generation_blocked" }
     : operation;
   const running = displayOperation.status === "in_progress" || displayOperation.status === "waiting";
+  const timingActive = displayOperation.status === "in_progress";
   const [now, setNow] = React.useState(() => Date.now());
   const stageStartedAt = openStageStartedAt(operation.events);
   React.useEffect(() => {
-    if (!running || !stageStartedAt) return undefined;
+    if (!timingActive) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [running, stageStartedAt]);
+  }, [timingActive, operation.created_at]);
   const [open, setOpen] = React.useState(running);
   React.useEffect(() => {
     setOpen(running);
@@ -552,8 +584,16 @@ export function BuilderActivityBlock({
   const elapsed = durationLabel(operation);
   const currentStep = steps.find((item) => item.state === "current" || item.state === "failed");
   const status = statusPresentation(displayOperation, locale);
-  const showRetry = !blocked && operation.status === "failed" && onRetry && operation.kind !== "test_agent";
-  const meta = blocked ? failureSummary(displayOperation, locale)
+  const quotaUnavailable = operation.error_code === "factory_quota_exhausted" || ["exceeded_current_quota_error", "insufficient_quota"].includes(operation.diagnostic.provider_error_type ?? "");
+  const retainedApply = factorySession?.state === "review"
+    && factorySession.session_id === operation.factory_session_id
+    && isCreationApplyFailure(operation);
+  const showRetry = !retainedApply && !unsupported && !quotaUnavailable && displayOperation.status === "failed" && onRetry && operation.kind !== "test_agent";
+  const showContinueReview = !retainedApply && !unsupported && onContinueReview && operation.status === "failed"
+    && (operation.kind === "create_agent" || operation.kind === "create_workflow")
+    && operation.factory_session_id && operation.diagnostic.resolution_status !== "unsupported"
+    && !operation.events.some((event) => event.kind === "builder.intent.resolved" && event.facts.status === "unsupported");
+  const meta = blocked ? unsupported ? (zh ? "当前支持范围有限" : "Task support limitation") : failureSummary(displayOperation, locale)
     : operation.status === "succeeded" && elapsed
     ? elapsed
     : operation.status === "failed" && operation.kind !== "test_agent"
@@ -568,6 +608,10 @@ export function BuilderActivityBlock({
         <span className="builder-activity-copy">
           <span className="builder-activity-title">{activityTitle(operation, locale)}</span>
           {meta ? <span className="builder-activity-meta">{meta}</span> : null}
+          {(displayOperation.status === "failed" || running) && (timingActive || operation.receipts?.length) ? <span className="builder-activity-meta">{[
+            timingActive ? runningClock(operation.created_at, now, locale, "operation") : elapsed,
+            operation.receipts?.length ? (zh ? `${operation.receipts.length} 次模型请求` : `${operation.receipts.length} model requests`) : "",
+          ].filter(Boolean).join(" · ")}</span> : null}
         </span>
         <StatusBadge label={status.label} tone={status.tone} />
       </button>
@@ -586,13 +630,16 @@ export function BuilderActivityBlock({
           </ol>
           {operation.kind === "test_agent"
             ? <BuilderTestObservation observation={operation.run_observation} locale={locale} />
-            : <BuilderBuildDetails operation={operation} locale={locale} />}
+            : <BuilderBuildDetails operation={operation} locale={locale} blockedReason={blockReason} />}
         </>
       ) : null}
-      {blocked ? <p role="status" aria-live="polite">{zh ? "未创建 Agent 或 Workflow。请调整任务要求后，在消息框重新发送。" : "No Agent or Workflow was created. Adjust the task and send it again in the message box."}</p> : null}
-      {showRetry ? (
+      {blocked ? <p role="status" aria-live="polite">{unsupported
+        ? (zh ? "当前还不能完整实现这类任务，未创建 Agent 或 Workflow。原始需求已保留；请展开构建详情查看当前支持范围。" : "This task is not fully supported yet, so no Agent or Workflow was created. Your original request is retained; open the build details to review the limitation.")
+        : (zh ? "这轮生成的方案未通过检查，未创建 Agent 或 Workflow。原始需求已保留，可以重试或展开构建详情查看原因。" : "The generated plan did not pass checks, so no Agent or Workflow was created. Your original request is retained. Retry or open the build details to inspect the cause.")}</p> : null}
+      {showRetry || showContinueReview ? (
         <div className="builder-activity-actions">
-          <Button size="sm" onClick={onRetry}>{zh ? "重试" : "Retry"}</Button>
+          {showRetry ? <Button size="sm" onClick={onRetry}>{zh ? "重试" : "Retry"}</Button> : null}
+          {showContinueReview ? <Button size="sm" onClick={onContinueReview}><FileCheck2 size={14} aria-hidden="true" />{quotaUnavailable ? (zh ? "账户恢复后继续检查" : "Check plan after account recovery") : (zh ? "继续检查保留方案" : "Check retained plan")}</Button> : null}
         </div>
       ) : null}
     </section>

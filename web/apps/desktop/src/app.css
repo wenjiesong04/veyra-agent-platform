@@ -2,6 +2,7 @@
 @import "./features/projects/projects.css";
 @import "./features/agents/agents.css";
 @import "./features/agents/chat/conversation.css";
+@import "./features/agents/chat/agent-app-workspace.css";
 @import "./features/factory/factory.css";
 @import "./features/studio/studio.css";
 @import "./features/runs/runs.css";

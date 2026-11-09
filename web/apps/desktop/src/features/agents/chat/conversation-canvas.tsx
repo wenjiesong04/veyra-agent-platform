@@ -1,40 +1,14 @@
 import { LayoutPanelTop, X } from "lucide-react";
-import type { AgentSource, JsonObject, JsonValue, ResourceDescriptor } from "@veyra/api-contracts";
+import type { AgentSource, ResourceDescriptor } from "@veyra/api-contracts";
 import { IconButton } from "@veyra/ui";
 import type { LocalProjectApi } from "../../../api/local-client";
 import { RuntimeOutputView } from "../../runtime/RuntimeOutputView";
 import { nodeDisplayTitle } from "../../studio/palette";
 import { nodeRunStates, type LiveRunSession } from "../../studio/live-run";
-import { scalarResultText, tableRows, type ConversationCanvasSpec } from "./canvas-artifact";
+import type { ConversationCanvasSpec } from "./canvas-artifact";
 
 const NODE_W = 148;
 const NODE_H = 58;
-
-function formatCell(value: JsonValue | undefined): string {
-  if (value == null) return "";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
-function CanvasTable({ rows }: { rows: JsonObject[] }) {
-  const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))];
-  return (
-    <div className="agent-convo-table-wrap">
-      <table>
-        <thead>
-          <tr>{keys.map((key) => <th key={key}>{key}</th>)}</tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={index}>
-              {keys.map((key) => <td key={key}>{formatCell(row[key])}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 function ConversationFlowCanvas({
   source,
@@ -66,7 +40,7 @@ function ConversationFlowCanvas({
     return { x: node.position.x - minX + 24 + NODE_W / 2, y: node.position.y - minY + 24 + NODE_H / 2 };
   };
   return (
-    <div className="agent-convo-flow-block">
+    <div className="agent-convo-flow-block agent-convo-flow-scroll" role="region" tabIndex={0} aria-label={locale === "zh" ? "执行图" : "Execution diagram"}>
       <div className="agent-convo-flow" style={{ width, height }}>
         <svg className="agent-convo-flow-edges" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
           {source.transitions.map((edge) => {
@@ -112,9 +86,7 @@ export function ConversationCanvasPanel({
   onClose: () => void;
 }) {
   const result = live.run?.result ?? null;
-  const rows = tableRows(result);
-  const document = spec.kind === "document" ? scalarResultText(result) : null;
-  const showGraph = Boolean(source && source.nodes.length >= 2 && live.run);
+  const showGraph = spec.kind === "run" && Boolean(source && source.nodes.length >= 2 && live.run);
   return (
     <aside className="agent-convo-canvas" aria-label={spec.title}>
       <header className="agent-convo-canvas-head">
@@ -122,13 +94,15 @@ export function ConversationCanvasPanel({
           <span className="ui-eyebrow">Canvas</span>
           <h3>{spec.title}</h3>
         </div>
-        <IconButton icon={X} label={locale === "zh" ? "关闭画布" : "Close canvas"} onClick={onClose} />
+        <IconButton icon={X} label={locale === "zh" ? "关闭画布" : "Close canvas"} title={locale === "zh" ? "关闭画布" : "Close canvas"} onClick={onClose} />
       </header>
-      <div className="agent-convo-canvas-body">
+      <div className="agent-convo-canvas-body" data-carrier-kind={spec.kind} role="region" aria-label={spec.title} tabIndex={0}>
         {showGraph && source ? <ConversationFlowCanvas source={source} catalog={catalog} live={live} locale={locale} /> : null}
-        {rows ? <CanvasTable rows={rows} /> : null}
-        {spec.kind === "result" && result != null ? <RuntimeOutputView result={result} locale={locale} projectId={projectId} api={api} /> : null}
-        {document ? <article className="agent-convo-document"><p>{document}</p></article> : null}
+        {spec.kind !== "run" && result != null ? (
+          <article className="agent-convo-document">
+            <RuntimeOutputView result={result} locale={locale} projectId={projectId} api={api} presentation="reading" />
+          </article>
+        ) : null}
       </div>
     </aside>
   );

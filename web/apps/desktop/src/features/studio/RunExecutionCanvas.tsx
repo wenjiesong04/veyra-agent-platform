@@ -5,16 +5,18 @@ import type { AgentRunResponse, AgentSource, RuntimeEvent, RuntimeRunStatus } fr
 import { Button, Panel } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
 import { runDetailHref } from "../runs/run-location";
-import { applyRuntimeEvent, approvalPrompt, inferRunStatus } from "./live-run";
+import { applyRuntimeEvent, approvalPrompt, approvalRequestBinding, inferRunStatus, runCommandKey } from "./live-run";
+import { BudgetContinuation, isBudgetWaiting } from "./BudgetContinuation";
 import { studioNodeTypes } from "./canvas-nodes";
 import { FlowEdge, type FlowEdgeData } from "./canvas-edge";
 import { projectRunToExecutionState, type NodeExecutionState } from "./execution-state";
 import { RuntimeNodeInspector } from "./RuntimeNodeInspector";
 import { isLoopAgent, toCanvas, type CanvasNodeData } from "./graph";
 import { loopTimelineLabel } from "./studio-run-ui";
+import { FinalizationFeedback } from "./FinalizationFeedback";
 
 const edgeTypes = { flowEdge: FlowEdge };
-const PUBLIC_LOOP_EVENTS = new Set(["node.started", "node.completed", "tool.requested", "tool.started", "tool.completed", "run.completed", "run.failed", "run.cancelled", "run.interrupted", "approval.requested"]);
+const PUBLIC_LOOP_EVENTS = new Set(["node.started", "node.completed", "tool.requested", "tool.started", "tool.completed", "tool.failed", "run.completed", "run.failed", "run.cancelled", "run.interrupted", "approval.requested", "finalization.started", "finalization.completed", "finalization.rejected", "finalization.accepted", "image.response_received"]);
 
 function stateLabel(state: NodeExecutionState, locale: "zh" | "en"): string {
   const labels: Record<NodeExecutionState, { zh: string; en: string }> = {
@@ -22,6 +24,8 @@ function stateLabel(state: NodeExecutionState, locale: "zh" | "en"): string {
     queued: { zh: "排队中", en: "Queued" },
     running: { zh: "运行中", en: "Running" },
     waiting_approval: { zh: "等待批准", en: "Waiting for approval" },
+    waiting_budget: { zh: "等待追加轮次", en: "Waiting for additional turns" },
+    waiting_input: { zh: "等待输入", en: "Waiting for input" },
     completed: { zh: "已完成", en: "Completed" },
     failed: { zh: "失败", en: "Failed" },
     stopped: { zh: "已停止", en: "Stopped" },
@@ -83,6 +87,8 @@ export function RunExecutionCanvas({
   const [loading, setLoading] = React.useState(true);
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
   const runRef = React.useRef<AgentRunResponse | null>(null);
+  const commandKeys = React.useRef(new Map<string, string>());
+  const pendingCommand = React.useRef(false);
   runRef.current = run;
 
   React.useEffect(() => {
@@ -147,18 +153,27 @@ export function RunExecutionCanvas({
     };
   }, [api, projectId, agentId, run?.run_id, run?.status]);
 
-  const sendCommand = async (command: "approve" | "reject" | "stop") => {
-    if (!run || !api.commandAgentRun || commandBusy) return;
+  const sendCommand = async (command: "approve" | "reject" | "stop" | "extend_budget", additionalTurns?: number) => {
+    if (!run || !api.commandAgentRun || commandBusy || pendingCommand.current) return;
+    pendingCommand.current = true;
     setCommandBusy(true);
     setCommandError("");
     try {
-      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command });
+      const updated = await api.commandAgentRun(projectId, agentId, run.run_id, { command, ...approvalRequestBinding(run, command), ...(command === "extend_budget" ? { additional_turns: additionalTurns } : {}) }, ...(isBudgetWaiting(run) ? [{ idempotencyKey: runCommandKey(commandKeys.current, run, command, additionalTurns) }] as const : [] as const));
+      if (updated.run_id !== run.run_id || updated.project_id !== projectId || updated.agent_id !== agentId) throw new Error("Runtime run identity mismatch");
       const detail = api.getAgentRun ? await api.getAgentRun(projectId, agentId, run.run_id) : updated;
-      if (detail.run_id !== run.run_id) throw new Error(zh ? "运行命令返回了不同的 Run。" : "The Runtime command returned a different Run.");
+      if (detail.run_id !== run.run_id || detail.project_id !== projectId || detail.agent_id !== agentId) throw new Error(zh ? "运行命令返回了不同的 Run。" : "The Runtime command returned a different Run.");
       setRun((previous) => mergeRun(previous, detail));
     } catch (cause) {
       setCommandError(cause instanceof Error ? cause.message : (zh ? "运行命令失败。" : "The Run command failed."));
+      if (api.getAgentRun) {
+        const detail = await api.getAgentRun(projectId, agentId, run.run_id).catch(() => null);
+        if (detail?.run_id === run.run_id && detail.project_id === projectId && detail.agent_id === agentId) {
+          setRun((previous) => previous?.run_id === run.run_id ? mergeRun(previous, detail) : previous);
+        }
+      }
     } finally {
+      pendingCommand.current = false;
       setCommandBusy(false);
     }
   };
@@ -211,7 +226,7 @@ export function RunExecutionCanvas({
         <div>
           <p className="run-execution-canvas__eyebrow">{zh ? "不可变 Agent 版本" : "Immutable Agent version"}</p>
           <h1>{source.name}</h1>
-          <p>{zh ? "运行状态" : "Run status"}: <strong>{runStateLabel(run.status, locale)}</strong> · {run.run_id}</p>
+          <p>{zh ? "运行状态" : "Run status"}: <strong>{isBudgetWaiting(run) ? (zh ? "等待追加轮次" : "Waiting for additional turns") : runStateLabel(run.status, locale)}</strong> · {run.run_id}</p>
         </div>
         <div className="run-execution-canvas__header-actions">
           {onReturnToDraft ? <Button variant="ghost" onClick={onReturnToDraft}>{zh ? "返回设计画布" : "Back to design canvas"}</Button> : null}
@@ -219,7 +234,7 @@ export function RunExecutionCanvas({
         </div>
       </header>
       {error ? <p className="run-execution-canvas__stream-error" role="status">{zh ? "实时连接暂时中断，画布保留已保存的运行事件。" : "Live connection is temporarily unavailable; the canvas retains persisted Run events."}</p> : null}
-      {showRunControls && run.status === "waiting" ? <section className="run-execution-canvas__approval" aria-label={zh ? "运行审批" : "Run approval"}>
+      {showRunControls && isBudgetWaiting(run) ? <BudgetContinuation run={run} locale={locale} disabled={commandBusy} onContinue={(turns) => void sendCommand("extend_budget", turns)} onStop={() => void sendCommand("stop")} /> : showRunControls && run.status === "waiting" && run.events?.filter((event) => event.kind === "approval.requested").at(-1)?.payload.kind === "input" ? <a href={runDetailHref({ projectId, agentId, runId })}>{zh ? "打开运行详情补充输入" : "Open Run Detail to provide input"}</a> : showRunControls && run.status === "waiting" ? <section className="run-execution-canvas__approval" aria-label={zh ? "运行审批" : "Run approval"}>
         <strong>{zh ? "等待人工批准" : "Waiting for Human Approval"}</strong>
         {approvalPrompt(run) ? <p>{approvalPrompt(run)}</p> : null}
         <div>
@@ -260,6 +275,7 @@ export function RunExecutionCanvas({
         {isLoopAgent(source) ? (
           <aside className="run-execution-canvas__inspector" aria-label={zh ? "运行时间线" : "Run timeline"}>
             <h2>{zh ? "运行时间线" : "Run timeline"}</h2>
+            <FinalizationFeedback events={run.events ?? []} locale={locale} />
             <ol className="run-loop-timeline">
               {(run.events ?? []).filter((event) => PUBLIC_LOOP_EVENTS.has(event.kind)).map((event) => (
                 <li key={event.sequence}>

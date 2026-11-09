@@ -69,11 +69,13 @@ class ResourceResolver:
         catalog_resources: Sequence[Mapping[str, Any]] | None = None,
         claimed_references: Sequence[str] | None = None,
         requested_references: Mapping[str, Sequence[str]] | None = None,
+        requested_skills: Mapping[str, Sequence[str]] | None = None,
         requirement_text: str = "",
     ) -> ResourcePlan:
         # Only a caller's reviewed, structured selection uses this channel.
         # Text mentions/claimed references remain exclusion diagnostics only.
         requested = _requested_map(requested_references)
+        methods = _requested_map(requested_skills, allow_model_capability=True)
         owned = list(project_resources or [])
         snapshot = [dict(item) for item in (catalog_resources or [])]
         if not snapshot:
@@ -97,8 +99,21 @@ class ResourceResolver:
             for item in snapshot
             if item.get("reference")
         }
-        conflicting_ids = _requested_version_conflicts(requested)
+        conflicting_ids = _requested_version_conflicts(
+            {
+                key: (*requested.get(key, ()), *methods.get(key, ()))
+                for key in requested.keys() | methods.keys()
+            }
+        )
         declared = {item.capability for item in requirements}
+        if methods.keys() - set(specification.required_capabilities):
+            raise ValueError("Selected Skill needs a declared specification capability")
+        executable = {
+            capability
+            for resource in self.catalog.resources()["resources"]
+            if resource.get("kind") in EXECUTABLE_KINDS
+            for capability in resource.get("capabilities") or ()
+        }
         for capability in requested.keys() - declared:
             diagnostics.append(f"requested_unused_capability:{capability}")
             optional_unresolved.append(
@@ -119,15 +134,35 @@ class ResourceResolver:
                 "No catalog resource provides this capability "
                 "in a selectable, supported state"
             )
-            if requirement.capability in requested:
+            if (
+                requirement.capability in methods
+                and requirement.capability not in executable
+            ):
                 chosen, missing_reason = self._choose_requested(
-                    requirement, requested[requirement.capability], owned,
-                    catalog_by_ref, conflicting_ids, diagnostics,
+                    requirement,
+                    methods[requirement.capability],
+                    owned,
+                    catalog_by_ref,
+                    conflicting_ids,
+                    diagnostics,
+                    require_executor=False,
+                    required_kind="skill",
+                )
+            elif requirement.capability in requested:
+                chosen, missing_reason = self._choose_requested(
+                    requirement,
+                    requested[requirement.capability],
+                    owned,
+                    catalog_by_ref,
+                    conflicting_ids,
+                    diagnostics,
                 )
             else:
                 chosen = self._choose(
                     requirement,
-                    snapshot,
+                    [item for item in snapshot if item.get("kind") != "skill"]
+                    if requirement.capability in methods
+                    else snapshot,
                     owned,
                     catalog_by_ref,
                     diagnostics,
@@ -181,6 +216,35 @@ class ResourceResolver:
                 existing is None
                 or _BIND_RANK[planned.bind_status] < _BIND_RANK[existing.bind_status]
             ):
+                selected[planned.resource_id] = planned
+
+        # Methods augment executable capabilities. They never replace a Tool,
+        # even when a Skill advertises the same capability as that Tool.
+        for capability in methods.keys() & (executable | MODEL_ONLY_CAPABILITIES):
+            requirement = next(
+                (item for item in requirements if item.capability == capability),
+                CapabilityRequirement(capability=capability),
+            )
+            chosen, reason = self._choose_requested(
+                requirement,
+                methods[capability],
+                owned,
+                catalog_by_ref,
+                conflicting_ids,
+                diagnostics,
+                require_executor=False,
+                required_kind="skill",
+            )
+            if chosen is None:
+                missing_required.append(
+                    MissingCapability(capability=capability, reason=reason)
+                )
+                continue
+            resource, status, reason = chosen
+            planned = self._planned(resource, status, requirement, reason)
+            if status == "needs_configuration":
+                needs_configuration.append(planned)
+            else:
                 selected[planned.resource_id] = planned
 
         knowledge = self._knowledge_plan(
@@ -237,6 +301,9 @@ class ResourceResolver:
         catalog_by_ref: Mapping[str, Mapping[str, Any]],
         conflicting_ids: set[str],
         diagnostics: list[str],
+        *,
+        require_executor: bool = True,
+        required_kind: str | None = None,
     ) -> tuple[tuple[dict[str, Any], BindStatus, str] | None, str]:
         capability = requirement.capability
 
@@ -246,50 +313,114 @@ class ResourceResolver:
 
         if len(references) != 1:
             code = "requested_ambiguous" if references else "requested_unresolved"
-            return reject(code, "Select exactly one reviewed resource for this capability")
+            return reject(
+                code, "Select exactly one reviewed resource for this capability"
+            )
         reference = references[0]
         if reference != reference.strip() or reference.count("@") != 1:
-            return reject("requested_reference_invalid", "Requested resource needs an exact versioned reference")
+            return reject(
+                "requested_reference_invalid",
+                "Requested resource needs an exact versioned reference",
+            )
         try:
             resource = self.catalog.by_reference(reference)
         except ResourceCatalogError:
-            return reject("requested_reference_unknown", f"Requested resource version is not registered: {reference}")
+            return reject(
+                "requested_reference_unknown",
+                f"Requested resource version is not registered: {reference}",
+            )
+        if required_kind is not None and resource.get("kind") != required_kind:
+            return reject(
+                "requested_kind_mismatch",
+                f"Requested method must be a {required_kind}: {reference}",
+            )
         eligible, code = _eligibility(resource, requirement)
         if not eligible:
-            return reject(f"requested_{code}", f"Requested resource is not eligible: {reference} ({code})")
+            return reject(
+                f"requested_{code}",
+                f"Requested resource is not eligible: {reference} ({code})",
+            )
         if not _capability_match(resource, capability):
-            return reject("requested_capability_mismatch", f"Requested resource does not provide {capability}: {reference}")
+            return reject(
+                "requested_capability_mismatch",
+                f"Requested resource does not provide {capability}: {reference}",
+            )
         # An instruction-bearing Skill cannot replace an executable capability.
         executable_required = any(
             item.get("kind") in EXECUTABLE_KINDS and _capability_match(item, capability)
             for item in self.catalog.resources()["resources"]
         )
-        if executable_required and resource.get("kind") not in EXECUTABLE_KINDS:
-            return reject("requested_executable_required", "This capability still requires a registered executable Tool")
+        if (
+            require_executor
+            and executable_required
+            and resource.get("kind") not in EXECUTABLE_KINDS
+        ):
+            return reject(
+                "requested_executable_required",
+                "This capability still requires a registered executable Tool",
+            )
         visible = catalog_by_ref.get(reference)
-        identity_fields = ("reference", "resource_id", "version", "kind", "content_hash")
-        if visible is None or any(visible.get(name) != resource.get(name) for name in identity_fields):
-            return reject("requested_snapshot_conflict", "Requested resource is absent or changed in the current catalog snapshot")
+        identity_fields = (
+            "reference",
+            "resource_id",
+            "version",
+            "kind",
+            "content_hash",
+        )
+        if visible is None or any(
+            visible.get(name) != resource.get(name) for name in identity_fields
+        ):
+            return reject(
+                "requested_snapshot_conflict",
+                "Requested resource is absent or changed in the current "
+                "catalog snapshot",
+            )
         visible_eligible, visible_code = _eligibility(visible, requirement)
         if not visible_eligible:
-            return reject(f"requested_{visible_code}", f"Requested resource is not eligible in this snapshot ({visible_code})")
+            return reject(
+                f"requested_{visible_code}",
+                f"Requested resource is not eligible in this snapshot ({visible_code})",
+            )
         resource_id = str(resource["resource_id"])
         if resource_id in conflicting_ids:
-            return reject("requested_version_conflict", "One resource cannot select conflicting versions across capabilities")
+            return reject(
+                "requested_version_conflict",
+                "One resource cannot select conflicting versions across capabilities",
+            )
         pins = [
-            item for item in owned
+            item
+            for item in owned
             if item.get("scope") == "project"
-            and (item.get("resource_id") or str(item.get("reference") or "").split("@", 1)[0]) == resource_id
+            and (
+                item.get("resource_id")
+                or str(item.get("reference") or "").split("@", 1)[0]
+            )
+            == resource_id
         ]
-        if any(pin.get("reference") != reference or pin_hash(pin) != resource["content_hash"] for pin in pins):
-            return reject("requested_project_pin_conflict", "Requested version/hash conflicts with the existing Project pin; review the pin before changing it")
+        if any(
+            pin.get("reference") != reference
+            or pin_hash(pin) != resource["content_hash"]
+            for pin in pins
+        ):
+            return reject(
+                "requested_project_pin_conflict",
+                "Requested version/hash conflicts with the existing Project pin; "
+                "review the pin before changing it",
+            )
         status = self._bind_status(resource, owned, catalog_by_ref)
         if status == "unavailable":
-            return reject("requested_unavailable", "Requested resource is unavailable; no substitute was selected")
+            return reject(
+                "requested_unavailable",
+                "Requested resource is unavailable; no substitute was selected",
+            )
         if status == "already_bound":
             resource["lock_hash"] = resource["content_hash"]
         diagnostics.append(f"requested_selected:{reference}:{capability}")
-        return (resource, status, f"Explicit reviewed selection for {capability}: {reference}"), ""
+        return (
+            resource,
+            status,
+            f"Explicit reviewed selection for {capability}: {reference}",
+        ), ""
 
     def _choose(
         self,
@@ -324,11 +455,17 @@ class ResourceResolver:
                 owned, str(resource.get("reference") or "")
             ) or project_pin(owned, str(resource.get("resource_id") or ""))
             if pinned is not None:
-                resource = dict(resource)
-                digest = pin_hash(pinned) or str(resource.get("content_hash") or "")
-                resource["lock_hash"] = digest
-                if pinned.get("reference"):
-                    resource["reference"] = str(pinned["reference"])
+                reference = str(
+                    pinned.get("reference") or resource.get("reference") or ""
+                )
+                pinned_descriptor = catalog_by_ref.get(reference)
+                if pinned_descriptor is None:
+                    return None
+                resource = dict(pinned_descriptor)
+                resource["lock_hash"] = pin_hash(pinned) or str(
+                    resource.get("content_hash") or ""
+                )
+                reason = _reason(resource, status, requirement)
         return resource, status, reason
 
     def _bind_status(
@@ -426,6 +563,7 @@ class ResourceResolver:
             secret_ref=str(secret_ref)
             if isinstance(secret_ref, str) and secret_ref
             else None,
+            adapter=str(spec.get("adapter") or "") if isinstance(spec, Mapping) else "",
         )
 
     def _knowledge_plan(
@@ -543,6 +681,8 @@ def _factory_item(resource: PlannedResource) -> dict[str, Any]:
 
 def _requested_map(
     requested: Mapping[str, Sequence[str]] | None,
+    *,
+    allow_model_capability: bool = False,
 ) -> dict[str, tuple[str, ...]]:
     if requested is None:
         return {}
@@ -551,14 +691,24 @@ def _requested_map(
     result: dict[str, tuple[str, ...]] = {}
     for capability, references in requested.items():
         if (
-            not isinstance(capability, str) or not capability
-            or capability != capability.strip() or len(capability) > 80
-            or capability in MODEL_ONLY_CAPABILITIES or capability == "project_knowledge"
+            not isinstance(capability, str)
+            or not capability
+            or capability != capability.strip()
+            or len(capability) > 80
+            or (not allow_model_capability and capability in MODEL_ONLY_CAPABILITIES)
+            or capability == "project_knowledge"
         ):
             raise ValueError("Requested references require a resource capability name")
-        if isinstance(references, str | bytes) or not isinstance(references, Sequence) or len(references) > 16:
+        if (
+            isinstance(references, str | bytes)
+            or not isinstance(references, Sequence)
+            or len(references) > 16
+        ):
             raise ValueError("Each requested capability needs a bounded reference list")
-        if any(not isinstance(reference, str) or not reference or len(reference) > 512 for reference in references):
+        if any(
+            not isinstance(reference, str) or not reference or len(reference) > 512
+            for reference in references
+        ):
             raise ValueError("Requested references must be nonempty bounded strings")
         result[capability] = tuple(dict.fromkeys(references))
     return result
@@ -570,7 +720,11 @@ def _requested_version_conflicts(requested: Mapping[str, tuple[str, ...]]) -> se
         for reference in references:
             resource_id = reference.split("@", 1)[0]
             versions.setdefault(resource_id, set()).add(reference)
-    return {resource_id for resource_id, references in versions.items() if len(references) > 1}
+    return {
+        resource_id
+        for resource_id, references in versions.items()
+        if len(references) > 1
+    }
 
 
 def _capability_match(resource: Mapping[str, Any], capability: str) -> bool:
@@ -649,6 +803,9 @@ def _rank_key(
         origin,
         approval_cost,
         str(resource.get("resource_id") or ""),
+        tuple(
+            -int(part) for part in str(resource.get("version") or "0.0.0").split(".")
+        ),
     )
 
 

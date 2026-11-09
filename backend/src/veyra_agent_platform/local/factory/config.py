@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from veyra_agent_platform.contracts.agent import HARD_MAX_TURNS
+
 
 class FactorySettings(BaseSettings):
     """Keep Factory credentials separate from user Agent Runtime credentials."""
@@ -23,9 +25,14 @@ class FactorySettings(BaseSettings):
     model_id: str = "kimi-k3"
     model_api_key_env: str = "MOONSHOT_API_KEY"
     reasoning_effort: Literal["low", "high", "max"] = "high"
+    intent_reasoning_effort: Literal["low", "high", "max"] = "low"
+    schema_repair_reasoning_effort: Literal["low", "high", "max"] = "low"
     max_completion_tokens: int = Field(default=16_384, ge=1_024, le=65_536)
     timeout_seconds: float = Field(default=90.0, gt=0, le=300)
-    repair_attempts: int = Field(default=3, ge=1, le=3)
+    repair_attempts: int | None = Field(default=None, ge=0)
+    generation_max_requests: int = Field(default=8, ge=1)
+    generation_timeout_seconds: float = Field(default=600, gt=0)
+    generated_agent_max_turns: int = Field(default=16, ge=1, le=HARD_MAX_TURNS)
 
     @field_validator("model_base_url")
     @classmethod

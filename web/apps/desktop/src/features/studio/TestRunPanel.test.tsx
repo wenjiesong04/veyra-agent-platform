@@ -139,7 +139,7 @@ describe("TestRunPanel", () => {
     await user.click(screen.getByRole("button", { name: "Test run" }));
     expect(await screen.findByText("Write notes.txt?")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve" }));
+    await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve", expected_request_id: "event-2" }));
   });
 
   it("paints node run states from the live event stream", async () => {

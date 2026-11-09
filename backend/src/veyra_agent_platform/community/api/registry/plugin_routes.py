@@ -5,7 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any, TypeVar, cast
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +52,18 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         return _translate(
             lambda: _registry(request).list_entries(query=query, limit=limit)
+        )
+
+    @router.get("/mine/plugins")
+    def my_plugins(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=100),
+    ) -> dict[str, Any]:
+        authenticated = authenticate_request(request)
+        return _translate(
+            lambda: _registry(request).owned_entries(
+                user_id=authenticated.user_id, limit=limit
+            )
         )
 
     @router.get("/plugins/moderation/queue")
@@ -102,9 +123,18 @@ def build_router() -> APIRouter:
     async def publish_plugin(
         request: Request,
         package: Annotated[UploadFile, File()],
+        expected_publisher_id: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         authenticated = authenticate_request(request)
         require_csrf(request, authenticated, get_settings(request))
+        if (
+            expected_publisher_id is not None
+            and expected_publisher_id != authenticated.user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="publication_account_changed",
+            )
         content = await package.read(5_000_001)
         await package.close()
         return _translate(

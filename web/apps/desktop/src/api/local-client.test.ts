@@ -112,6 +112,50 @@ describe("LocalApiClient Project requests", () => {
     await expect(client.getWorkflowRun("project-1", "workflow-1", "run-1")).resolves.toMatchObject({ waiting: { kind: "input", expected_fields: ["model"] } });
   });
 
+  it("preserves child question and permission metadata through the real parser", async () => {
+    const waiting = { kind: "input", node_id: "call", prompt: "Which column?", expected_fields: ["reply"], agent_id: "agent-1", child_run_id: "child-1", request_id: "request-1", input_schema: { reply: "string" }, context: { columns: ["amount", "total"] }, tool_reference: "veyra.tool.filesystem.write@1.0.0", approval_summary: { action: "Write file", target: "reports/result.md" } };
+    const payload = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", workflow_id: "workflow-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: "2026-10-02T00:00:00Z", finished_at: null, waiting, children: [], events: [] };
+    const fetcher = vi.fn().mockResolvedValueOnce(response(payload)).mockResolvedValueOnce(response(payload));
+    const client = new LocalApiClient({ fetcher });
+    const parsed = await client.getWorkflowRun("project-1", "workflow-1", "run-1");
+    expect(parsed.waiting).toEqual(waiting);
+    await client.commandWorkflowRun("project-1", "workflow-1", "run-1", { command: "reply", inputs: { reply: "amount" }, expected_request_id: parsed.waiting!.request_id! });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ command: "reply", inputs: { reply: "amount" }, expected_request_id: "request-1" });
+  });
+
+  it("preserves child budget metadata and sends explicit continuation idempotency without creating a Run", async () => {
+    const context = { budget: { scope: "run_model_turns", used: 16, limit: 16, remaining: 0 }, required_remaining: 4, max_additional_turns: 32, suggested_additional_turns: 8 };
+    const waiting = { kind: "budget", node_id: "call", prompt: "Additional turns needed", agent_id: "agent-1", child_run_id: "child-1", request_id: "budget-current", context };
+    const payload = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", workflow_id: "workflow-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: "2026-10-15T00:00:00Z", finished_at: null, waiting, children: [], events: [] };
+    const fetcher = vi.fn().mockImplementation(async () => response(payload));
+    const client = new LocalApiClient({ fetcher });
+    expect((await client.getWorkflowRun("project-1", "workflow-1", "run-1")).waiting).toEqual(waiting);
+    await client.commandWorkflowRun("project-1", "workflow-1", "run-1", { command: "extend_budget", additional_turns: 8, expected_request_id: "budget-current" }, { idempotencyKey: "budget-key" });
+    expect(fetcher.mock.calls[1][0]).toBe("/api/v1/projects/project-1/workflows/workflow-1/runs/run-1/commands");
+    expect(JSON.parse(String(fetcher.mock.calls[1][1].body))).toEqual({ command: "extend_budget", additional_turns: 8, expected_request_id: "budget-current" });
+    expect(new Headers(fetcher.mock.calls[1][1].headers).get("Idempotency-Key")).toBe("budget-key");
+  });
+
+  it.each(["agent.budget_updated", "agent.budget_insufficient", "finalization.failed", "finalization.progress"])("parses saved %s budget and review evidence", async (kind) => {
+    const payload = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: "2026-10-15T00:00:00Z", finished_at: null, events: [{ schema_version: "1.0", event_id: "event-1", run_id: "run-1", sequence: 1, kind, node_id: "model", timestamp: "2026-10-15T00:00:00Z", payload: { budget: { scope: "run_model_turns", used: 14, limit: 16, remaining: 2 } } }] };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(payload)) });
+    await expect(client.getAgentRun("project-1", "agent-1", "run-1")).resolves.toMatchObject({ events: [{ kind, payload: payload.events[0].payload }] });
+  });
+
+  it("restores a completed Agent run with saved action transport progress", async () => {
+    const progress = { phase: "action", turn: 0, status: "completed", elapsed_ms: 44859, event_count: 1541, content_bytes: 2775, published: false };
+    const event = { schema_version: "1.0", event_id: "event-1", run_id: "run-1", sequence: 1, kind: "model.progress", node_id: "model", timestamp: "2026-10-23T03:10:22Z", payload: progress };
+    const payload = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1", version_id: "version-1", status: "unverified", result: { report: "Completed report" }, error: null, created_at: "2026-10-23T03:09:37Z", finished_at: "2026-10-23T03:10:52Z", events: [event] };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(payload)) });
+    await expect(client.getAgentRun("project-1", "agent-1", "run-1")).resolves.toMatchObject({ status: "unverified", result: payload.result, error: null, events: [event] });
+  });
+
+  it("rejects malformed waiting bindings instead of silently dropping them", async () => {
+    const payload = { schema_version: "1.0", run_id: "run-1", project_id: "project-1", workflow_id: "workflow-1", version_id: "version-1", status: "waiting", result: null, error: null, created_at: "2026-10-02T00:00:00Z", finished_at: null, waiting: { kind: "input", node_id: "call", prompt: "Which column?", request_id: 123 }, children: [], events: [] };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(payload)) });
+    await expect(client.getWorkflowRun("project-1", "workflow-1", "run-1")).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
   it.each(["resource_unbound", "project_binding_stale", "configuration_required"])("preserves %s Agent dependency evidence", async (status) => {
     const dependency = { reference: "veyra.tool.filesystem.read@1.0.0", kind: "tool", name: "Read File", status, detail: "Check the Project binding", locked_hash: "a".repeat(64), bound_content_hash: "a".repeat(64), content_hash: "b".repeat(64), blocking_reasons: [{ code: "secret_not_configured", message: "Configure host credential." }], used_by: ["read"], bound_by: [] };
     const payload = { schema_version: "1.0", valid: true, source_hash: "source", behavior_hash: "behavior", lock_hash: "lock", file_hash: "file", runtime_ready: false, runtime_ready_scope: "agent_dependencies", dependency_summary: { total: 1, ready: 0, attention: 1 }, dependencies: [dependency] };
@@ -453,7 +497,7 @@ describe("LocalApiClient Project requests", () => {
     await expect(client.getAgentRun("project-1", "agent-1", "run-1")).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  it.each(["model.output_rejected", "tool.input_rejected"])("accepts the pre-effect repair event %s and preserves the actual terminal error", async (kind) => {
+  it.each(["model.output_rejected", "tool.input_rejected", "agent.plan_updated"])("accepts the pre-effect repair event %s and preserves the actual terminal error", async (kind) => {
     const detail = {
       schema_version: "1.0", run_id: "run-1", project_id: "project-1", agent_id: "agent-1",
       version_id: "version-1", status: "failed", result: null,
@@ -540,6 +584,9 @@ describe("LocalApiClient Project requests", () => {
     const failed = { ...event, event_id: "event-2", sequence: 3, kind: "tool.failed", node_id: "lookup", payload: { output_digest: null, schema_validation: { input: "failed", output: "not_checked" } } };
     listeners.runtime({ data: JSON.stringify(failed) } as MessageEvent);
     expect(onEvent).toHaveBeenCalledWith(failed);
+    const progress = { ...event, event_id: "event-3", sequence: 4, kind: "model.progress", node_id: "model", payload: { phase: "action", turn: 0, status: "receiving", elapsed_ms: 1000, event_count: 10, content_bytes: 0, published: false } };
+    listeners.runtime({ data: JSON.stringify(progress) } as MessageEvent);
+    expect(onEvent).toHaveBeenCalledWith(progress);
     expect(onError).not.toHaveBeenCalled();
     created?.onerror?.(new Event("error"));
     expect(created?.closed).toBe(false);
@@ -900,6 +947,31 @@ describe("LocalApiClient Project requests", () => {
     await expect(client.getBuilderConversation("project-1", "conv-1")).resolves.toMatchObject({
       operations: [{ receipts: [{ invocation_kind: "semantic_plan", structured_mode: "strict_json_schema" }] }],
     });
+  });
+
+  it.each([{ feedback: undefined }, { feedback: ["No executable repair path.\nCheck and revise.", "The final output is not rechecked. ".repeat(12)] }])("preserves optional complete Builder generation feedback", async ({ feedback }) => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: { conversation_id: "conv-1", project_id: "project-1", title: "Review", status: "active", created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", last_activity_at: "2026-09-18T00:00:01Z", last_operation_status: "failed" },
+      messages: [],
+      operations: [{ operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_generation_blocked", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true, ...(feedback === undefined ? {} : { generation_feedback: feedback }) }],
+      resolution: null, factory_session: null,
+    };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(snapshot)) });
+    const parsed = await client.getBuilderConversation("project-1", "conv-1");
+    expect(parsed.operations[0]?.generation_feedback).toEqual(feedback);
+  });
+
+  it.each([{ feedback: "not-an-array" }, { feedback: [1] }, { feedback: [{ reason: "Do not treat an object as public feedback" }] }])("rejects malformed Builder generation feedback", async ({ feedback }) => {
+    const snapshot = {
+      schema_version: "1.0",
+      conversation: { conversation_id: "conv-1", project_id: "project-1", title: "Review", status: "active", created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", last_activity_at: "2026-09-18T00:00:01Z", last_operation_status: "failed" },
+      messages: [],
+      operations: [{ operation_id: "op-1", conversation_id: "conv-1", kind: "create_agent", status: "failed", retry_of: null, error_code: "factory_generation_blocked", proposal_id: null, run_id: null, factory_session_id: null, created_at: "2026-09-18T00:00:00Z", updated_at: "2026-09-18T00:00:01Z", diagnostic: {}, has_request: true, generation_feedback: feedback }],
+      resolution: null, factory_session: null,
+    };
+    const client = new LocalApiClient({ fetcher: vi.fn().mockResolvedValue(response(snapshot)) });
+    await expect(client.getBuilderConversation("project-1", "conv-1")).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   it("keeps the canonical Builder snapshot when the auxiliary Factory session has a schema mismatch", async () => {

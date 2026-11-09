@@ -125,7 +125,7 @@ def test_0036_upgrade_keeps_only_known_baseline_and_does_not_fabricate_prior_his
             ),
         )
     migrate_local_database(database)
-    assert HEAD_REVISION == "local_0037_entity_revision_history"
+    assert HEAD_REVISION == "local_0038_work_item_version_binding"
     store = EntityStore(database)
     result = history(store, "old")
     assert result["available_from"] == 4 and result["incomplete"] is True

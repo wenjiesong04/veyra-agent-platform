@@ -70,6 +70,26 @@ describe("RuntimeInputForm", () => {
     expect(screen.getByLabelText("photos")).toHaveAttribute("multiple");
   });
 
+  it.each(["default", "workspace"] as const)("preserves multiline string input in %s presentation", (presentation) => {
+    const onChange = vi.fn();
+    const original = "First paragraph.\n\nSecond paragraph with a quote: 'source'.";
+    render(<RuntimeInputForm schema={{ analysis: "string" }} values={{ analysis: original }} onChange={onChange} locale="en" presentation={presentation} />);
+    const editor = screen.getByLabelText("analysis");
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor).toHaveValue(original);
+    const revised = `${original}\nThird paragraph.`;
+    fireEvent.change(editor, { target: { value: revised } });
+    expect(onChange).toHaveBeenCalledWith({ analysis: revised });
+  });
+
+  it("keeps path suggestions on a single-line input", () => {
+    render(<RuntimeInputForm schema={{ source_file: "string" }} values={{}} onChange={vi.fn()} fileOptions={["notes.txt"]} locale="en" />);
+    const editor = screen.getByLabelText("source_file");
+    expect(editor.tagName).toBe("INPUT");
+    expect(editor).toHaveAttribute("list", "run-file-options-source_file");
+    expect((editor as HTMLInputElement).list?.options[0]?.value).toBe("notes.txt");
+  });
+
   it("uploads an image and stores an ArtifactRef", async () => {
     const uploadArtifact = vi.fn().mockResolvedValue({
       ...png,
@@ -163,6 +183,17 @@ describe("RuntimeInputForm", () => {
   it("keeps an existing ArtifactRef across refresh", () => {
     renderForm({ photo: "image" }, { photo: png });
     expect(screen.getByText("product.png")).toBeInTheDocument();
+  });
+
+  it("keeps file selection and removal accessible in the workspace presentation", () => {
+    const onChange = vi.fn();
+    render(<RuntimeInputForm schema={{ attachment: { type: "file", description: "Original source file" } }} values={{ attachment: file }} onChange={onChange} locale="en" presentation="workspace" />);
+    expect(screen.getByLabelText("attachment")).toHaveAttribute("type", "file");
+    expect(screen.getByText("Replace file")).toHaveAttribute("for", screen.getByLabelText("attachment").id);
+    expect(screen.getByText("Original source file")).toBeInTheDocument();
+    expect(screen.queryByText("Upload a file accepted by this Agent.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
+    expect(onChange).toHaveBeenCalledWith({});
   });
 
   it("shows an upload error", async () => {

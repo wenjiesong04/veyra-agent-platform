@@ -134,6 +134,8 @@
 .builder-test-run label { display: grid; gap: 4px; font-size: 13px; }
 .builder-test-run input { min-height: 36px; }
 .builder-test-run-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.builder-test-run-request { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
+.builder-test-run-request p { margin: 0; }
 .builder-test-observation, .builder-test-observation-facts { display: grid; gap: 6px; font-size: 13px; }
 .builder-test-observation-facts { margin: 8px 0 0; grid-template-columns: max-content 1fr; gap: 4px 12px; }
 .builder-test-observation-facts dt { opacity: 0.7; }

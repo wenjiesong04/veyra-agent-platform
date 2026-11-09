@@ -62,6 +62,13 @@ function event(
 }
 
 describe("canonical run execution projection", () => {
+  it.each([["budget", "waiting_budget"], ["input", "waiting_input"]] as const)("keeps %s waiting separate from tool approval", (kind, state) => {
+    const projection = projectRunToExecutionState(graph, { run_id: "run-1", status: "waiting", events: [event("approval.requested", 1, "approval", { kind })] });
+    expect(projection.nodeStates.get("approval")).toBe(state);
+    expect(projection.waitingNodeId).toBe("approval");
+    const stopped = projectRunToExecutionState(graph, { run_id: "run-1", status: "cancelled", events: [event("approval.requested", 1, "approval", { kind })] });
+    expect(stopped.nodeStates.get("approval")).toBe("stopped");
+  });
   it("keeps a fresh graph idle and excludes annotation notes", () => {
     const projection = projectRunToExecutionState(graph, null);
     expect([...projection.nodeStates.values()]).toEqual(["idle", "idle", "idle", "idle", "idle", "idle"]);

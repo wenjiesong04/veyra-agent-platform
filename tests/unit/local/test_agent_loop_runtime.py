@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from veyra_agent_platform.contracts.agent import AgentSource, FlowNode
@@ -113,7 +114,9 @@ def _image_loop_source() -> AgentSource:
 def test_loop_prompt_leaves_image_outputs_to_the_image_model() -> None:
     prompt = loop_system_prompt(_image_loop_source())
     assert "Declared outputs: result:object." in prompt
-    assert "Image outputs (render) are rendered by the image model" in prompt
+    assert "Image outputs (render) must use actual images" in prompt
+    assert "actual artifact references returned by render_images" in prompt
+    assert "Do not return them" not in prompt
 
 
 def test_loop_renders_declared_image_outputs_with_image_model() -> None:
@@ -297,7 +300,7 @@ class _HarnessHost(AgentLoopRuntime):
 
     def _prepare_outputs(self, project_id, source, values):
         del project_id
-        return {name: values[name] for name in source.outputs}
+        return {name: values[name] for name in source.outputs if name in values}
 
     def _authorize_tool(self, project_id, source, node, values):
         resource = self.project_resources.resolve_pin(
@@ -334,6 +337,514 @@ def test_loop_prompt_exposes_pinned_tool_schema_and_approval_without_host_secret
     assert "host-reference" not in projection
     assert "HOST_ENV" not in projection
     assert "fixture-secret" not in projection
+
+
+def test_loop_exposes_complete_output_contract_and_repairs_declared_constraints(
+    tmp_path: Path,
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    payload = _tool_loop_source(tool).to_dict()
+    payload["outputs"]["translation"] = {
+        "type": "string",
+        "multiple": True,
+        "enum": ["ready", "blocked"],
+        "description": "Return a list of declared readiness labels",
+    }
+    payload["outputs"]["summary"] = {
+        "type": "object",
+        "required": False,
+        "json_schema": {
+            "type": "object",
+            "properties": {"count": {"type": "integer", "minimum": 1}},
+            "required": ["count"],
+        },
+    }
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    model = _ScriptedLoopModel(
+        {"action": "final", "outputs": {"translation": ["unknown"]}},
+        {
+            "action": "final",
+            "outputs": {"translation": ["ready"], "summary": {"count": 1}},
+        },
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.result == {"translation": ["ready"], "summary": {"count": 1}}
+    prompt = model.calls[0][0]["content"]
+    assert (
+        json.dumps({name: field.to_wire() for name, field in source.outputs.items()})
+        in prompt
+    )
+    feedback = json.loads(model.calls[1][-1]["content"].split("\n", 1)[1])
+    assert feedback["fields"] == [
+        {
+            "name": "translation",
+            "reason": "value_does_not_match_contract",
+            "contract": source.outputs["translation"].to_wire(),
+        }
+    ]
+    assert not host.effects
+
+
+def test_loop_output_validation_feedback_is_bounded_and_does_not_echo_values(
+    tmp_path: Path,
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    source = _tool_loop_source(tool)
+    host = _HarnessHost(tmp_path, tool)
+    model = _ScriptedLoopModel(
+        {"action": "final", "outputs": {"translation": {"private": "a" * 30_000}}},
+        {"action": "final", "outputs": {"translation": "corrected"}},
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.result == {"translation": "corrected"}
+    feedback = model.calls[1][-1]["content"]
+    assert len(feedback) <= 8_000
+    assert "a" * 200 not in feedback
+    assert "value_does_not_match_contract" in feedback
+
+
+@pytest.mark.parametrize(
+    ("invalid", "keyword"),
+    [
+        ({"answer": {}}, "required"),
+        ({"answer": {"count": 1}, "extra": "private-value"}, "additionalProperties"),
+        ({"answer": {"count": "private-value"}}, "type"),
+        ({"answer": {"count": 0}}, "minimum"),
+        ({"answer": {"count": float("nan")}}, "json_value"),
+    ],
+)
+def test_loop_nested_output_schema_returns_safe_keywords_and_can_be_corrected(
+    tmp_path: Path, invalid: dict[str, Any], keyword: str
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    payload = _tool_loop_source(tool).to_dict()
+    payload["outputs"]["translation"] = {
+        "type": "object",
+        "json_schema": {
+            "type": "object",
+            "properties": {
+                "answer": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer", "minimum": 1}},
+                    "required": ["count"],
+                    "additionalProperties": False,
+                }
+            },
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    }
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    corrected = {"answer": {"count": 1}}
+    model = _ScriptedLoopModel(
+        {"action": "final", "outputs": {"translation": invalid}},
+        {"action": "final", "outputs": {"translation": corrected}},
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.result == {"translation": corrected}
+    assert outcome.verified is False
+    feedback = model.calls[1][-1]["content"]
+    assert "private-value" not in feedback
+    error = json.loads(feedback.split("\n", 1)[1])["fields"][0]
+    assert error["reason"] == "json_schema_violation"
+    assert error["keywords"] == [keyword]
+    assert error["contract"] == source.outputs["translation"].to_wire()
+
+
+def test_loop_multiple_output_schema_validates_each_item(tmp_path: Path) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    payload = _tool_loop_source(tool).to_dict()
+    payload["outputs"]["translation"] = {
+        "type": "object",
+        "multiple": True,
+        "json_schema": {
+            "type": "object",
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        },
+    }
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    corrected = [{"count": 1}, {"count": 2}]
+    model = _ScriptedLoopModel(
+        {"action": "final", "outputs": {"translation": [{"count": 1}, {}]}},
+        {"action": "final", "outputs": {"translation": corrected}},
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.result == {"translation": corrected}
+    error = json.loads(model.calls[1][-1]["content"].split("\n", 1)[1])["fields"][0]
+    assert error["keywords"] == ["required"]
+
+
+def test_loop_optional_output_schema_can_be_omitted(tmp_path: Path) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    payload = _tool_loop_source(tool).to_dict()
+    payload["outputs"]["summary"] = {
+        "type": "object",
+        "required": False,
+        "json_schema": {"type": "object", "required": ["count"]},
+    }
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    model = _ScriptedLoopModel(
+        {"action": "final", "outputs": {"translation": "finished"}}
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.result == {"translation": "finished"}
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "imaginary"},
+        {"$ref": "https://example.invalid/private-schema"},
+        {"allOf": [{"type": "object"}]},
+        {
+            "type": "object",
+            "properties": {str(index): {"type": "string"} for index in range(257)},
+        },
+    ],
+)
+def test_loop_unsupported_output_schema_fails_before_model_or_tool_calls(
+    tmp_path: Path, schema: dict[str, Any]
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    payload = _tool_loop_source(tool).to_dict()
+    payload["outputs"]["translation"] = {"type": "object", "json_schema": schema}
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    model = _ScriptedLoopModel(
+        {"action": "final", "outputs": {"translation": {"count": 1}}}
+    )
+    with pytest.raises(LoopRuntimeError) as caught:
+        host._execute_loop("project", "run", source, {}, model)
+    assert caught.value.code == "agent_output_schema_unsupported"
+    assert not model.calls
+    assert not host.effects
+    assert not host.events
+
+
+def test_loop_native_read_failure_can_change_tool_then_correct_its_arguments(
+    tmp_path: Path,
+) -> None:
+    catalog = ResourceCatalog()
+    read = catalog.detail("veyra.tool.filesystem.read", "1.0.0")
+    listing = catalog.detail("veyra.tool.filesystem.list", "1.0.0")
+    payload = _tool_loop_source(read).to_dict()
+    payload["lock"][listing["reference"]] = listing["content_hash"]
+    payload["ui"]["bindings"]["tool_list"] = {
+        "kind": "tool",
+        "reference": listing["reference"],
+        "x": 80,
+        "y": 80,
+    }
+    payload["extensions"]["veyra"]["permissions"]["tools"].append(
+        listing["resource_id"]
+    )
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, read)
+    resources = {item["reference"]: item for item in (read, listing)}
+
+    def resolve_pin(project_id, reference, digest):
+        del project_id
+        resource = resources[reference]
+        assert digest == resource["content_hash"]
+        return deepcopy(resource)
+
+    host.project_resources = SimpleNamespace(resolve_pin=resolve_pin)
+    host.tools = ToolRuntime(catalog)
+    (tmp_path / "notes.txt").write_text("Synthetic evidence", encoding="utf-8")
+    model = _ScriptedLoopModel(
+        {
+            "action": "tool",
+            "tool": read["reference"],
+            "arguments": {"path": "absent.txt"},
+        },
+        {"action": "tool", "tool": listing["reference"], "arguments": {"path": "."}},
+        {
+            "action": "tool",
+            "tool": read["reference"],
+            "arguments": {"path": "notes.txt"},
+        },
+        {"action": "final", "outputs": {"translation": "finished"}},
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.result == {"translation": "finished"}
+    assert len(outcome.tool_calls) == 3
+    assert outcome.tool_calls[0].receipt["outcome"] == "failed"
+    assert outcome.tool_calls[0].receipt["recovery"] == "observe"
+    feedback = json.loads(model.calls[1][-1]["content"].split("\n", 1)[1])
+    assert feedback["outcome"] == "failed"
+    assert feedback["effect_status"] == "read_only"
+    assert feedback["input_schema"] == read["spec"]["input_schema"]
+    assert "not retried" in feedback["notice"]
+    assert any(kind == "tool.failed" for _, kind, _ in host.events)
+    assert "Synthetic evidence" in model.calls[3][-1]["content"]
+    assert len(model.calls) == source.max_turns
+
+
+def test_loop_native_search_failure_preserves_approval_and_does_not_echo_exception(
+    tmp_path: Path,
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.web.search", "1.0.0")
+    host = _HarnessHost(tmp_path, tool)
+    requests: list[httpx.Request] = []
+
+    def search(request):
+        requests.append(request)
+        if len(requests) == 1:
+            raise httpx.ReadTimeout("private-host-path-and-secret", request=request)
+        return httpx.Response(200, text="<html><body>Synthetic result</body></html>")
+
+    host.tools = ToolRuntime(
+        ResourceCatalog(),
+        http_client=httpx.Client(transport=httpx.MockTransport(search)),
+    )
+    source = _tool_loop_source(tool)
+    model = _ScriptedLoopModel(
+        {"action": "tool", "tool": tool["reference"], "arguments": {"query": "first"}},
+        {
+            "action": "tool",
+            "tool": tool["reference"],
+            "arguments": {"query": "revised"},
+        },
+        {"action": "final", "outputs": {"translation": "finished"}},
+    )
+    first = host._execute_loop("project", "run", source, {}, model)
+    assert first.pause is not None
+    assert not requests
+    second = host._execute_loop(
+        "project", "run", source, first.pause.values, model, approved=True
+    )
+    assert second.pause is not None
+    assert len(requests) == 1
+    assert second.tool_calls[0].receipt["outcome"] == "failed"
+    assert second.tool_calls[0].receipt["code"] == "tool_timeout"
+    feedback = model.calls[1][-1]["content"]
+    assert "private-host-path-and-secret" not in feedback
+    assert '"code": "tool_timeout"' in feedback
+    assert '"recoverable": true' in feedback
+    finished = host._execute_loop(
+        "project", "run", source, second.pause.values, model, approved=True
+    )
+    assert finished.result == {"translation": "finished"}
+    assert len(requests) == 2
+
+
+def test_loop_native_arithmetic_failure_uses_existing_turn_budget(
+    tmp_path: Path,
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.math.calculate", "1.0.0")
+    source = _tool_loop_source(tool)
+    host = _HarnessHost(tmp_path, tool)
+    host.tools = ToolRuntime(ResourceCatalog())
+    model = _ScriptedLoopModel(
+        *[
+            {
+                "action": "tool",
+                "tool": tool["reference"],
+                "arguments": {"expression": f"sum(1, {index})"},
+            }
+            for index in range(source.max_turns)
+        ]
+    )
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.pause is not None and outcome.pause.details["kind"] == "budget"
+    assert len(model.calls) == source.max_turns
+    assert len(outcome.tool_calls) == source.max_turns
+    assert len([kind for _, kind, _ in host.events if kind == "tool.failed"]) == (
+        source.max_turns
+    )
+
+
+def test_loop_read_failure_receipt_survives_a_later_provider_failure(
+    tmp_path: Path,
+) -> None:
+    from veyra_agent_platform.local.runtime.client import RuntimeProviderError
+
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    source = _tool_loop_source(tool)
+    host = _HarnessHost(tmp_path, tool)
+    host.tools = ToolRuntime(ResourceCatalog())
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages):
+            del messages
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeProviderError("runtime_rate_limited", "Synthetic limit")
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "action": "tool",
+                        "tool": tool["reference"],
+                        "arguments": {"path": "absent.txt"},
+                    }
+                )
+            )
+
+    model = Model()
+    with pytest.raises(LoopRuntimeError) as caught:
+        host._execute_loop("project", "run", source, {}, model)
+    assert caught.value.code == "runtime_rate_limited"
+    assert len(caught.value.tool_calls) == 1
+    assert caught.value.tool_calls[0].receipt["outcome"] == "failed"
+    assert caught.value.tool_calls[0].receipt["recovery"] == "observe"
+    assert model.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("next_failure", "code"),
+    [
+        ("authorization", "tool_unavailable"),
+        ("tool_contract", "tool_schema_invalid"),
+        ("output_binding", "output_invalid"),
+        ("image", "image_model_failed"),
+        ("image_provider", "runtime_timeout"),
+        ("image_tool", "tool_failed"),
+        ("unknown", "executor_failed"),
+    ],
+)
+def test_loop_read_failure_receipt_survives_every_terminal_exit(
+    tmp_path: Path, next_failure: str, code: str
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    payload = _tool_loop_source(tool).to_dict()
+    if next_failure in {"image", "image_provider", "image_tool"}:
+        payload["outputs"]["render"] = {"type": "artifact", "artifact_kind": "image"}
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    host.tools = ToolRuntime(ResourceCatalog())
+
+    def binding_failure(*args):
+        del args
+        raise LoopRuntimeError("output_invalid", "Synthetic binding failure")
+
+    def image_failure(*args):
+        del args
+        if next_failure == "image_provider":
+            from veyra_agent_platform.local.runtime.client import RuntimeProviderError
+
+            raise RuntimeProviderError("runtime_timeout", "Synthetic image timeout")
+        if next_failure == "image_tool":
+            raise ToolRuntimeError("tool_failed", "Synthetic image tool failure")
+        raise LoopRuntimeError("image_model_failed", "Synthetic image failure")
+
+    if next_failure == "output_binding":
+        host._prepare_outputs = binding_failure
+    if next_failure in {"image", "image_provider", "image_tool"}:
+        host._run_image_model = image_failure
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages):
+            del messages
+            self.calls += 1
+            if self.calls == 1:
+                action = {
+                    "action": "tool",
+                    "tool": tool["reference"],
+                    "arguments": {"path": "absent.txt"},
+                }
+            else:
+                if next_failure == "authorization":
+                    tool["availability"] = "disabled"
+                elif next_failure == "tool_contract":
+                    tool["spec"]["input_constraints"] = {"path": {"type": "imaginary"}}
+                elif next_failure == "unknown":
+                    raise ValueError("private-exception-body")
+                action = (
+                    {
+                        "action": "tool",
+                        "tool": tool["reference"],
+                        "arguments": {"path": "notes.txt"},
+                    }
+                    if next_failure in {"authorization", "tool_contract"}
+                    else {"action": "final", "outputs": {"translation": "finished"}}
+                )
+            return SimpleNamespace(content=json.dumps(action))
+
+    model = Model()
+    with pytest.raises(LoopRuntimeError) as caught:
+        host._execute_loop("project", "run", source, {}, model)
+    assert caught.value.code == code
+    assert len(caught.value.tool_calls) == 1
+    assert caught.value.tool_calls[0].receipt["outcome"] == "failed"
+    assert caught.value.tool_calls[0].receipt["recovery"] == "observe"
+    assert "private-exception-body" not in str(caught.value)
+    assert model.calls == 2
+
+
+def test_loop_native_path_denial_is_not_recoverable(tmp_path: Path) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    source = _tool_loop_source(tool)
+    host = _HarnessHost(tmp_path, tool)
+    host.tools = ToolRuntime(ResourceCatalog())
+    model = _ScriptedLoopModel(
+        {"action": "tool", "tool": tool["reference"], "arguments": {"path": ".env"}},
+        {"action": "final", "outputs": {"translation": "must not continue"}},
+    )
+    with pytest.raises(LoopRuntimeError) as caught:
+        host._execute_loop("project", "run", source, {}, model)
+    assert caught.value.code == "tool_path_denied"
+    assert len(model.calls) == 1
+
+
+def test_loop_native_write_failure_remains_terminal_after_approval(
+    tmp_path: Path,
+) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.write", "1.0.0")
+    source = _tool_loop_source(tool)
+    host = _HarnessHost(tmp_path, tool)
+    host.tools = ToolRuntime(ResourceCatalog())
+    (tmp_path / "directory").mkdir()
+    model = _ScriptedLoopModel(
+        {
+            "action": "tool",
+            "tool": tool["reference"],
+            "arguments": {"path": "directory", "content": "Synthetic material"},
+        },
+        {"action": "final", "outputs": {"translation": "must not continue"}},
+    )
+    waiting = host._execute_loop("project", "run", source, {}, model)
+    assert waiting.pause is not None
+    with pytest.raises(LoopRuntimeError) as caught:
+        host._execute_loop(
+            "project", "run", source, waiting.pause.values, model, approved=True
+        )
+    assert caught.value.code == "tool_input_invalid"
+    assert len(model.calls) == 1
+
+
+def test_loop_missing_secret_is_not_recoverable(tmp_path: Path) -> None:
+    tool = ResourceCatalog().detail("veyra.tool.filesystem.read", "1.0.0")
+    tool["spec"].update(secret_ref="synthetic-secret", secret_env="SYNTHETIC_SECRET")
+    payload = _tool_loop_source(tool).to_dict()
+    payload["extensions"]["veyra"]["secret_refs"] = ["synthetic-secret"]
+    source = AgentSource.from_dict(payload)
+    host = _HarnessHost(tmp_path, tool)
+    host.tools._secret_value = lambda *args: ""
+    model = _ScriptedLoopModel(
+        {
+            "action": "tool",
+            "tool": tool["reference"],
+            "arguments": {"path": "notes.txt"},
+        },
+        {"action": "final", "outputs": {"translation": "must not continue"}},
+    )
+    with pytest.raises(LoopRuntimeError) as caught:
+        host._execute_loop("project", "run", source, {}, model)
+    assert caught.value.code == "secret_not_configured"
+    assert len(model.calls) == 1
+    assert not host.effects
 
 
 @pytest.mark.parametrize("state", ["disabled", "requires_configuration"])
@@ -484,7 +995,7 @@ def test_loop_corrected_write_request_still_pauses_for_explicit_approval(
     waiting = host._execute_loop("project", "run", source, {}, model)
     assert waiting.pause is not None
     assert waiting.pause.details["kind"] == "tool_permission"
-    assert waiting.pause.values[LOOP_STATE_KEY]["turn"] == 1
+    assert waiting.pause.values[LOOP_STATE_KEY]["turn"] == 2
     assert not host.effects
     finished = host._execute_loop(
         "project", "run", source, waiting.pause.values, model, approved=True
@@ -550,9 +1061,8 @@ def test_loop_schema_repairs_consume_existing_max_turns_budget(tmp_path: Path) -
     source = _tool_loop_source(tool)
     bad = {"action": "tool", "tool": tool["reference"], "arguments": {"path": 17}}
     model = _ScriptedLoopModel(*[bad] * source.max_turns)
-    with pytest.raises(LoopRuntimeError) as caught:
-        host._execute_loop("project", "run", source, {}, model)
-    assert caught.value.code == "agent_max_turns_exceeded"
+    outcome = host._execute_loop("project", "run", source, {}, model)
+    assert outcome.pause is not None and outcome.pause.details["kind"] == "budget"
     assert len(model.calls) == source.max_turns
     assert not host.effects
 
@@ -819,11 +1329,10 @@ def test_rejecting_tool_approvals_cannot_reset_the_model_turn_budget(
         > first.pause.values[LOOP_STATE_KEY]["turn"]
     )
     assert "rejected the tool request" in model.calls[1][-1]["content"]
-    with pytest.raises(LoopRuntimeError) as caught:
-        host._execute_loop(
-            "project", "run", source, second.pause.values, model, approved=False
-        )
-    assert caught.value.code == "agent_max_turns_exceeded"
+    stopped = host._execute_loop(
+        "project", "run", source, second.pause.values, model, approved=False
+    )
+    assert stopped.pause is not None and stopped.pause.details["kind"] == "budget"
     assert len(model.calls) == 2
     assert not host.effects
     assert not any(kind == "tool.started" for _, kind, _ in host.events)

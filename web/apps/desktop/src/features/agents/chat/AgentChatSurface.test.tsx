@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResponse, AgentSource, AgentVersionSnapshot, RuntimeReadiness } from "@veyra/api-contracts";
@@ -76,6 +76,30 @@ describe("AgentChatSurface", () => {
     expect(api.runAgent).not.toHaveBeenCalled();
   });
 
+  it("restores saved Markdown reports without re-running the Agent or formatting user input", async () => {
+    const content = "# Saved reconciliation\n\n| Order | Amount |\n|---|---:|\n| O002 | 0.10 |";
+    const conversation = {
+      schema_version: "1.0" as const, conversation_id: "conversation-markdown", project_id: "project-1", agent_id: "agent-1", agent_version_id: "version-1",
+      title: "Reconcile", created_at: run.created_at, updated_at: run.created_at, initial_inputs: {},
+      messages: [
+        { schema_version: "1.0" as const, message_id: "user-markdown", conversation_id: "conversation-markdown", sequence: 0, role: "user" as const, content: "# Original user request", run_id: "old-run", created_at: run.created_at },
+        { schema_version: "1.0" as const, message_id: "answer-markdown", conversation_id: "conversation-markdown", sequence: 1, role: "assistant" as const, content, run_id: "old-run", created_at: run.created_at },
+      ],
+    };
+    const api = apiWith({
+      runAgent: vi.fn(),
+      listAgentConversations: vi.fn().mockResolvedValue({ schema_version: "1.0", conversations: [{ ...conversation, message_count: 2 }] }),
+      getAgentConversation: vi.fn().mockResolvedValue(conversation),
+    });
+    renderSurface(api);
+    expect(await screen.findByRole("heading", { name: "Saved reconciliation" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "0.10" })).toBeInTheDocument();
+    expect(screen.getByText("# Original user request")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Original user request" })).not.toBeInTheDocument();
+    expect(conversation.messages[1].content).toBe(content);
+    expect(api.runAgent).not.toHaveBeenCalled();
+  });
+
   it.each(["Ordinary assistant text", '{"title":"ordinary JSON answer"}', '{"answer":"Known","extra":"not declared"}', "{malformed}", "[]", "{}"]) (
     "retains a plain or non-contract JSON assistant answer as its original text: %s", async (content) => {
       const conversation = {
@@ -114,6 +138,18 @@ describe("AgentChatSurface", () => {
     renderSurface(apiWith({ runAgent: vi.fn().mockResolvedValue(unsupported) }));
     const user = userEvent.setup(); await user.type(await screen.findByRole("textbox", { name: "request" }), "Try it"); await user.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("This Agent cannot run in the local Runtime.")).toBeInTheDocument(); expect(screen.getByText("runtime_not_supported")).toBeInTheDocument(); expect(screen.queryByText("Reviewed")).not.toBeInTheDocument();
+  });
+
+  it("explains a persisted model timeout and retains its diagnostic code and recovery link", async () => {
+    const timedOut = { ...run, status: "failed" as const, result: null, error: { code: "runtime_timeout", message: "Runtime model request timed out" } };
+    renderSurface(apiWith({ runAgent: vi.fn().mockResolvedValue(timedOut) }));
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole("textbox", { name: "request" }), "Check the supplied facts");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText(/The model service request timed out before a complete response/)).toBeInTheDocument();
+    expect(screen.getByText("runtime_timeout")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View run and recovery options" })).toBeInTheDocument();
+    expect(screen.queryByText("Reviewed")).not.toBeInTheDocument();
   });
 
   it("clears submitted input and output instead of retaining a fake chat history", async () => {
@@ -162,6 +198,32 @@ describe("AgentChatSurface", () => {
     renderSurface(apiWith({ runAgent, runtimeReadiness: vi.fn().mockResolvedValue(readiness) }));
     expect(await screen.findByText("Runtime model is not configured.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("shows setup needed instead of Ready when structured setup issues block the run", async () => {
+    const readiness: RuntimeReadiness = {
+      ...readyReadiness,
+      ready: false,
+      setup_issues: [{ code: "model_capability_unverified", scope: "primary_model", agent_id: "agent-1", resource_type: "model_profile", model_profile_id: "profile-1", requirement: ["text_generation"], message: "Verify the text model.", action: "verify_model" }],
+    };
+    const runAgent = vi.fn();
+    renderSurface(apiWith({ runAgent, runtimeReadiness: vi.fn().mockResolvedValue(readiness) }));
+    const badge = await screen.findByText("Needs setup");
+    expect(badge).toHaveClass("ui-status", "warn");
+    expect(screen.queryByText("Ready", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set up models" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("offers natural-language editing scoped to this Agent without running it", async () => {
+    const runAgent = vi.fn();
+    renderSurface(apiWith({ runAgent }));
+    const edit = await screen.findByRole("link", { name: "Edit with Veyra" });
+    expect(edit).toHaveAttribute("href", "#/projects/project-1/chat?target=agent:agent-1");
+    edit.focus();
+    expect(edit).toHaveFocus();
     expect(runAgent).not.toHaveBeenCalled();
   });
 
@@ -225,6 +287,95 @@ describe("AgentChatSurface", () => {
     expect(screen.getByRole("heading", { name: "Add task details and a message" })).toBeInTheDocument();
     expect(screen.getByText(/After the first run, you can keep adding messages/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/continue the conversation after a run/)).toBeInTheDocument();
+  });
+
+  it("collapses form inputs after submission and preserves them when reopened", async () => {
+    const formSource: AgentSource = { ...source, inputs: { topic: "string" }, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "form" } } };
+    const runAgent = vi.fn().mockResolvedValue(run);
+    renderSurface(apiWith({ runAgent, getAgentRun: vi.fn().mockResolvedValue(run) }, formSource));
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("topic"), "Keep these task details");
+    expect(screen.queryByText(/Enter to send/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    const toggle = screen.getByRole("button", { name: /Task inputs/ });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    expect(screen.queryByRole("textbox", { name: "topic" })).not.toBeInTheDocument();
+    await user.click(toggle);
+    expect(screen.getByRole("textbox", { name: "topic" })).toHaveValue("Keep these task details");
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a clean form without deleting past runs or sending a request", async () => {
+    const formSource: AgentSource = { ...source, inputs: { topic: "string" }, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "form" } } };
+    const runAgent = vi.fn();
+    renderSurface(apiWith({ runAgent, listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [run] }) }, formSource));
+    expect(await screen.findByText("Reviewed")).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /New run/ }));
+    expect(screen.queryByText("Reviewed")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "topic" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Task context" }));
+    expect(screen.getByRole("link", { name: /Verified/ })).toHaveAttribute("href", expect.stringContaining("run_id=run-1"));
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps task fields intact when the optional context panel is opened and closed", async () => {
+    const formSource: AgentSource = { ...source, inputs: { topic: "string" }, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "form" } } };
+    const runAgent = vi.fn();
+    renderSurface(apiWith({ runAgent }, formSource));
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("topic"), "Keep the task in the main column");
+    await user.click(screen.getByRole("button", { name: "Task context" }));
+    expect(screen.getByRole("complementary", { name: "Task context" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close context" }));
+    expect(screen.queryByRole("complementary", { name: "Task context" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("topic")).toHaveValue("Keep the task in the main column");
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("opens an existing pinned report in the canvas without another execution", async () => {
+    const report = { ...run, result: { answer: "# Saved report\n\n## Reconciliation\n\nThe original report is retained." } };
+    const formSource: AgentSource = { ...source, inputs: { topic: "string" }, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "form" } } };
+    const runAgent = vi.fn();
+    const getAgentRun = vi.fn().mockResolvedValue(report);
+    renderSurface(apiWith({ runAgent, getAgentRun, listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [report] }) }, formSource));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Read in canvas" }));
+    expect(await screen.findByRole("complementary", { name: "Document canvas" })).toBeInTheDocument();
+    expect(getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1");
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not enable a new form run using files hidden in a saved conversation", async () => {
+    const fileSource: AgentSource = { ...source, inputs: { attachment: "file" }, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "form" } } };
+    const conversation = { schema_version: "1.0" as const, conversation_id: "saved-files", project_id: "project-1", agent_id: "agent-1", agent_version_id: "version-1", title: "Saved report", created_at: run.created_at, updated_at: run.created_at, initial_inputs: { attachment: { kind: "artifact", artifact_id: "saved-artifact", media_type: "text/csv", filename: "saved.csv" } }, messages: [] };
+    const getAgentConversation = vi.fn().mockResolvedValue(conversation);
+    const runAgent = vi.fn();
+    renderSurface(apiWith({ runAgent, listAgentConversations: vi.fn().mockResolvedValue({ schema_version: "1.0", conversations: [{ ...conversation, message_count: 0 }] }), getAgentConversation }, fileSource));
+    await waitFor(() => expect(getAgentConversation).toHaveBeenCalled());
+    expect(await screen.findByRole("button", { name: "Run" })).toBeDisabled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps the new form empty when an earlier read-in-canvas request returns late", async () => {
+    const report = { ...run, result: { answer: "# Saved report\n\n## Reconciliation\n\nThe original report is retained." } };
+    const formSource: AgentSource = { ...source, inputs: { topic: "string" }, extensions: { veyra: { ...source.extensions.veyra, interaction_mode: "form" } } };
+    let resolve!: (value: AgentRunResponse) => void;
+    const response = new Promise<AgentRunResponse>((accept) => { resolve = accept; });
+    const runAgent = vi.fn();
+    const getAgentRun = vi.fn().mockReturnValue(response);
+    renderSurface(apiWith({ runAgent, getAgentRun, listAgentRuns: vi.fn().mockResolvedValue({ schema_version: "1.0", runs: [report] }) }, formSource));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Read in canvas" }));
+    expect(getAgentRun).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: /New run/ }));
+    await act(async () => { resolve(report); await response; });
+    expect(screen.queryByRole("complementary", { name: "Document canvas" })).not.toBeInTheDocument();
+    expect(screen.queryByText("The original report is retained.")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "topic" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Task context" }));
+    expect(screen.getByRole("link", { name: /Verified/ })).toHaveAttribute("href", expect.stringContaining("run_id=run-1"));
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
   it("uploads a pasted image into the one declared typed field and sends only its ArtifactRef on the committed run", async () => {
@@ -310,6 +461,7 @@ describe("AgentChatSurface", () => {
       listAgentConversations: vi.fn().mockResolvedValue({ schema_version: "1.0", conversations: [{ ...conversation, message_count: 1 }] }),
       getAgentConversation: vi.fn().mockResolvedValue(conversation),
     }, multiSource));
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Task context" }));
     expect(await screen.findByRole("button", { name: "Multi-field run · image attachment" })).toBeInTheDocument();
     expect(await screen.findByText("First view")).toBeInTheDocument();
     const message = screen.getByRole("textbox", { name: "message" });
@@ -370,7 +522,8 @@ describe("AgentChatSurface", () => {
     const hero = document.querySelector(".agent-convo-hero");
     expect(hero?.textContent).toContain("Send real inputs to start a local run.");
     expect(hero?.textContent).not.toContain(description);
-    expect(screen.getByText("Read full description")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Task context" }));
+    expect(screen.getByText("Task brief")).toBeInTheDocument();
   });
 
   it("shows a product approval card on the same run", async () => {
@@ -386,7 +539,7 @@ describe("AgentChatSurface", () => {
         sequence: 2,
         kind: "approval.requested",
         node_id: "loop",
-        payload: { prompt: "Write notes.txt?", approval_summary: { action: "Write file", target: "notes.txt", tool: "veyra.tool.filesystem.write@1.0.0", reason: "This tool requires explicit approval before it can run." } },
+        payload: { request_id: "write-request-1", prompt: "Write notes.txt?", approval_summary: { action: "Write file", target: "notes.txt", tool: "veyra.tool.filesystem.write@1.0.0", reason: "This tool requires explicit approval before it can run." } },
         timestamp: "2026-08-28T00:00:02Z",
       }],
     };
@@ -402,7 +555,7 @@ describe("AgentChatSurface", () => {
     expect(await screen.findByText("Write file")).toBeInTheDocument();
     expect(screen.getByText("notes.txt")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve" }));
+    await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "approve", expected_request_id: "write-request-1" }));
   });
 
   it("cancels a running App run through the Runtime command", async () => {
@@ -420,27 +573,49 @@ describe("AgentChatSurface", () => {
     await waitFor(() => expect(commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { command: "stop" }));
   });
 
-  it("retries a failed run as a new committed run", async () => {
-    const failed: AgentRunResponse = { ...run, status: "failed", result: null, error: { code: "runtime_provider_error", message: "scripted failure" } };
+  it("routes failed runs with completed effects to explicit recovery instead of replaying inputs", async () => {
+    const failed: AgentRunResponse = { ...run, status: "failed", result: null, error: { code: "runtime_provider_error", message: "scripted failure" }, events: [{ schema_version: "1.0", event_id: "effect-1", run_id: "run-1", sequence: 1, kind: "tool.completed", node_id: "model", payload: { tool_reference: "veyra.tool.entity.write@1.0.0" }, timestamp: run.created_at }] };
     const runAgent = vi.fn().mockResolvedValue(failed);
     renderSurface(apiWith({ runAgent, getAgentRun: vi.fn().mockResolvedValue(failed) }));
     const user = userEvent.setup();
     await user.type(await screen.findByRole("textbox", { name: "request" }), "Fail please");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await user.click(await screen.findByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(runAgent).toHaveBeenCalledTimes(2));
-    expect(runAgent.mock.calls[1][2]).toEqual({ inputs: { request: "Fail please" }, source: "committed", version_id: "version-1" });
+    const recovery = await screen.findByRole("link", { name: "View run and recovery options" });
+    expect(recovery).toHaveAttribute("href", "#/projects/project-1/agents/agent-1/run?run_id=run-1");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  it("opens a result canvas for structured Runtime output", async () => {
+  it("continues a budget request on the same committed run without granting tool approval", async () => {
+    const context = { budget: { scope: "run_model_turns", used: 14, limit: 16, remaining: 2 }, required_remaining: 4, phase: "pre_render", max_additional_turns: 32, suggested_additional_turns: 8 };
+    const waiting: AgentRunResponse = { ...run, status: "waiting", result: null, finished_at: null, events: [{ schema_version: "1.0", event_id: "budget-1", run_id: "run-1", sequence: 1, kind: "approval.requested", node_id: "model", payload: { kind: "budget", request_id: "budget-current", context }, timestamp: run.created_at }] };
+    const commandAgentRun = vi.fn().mockRejectedValue(new Error("Response unknown"));
+    const runAgent = vi.fn().mockResolvedValue(waiting);
+    renderSurface(apiWith({ runAgent, getAgentRun: vi.fn().mockResolvedValue(waiting), commandAgentRun }));
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole("textbox", { name: "request" }), "Create and check the design");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Response unknown");
+    expect(commandAgentRun).toHaveBeenCalledTimes(1);
+    expect(commandAgentRun.mock.calls[0].slice(0, 4)).toEqual(["project-1", "agent-1", "run-1", { command: "extend_budget", expected_request_id: "budget-current", additional_turns: 8 }]);
+    expect(commandAgentRun.mock.calls[0][4].idempotencyKey).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps structured output in the transcript and opens its canvas only on request", async () => {
     const structured = { ...run, result: { title: "Brief", score: 4, notes: ["keep"] } };
     renderSurface(apiWith({ runAgent: vi.fn().mockResolvedValue(structured), getAgentRun: vi.fn().mockResolvedValue(structured) }));
     const user = userEvent.setup();
     await user.type(await screen.findByRole("textbox", { name: "request" }), "Summarize");
     await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Brief")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Result canvas" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open in canvas" }));
     expect(await screen.findByRole("complementary", { name: "Result canvas" })).toBeInTheDocument();
-    expect(screen.getByText("Opened in canvas.")).toBeInTheDocument();
-    expect(screen.getByText("Brief")).toBeInTheDocument();
+    expect(screen.queryByText("Opened in canvas.")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Brief")).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "Close canvas" }));
     expect(screen.queryByRole("complementary", { name: "Result canvas" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open in canvas" }));
@@ -513,6 +688,7 @@ describe("AgentChatSurface", () => {
     }));
     renderSurface(apiWith({ listAgentConversations, getAgentConversation }));
     expect(await screen.findByText("Hello one")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Task context" }));
     await userEvent.setup().click(screen.getByRole("button", { name: "Second chat" }));
     expect(await screen.findByText("Hello two")).toBeInTheDocument();
     expect(screen.queryByText("Hello one")).not.toBeInTheDocument();
@@ -569,8 +745,9 @@ describe("AgentChatSurface", () => {
     expect(composer.closest(".agent-conversation-main")).not.toBeNull();
     const appShell = document.querySelector(".agent-app-shell");
     expect(appShell).toHaveAttribute("data-primary-surface", "app");
-    expect(window.getComputedStyle(appShell!).display).toBe("grid");
-    expect(document.querySelector(".agent-app-body")?.className).toContain("has-sidebar");
+    expect(window.getComputedStyle(appShell!).display).toBe("flex");
+    expect(document.querySelector(".agent-app-body")?.className).not.toContain("has-sidebar");
+    expect(screen.queryByRole("complementary", { name: "Task context" })).not.toBeInTheDocument();
     expect(document.querySelector(".agent-conversation")?.classList.contains("is-empty")).toBe(true);
   });
 });
@@ -586,4 +763,35 @@ it("restores a waiting question from the selected committed conversation", async
   expect(getAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "run-1");
   expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Your reply" })).toBeEnabled();
+});
+
+it("binds replies to the visible question and refreshes a stale request without resending", async () => {
+  cleanup();
+  window.localStorage.clear();
+  const question = (requestId: string, prompt: string, sequence: number): AgentRunResponse => ({
+    ...run, status: "waiting", result: null, finished_at: null,
+    events: [{ schema_version: "1.0", event_id: "same-visible-event", run_id: "run-1", sequence, node_id: "model", kind: "approval.requested",
+      payload: { kind: "input", request_id: requestId, prompt }, timestamp: run.created_at }],
+  });
+  const first = question("question-old", "Which column?", 1);
+  const second = question("question-new", "Which unit?", 2);
+  let current = first;
+  const commandAgentRun = vi.fn().mockImplementation(async () => {
+    if (current === first) { current = second; throw new Error("Request changed"); }
+    return current;
+  });
+  renderSurface(apiWith({ runAgent: vi.fn().mockResolvedValue(first), getAgentRun: vi.fn().mockImplementation(async () => current), commandAgentRun }));
+  const user = userEvent.setup();
+  await user.type(await screen.findByRole("textbox", { name: "request" }), "Reconcile");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByText("Which column?");
+  await user.type(screen.getByRole("textbox", { name: "Your reply" }), "amount");
+  await user.click(screen.getByRole("button", { name: "Submit and continue" }));
+  expect(await screen.findByText("Which unit?")).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Your reply" })).toHaveValue("");
+  expect(commandAgentRun).toHaveBeenCalledTimes(1);
+  expect(commandAgentRun).toHaveBeenLastCalledWith("project-1", "agent-1", "run-1", { command: "reply", expected_request_id: "question-old", inputs: { reply: "amount" } });
+  await user.type(screen.getByRole("textbox", { name: "Your reply" }), "CNY");
+  await user.click(screen.getByRole("button", { name: "Submit and continue" }));
+  expect(commandAgentRun).toHaveBeenLastCalledWith("project-1", "agent-1", "run-1", { command: "reply", expected_request_id: "question-new", inputs: { reply: "CNY" } });
 });

@@ -54,12 +54,12 @@ export function LoadingState({ label = "Loading", compact = false }: { label?: s
   return <BrandLoading label={label} />;
 }
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+export function ErrorState({ message, onRetry, retryLabel = "Retry" }: { message: string; onRetry?: () => void; retryLabel?: string }) {
   return (
     <div className="ui-error" role="alert">
       <span className="ui-error-mark" aria-hidden="true">!</span>
       <span>{message}</span>
-      {onRetry ? <Button variant="ghost" size="sm" onClick={onRetry}>Retry</Button> : null}
+      {onRetry ? <Button variant="ghost" size="sm" onClick={onRetry}>{retryLabel}</Button> : null}
     </div>
   );
 }

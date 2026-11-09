@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -36,6 +37,45 @@ def _cargo_path() -> Path:
     )
 
 
+def _configure_signing(root: Path, environment: dict[str, str]) -> str:
+    config = json.loads(
+        (root / "apps/desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+    configured = config.get("bundle", {}).get("macOS", {}).get("signingIdentity")
+    identity = environment.get("APPLE_SIGNING_IDENTITY", "").strip()
+    if not identity:
+        environment.pop("APPLE_SIGNING_IDENTITY", None)
+        identity = str(configured or "").strip()
+    if not identity:
+        identity = "-"
+        environment["APPLE_SIGNING_IDENTITY"] = identity
+    return "ad-hoc-preview" if identity == "-" else "configured"
+
+
+def _verify_app_bundle(bundle_root: Path, *, build_sha: str) -> Path:
+    applications = sorted((bundle_root / "macos").glob("*.app"))
+    if len(applications) != 1:
+        raise DesktopPackageError(
+            f"expected one retained macOS app bundle, found {len(applications)}"
+        )
+    application = applications[0]
+    bundled_sidecar = application / "Contents" / "MacOS" / "veyra-local"
+    if not bundled_sidecar.is_file():
+        raise DesktopPackageError("the app bundle is missing its Local sidecar")
+    try:
+        subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", str(application)],
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise DesktopPackageError("macOS app bundle signature is invalid") from exc
+    print("app_bundle_signature=ok")
+    # Signing may change executable bytes; probe the actual signed payload.
+    run_runtime_smoke(bundled_sidecar, build_sha=build_sha)
+    print("bundled_sidecar=verified")
+    return application
+
+
 def _run_tauri(root: Path, *, build_sha: str, target: str) -> Path:
     npm = shutil.which("npm")
     npx = shutil.which("npx")
@@ -54,6 +94,7 @@ def _run_tauri(root: Path, *, build_sha: str, target: str) -> Path:
     environment["VITE_LOCAL_API_BASE_URL"] = "http://127.0.0.1:8771/api/v1"
     cargo_bin = str(cargo.parent)
     environment["PATH"] = cargo_bin + os.pathsep + environment.get("PATH", "")
+    print(f"desktop_signing={_configure_signing(root, environment)}")
 
     # Build the Desktop web assets explicitly so the release API base is not the
     # browser-only relative `/api/v1` fallback. Tauri repeats this through its
@@ -97,6 +138,7 @@ def _run_tauri(root: Path, *, build_sha: str, target: str) -> Path:
         / "release"
         / "bundle"
     )
+    _verify_app_bundle(bundle_root, build_sha=build_sha)
     dmgs = sorted(bundle_root.glob("dmg/*.dmg"))
     if not dmgs:
         raise DesktopPackageError(

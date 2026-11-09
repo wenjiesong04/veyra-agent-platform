@@ -5,6 +5,8 @@ export type NodeExecutionState =
   | "queued"
   | "running"
   | "waiting_approval"
+  | "waiting_budget"
+  | "waiting_input"
   | "completed"
   | "failed"
   | "stopped"
@@ -37,6 +39,8 @@ function stateFromEvent(event: RuntimeEvent): NodeExecutionState | null {
       return "running";
     case "node.waiting":
     case "approval.requested":
+      if (event.payload.kind === "budget" || event.payload.reason === "budget") return "waiting_budget";
+      if (event.payload.kind === "input" || event.payload.reason === "input") return "waiting_input";
       return event.kind === "approval.requested" || event.payload.reason === "approval"
         ? "waiting_approval"
         : null;
@@ -53,6 +57,8 @@ function stateFromEvent(event: RuntimeEvent): NodeExecutionState | null {
         case "queued": return "queued";
         case "running": return "running";
         case "waiting_approval": return "waiting_approval";
+        case "waiting_budget": return "waiting_budget";
+        case "waiting_input": return "waiting_input";
         case "completed":
         case "verified": return "completed";
         case "failed": return "failed";
@@ -108,7 +114,6 @@ function capabilityStateFromEvent(event: RuntimeEvent): NodeExecutionState | nul
   if (event.kind === "tool.requested" || event.kind === "tool.started") return "running";
   if (event.kind === "tool.completed") return "completed";
   if (event.kind === "tool.failed") return "failed";
-  if (event.kind === "approval.requested") return "waiting_approval";
   return stateFromEvent(event);
 }
 
@@ -152,12 +157,12 @@ export function projectRunToExecutionState(
   let waitingNodeId: string | null = null;
   for (const [nodeId, state] of nodeStates) {
     if (state === "running") activeNodeId = nodeId;
-    if (state === "waiting_approval") waitingNodeId = nodeId;
+    if (state.startsWith("waiting_")) waitingNodeId = nodeId;
   }
 
   if (run?.status === "cancelled" || run?.status === "interrupted") {
     for (const [nodeId, state] of nodeStates) {
-      if (state === "running" || state === "waiting_approval") nodeStates.set(nodeId, "stopped");
+      if (state === "running" || state.startsWith("waiting_")) nodeStates.set(nodeId, "stopped");
     }
     activeNodeId = null;
     waitingNodeId = null;

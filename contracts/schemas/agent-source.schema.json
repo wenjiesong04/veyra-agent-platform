@@ -188,6 +188,17 @@
         },
         "shell_workspace_only": {
           "type": "boolean"
+        },
+        "protect_input_files": {
+          "type": "boolean"
+        },
+        "protected_input_fields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -276,6 +287,17 @@
       },
       "description": "Historical model node spelling, preserved during roundtrip."
     },
+    "tool_mapping": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/node_id"
+      }
+    },
     "tool_node": {
       "type": "object",
       "additionalProperties": false,
@@ -290,6 +312,18 @@
         },
         "component_type": {
           "const": "Tool"
+        },
+        "input_mapping": {
+          "$ref": "#/$defs/tool_mapping"
+        },
+        "output_mapping": {
+          "$ref": "#/$defs/tool_mapping"
+        },
+        "inputs": {
+          "$ref": "#/$defs/typed_fields"
+        },
+        "outputs": {
+          "$ref": "#/$defs/typed_fields"
         },
         "uses": {
           "type": "string",
@@ -407,6 +441,16 @@
         },
         "component_type": {
           "const": "Verifier"
+        },
+        "input_mapping": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,62}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/node_id"
+          }
         },
         "checks": {
           "type": "array",
@@ -936,6 +980,187 @@
               "items": {
                 "type": "string",
                 "minLength": 1
+              }
+            },
+            "finalization": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "checks",
+                "criteria",
+                "review_images"
+              ],
+              "properties": {
+                "version": {
+                  "const": "1"
+                },
+                "checks": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "criteria": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "review_images": {
+                  "type": "boolean"
+                },
+                "advisory_criteria": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "pre_render_review": {
+                  "type": "boolean"
+                },
+                "review_strategy": {
+                  "type": "string",
+                  "enum": ["direct", "evidence_first"]
+                },
+                "evidence_inputs": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {"type": "string", "minLength": 1}
+                }
+              },
+              "anyOf": [
+                {
+                  "properties": {
+                    "checks": {
+                      "minItems": 1
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "criteria": {
+                      "minItems": 1
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "advisory_criteria": {
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "advisory_criteria"
+                  ]
+                }
+              ],
+              "if": {
+                "properties": {
+                  "review_images": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "criteria": {
+                        "minItems": 1
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "advisory_criteria": {
+                        "minItems": 1
+                      }
+                    },
+                    "required": [
+                      "advisory_criteria"
+                    ]
+                  }
+                ]
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "pre_render_review": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "pre_render_review"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "review_images": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "state_contract": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "entity",
+                "identity",
+                "scope",
+                "fields",
+                "statuses",
+                "revision"
+              ],
+              "properties": {
+                "entity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "identity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scope": {
+                  "enum": [
+                    "run",
+                    "conversation",
+                    "project",
+                    "entity"
+                  ]
+                },
+                "fields": {
+                  "type": "object",
+                  "maxProperties": 128,
+                  "additionalProperties": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "statuses": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "revision": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": "string"
+                }
               }
             }
           }

@@ -56,6 +56,8 @@ def behavior_projection(source: Mapping[str, Any]) -> dict[str, Any]:
 
     if veyra.get("knowledge_refs"):
         projection["knowledge_refs"] = list(veyra["knowledge_refs"])
+    if "finalization" in veyra:
+        projection["finalization"] = veyra["finalization"]
     return projection
 
 

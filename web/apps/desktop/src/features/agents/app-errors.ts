@@ -3,6 +3,10 @@ import { LocalApiClientError } from "../../api/local-client";
 type Locale = "zh" | "en";
 
 const PRODUCT: Record<string, { zh: string; en: string }> = {
+  work_item_command_required: {
+    zh: "此运行由任务调度管理。请回到监控页重试任务，保留固定版本和执行记录。",
+    en: "This Run is managed by a WorkItem. Retry it from Monitor to retain its pinned version and execution history.",
+  },
   workflow_execution_failed: {
     zh: "工作流执行发生内部错误。已完成的子 Agent 结果仍可查看。",
     en: "The Workflow encountered an internal error. Results from completed child Agents are still available.",
@@ -18,6 +22,14 @@ const PRODUCT: Record<string, { zh: string; en: string }> = {
   runtime_not_configured: {
     zh: "尚未配置运行模型。",
     en: "Runtime model is not configured.",
+  },
+  runtime_timeout: {
+    zh: "模型服务请求超时，未获得完整响应。请在运行详情查看失败阶段与超时设置，再检查服务状态。运行记录已保留；请勿直接重复已执行的外部操作。",
+    en: "The model service request timed out before a complete response was received. Inspect the failed phase and timeout settings in Run details, then check service availability. Run records are retained; do not blindly repeat completed external actions.",
+  },
+  runtime_permission_denied: {
+    zh: "模型服务拒绝访问（HTTP 403）。仅凭该状态无法确定具体原因。请核对模型、地域、工作空间和密钥配置，并查看执行记录。",
+    en: "The model service refused access (HTTP 403). This status alone does not establish the cause. Check the model, region, workspace and key configuration, then inspect the execution record.",
   },
   runtime_invalid_response: {
     zh: "模型服务没有返回可用的回答。可以重试；已执行的工具记录仍可查看。",
@@ -58,6 +70,26 @@ const PRODUCT: Record<string, { zh: string; en: string }> = {
   agent_max_turns_exceeded: {
     zh: "Agent 已达到最大轮次。",
     en: "The Agent reached its maximum number of turns.",
+  },
+  agent_no_progress: {
+    zh: "Agent 连续重复同一个工具调用而没有利用结果，已停止且没有再次执行。可在运行记录查看具体调用。",
+    en: "The Agent repeated the same tool call without using its result, so the run stopped without running it again. Inspect the call in the run record.",
+  },
+  agent_finalization_budget_exhausted: {
+    zh: "候选结果尚未完成要求的交付检查，剩余轮次不足，因此没有作为最终结果交付。",
+    en: "The candidate was not delivered because no turn remains for its required review.",
+  },
+  agent_finalization_no_progress: {
+    zh: "相同候选重复出现相同检查问题，已停止无进展的修改。可在运行记录查看具体反馈。",
+    en: "The same candidate repeated the same review defects. Inspect the feedback in the run record.",
+  },
+  agent_finalization_uncertain: {
+    zh: "现有证据不足以完成要求的检查，候选结果尚未交付。可在运行记录查看缺少的证据。",
+    en: "Available evidence cannot establish the required checks. Inspect the missing evidence in the run record.",
+  },
+  agent_finalization_review_invalid: {
+    zh: "检查模型未返回完整、有效的审查结果，候选结果尚未交付。",
+    en: "The review model returned an invalid or incomplete assessment. The candidate was not delivered.",
   },
   tool_network_denied: {
     zh: "网络工具未被允许。",

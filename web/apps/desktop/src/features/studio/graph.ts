@@ -112,7 +112,7 @@ export function repairInvalidNodeIds(source: StudioSource): StudioSource {
 }
 
 const componentTypes = new Set<FlowNode["component_type"]>([
-  "Start", "Agent", "Model", "AgentCall", "Tool", "CustomComponent", "Condition", "Transform", "HumanApproval", "Verifier", "Output",
+  "Start", "Agent", "Model", "AgentCall", "Tool", "CustomComponent", "Condition", "Transform", "HumanApproval", "Verifier", "Output", "Stop",
 ]);
 const ports = new Set<FlowTransition["port"]>(["next", "true", "false", "approved", "rejected", "passed", "failed"]);
 
@@ -171,6 +171,16 @@ export function isAgentSourceCandidate(value: unknown): value is AgentSource {
   const veyra = value.extensions.veyra;
   const permissions = veyra.permissions;
   const verification = veyra.verification;
+  if ("finalization" in veyra) {
+    const policy = veyra.finalization;
+    if (!record(policy) || policy.version !== "1" || typeof policy.review_images !== "boolean"
+      || veyra.execution_kind !== "loop" || !Array.isArray(policy.checks) || !Array.isArray(policy.criteria)
+      || ![...policy.checks, ...policy.criteria].every((item) => typeof item === "string" && item.trim().length > 0)
+      || ("advisory_criteria" in policy && (!Array.isArray(policy.advisory_criteria) || !policy.advisory_criteria.every((item) => typeof item === "string" && item.trim().length > 0)))
+      || policy.checks.length + policy.criteria.length + (Array.isArray(policy.advisory_criteria) ? policy.advisory_criteria.length : 0) === 0
+      || (policy.review_images && policy.criteria.length + (Array.isArray(policy.advisory_criteria) ? policy.advisory_criteria.length : 0) === 0)
+      || ("pre_render_review" in policy && (typeof policy.pre_render_review !== "boolean" || (policy.pre_render_review && !policy.review_images)))) return false;
+  }
   if (typeof veyra.runtime_profile !== "string" || !Array.isArray(veyra.secret_refs) || !veyra.secret_refs.every((item) => typeof item === "string")
     || !record(permissions) || !Array.isArray(permissions.network_hosts) || !permissions.network_hosts.every((item) => typeof item === "string")
     || !Array.isArray(permissions.tools) || !permissions.tools.every((item) => typeof item === "string")
@@ -591,12 +601,12 @@ export function graphDiagnostics(source: StudioSource, catalog: ResourceDescript
   const outputNames = source.nodes.filter((node) => node.component_type === "Output").map((node) => node.output_name);
   if (new Set(outputNames).size !== outputNames.length || outputNames.some((name) => !name || !(name in source.outputs))) problems.push({ code: "output_declaration" });
   if (source.extensions.veyra.verification.required && !source.nodes.some((node) => node.component_type === "Verifier") && !isLoopAgent(source)) problems.push({ code: "verifier_required" });
-  const workflowTypes = new Set(["Start", "AgentCall", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output"]);
+  const workflowTypes = new Set(["Start", "AgentCall", "Tool", "Condition", "Transform", "HumanApproval", "Verifier", "Output", "Stop"]);
   if (isLoopAgent(source)) {
     if (source.nodes.filter((node) => node.component_type === "Start").length !== 1) problems.push({ code: "start_count" });
     if (!source.nodes.some((node) => node.component_type === "Output")) problems.push({ code: "output_missing" });
     for (const node of source.nodes) {
-      if (node.component_type === "AgentCall") {
+      if (node.component_type === "AgentCall" || node.component_type === "Stop") {
         problems.push({ code: "node_context_invalid", params: { nodeId: node.id, componentType: node.component_type, context: source.component_type } });
       }
     }
@@ -604,7 +614,7 @@ export function graphDiagnostics(source: StudioSource, catalog: ResourceDescript
   }
   const workflowValues = new Set([...Object.keys(source.inputs), ...source.nodes.flatMap((node) => [...Object.keys(node.mapping ?? {}), ...Object.values(node.output_mapping ?? {})])]);
   for (const node of source.nodes) {
-    if ((source.component_type === "Workflow" && !workflowTypes.has(node.component_type)) || (source.component_type === "Flow" && node.component_type === "AgentCall")) {
+    if ((source.component_type === "Workflow" && !workflowTypes.has(node.component_type)) || (source.component_type === "Flow" && (node.component_type === "AgentCall" || node.component_type === "Stop"))) {
       problems.push({ code: "node_context_invalid", params: { nodeId: node.id, componentType: node.component_type, context: source.component_type } });
     }
     if (node.component_type === "AgentCall") {

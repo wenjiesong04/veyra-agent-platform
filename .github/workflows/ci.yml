@@ -155,3 +155,12 @@ jobs:
       - name: Assert the release package path
         run: |
           test "$(find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')" = "1"
+
+      - name: Verify the application inside the disk image
+        run: |
+          package="$(find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg')"
+          hdiutil verify "$package"
+          mount_dir="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$package"
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          codesign --verify --deep --strict "$mount_dir/Veyra Agent Platform.app"

@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Header, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from veyra_agent_platform.contracts.common import ContractValidationError
 from veyra_agent_platform.local.api.projects import TypedApiError
 from veyra_agent_platform.local.orchestrator import (
     OrchestratorError,
     OrchestratorService,
 )
+from veyra_agent_platform.local.storage import IdempotencyConflict
 
 _Result = TypeVar("_Result")
 _NOT_FOUND = {
@@ -29,6 +31,7 @@ class _ClosedModel(BaseModel):
 class CreateWorkItemRequest(_ClosedModel):
     title: str = Field(min_length=1, max_length=200)
     agent_id: str = Field(min_length=1, max_length=64)
+    agent_version_id: str | None = Field(default=None, min_length=36, max_length=36)
     description: str = Field(default="", max_length=10_000)
     depends_on: list[str] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict)
@@ -38,8 +41,13 @@ class UpdateWorkItemRequest(_ClosedModel):
     title: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
     agent_id: str | None = Field(default=None, max_length=64)
+    agent_version_id: str | None = Field(default=None, min_length=36, max_length=36)
     depends_on: list[str] | None = None
     inputs: dict[str, Any] | None = None
+
+
+class WorkItemCommandRequest(_ClosedModel):
+    expected_attempt_number: int = Field(ge=0, strict=True)
 
 
 def build_router() -> APIRouter:
@@ -65,11 +73,16 @@ def build_router() -> APIRouter:
                 project_id,
                 title=payload.title,
                 agent_id=payload.agent_id,
+                agent_version_id=payload.agent_version_id,
                 description=payload.description,
                 depends_on=payload.depends_on,
                 inputs=payload.inputs,
             )
         )
+
+    @router.get("/api/v1/work-items/{work_item_id}")
+    def get_work_item(work_item_id: str, request: Request) -> dict[str, Any]:
+        return _translate(lambda: _orchestrator(request).get_work_item(work_item_id))
 
     @router.patch("/api/v1/work-items/{work_item_id}")
     def update_work_item(
@@ -81,18 +94,41 @@ def build_router() -> APIRouter:
                 title=payload.title,
                 description=payload.description,
                 agent_id=payload.agent_id,
+                agent_version_id=payload.agent_version_id,
                 depends_on=payload.depends_on,
                 inputs=payload.inputs,
             )
         )
 
     @router.post("/api/v1/work-items/{work_item_id}/dispatch")
-    def dispatch(work_item_id: str, request: Request) -> dict[str, Any]:
-        return _translate(lambda: _orchestrator(request).dispatch(work_item_id))
+    def dispatch(
+        work_item_id: str,
+        payload: WorkItemCommandRequest,
+        request: Request,
+        idempotency_key: str = Header(),
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _orchestrator(request).dispatch(
+                work_item_id,
+                idempotency_key,
+                expected_attempt_number=payload.expected_attempt_number,
+            )
+        )
 
     @router.post("/api/v1/work-items/{work_item_id}/retry")
-    def retry(work_item_id: str, request: Request) -> dict[str, Any]:
-        return _translate(lambda: _orchestrator(request).retry(work_item_id))
+    def retry(
+        work_item_id: str,
+        payload: WorkItemCommandRequest,
+        request: Request,
+        idempotency_key: str = Header(),
+    ) -> dict[str, Any]:
+        return _translate(
+            lambda: _orchestrator(request).retry(
+                work_item_id,
+                idempotency_key,
+                expected_attempt_number=payload.expected_attempt_number,
+            )
+        )
 
     @router.post("/api/v1/work-items/{work_item_id}/cancel")
     def cancel(work_item_id: str, request: Request) -> dict[str, Any]:
@@ -115,5 +151,15 @@ def _translate(operation: Callable[[], _Result]) -> _Result:
     try:
         return operation()
     except OrchestratorError as exc:
-        status_code = 404 if exc.code in _NOT_FOUND else 422
+        status_code = (
+            404
+            if exc.code in _NOT_FOUND
+            else 409
+            if exc.code == "work_item_command_stale"
+            else 422
+        )
         raise TypedApiError(status_code, exc.code, str(exc)) from exc
+    except IdempotencyConflict as exc:
+        raise TypedApiError(409, "idempotency_conflict", str(exc)) from exc
+    except ContractValidationError as exc:
+        raise TypedApiError(422, "contract_invalid", str(exc)) from exc

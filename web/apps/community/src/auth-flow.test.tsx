@@ -207,7 +207,7 @@ describe("Community account flows", () => {
   });
 
   it("loads the account, updates the display name, and revokes a device session", async () => {
-    window.location.hash = "#/account";
+    window.location.hash = "#/community/mine/settings";
     const otherSession = { ...currentSession, id: "session-other", device_name: "Old browser", current: false };
     let currentAccount = account;
     let visibleSessions = [currentSession, otherSession];
@@ -233,12 +233,12 @@ describe("Community account flows", () => {
     document.cookie = "veyra-csrf=test-csrf; path=/";
     const user = userEvent.setup();
     render(<CommunityApp />);
-    const name = await screen.findByLabelText("Name");
+    const name = await screen.findByLabelText("Display name");
     fireEvent.change(name, { target: { value: "Alice Chen" } });
-    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await user.click(screen.getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(requests.some((request) => request.url.endsWith("/account/profile"))).toBe(true), { timeout: 3000 });
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Profile updated."), { timeout: 3000 });
-    await user.click(screen.getAllByRole("button", { name: "Revoke" })[1]!);
+    await waitFor(() => expect(screen.getByText("Profile updated.").closest('[role="status"]')).not.toBeNull(), { timeout: 3000 });
+    await user.click(screen.getByRole("button", { name: "Revoke access" }));
     await waitFor(() => expect(screen.queryByText("Old browser")).not.toBeInTheDocument());
 
     expect(requests.find((request) => request.url.endsWith("/account/profile"))?.body).toEqual({ display_name: "Alice Chen" });

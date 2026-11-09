@@ -79,6 +79,17 @@ describe("workbenchPhase", () => {
     expect(workbenchPhase(failed, { ...session, state: "completed" }, "created-agent")).toBe("completed");
   });
 
+  it.each(["agent_creation_apply", "workflow_creation_apply"])("retains the reviewed proposal after %s fails", (stage) => {
+    const failed = { ...operation(["builder.proposal.ready", "builder.operation.failed"], "failed"), proposal_id: "proposal-1", diagnostic: { stage } };
+    const reviewed = { ...session, session_id: "session-1", state: "review" as const };
+    expect(workbenchPhase(failed, reviewed, null)).toBe("review");
+    expect(failed.status).toBe("failed");
+    expect(workbenchPhase(failed, { ...reviewed, session_id: "other" }, null)).toBe("failed");
+    expect(workbenchPhase(failed, null, null)).toBe("failed");
+    expect(workbenchPhase({ ...failed, proposal_id: null }, reviewed, null)).toBe("failed");
+    expect(workbenchPhase({ ...failed, diagnostic: { stage: "coverage_review" } }, reviewed, null)).toBe("failed");
+  });
+
   it.each(["builder.operation.completed", "builder.operation.failed"])("closes the plan clock after %s", (terminal) => {
     expect(openStageStartedAt(operation(["builder.semantic_plan.started", terminal]).events)).toBeNull();
   });

@@ -757,7 +757,9 @@ export function ApplicationShell({ brand, navigation, activeHref, eyebrow, title
             {breadcrumbs ? <nav className="header-breadcrumbs" aria-label={t("breadcrumb")}>{breadcrumbs.map((crumb, index) => {
               const Icon = crumb.icon;
               const current = index === breadcrumbs.length - 1;
-              return <span className="breadcrumb-part" key={`${crumb.label}-${crumb.href ?? index}`}>{index > 0 ? <span className="breadcrumb-separator" aria-hidden="true">/</span> : null}{current ? <span aria-current="page">{Icon ? <Icon size={15} aria-hidden="true" /> : null}{shellText(crumb.label, t)}</span> : <a href={crumb.href}>{Icon ? <Icon size={15} aria-hidden="true" /> : null}{shellText(crumb.label, t)}</a>}</span>;
+              const label = shellText(crumb.label, t);
+              const content = <>{Icon ? <Icon size={15} aria-hidden="true" /> : null}<span className="breadcrumb-label" title={label}>{label}</span></>;
+              return <span className="breadcrumb-part" key={`${crumb.label}-${crumb.href ?? index}`}>{index > 0 ? <span className="breadcrumb-separator" aria-hidden="true">/</span> : null}{current ? <span aria-current="page">{content}</span> : <a href={crumb.href}>{content}</a>}</span>;
             })}</nav> : <>{localizedEyebrow ? <span className="ui-eyebrow">{localizedEyebrow}</span> : null}<h1>{localizedTitle}</h1></>}
           </div>
           <div className="header-actions">

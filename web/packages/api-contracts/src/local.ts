@@ -187,6 +187,8 @@ export type PermissionContract = {
   filesystem_read_roots?: string[];
   filesystem_write_roots?: string[];
   shell_workspace_only?: boolean;
+  protect_input_files?: boolean;
+  protected_input_fields?: string[];
 };
 
 export type VerificationContract = {
@@ -207,6 +209,7 @@ export type FlowNode = {
     | "Transform"
     | "HumanApproval"
     | "Verifier"
+    | "Stop"
     | "Output";
   model_ref?: string;
   system_prompt?: string;
@@ -280,6 +283,16 @@ export type AgentSource = {
       max_turns?: number;
       interaction_mode?: "auto" | "chat" | "form" | "hybrid";
       handoff_agent_refs?: string[];
+      finalization?: {
+        version: "1";
+        checks: string[];
+        criteria: string[];
+        review_images: boolean;
+        advisory_criteria?: string[];
+        pre_render_review?: boolean;
+        review_strategy?: "direct" | "evidence_first";
+        evidence_inputs?: string[];
+      };
       state_contract?: {
         entity: string;
         identity: string;
@@ -592,6 +605,7 @@ export type BuilderConversationOperation = {
   created_at: string;
   updated_at: string;
   diagnostic: Record<string, string>;
+  generation_feedback?: string[];
   has_request: boolean;
   events: BuilderOperationEvent[];
   receipts: BuilderHarnessReceipt[];
@@ -606,6 +620,7 @@ export type BuilderTestRunRequest = {
 export type BuilderTestRunCommandRequest = {
   command: "approve" | "reject" | "stop";
   locale: "zh" | "en";
+  expected_request_id?: string;
 };
 export type BuilderTestRepairRequest = {
   locale: "zh" | "en";
@@ -634,6 +649,8 @@ export type BuilderTurnRequest = {
   focus: { kind: EditTargetKind; target_id: string } | null;
   locale: "zh" | "en";
   retry_of?: string;
+  request_limit?: number;
+  resume_only?: boolean;
 };
 export type BuilderRecordKind = "proposal_reference" | "reject" | "confirm" | "apply_summary" | "validation_summary";
 export type BuilderConversationRecordRequest = {
@@ -1579,10 +1596,45 @@ export type StartAgentRunRequest = {
 };
 
 export type RunCommandRequest = {
-  command: "approve" | "reject" | "stop" | "resume" | "retry" | "reply";
+  command: "approve" | "reject" | "stop" | "resume" | "retry" | "reply" | "extend_budget";
   checkpoint_id?: string;
   inputs?: Record<string, JsonValue>;
+  expected_request_id?: string;
+  additional_turns?: number;
 };
+
+export type EvaluationBaseline = { kind: "user" | "fixture" | "reference" | "model"; reference: string; revision: string };
+export type EvaluationMethod = "equals" | "number_equals" | "set_equals" | "artifact_integrity" | "human_review";
+export type EvaluationCheck = { id: string; label: string; required: boolean; path: string[]; method: EvaluationMethod; expected?: JsonValue; baseline?: EvaluationBaseline };
+export type EvaluationSpec = { version: "1"; version_id: string; checks: EvaluationCheck[] };
+export type EvaluationReviewDecision = { check_id: string; outcome: "pass" | "fail" | "unknown"; reason: string };
+export type EvaluationReviewRequest = {
+  expected_report_id: string; version_id: string; spec_hash: string; result_hash: string;
+  decisions: EvaluationReviewDecision[];
+};
+export type EvaluationHumanReview = EvaluationReviewDecision & {
+  review_id: string; source: "local_user"; created_at: string; base_evaluation_id: string;
+};
+export type EvaluationFinding = {
+  id: string; label: string; required: boolean; path: string[]; method: EvaluationMethod;
+  status: "pass" | "fail" | "unknown" | "not_evaluated" | "awaiting_human";
+  code: string; baseline: EvaluationBaseline | null; actual_hash?: string; expected_hash?: string; actual_value?: JsonValue;
+  evidence: { kind: "artifact"; artifact_id: string; sha256: string; size_bytes: number; source_run_id: string | null }[];
+  human_review?: EvaluationHumanReview;
+};
+export type EvaluationReport = {
+  schema_version: "1.0"; evaluator_version: "1" | "2"; scope: "declared_checks";
+  evaluation_id: string; project_id: string; target_kind: "agent" | "workflow"; target_id: string;
+  run_id: string; version_id: string; run_status: AgentRunResponse["status"];
+  source_hash: string; behavior_hash: string; lock_hash: string; spec_hash: string;
+  input_hash: string | null; input_evidence: "persisted" | "not_saved"; result_hash: string | null;
+  created_at: string; spec: EvaluationSpec; decision: "accepted" | "rejected" | "inconclusive";
+  checks: EvaluationFinding[]; output_contract: "pass" | "fail" | "not_evaluated";
+  independent_scope: "baseline_comparison_and_artifact_integrity_only" | "baseline_comparison_artifact_integrity_and_user_review";
+  root_evaluation_id?: string; parent_evaluation_id?: string;
+  review?: { review_id: string; source: "local_user"; created_at: string; base_evaluation_id: string; supersedes_review_id: string | null; decisions: EvaluationReviewDecision[] };
+};
+export type RunEvaluationsResponse = { schema_version: "1.0"; reports: EvaluationReport[] };
 
 export type ComponentRuntimeStatus =
   | "supported"
@@ -1922,7 +1974,9 @@ export type FactoryStatus = {
   model_base_url: string;
   model_api_key_env: string;
   reasoning_effort: "low" | "high" | "max";
-  repair_attempts: number;
+  repair_attempts: number | null;
+  generation_max_requests?: number;
+  generation_timeout_seconds?: number;
   executes_drafts: false;
   capability_profile: ProviderCapabilityProfile;
 };
@@ -2080,7 +2134,18 @@ export type RuntimeEventKind =
   | "tool.failed"
   | "tool.input_rejected"
   | "model.output_rejected"
+  | "agent.plan_updated"
+  | "agent.budget_updated"
+  | "agent.budget_insufficient"
+  | "finalization.started"
+  | "finalization.progress"
+  | "finalization.completed"
+  | "finalization.rejected"
+  | "finalization.accepted"
+  | "finalization.failed"
+  | "image.response_received"
   | "model.delta"
+  | "model.progress"
   | "approval.requested"
   | "approval.resolved"
   | "input.requested"
@@ -2088,10 +2153,14 @@ export type RuntimeEventKind =
   | "artifact.created"
   | "checkpoint.created"
   | "verification.completed"
+  | "evaluation.completed"
+  | "evaluation.reviewed"
   | "verifier.result"
   | "skill.loaded"
   | "knowledge.retrieved"
-  | "policy.partial";
+  | "policy.partial"
+  | "input.protected"
+  | "input.output_created";
 
 export type KnowledgeRetrievalHit = {
   reference: string;
@@ -2356,6 +2425,7 @@ export type WorkItemStatus =
   | "ready"
   | "running"
   | "waiting"
+  | "cancelling"
   | "done"
   | "failed"
   | "cancelled";
@@ -2367,6 +2437,9 @@ export type WorkItem = {
   title: string;
   description: string;
   agent_id: string;
+  agent_version_id?: string | null;
+  agent_source_hash?: string | null;
+  binding_required?: boolean;
   depends_on: string[];
   inputs: JsonObject;
   status: WorkItemStatus;
@@ -2384,6 +2457,9 @@ export type WorkItem = {
 export type WorkItemAttempt = {
   attempt_id: string;
   attempt_number: number;
+  operation?: "start" | "retry" | null;
+  previous_run_id?: string | null;
+  error_code?: string | null;
   run_id: string | null;
   status: string;
   failure_class: string | null;
@@ -2392,6 +2468,8 @@ export type WorkItemAttempt = {
   finished_at: string | null;
   created_at: string;
 };
+
+export type WorkItemCommandRequest = { expected_attempt_number: number };
 
 export type ListWorkItemsResponse = {
   schema_version: typeof LOCAL_API_SCHEMA_VERSION;
@@ -2415,6 +2493,6 @@ export type OrchestratorStatus = {
 
 export type WorkflowRunResponse = Omit<AgentRunResponse, "agent_id"> & {
   workflow_id: string;
-  waiting: { kind: string; node_id: string; prompt: string; expected_fields?: string[]; agent_id?: string; child_run_id?: string } | null;
+  waiting: { kind: string; node_id: string; prompt: string; expected_fields?: string[]; agent_id?: string; child_run_id?: string; request_id?: string | null; input_schema?: TypedFields; context?: JsonValue; tool_reference?: string; approval_summary?: JsonObject } | null;
   children: { node_id: string; agent_id: string; version_id: string; child_run_id: string | null; status: RuntimeRunStatus | null }[];
 };

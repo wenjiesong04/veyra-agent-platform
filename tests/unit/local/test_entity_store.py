@@ -85,7 +85,7 @@ def test_fresh_database_bootstraps_head_and_round_trips_project_entity(
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_REVISION,)
-    assert HEAD_REVISION == "local_0037_entity_revision_history"
+    assert HEAD_REVISION == "local_0038_work_item_version_binding"
     projects = ProjectService(LocalRepository(database), tmp_path / "objects")
     project = projects.create(root_path=tmp_path / "workspace", name="Fresh Entities")
     project_id = project["project_id"]

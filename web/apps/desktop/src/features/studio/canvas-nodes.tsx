@@ -8,6 +8,8 @@ const STATE_MARKS: Partial<Record<NonNullable<CanvasNodeData["runState"]>, strin
   queued: "…",
   running: "●",
   waiting_approval: "◷",
+  waiting_budget: "◷",
+  waiting_input: "◷",
   completed: "✓",
   failed: "×",
   stopped: "■",

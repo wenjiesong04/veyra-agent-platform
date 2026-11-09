@@ -12,6 +12,8 @@ type Props = {
   revision: number;
   etag: string;
   blocked: boolean;
+  disabled?: boolean;
+  refreshKey?: string;
   locale: "zh" | "en";
   onCommand: (proposal: EditProposal, command: EditProposalCommand) => Promise<EditProposal>;
   onConflict: () => void;
@@ -19,7 +21,7 @@ type Props = {
   targetName: string;
 };
 
-export function EditProposalPanel({ api, projectId, targetKind, targetId, revision, etag, blocked, locale, onCommand, onConflict, incoming, targetName }: Props) {
+export function EditProposalPanel({ api, projectId, targetKind, targetId, revision, etag, blocked, disabled = false, refreshKey, locale, onCommand, onConflict, incoming, targetName }: Props) {
   const zh = locale === "zh";
   const [proposals, setProposals] = React.useState<EditProposal[]>([]);
   const [busy, setBusy] = React.useState(true);
@@ -35,7 +37,7 @@ export function EditProposalPanel({ api, projectId, targetKind, targetId, revisi
     }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
-  }, [api, projectId, targetKind, targetId, reload]);
+  }, [api, projectId, targetKind, targetId, reload, refreshKey]);
   React.useEffect(() => {
     if (incoming && !busy && adopted.current !== incoming.proposal_id) {
       adopted.current = incoming.proposal_id;
@@ -83,10 +85,10 @@ export function EditProposalPanel({ api, projectId, targetKind, targetId, revisi
         <small>{zh ? "结构验证不是实际运行验收。确认前服务端会重新检查修订和依赖。" : "Structural validation is not runtime verification. Revision and dependencies are checked again on confirmation."}</small>
         <div className="studio-edit-actions">
           {proposal.state === "review" ? <>
-            <Button disabled={busy || blocked || stale} onClick={() => void perform(() => onCommand(proposal, "apply"))}>{zh ? "确认应用提案" : "Confirm apply proposal"}</Button>
+            <Button disabled={busy || blocked || disabled || stale} onClick={() => void perform(() => onCommand(proposal, "apply"))}>{zh ? "确认应用提案" : "Confirm apply proposal"}</Button>
             <Button disabled={busy} onClick={() => void perform(() => onCommand(proposal, "reject"))}>{zh ? "拒绝提案" : "Reject proposal"}</Button>
           </> : null}
-          {proposal.state === "applied" ? <Button disabled={busy || blocked || stale} onClick={() => void perform(() => onCommand(proposal, "undo"))}>{zh ? "确认撤销应用" : "Confirm undo application"}</Button> : null}
+          {proposal.state === "applied" ? <Button disabled={busy || blocked || disabled || stale} onClick={() => void perform(() => onCommand(proposal, "undo"))}>{zh ? "确认撤销应用" : "Confirm undo application"}</Button> : null}
         </div>
       </article>;
     })}

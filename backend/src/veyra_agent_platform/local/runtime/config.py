@@ -8,6 +8,11 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .execution_budget import (
+    DEFAULT_ADDITIONAL_MODEL_TURNS,
+    DEFAULT_TOTAL_MODEL_TURNS,
+)
+
 
 class RuntimeSettings(BaseSettings):
     """Keep Runtime credentials separate from Factory generation credentials."""
@@ -26,6 +31,13 @@ class RuntimeSettings(BaseSettings):
     reasoning_effort: Literal["low", "high", "max"] = "high"
     max_completion_tokens: int = Field(default=8_192, ge=256, le=65_536)
     timeout_seconds: float = Field(default=90.0, gt=0, le=300)
+    action_max_duration_seconds: float = Field(default=600.0, gt=0, allow_inf_nan=False)
+    review_timeout_seconds: float = Field(default=180.0, gt=0, le=300)
+    review_max_duration_seconds: float = Field(default=600.0, gt=0, allow_inf_nan=False)
+    max_total_model_turns: int = Field(default=DEFAULT_TOTAL_MODEL_TURNS, ge=1)
+    max_additional_model_turns: int = Field(
+        default=DEFAULT_ADDITIONAL_MODEL_TURNS, ge=1
+    )
     allow_process_environment_key: bool = True
 
     @field_validator("model_base_url")

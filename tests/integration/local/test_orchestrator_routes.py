@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.config import LocalSettings
 
 from .test_runtime_routes import ScriptedRuntimeTransport
@@ -29,6 +30,14 @@ def test_orchestrator_creates_and_dispatches_local_work_items(tmp_path: Path) ->
             json={"mode": "blank", "name": "Queued"},
         )
         agent_id = agent.json()["agent_id"]
+        agent_url = f"/api/v1/projects/{project_id}/agents/{agent_id}"
+        draft = client.get(f"{agent_url}/draft").json()
+        committed = client.post(
+            f"{agent_url}/commit",
+            json={"expected_revision": draft["revision"]},
+            headers={"If-Match": draft["etag"], "Idempotency-Key": new_uuid7()},
+        )
+        assert committed.status_code == 200, committed.text
         status = client.get("/api/v1/orchestrator/status")
         assert status.status_code == 200
         assert status.json()["execution_plane"] == "local"
@@ -57,11 +66,17 @@ def test_orchestrator_creates_and_dispatches_local_work_items(tmp_path: Path) ->
         )
         assert blocked.json()["status"] == "backlog"
         blocked_dispatch = client.post(
-            f"/api/v1/work-items/{blocked.json()['work_item_id']}/dispatch"
+            f"/api/v1/work-items/{blocked.json()['work_item_id']}/dispatch",
+            json={"expected_attempt_number": 0},
+            headers={"Idempotency-Key": new_uuid7()},
         )
         assert blocked_dispatch.status_code == 422
 
-        dispatched = client.post(f"/api/v1/work-items/{work_item_id}/dispatch")
+        dispatched = client.post(
+            f"/api/v1/work-items/{work_item_id}/dispatch",
+            json={"expected_attempt_number": 0},
+            headers={"Idempotency-Key": new_uuid7()},
+        )
         assert dispatched.status_code == 200
         assert dispatched.json()["run_id"]
         assert dispatched.json()["status"] in {"running", "waiting", "failed", "done"}

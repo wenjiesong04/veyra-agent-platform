@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ArrowUp, ChevronsDown, ChevronsLeft, ChevronsRight, ChevronsUp, Copy, Plus, RotateCcw } from "lucide-react";
+import { ArrowUp, ChevronsDown, ChevronsLeft, ChevronsRight, ChevronsUp, Copy, LoaderCircle, Play, Plus, RotateCcw } from "lucide-react";
 import { IconButton, PaneResizeHandle, useLocale } from "@veyra/ui";
 import type { JsonValue, TypedFieldSpec } from "@veyra/api-contracts";
 import { compactFieldType } from "@veyra/api-contracts";
@@ -43,9 +43,9 @@ function scrollConversationToEnd(node: HTMLDivElement, behavior: ScrollBehavior)
   else node.scrollTop = node.scrollHeight;
 }
 
-function useConversationCanvasFrame(open: boolean) {
+function useConversationCanvasFrame(open: boolean, defaultWidth?: number) {
   const stageRef = React.useRef<HTMLDivElement>(null);
-  const [stored, setStored] = React.useState(readConversationCanvasLayout);
+  const [stored, setStored] = React.useState(() => readConversationCanvasLayout(defaultWidth));
   const [box, setBox] = React.useState({ width: 0, height: 0 });
   const [collapsed, setCollapsed] = React.useState(false);
   const layout = measureConversationCanvas(box.width, box.height, stored.width, stored.height);
@@ -88,6 +88,8 @@ export function ConversationStage({
   composer,
   canvas,
   forceStacked = false,
+  autoPin = true,
+  canvasDefaultWidth,
   children,
   ...props
 }: {
@@ -102,6 +104,8 @@ export function ConversationStage({
   composer?: React.ReactNode;
   canvas?: React.ReactNode;
   forceStacked?: boolean;
+  autoPin?: boolean;
+  canvasDefaultWidth?: number;
   children?: React.ReactNode;
 } & React.HTMLAttributes<HTMLDivElement>) {
   const { locale } = useLocale();
@@ -111,7 +115,7 @@ export function ConversationStage({
   const pinnedRef = React.useRef(true);
   const [dockHeight, setDockHeight] = React.useState(COMPOSER_DOCK_FALLBACK);
   const [showJump, setShowJump] = React.useState(false);
-  const { stageRef, layout, collapsed, setCollapsed, persist } = useConversationCanvasFrame(canvasOpen);
+  const { stageRef, layout, collapsed, setCollapsed, persist } = useConversationCanvasFrame(canvasOpen, canvasDefaultWidth);
   const syncPin = React.useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
@@ -143,11 +147,11 @@ export function ConversationStage({
     return () => observer.disconnect();
   }, [empty]);
   React.useEffect(() => {
-    if (empty || !pinnedRef.current) return;
+    if (empty || !autoPin || !pinnedRef.current) return;
     const node = scrollRef.current;
     if (!node) return;
     scrollConversationToEnd(node, "auto");
-  }, [empty, children, dockHeight]);
+  }, [empty, children, dockHeight, autoPin]);
   const stacked = forceStacked || layout.stacked;
   const canvasLayout = canvasOpen ? (stacked ? "stack" : "split") : undefined;
   const FoldIcon = stacked ? (collapsed ? ChevronsUp : ChevronsDown) : (collapsed ? ChevronsLeft : ChevronsRight);
@@ -257,6 +261,7 @@ export function ConversationComposer({
   onAttachFiles,
   onPasteFiles,
   onPasteNotice,
+  presentation = "chat",
 }: {
   locale: Locale;
   value: string;
@@ -278,6 +283,7 @@ export function ConversationComposer({
   onAttachFiles?: (files: File[]) => void;
   onPasteFiles?: (files: File[]) => void;
   onPasteNotice?: () => void;
+  presentation?: "chat" | "task";
 }) {
   const areaRef = React.useRef<HTMLTextAreaElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
@@ -292,7 +298,7 @@ export function ConversationComposer({
   React.useEffect(() => { resize(); }, [value, resize]);
   return (
     <form
-      className={`agent-convo-composer ${sending ? "is-sending" : ""}`}
+      className={`agent-convo-composer ${sending ? "is-sending" : ""}${presentation === "task" ? " is-task-form" : ""}`}
       onSubmit={(event) => { event.preventDefault(); if (!disabled) onSubmit(); }}
       onPaste={(event) => {
         if (!onPasteFiles) return;
@@ -322,6 +328,8 @@ export function ConversationComposer({
         <textarea
           ref={areaRef}
           aria-label={textboxLabel}
+          name={textboxLabel}
+          autoComplete="off"
           value={value}
           placeholder={placeholder}
           rows={1}
@@ -357,12 +365,12 @@ export function ConversationComposer({
             </>
           ) : null}
           {footerLeft}
-          <span>{locale === "zh" ? "Enter 发送 · Shift+Enter 换行" : "Enter to send · Shift+Enter for a new line"}</span>
+          {presentation === "chat" ? <span>{locale === "zh" ? "Enter 发送 · Shift+Enter 换行" : "Enter to send · Shift+Enter for a new line"}</span> : null}
         </div>
         <div className="agent-convo-composer-actions">
           {canReset && onReset && resetLabel ? <IconButton icon={RotateCcw} label={resetLabel} onClick={onReset} /> : null}
           <button className="agent-convo-send" type="submit" aria-label={sendLabel} disabled={disabled}>
-            <ArrowUp size={18} aria-hidden="true" />
+            {presentation === "task" ? <>{sending ? <LoaderCircle size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}<span>{sendLabel}</span></> : <ArrowUp size={18} aria-hidden="true" />}
           </button>
         </div>
       </div>

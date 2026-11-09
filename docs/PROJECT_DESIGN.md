@@ -10,6 +10,22 @@
 
 This document starts from a new, independent project. It does not assume that the old Veyra repository will be cleaned, merged, or used as a runtime dependency. The old repository is read-only migration evidence. Every extracted behavior must be re-namespaced, simplified, tested, and recorded in this document or a later migration ledger.
 
+### Workflow Approval Termination (2026-10-20)
+
+Workflow `Stop` is an explicit terminal node: reaching it cancels the Run without
+delivering business outputs or dispatching further work. It is not an Agent-loop
+action and does not replace existing committed rejection routes. Newly compiled
+business approvals default to approved continuation and rejected `Stop`, unless
+the task supplies an explicit rejection route. An approval outcome is a control
+port, not a fabricated boolean data value. A redundant predicate over a dedicated
+approval stage may be normalized to those ports while genuine data conditions
+remain strict. Approval prompts retain their explicit question and bind the actual
+candidate material for review; no extra model summary is needed.
+TaskStructure's linear stage list does not define membership or joins for two
+distinct non-terminal approval branches. Such routes must not be silently wired
+through each other: generation reports `approval_branch_join_ambiguous` instead.
+Explicit graph routes in Studio remain supported and are not rewritten.
+
 ---
 
 ## 0. Executive Decision
@@ -42,6 +58,41 @@ Tool / Knowledge / Skill, observes the result, and continues until it returns
 a final output or hits `max_turns`. Users do not have to draw those turns as
 nodes. HumanApproval inside an Agent Run is a **tool-permission gate**, not a
 business DAG node.
+
+Studio binds the loop Agent's Model capability to its Agent-scoped
+`primary_model`, not `node.<id>`: the capability's Canvas node ID is not a
+separate model execution slot. Legacy graph Agents and Workflow Model nodes
+retain node-specific bindings. UI selection and Runtime readiness must resolve
+the same effective model before a paid Run.
+
+`max_turns` is the initial cumulative model-turn allowance, including required
+delivery reviews and corrective actions. Human replies and tool approvals do
+not silently renew it. An explicit request-bound `extend_budget` command may
+increase the Run allowance, never the Source, business criteria or permissions.
+Runtime events expose used/limit/remaining counts and
+the required delivery reserve when insufficient; these are not Token, price,
+or image-request caps. Historical events without budget evidence remain
+unknown. Existing saved versions and failed Runs are never implicitly enlarged.
+
+Factory's `VEYRA_FACTORY_GENERATED_AGENT_MAX_TURNS` selects a uniform initial
+allowance (default 16, within the existing Source 1..32 range). It no longer
+guesses 8 versus 16 from Tool presence. Direct compiler callers may supply an
+initial allowance; legacy Sources retain their original serialized values.
+Runtime host admission is separately configurable with
+`VEYRA_RUNTIME_MAX_TOTAL_MODEL_TURNS` (default 512 across checkpoint lineage)
+and `VEYRA_RUNTIME_MAX_ADDITIONAL_MODEL_TURNS` (default 64 per explicit grant).
+These are model-turn policies, not currency, Token or image-request caps.
+
+Delivery review has a separately configurable HTTP read timeout
+(`VEYRA_RUNTIME_REVIEW_TIMEOUT_SECONDS`, default 180 seconds, up to 300),
+using the same model binding and credentials. Ordinary action timeout remains
+90 seconds by default. Actions now request a safely aggregated stream, with a
+separate configurable `VEYRA_RUNTIME_ACTION_MAX_DURATION_SECONDS` (default 600)
+for an indefinitely active response. These are HTTP phase/request timeouts, not
+whole-task deadlines or additional model turns.
+A failed review records its phase, safe Provider diagnostic and elapsed time;
+it does not publish the candidate or retry the paid request. This does not
+replace independent factual evidence or establish a latency improvement.
 
 **Workflow** is an explicit typed execution graph. It owns Start, AgentCall,
 Tool, Condition, Transform, HumanApproval, Verifier, Output, typed ports, and
@@ -397,8 +448,10 @@ The four local development ports are distinct product surfaces, not four names
 for one Community application:
 
 - `5173` is Veyra Desktop, the authenticated day-to-day workspace. It owns
-  Project work and the interactive Community discovery, publish, release
-  inspection, Star, and import-preview flows.
+  Project work, local export, import preview, and execution. Community links
+  open the separately deployed website in the system browser, preserving the
+  current desktop route. Existing Community deep links have a compatibility
+  entry instead of mounting a second catalog inside Desktop.
 - `8771` is the loopback-only Local API and trusted local execution boundary
   for Project files, Agent/Workflow source, Builder, Runtime, Knowledge,
   Resources, Import, approvals, receipts, and Orchestration.
@@ -406,14 +459,35 @@ for one Community application:
   immutable Agent/Plugin release registry, metadata, moderation, feedback, and
   artifact downloads. It never executes a downloaded Agent.
 - `5174` is the public site. The default route is the anonymous product
-  Showcase. `#/community`, login, and account are the Community catalog. It
+  Showcase. `#/community`, login, and Mine provide discovery, accounts, and
+  explicit publication of supported exported packages. It
   does not provide Cloud Projects, Cloud Conversations, Cloud Files, Cloud
   Runs, or Cloud Credentials.
 
 The Registry is a service capability, not a second execution host. The
-`web/apps/community` package name is retained. Desktop Community discovery,
-publish, Star, and import stay on `5173`. Generation and Chat stay on the
-Local API. A Cloud data plane is not part of the current product.
+`web/apps/community` package name is retained. Discovery, Star, and package
+publication use the website; generation, Chat, import, and execution stay on
+the Local API. A Cloud workspace/data plane is not part of the product.
+
+The public site's catalog and documentation share the Showcase navigation.
+Community uses a local sidebar for Discover, Published, Starred, and Mine;
+the latter three require the existing Community account. Public discovery
+reads the Agent/Plugin registry, while personal Agent/Plugin lists and Star actions
+use the authenticated registry APIs. Mine is the single personal/publication
+entry, with profile/security settings beneath it; the global header shows
+sign-in state. Selecting a package creates only a browser-local preview. A
+separate confirmation sends the frozen file bytes and expected publisher ID.
+The Agent/Plugin endpoints compare that ID with the actual POST session before
+publishing, so a changed cookie cannot publish under a different identity.
+
+The current upload lanes are Agent YAML and declarative Plugin Packs. Workflow
+sharing/export and registry contracts remain unimplemented and are shown as
+unavailable. Project files, conversations, Runs, and credentials are not synced.
+The Desktop public website base is configured with `VITE_COMMUNITY_SITE_URL`.
+Development defaults to local `5174`; production without configuration shows a
+setup notice and never silently opens a customer's localhost. Native opening
+uses the existing Tauri shell plugin with an HTTP(S)-only scope. Static checks
+and browser tests do not substitute for acceptance in a rebuilt installation.
 
 ---
 
@@ -1040,25 +1114,99 @@ input sources, human interaction and state lifecycle. `FactoryTaskStructurePlann
 uses the shared bounded Project Harness and safe invocation receipts. The server
 chooses Agent versus Workflow, resolves exact resources and model capabilities,
 compiles source, and checks required duties. A second `TaskCoverageV1` model review
-checks omissions against the compiled candidate; it is planning evidence, not a
-successful Run. JSON parsing, contract and composition repairs share a bounded
-budget and cannot remove required duties. Provider failure never falls back to
+checks omissions and unrequested restrictions against the compiled candidate; it
+is planning evidence, not a successful Run. Format/binding repairs preserve task
+duties. A parsed coverage rejection may instead correct the model's interpretation
+of those duties, retaining permission/input protections and exact selected methods;
+the result must recompile and pass a new review of the complete original request.
+The rejected model draft is not stronger authority than the user's task. Saved
+semantic corrections become the recovery baseline, not the rejected first draft.
+Repairs share a bounded budget. Provider failure never falls back to
 keyword generation. The offline deterministic helper remains explicitly labelled
 an offline compiler preview. AgentSemanticPlanV1 and Blueprint projections remain
 legacy adapters, not the current production TaskStructure contract.
 
-Loop Agents execute `tool`, `ask_user`, and `final` actions under `max_turns`.
+Formal Builder edit turns own proposal generation on the server, including
+deterministic Resource/Knowledge binding resolution before general Source edits.
+Each model request shares the operation's admission, receipt and remaining time;
+its timeout cannot exceed the existing per-request setting. The operation stores
+its validated target and proposal identity and waits for explicit application.
+Provider failures terminate that operation with the actual edit stage. Browser
+navigation and snapshot reads do not generate another candidate or apply it.
+The legacy resolver-only client adapter remains separate from this durable path.
+
+Loop Agents execute `tool`, `tool_batch`, `ask_user`, `render_images`, and `final` actions under
+`max_turns`.
 `ask_user` stores a checkpoint and user-visible context; an explicit `reply`
 continues the same pinned version and Run. A user reply grants no Tool permission.
-Images are rendered after final output; questions do not trigger image generation.
+Conversation capability and delivery prerequisites are distinct. Optional later
+corrections do not require a mandatory input gate. When the task is to report
+missing or conflicting facts, those gaps may remain explicit in the report;
+only actually required facts, decisions and approvals can withhold delivery.
+Builder coverage reviews both omitted requirements and unrequested restrictions.
+Accepted native input replies are retained as user conversation messages in the
+same transaction as the reply decision, so subsequent turns keep corrected facts.
+Native `render_images` returns actual artifact references before final so the
+Agent can retain them in declared state. Final candidates reuse valid image
+artifacts or render declared outputs; optional finalization controls review and
+same-run rework before delivery. Questions do not trigger image generation.
+An explicit native image prompt describes the current chosen design; older raw
+inputs are not appended to it after later user replies may have superseded them.
+Existing Graph image nodes retain their declared input/interpolation behavior.
 Pinned Skill instructions cannot override Agent instructions or grant permissions.
 Tool descriptors expose the actual public argument/result schema and approval
-requirements. Only offline argument validation can be repaired before dispatch;
-errors after execution do not trigger blind external-effect retries.
+requirements. Offline argument validation can be repaired before dispatch.
+Trusted built-in read-only adapters may classify a business failure as an
+observation after its failure receipt is saved. The model then chooses another
+permitted action within the same turn budget; Runtime does not retry the call.
+Write effects, unknown/custom adapters, permission, secret and integrity errors
+retain their fail-closed boundaries.
+
+`tool_batch` groups 1 to 16 independent calls in one model action. It is not
+thread parallelism or Provider-native Tool Calling. Only platform-owned local
+observers/calculators with allowed authorization and no approval requirement
+are eligible; network, write, image and custom adapters keep their single-action
+paths. All calls are checked before the first dispatch, then reauthorized and
+implementation-checked individually. Every actual call retains its own receipt,
+index and success/failure status. Large observations retain all call metadata
+with explicit per-item truncation under the same overall observation bound.
+Rejected batches do not reset repeated-effect protection or grant approval.
+
+Tool input rejection evidence uses schema-owned parameter paths, categories,
+expected types and public numeric constraints. It never serializes validator
+messages, instance values or arbitrary dynamic property names. The same evidence
+is supplied to the model and retained in Run events; historical failures lacking
+that evidence are not retroactively assigned a guessed reason. Pure arithmetic
+failure remains an observation with a failed receipt, not a successful result.
+
+The loop receives the complete public output contract, including optional/multiple
+fields, enums and declared JSON schemas. Supported bounded offline JSON schemas
+are checked before any model/tool call and validate final values; unsupported
+schemas fail visibly. Invalid outputs receive constraint feedback in the same
+loop. This is contract evidence, not independent business acceptance, and does
+not turn an unverified result into verified.
+
+Product shape follows executable responsibilities. State owned by a single actor
+stage can use that Agent's declared state contract and entity tools. A separate
+state stage, business approval, deterministic branch or independent verifier
+remains Workflow structure. Two independently scheduled actor roles justify
+multi-Agent orchestration even if both only generate text; names such as main
+and editor never erase an actual scheduled role. Native human questions remain
+in loop instructions, while working notes cannot reference future stages.
 
 Planning context includes real capability names and public Tool contracts, not
 legacy graph node specifications or Skill bodies. Provider JSON is validated
-against the complete closed projection before permissive server-contract defaults.
+against a closed intake contract. Strict transport retains the full projection;
+JSON mode accepts canonical optional I/O defaults after validating supplied values.
+Names, types, bindings, duties and permission limits cannot be invented by defaults.
+Builder Operations freeze original user statements and ordered amendments separately
+from bounded recent chat. Intent resolution and Factory planning consume that same
+requirement provenance. Retries reuse their snapshot; legacy retries reconstruct
+the originating request prefix without later amendments. Assistant interpretations
+are not authoritative requirements. Planning validation and Workflow compilation
+share declared-reference resolution; bare declared task inputs and input(s)/stage
+qualified aliases are deterministic, while unknown, future and ambiguous values
+never acquire fallback ports.
 Coverage review uses selected Tool contracts and one copy of each compiled Agent
 instruction set, without duplicated canvas/model prompts. Runtime input questions
 are distinct from unsupported software capabilities.
@@ -1307,29 +1455,39 @@ transactions remain a subsequent module, tracked in the development document.
 ```text
 User requirement
 → persist Builder user message
-→ bounded Factory conversation
-→ server-selected Resource Catalog snapshot
-→ Kimi JSON Schema AgentSemanticPlanV1
-→ SemanticPlanCompiler
-→ canonical AgentBlueprint
-→ schema validation
-→ component/tool/knowledge resolution
-→ Skill compilation and Policy application
-→ exact Project pin and permission derivation
-→ graph validation
-→ bounded repair loop, maximum three attempts
-→ user-visible Blueprint and Resource Plan
+→ BuilderIntentV1 understanding (model + target ownership checks)
+→ bounded Project / real Resource Catalog context
+→ TaskStructureV1 (goals, roles, typed I/O, stages and boundaries)
+→ exact selected Skill verification and actual procedure reading
+→ method-grounded task refinement when needed
+→ deterministic Agent / Workflow shape and ExecutionPlan compilation
+→ role-specific resource / model / permission resolution
+→ canonical AgentSource / WorkflowSource and unified value bindings
+→ contract, dependency and fidelity checks
+→ TaskCoverageV1 review of the complete requirement and compiled candidate
+→ bounded repairs share at most three repair operations
+→ user-visible candidate, Resource Plan and readiness
 → persist canonical `create_agent` Proposal snapshot
 → user confirms the Proposal identity
-→ server installs the exact persisted AgentSource as an Agent Draft
-→ immutable version
+→ Apply the exact persisted candidate as Draft
+→ Studio validation / Draft testing / explicit version commit
+→ product Runtime executes the selected committed version
 ```
 
-The repair loop receives only validation diagnostics and the same immutable
-catalog snapshot. It cannot broaden permissions, replace the catalog, or invent
-resource identifiers. After three failed attempts the session becomes a visible
-generation failure or `missing_capability`; it never silently falls back to an
-unvalidated graph.
+Builder creation avoids a duplicate fixed interview after intent understanding;
+standalone Factory interview remains supported. Skill grounding, syntax/contract
+and composition repairs share the bounded repair budget. Initial planning, intent
+and coverage calls have distinct responsibilities, so three repairs does not mean
+three total model requests. Repair preserves task duties while correcting their
+implementation bindings, cannot broaden reviewed write scopes, replace exact read
+methods or invent catalog resources, and fails visibly when unsupported. Legacy
+SemanticPlan / Blueprint adapters remain compatibility paths.
+
+Single-Agent Apply creates its Draft. Composite Apply creates and commits companion
+Agents, pins their immutable versions in AgentCalls, then creates the Workflow
+Draft. The Workflow itself still requires explicit commit for product execution.
+Generation does not execute the user's task Tools; actual file reads, calculations,
+approvals and effects belong to Runtime and have separate execution evidence.
 
 ### 6.4 Kimi configuration
 
@@ -1528,9 +1686,18 @@ needs. Model gaps belong to the Model Registry, not ResourceFactory. A missing
 model permits a reviewable and applyable Draft with Needs Setup. A Proposal
 candidate is re-resolved against current local configuration before a Run;
 it is not a credential embedded in immutable Agent source.
+For new pure-Agent generation, complete and unique verified role resolutions
+project the builtin Model component's static setup default into candidate
+readiness. Every required role must have a selected Profile and compatible,
+issue-free `will_bind` or `already_bound` evidence. Missing, unknown, conflicting
+or incomplete role evidence remains Needs Setup; unavailable resources are not
+promoted. The static catalog, persisted older proposals and Workflow readiness
+are not rewritten. Actual readiness remains the no-effect preflight of the
+installed draft or explicit committed version, and invocation rechecks it.
 Requirements describe the Provider protocol actually invoked. Current V2 loop
-Agents use the platform JSON-action protocol without native `tools` or
-`response_format`; Tool boundaries and typed JSON outputs do not by themselves
+Agents use the platform JSON-action protocol, with JSON-object transport hints
+on supported adapters but no native `tools`; Tool boundaries and typed JSON
+outputs do not by themselves
 require Provider `tool_calling` or native `structured_output`. Graph Model paths
 that invoke `response_format` still require verified structured-output evidence.
 
@@ -1826,7 +1993,252 @@ POST `/run` returns a started run before completion. Ordered events are
 persisted during execution. Workflow runs use a separate durable parent Run
 and pinned child Agent runs; see ADR 0005 for supported controls and limits.
 
+An exhausted loop allowance or insufficient delivery reserve creates a durable
+`waiting` request with `kind=budget`, not a failed Run or a Tool approval.
+`extend_budget` requires positive `additional_turns`, the current request ID,
+and an idempotency key. The grant and checkpoint commit before scheduling;
+approval does not carry into the next Tool. Stop declines continuation.
+Workflow forwards a child's budget request and consumes parent/child commands
+in one transaction. Parent Workflow terminal recovery is not implied by this.
+
+Loop execution checkpoints retain consumed turns, prepared actions, observed
+Tool results, candidate/review state, and completed image references. They are
+written before model requests and at completed-effect boundaries. Failed or
+interrupted execution resumes as a descendant pinned to the same version;
+successful writes and cached images are not redispatched. Any unaccounted
+Tool or image dispatch after the checkpoint blocks automatic recovery. Old
+failed Runs without sufficient execution checkpoints are not reconstructed
+from guesses. Stop continues to revoke terminal recovery.
+
+Native questions within an AgentCall are child-loop input waits, not unconditional
+HumanInput nodes appended after that call. The Workflow projects the current child
+question and its public context, and forwards `reply` to the same pinned child Run.
+That reply never approves subsequent Tools. Actor-less HumanInput stages remain
+typed Workflow inputs; business approval stages are independent of complete actor
+calls. A declared capability governed by such a gate must not also be owned by its
+pre-gate producer. This placement check is not proof of all semantic effect ordering.
+
+Desktop approve/reject/reply/budget-extension actions bind the request visible to the user through
+`expected_request_id`. Missing IDs prevent sending and cause a refresh, never an
+automatic replay against a new request. Runtime validates a supplied ID in the same
+transaction as resolving the approval and recording the command. A new approval's
+`request_id` is its approval ID; its event ID remains an accepted legacy alias.
+The ID participates in idempotency, so a retry cannot silently change its target.
+Budget-bound Stop also verifies the displayed request; ordinary global Stop
+remains available without a waiting request. Unknown network outcomes cause
+a refresh, not automatic replay. Agent Chat no longer presents a fresh start
+as a safe retry after effects; checkpoint recovery is explicit in Run Detail.
+
+Workflow child command acceptance and parent continuation records commit together.
+Direct child replies or termination are projected back to the parent; repeated
+reads cannot dispatch another continuation. Independent input/approval nodes emit
+completion when the graph advances, while native questions do not complete the
+whole AgentCall. Historical independent waits gain a stable ID without execution.
+The SDK/API field stays optional for legacy current-wait commands: clients that
+omit it do not receive stale-request protection. Desktop controls never use that
+compatibility path for approve/reject/reply.
+
 ### 8.2 Runtime guarantees
+
+Loop Sources may opt into `extensions.veyra.finalization` version `1`. Absent
+policies retain their previous Source/behavior hashes; a present policy is part
+of the behavior projection. This is a delivery gate, not another execution DAG.
+Actor-owned verification boundaries compile into that gate; independent checks
+and business approvals remain explicit Workflow boundaries.
+
+`final` submits a candidate. Typed output and existing executable rules run
+offline. Required semantic criteria use a separate read-only model context;
+findings return to the same loop for Tools, questions or revision. Advisory
+criteria are disclosed without blocking delivery. Missing user facts pause the
+same Run; unresolved required evidence never becomes a fabricated pass. Model
+assessment is labelled non-independent, and does not set the Run to verified.
+Advisory-only reviews may be omitted when no model turn is available; an
+unavailable advisory model is disclosed without blocking valid required rule
+checks and outputs. Required reviews still block publication on errors.
+
+Image review inspects actual owned artifacts and all applicable input images.
+It normally requires one post-render assessment. `pre_render_review` is an
+explicit policy option, also compiled when a required native interaction must
+be resolved before image effects. A matching pre-reviewed candidate can reuse
+that assessment; changed candidate, user facts or policy invalidate it. Once
+all declared views are pinned by explicit native render/reuse actions and their
+bytes remain available, the full image assessment covers the current text and
+images together. It need not repeat a separate text-only assessment first.
+Implicit brief-dependent caches do not qualify: changed implicit briefs retain
+before-effect review when they would dispatch new image requests.
+
+Before-effect readiness and final delivery have explicit review phases, not
+different temporary Agent declarations. A readiness review keeps the original
+Source, all criteria and the complete image-output scope, and receives the
+validated pending generation/reuse plan and current design context. It assesses
+prerequisites now; future image bytes, their visual reinspection and persistence
+of returned references are assessed only after the effect. Findings must identify
+such deferred completion, not claim it happened. Existing factual or plan defects
+still block the effect. Readiness emits no delivery acceptance; the final review
+must establish every required criterion using actual outputs and observations.
+Only output-type validation uses a non-image projection, never semantic review.
+
+A readiness-cache identity includes the candidate, user facts/replies, policy,
+pending image plan and shared context. A changed Prompt or plan needs a new
+assessment. The approved plan is retained separately from its shrinking execution
+queue so partial-image checkpoints can resume without paying to review the same
+plan again. Old cache identities are invalidated when review semantics change.
+
+The parser receives the same explicit phase as the reviewer. A readiness pass
+means the repair is ready to begin, so it can also identify declared old images
+needing replacement. A final candidate/image pass still cannot invalidate its
+delivery. Readiness suggestions invalidate only caches for images that the acting
+plan will actually generate next; explicit reuse, already completed views and
+unplanned effects are not silently expanded. Applied and unapplied suggestions
+are recorded separately. Cache invalidation is checkpointed before dispatch so
+recovery cannot reintroduce the old asset. These records prove cache handling,
+not image repair or business correctness, and do not elevate advisory findings
+into additional required conditions.
+
+`render_images` is a native action over declared image outputs and the configured
+image model slot, not an invented Tool. It returns real ArtifactRefs before
+final, so permitted entity Tools can retain actual image history. Persistent
+Agents with a delivery gate cannot finalize required images that have not yet
+been produced. All image requests are validated before dispatch. Native cache
+keys include prompt, inputs and model evidence; explicit regeneration and
+failed-view feedback invalidate the appropriate assets. Cached artifacts must
+still exist. Approval/input checkpoints preserve assets and review state.
+
+Native image requests may explicitly reuse a real Project-owned ArtifactRef
+for an unchanged view. Every reuse is type/metadata/byte checked before any new
+generation in that action; a missing, foreign or damaged reference rejects the
+action without a new request. Reuse grants no permission and is recorded as
+reuse, not a fresh Provider response. An optional current `design_context` is
+shared across new view prompts and their cache identities. It is an identity
+brief, not reference-image editing or proof of visual consistency. The Runtime
+does not hardcode a particular business's brand names or forbidden phrases.
+
+For an explicit subsequent turn, the conversation may expose the preceding
+committed result's Run/version/hash as an available revision base. A native
+`render_images` or `final` action may explicitly set `base_run_id` and supply
+only changed non-image outputs. Runtime reads the saved structured result,
+requires the same Project/Agent/committed version/conversation and preceding
+user-turn boundary, merges changed fields, and applies the complete current
+output and delivery checks. Recovery follows its recorded originating turn,
+not a later conversation result. Images and permissions are never implicitly
+reused by this base; unchanged views still require explicit owned references.
+The base Run, report, Source and version remain immutable. This avoids forcing
+the model to rewrite an entire previous proposal for a local visual revision.
+
+Native image actions publish their full parameter shape, including top-level
+`design_context`, `images`, optional revision base, and candidate `outputs`.
+Explicit image reuse may use a full ArtifactRef, compact `$artifact`, or a
+stored artifact ID under the `artifact` field. Every representation resolves
+through the same owned-byte, metadata and output media-type checks before new
+effects. Input errors identify all invalid views/fields together and persist
+as `model.output_rejected` with the action, locations and `effect_started=false`.
+No raw prompt is copied into these diagnostics. Delivery review may exclude
+clearly identified, unexecuted protocol-repair feedback; user facts, real Tool
+results, human replies and business findings remain evidence. Request-content
+size and observation count are diagnostic metadata, not verified Token usage
+or a promise that a slow Provider will meet the timeout.
+
+Production HTTP Agent action requests and delivery reviews use one shared
+aggregated text-stream reader rather than waiting for a buffered completion
+body. Progress events expose only connection/status/elapsed time and counts;
+reasoning/thinking text and partial actions or assessments never become
+persisted progress or executable output. Native action progress is `model.progress`,
+with a zero-based model turn and `published=false`; clients coalesce updates
+within the same node/turn and fold transport metadata in execution records.
+Legacy injected transports keep their original complete-call protocol.
+OpenAI-compatible streams require a normal `finish_reason=stop`; this terminal
+signal also supports endpoints without a trailing DONE event. Anthropic streams
+require normal end-turn plus message-stop. Truncation, incomplete EOF, invalid
+frames, refusals and Provider errors fail closed before the unchanged complete
+JSON/all-criteria validation. Gateways returning JSON instead of SSE are read
+from the same response, with abnormal finishes and oversized bodies rejected;
+there is no second POST fallback. Legacy injected transports remain supported.
+
+Streamed action/review POSTs request `Accept-Encoding: identity` per request,
+without modifying shared Client headers, authentication or discovery/image calls.
+Compliant compressed responses are still decoded normally. A decoding failure is
+an invalid response with a safe `response_decoding` category and allowlisted HTTP
+status/content-type/content-encoding/count metadata, not a generic availability
+failure. Error bodies already decoded by HTTPX are classified without copying the
+original compression/length headers into another Response; otherwise a legitimate
+compressed 401/429 could be decoded twice and hide its actual provider category.
+No raw body, free-form exception text or full headers are saved, and no decoding
+fallback resubmits a model request.
+
+Read-idle timeouts remain independent of model-turn budgets: action requests
+retain `timeout_seconds` (90 by default), while reviews retain their separate
+180-second default. Independent `action_max_duration_seconds` and
+`review_max_duration_seconds` (each default 600) reject indefinitely active
+heartbeat streams; checks occur on network chunks, including incomplete lines,
+and before returning a complete response. Cancellation is checked between chunks
+and before return. A fully idle synchronous socket is still bounded by its read
+timeout, not an immediate interrupt guarantee. No late response can dispatch an
+action or publish after the Run is stopped. Normally finished empty completions
+retain the existing single recovery attempt and its new model-turn charge; an
+incomplete stream is not eligible for that recovery. These are transport
+semantics, not looser business criteria or proof of faster Provider inference.
+
+Review outcome validation is separate from presentation. Only the known
+assessment fields and four validated finding fields are projected onward;
+extra metadata is discarded, never interpreted as Tools, permissions or
+instructions. Every criterion, unique index, required status and image scope
+still has to validate. A missing question cannot turn `needs_input` into pass:
+Runtime formats its existing public reason/evidence for the same-Run input
+pause, marking `question_source=findings`, without a model format-repair call.
+Semantic failures retain safe category/location, already validated public
+findings and missing-criterion indexes. Raw responses and unknown fields are
+not stored as diagnostics. This preserves actionable evidence without making
+an otherwise complete assessment fail merely for optional display metadata.
+
+Delivery review receives the pinned Source's typed input/output contracts as
+data, preserving field purposes such as original evidence versus upstream
+analysis. Those descriptions do not establish factual correctness. Review
+guidance checks the premises and certainty of material inferences rather than
+treating conditional phrasing alone as sufficient support; supported conditional
+inferences remain valid. These instructions are model guidance, not a guarantee
+of semantic detection or independent verification.
+
+An explicit `finalization.review_strategy=evidence_first` may select declared
+`evidence_inputs`. The default remains `direct`; no saved Source is migrated or
+silently given another model call. The selected input names are not guessed from
+names or descriptions. Studio exposes this choice alongside the delivery checks.
+Before comparing a candidate, a separate read-only request receives only these
+input values, their field contracts and actual user replies, not the candidate,
+upstream analysis, Source description/criteria, or prior review results. It returns
+a brief public ledger of quoted facts and evidence limitations. Literal source
+references and quote existence are checked deterministically; this proves neither
+the summary's semantic validity nor external facts. The candidate reviewer must
+compare the ledger and candidate against the originals rather than treating either
+model's conclusions as authority. Both remain model assessments.
+
+The additional request is counted and reserved within the existing model-turn
+budget before any required review or image effect. A per-Run checkpoint cache is
+keyed by the exact selected input packet and actual replies, so candidate revisions
+reuse the blind assessment but changed original facts or replies do not. No Tool,
+network, approval or external verification capability is added. Missing evidence
+may be reported as unknown without forcing clarification when the task permits it.
+This opt-in method requires separate negative/positive/unseen-case evaluation;
+more reviewers or successful protocol validation do not establish better quality.
+
+Generation and Coverage distinguish required field presence from a minimum
+number of findings. Reviews, searches and comparisons may legitimately return
+zero findings unless the user explicitly requires a minimum count. Typed required
+outputs already enforce presence; the existing `required_fields` verifier also
+rejects empty collections and must not be added to a valid zero-findings list.
+No Runtime keyword filter removes explicit criteria or rewrites saved versions.
+Correcting an overconstrained saved definition requires an explicit new version.
+
+Each image Provider request and artifact store checks cancellation. In-flight
+responses may still incur Provider cost, but cannot cause another batch or
+final delivery after cancellation. Business entity writes remain recorded
+intermediate effects, not an atomic final-publication transaction; their status
+fields cannot substitute for Runtime acceptance evidence.
+
+Model/review turns remain bounded by the Source budget; image requests have
+their declared output scope. These are not a currency or Token hard ceiling.
+Usage and price absence remains unknown. Future Provider-native Tool transport,
+dynamic delegation, cross-role repetition and final entity publication need
+their own contracts and evidence; this delivery gate does not claim them.
 
 - Every run uses an immutable Agent version.
 - Every event has run ID, sequence, node ID, and timestamp.
@@ -1838,6 +2250,57 @@ and pinned child Agent runs; see ADR 0005 for supported controls and limits.
 - Verification is separate from Agent-reported completion.
 
 ### 8.3 Events
+
+#### Local result evaluation
+
+Run evaluation is an explicit, offline user operation, separate from Runtime
+completion and delivery model assessment. EvaluationSpec version `1` binds a
+Run's immutable version and stable check IDs to selected output paths (arrays
+of path segments), required/advisory levels, methods and baseline provenance.
+Initial methods are exact JSON equality, exact decimal equality, set equality,
+owned artifact integrity and explicit local user review. Model-supplied baselines
+cannot establish independent pass. Reference/fixture provenance is a user
+declaration, not proof that the platform fetched or authenticated that source.
+
+Reports identify evaluator/spec/input/result/source/behavior/lock hashes and
+the target Run. Conditions use pass/fail/unknown/not_evaluated/awaiting_human;
+the aggregate is accepted/rejected/inconclusive for the declared checks only,
+never an assertion that all original business requirements were evaluated.
+Required conditions must all pass; advisory failures do not mask required
+success. Runtime output conformance is checked against the pinned Source.
+Artifact integrity reads actual Project-owned bytes and verifies stored hash,
+size and claimed metadata. It does not establish visual or physical quality.
+
+Evaluation appends private local evidence with idempotency, preserving the Run
+status, result, version and execution budget. It dispatches no model, Tool or
+Workflow continuation and grants no permission. Waiting/running Runs are not
+evaluated as final results. Historical reports remain snapshots; explicitly
+rechecking an artifact can reveal later corruption without rewriting the old
+report. Specs, baselines and reports are not added to portable Sources or synced
+to Community. No new parallel task-definition or automatic evaluation Agent is
+introduced. Parent Workflow restart recovery and automated case-set execution
+remain separate work.
+
+Evaluator version `2` records owned artifact-byte evidence for human-review
+paths, including ArtifactRefs nested inside the selected value. A local user
+may submit pass/fail/unknown with reasons against the exact version/spec/result
+snapshot and current report-chain head. Submission checks current bytes and
+snapshot hashes again, then atomically appends `evaluation.reviewed` and its
+idempotency receipt. A changed snapshot requires a fresh evaluation; concurrent
+different submissions cannot silently replace each other. Corrections produce
+explicit parent/supersedes links. Original reports and Run fields never change.
+Only `human_review` conditions can receive these decisions; required machine
+failures remain failures. `local_user` identifies a manual local submission, not
+an authenticated expert or a model assessment. Legacy evaluator-v1 reports stay
+readable; missing historical artifact-byte evidence is never fabricated.
+
+Submitting reviews starts no Run or model request. A subsequent explicit user
+turn in the same pinned Agent conversation may include the latest result's
+recorded reviews as bounded, version-bound data. This does not grant permissions,
+rewrite instructions or automatically retry effects. Workflow review does not
+silently replan or rerun its graph. Desktop previews are opt-in and verify blob
+size/SHA against the historical report before showing supported raster images;
+unknown responses refresh history without automatic resubmission.
 
 ```text
 run.created
@@ -1945,9 +2408,32 @@ Monitor focuses on current operational attention:
 The local implementation currently enforces four global and two per-Project
 active WorkItems. Monitor exposes a stale signal after five minutes without a
 Runtime event. An operator can explicitly recover a stale running item: the
-local Runtime is stopped when still attached, the WorkItem is CAS-failed with a
-`stall_recovered` classification, and the item can be retried. Lease expiry
-remains the automatic failure/recovery boundary.
+WorkItem first claims `cancelling` durably and retains its concurrency slot.
+It becomes CAS-failed with a `stall_recovered` classification only after the
+attached Runtime is confirmed terminal. Stop failure retains the association
+and slot for reconciliation. Lease expiry uses the same recovery boundary,
+rechecking the observed lease and actual progress inside its claim transaction.
+
+WorkItems bind a committed `agent_version_id` and its source hash at creation,
+never at dispatch. An omitted creation version selects the latest committed
+version once; later Draft edits or commits do not upgrade the WorkItem. Existing
+unbound rows remain unbound after migration. Unattempted rows can be explicitly
+bound; rows with historical attempts cannot change Agent, version or inputs to
+bypass recovery checks.
+
+Dispatch and Retry bind the displayed attempt number and a UUIDv7 idempotency
+key. Each durable attempt records its operation and previous Run, and uses its
+own attempt ID as the internal Runtime request key. Run creation and WorkItem
+binding commit together before execution is scheduled. Replays retain that
+attempt; they do not create a new key or stop an already-bound matching Run.
+Retry of an existing Run goes through Runtime's effect guard and preserves its
+version and lineage. Tool and image dispatch both prevent blind whole-run
+retry. Missing legacy binding or dispatch evidence requires explicit recovery,
+not a fresh execution. Lease expiry and stall recovery retain Run associations;
+late callbacks cannot overwrite a new owner or release an active attached Run.
+Creation commands for WorkItem-owned Runs must use Monitor's managed Retry
+path; a direct Runtime Retry/Resume cannot create an untracked child. Same-Run
+Stop, input replies, approvals and explicit budget continuation remain available.
 
 Runs remains immutable history. Monitor must not duplicate the full Run detail page.
 

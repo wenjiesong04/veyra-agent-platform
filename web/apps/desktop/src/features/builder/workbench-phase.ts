@@ -30,6 +30,12 @@ export function isUnsupportedCreate(operation: BuilderConversationOperation): bo
     && operation.events.some((event) => event.kind === "builder.intent.resolved" && event.facts.status === "unsupported");
 }
 
+export function isCreationApplyFailure(operation: BuilderConversationOperation): boolean {
+  return operation.status === "failed" && Boolean(operation.proposal_id)
+    && (operation.kind === "create_agent" || operation.kind === "create_workflow")
+    && ["agent_creation_apply", "workflow_creation_apply"].includes(operation.diagnostic.stage ?? "");
+}
+
 export function workbenchPhase(
   operation: BuilderConversationOperation | undefined,
   session: FactorySession | null,
@@ -38,6 +44,7 @@ export function workbenchPhase(
   if (createdAgentId || session?.state === "completed") return "completed";
   if (session?.state === "missing_capability" || operation?.error_code === "factory_missing_capability") return "missing";
   if (isBlockedCreation(operation, session)) return "blocked";
+  if (session?.state === "review" && operation?.factory_session_id === session.session_id && isCreationApplyFailure(operation)) return "review";
   if (operation?.status === "failed") return "failed";
   if (operation?.status === "rejected" || session?.state === "abandoned") return "finished";
   if (session?.state === "review") return "review";
@@ -70,11 +77,12 @@ export function openStageStartedAt(events: Array<{ kind: string; created_at: str
   return null;
 }
 
-export function runningClock(startedAt: string, now: number, locale: "zh" | "en"): string {
+export function runningClock(startedAt: string, now: number, locale: "zh" | "en", scope: "stage" | "operation" = "stage"): string {
   const start = Date.parse(startedAt);
   if (!Number.isFinite(start)) return "";
   const seconds = Math.max(0, Math.floor((now - start) / 1000));
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  if (scope === "operation") return locale === "zh" ? `总耗时 ${clock}` : `Total elapsed ${clock}`;
   return locale === "zh" ? `已进行 ${clock}` : `Running ${clock}`;
 }
 

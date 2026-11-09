@@ -269,9 +269,18 @@ def build_router() -> APIRouter:
         fork_slug: Annotated[str | None, Form()] = None,
         fork_version: Annotated[str | None, Form()] = None,
         fork_source_hash: Annotated[str | None, Form()] = None,
+        expected_publisher_id: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         authenticated = authenticate_request(request)
         require_csrf(request, authenticated, get_settings(request))
+        if (
+            expected_publisher_id is not None
+            and expected_publisher_id != authenticated.user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="publication_account_changed",
+            )
         content = await package.read(MAX_PACKAGE_BYTES + 1)
         await package.close()
         return _translate(

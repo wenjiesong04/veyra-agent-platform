@@ -137,6 +137,14 @@ def _validate_call_dataflow(
                     )
             for output, variable in (node.output_mapping or {}).items():
                 values[variable] = child_outputs[output]
+        elif node.component_type is ComponentType.VERIFIER:
+            for parameter, variable in (node.input_mapping or {}).items():
+                if variable not in values:
+                    raise ProjectError(
+                        f"Verifier {node_id} input {parameter} needs a prior "
+                        f"variable: {variable}",
+                        code="workflow_verifier_input_invalid",
+                    )
         elif (
             node.component_type is ComponentType.HUMAN_APPROVAL
             and node.review == "input"

@@ -8,13 +8,18 @@ import json
 import struct
 import zlib
 from base64 import b64decode, b64encode
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
+from veyra_agent_platform.local.factory.capability_profile import (
+    ProviderCapabilityProfile,
+    derive_provider_capability_profile,
+    structured_response_format,
+)
 from veyra_agent_platform.local.models.contracts import ProviderModelDescriptor
 from veyra_agent_platform.local.models.discovery import normalize_provider_models
 from veyra_agent_platform.local.secrets import (
@@ -56,6 +61,10 @@ class RuntimeProviderNotConfigured(RuntimeProviderError):
 class RuntimeCompletion:
     content: str
     finish_reason: str | None
+    review_protocol: str | None = None
+
+
+CapabilityProfileLookup = Callable[[str], ProviderCapabilityProfile | None]
 
 
 MAX_GENERATED_IMAGE_BYTES = 20_000_000
@@ -208,19 +217,45 @@ class HttpRuntimeTransport:
         messages: Sequence[Mapping[str, Any]],
         *,
         response_format: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> RuntimeCompletion:
         body = self._request_body(messages, response_format=response_format)
         _assert_provider_safe_messages(messages)
+        timeout = httpx.Timeout(
+            self.settings.timeout_seconds,
+            read=timeout_seconds
+            if timeout_seconds is not None
+            else self.settings.timeout_seconds,
+        )
         try:
             response = self._client.post(
                 "/v1/messages"
                 if self.settings.provider_type == "anthropic"
                 else "/chat/completions",
                 json=body,
+                timeout=timeout,
             )
         except httpx.TimeoutException as exc:
+            phase = next(
+                (
+                    name
+                    for kind, name in (
+                        (httpx.ReadTimeout, "read"),
+                        (httpx.ConnectTimeout, "connect"),
+                        (httpx.WriteTimeout, "write"),
+                        (httpx.PoolTimeout, "pool"),
+                    )
+                    if isinstance(exc, kind)
+                ),
+                "unknown",
+            )
             raise RuntimeProviderError(
-                "runtime_timeout", "Runtime model request timed out"
+                "runtime_timeout",
+                "Runtime model request timed out",
+                diagnostic={
+                    "timeout_phase": phase,
+                    "timeout_seconds": timeout.as_dict().get(phase),
+                },
             ) from exc
         except httpx.HTTPError as exc:
             raise RuntimeProviderError(
@@ -316,6 +351,51 @@ class HttpRuntimeTransport:
             raise RuntimeProviderError(
                 "runtime_unavailable", "Runtime model service is unavailable"
             ) from exc
+
+    def complete_action(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        response_format: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> RuntimeCompletion:
+        from .completion_stream import complete_text_stream
+
+        _assert_provider_safe_messages(messages)
+        return complete_text_stream(
+            self._client,
+            self.settings,
+            self._request_body(messages, response_format=response_format),
+            read_timeout_seconds=timeout_seconds
+            if timeout_seconds is not None
+            else self.settings.timeout_seconds,
+            max_duration_seconds=self.settings.action_max_duration_seconds,
+            on_progress=on_progress,
+            is_cancelled=is_cancelled,
+        )
+
+    def complete_review(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        response_format: Mapping[str, Any] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> RuntimeCompletion:
+        from .completion_stream import complete_text_stream
+
+        _assert_provider_safe_messages(messages)
+        return complete_text_stream(
+            self._client,
+            self.settings,
+            self._request_body(messages, response_format=response_format),
+            read_timeout_seconds=self.settings.review_timeout_seconds,
+            max_duration_seconds=self.settings.review_max_duration_seconds,
+            on_progress=on_progress,
+            is_cancelled=is_cancelled,
+        )
 
     def generate_images(
         self, prompt: str, *, count: int = 1, size: str | None = None
@@ -496,6 +576,7 @@ class RuntimeModelClient:
         *,
         secret_store: SecretStore | None = None,
         secret_ref: str = MODEL_SECRET_REF,
+        provider_capability_lookup: CapabilityProfileLookup | None = None,
     ) -> None:
         self.settings = settings
         self.transport = transport
@@ -503,6 +584,7 @@ class RuntimeModelClient:
         self._secret_ref = secret_ref
         self._http: HttpRuntimeTransport | None = None
         self._model_checked = False
+        self.provider_capability_lookup = provider_capability_lookup
 
     @property
     def configured(self) -> bool:
@@ -541,24 +623,55 @@ class RuntimeModelClient:
         messages: Sequence[Mapping[str, Any]],
         *,
         response_format: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> RuntimeCompletion:
         if not self.configured:
             raise RuntimeProviderNotConfigured()
         transport: Any = self._transport()
         self._ensure_model(transport)
+        if timeout_seconds is not None and isinstance(transport, HttpRuntimeTransport):
+            return transport.complete(
+                messages,
+                response_format=response_format,
+                timeout_seconds=timeout_seconds,
+            )
         completion: RuntimeCompletion = _call_with_response_format(
             transport.complete, messages, response_format
         )
         return completion
 
     def complete_action(
-        self, messages: Sequence[Mapping[str, Any]]
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        timeout_seconds: float | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> RuntimeCompletion:
         """Use a known Provider's JSON mode for the Agent action contract.
 
         Unknown compatible endpoints retain the text protocol; they must not
         receive parameters whose support has not been established.
         """
+        if not self.configured:
+            raise RuntimeProviderNotConfigured()
+        transport = self._transport()
+        self._ensure_model(transport)
+        if isinstance(transport, HttpRuntimeTransport):
+            return transport.complete_action(
+                messages,
+                response_format=self._action_response_format(),
+                timeout_seconds=timeout_seconds,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
+            )
+        return self.complete(
+            messages,
+            response_format=self._action_response_format(),
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _action_response_format(self) -> dict[str, str] | None:
         host = (urlsplit(self.settings.model_base_url).hostname or "").lower()
         known_json = self.settings.provider_type in {
             "openai",
@@ -570,9 +683,72 @@ class RuntimeModelClient:
             "api.moonshot.ai",
             "openrouter.ai",
         }
-        return self.complete(
-            messages, response_format={"type": "json_object"} if known_json else None
+        return {"type": "json_object"} if known_json else None
+
+    def complete_review(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        schema: Mapping[str, Any] | None = None,
+    ) -> RuntimeCompletion:
+        """One aggregate review stream; injected legacy transports stay compatible."""
+        if not self.configured:
+            raise RuntimeProviderNotConfigured()
+        transport = self._transport()
+        self._ensure_model(transport)
+        response_format = self._review_response_format(schema)
+        if isinstance(transport, HttpRuntimeTransport):
+            completion = transport.complete_review(
+                messages,
+                response_format=response_format,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
+            )
+        else:
+            completion = self.complete(
+                messages,
+                response_format=response_format,
+                timeout_seconds=self.settings.review_timeout_seconds,
+            )
+        return (
+            RuntimeCompletion(
+                content=completion.content,
+                finish_reason=completion.finish_reason,
+                review_protocol=str(response_format["type"])
+                if response_format
+                else "text",
+            )
+            if schema is not None
+            else completion
         )
+
+    def _review_response_format(
+        self, schema: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        # The native Messages transport does not send Chat Completions formats.
+        if self.settings.provider_type == "anthropic":
+            return None
+        if schema is not None and self.provider_capability_lookup is not None:
+            seed = derive_provider_capability_profile(self.settings)
+            profile = self.provider_capability_lookup(seed.identity_key)
+            if (
+                profile is not None
+                and profile.identity_key == seed.identity_key
+                and profile.provider_family == seed.provider_family
+                and profile.schema_flavor == seed.schema_flavor
+                and profile.status == "known"
+                and profile.source == "probe"
+                and profile.probed
+                and profile.checked_at
+                and profile.strict_json_schema
+                and profile.strict_json_schema_support == "supported"
+            ):
+                return structured_response_format(
+                    profile, name="veyra_delivery_review", schema=schema
+                )
+        return self._action_response_format()
 
     def stream(
         self,
@@ -850,7 +1026,8 @@ def _raise_for_provider(response: httpx.Response) -> None:
     if response.status_code == 403:
         raise RuntimeProviderError(
             "runtime_permission_denied",
-            "This key does not have permission to use the model service",
+            "The model service refused access (HTTP 403); "
+            "the response does not establish the specific cause",
         )
     if provider_code == "model":
         raise RuntimeProviderError(

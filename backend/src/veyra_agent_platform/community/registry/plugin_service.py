@@ -80,6 +80,15 @@ class CommunityPluginRegistryService:
             entries = [self._entry_payload(*row, session) for row in rows]
         return {"schema_version": "community.plugin.registry.v1", "entries": entries}
 
+    def owned_entries(self, *, user_id: str, limit: int = 100) -> dict[str, Any]:
+        clean_limit = min(max(limit, 1), 100)
+        with self.database.transaction() as session:
+            rows = self.repository.list_owned_versions(
+                session, owner_id=user_id, limit=clean_limit
+            )
+            entries = [self._entry_payload(*row, session) for row in rows]
+        return {"schema_version": "community.plugin.registry.v1", "entries": entries}
+
     def entry(
         self, *, owner_handle: str, slug: str, version: str | None = None
     ) -> dict[str, Any]:

@@ -61,6 +61,7 @@ class PlannedResource:
     factory_selectable: bool = True
     required_permissions: dict[str, Any] | None = None
     secret_ref: str | None = None
+    adapter: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -82,6 +83,8 @@ class PlannedResource:
             payload["required_permissions"] = dict(self.required_permissions)
         if self.secret_ref:
             payload["secret_ref"] = self.secret_ref
+        if self.adapter:
+            payload["adapter"] = self.adapter
         return payload
 
     @classmethod
@@ -123,6 +126,7 @@ class PlannedResource:
                 if isinstance(item.get("secret_ref"), str) and item.get("secret_ref")
                 else None
             ),
+            adapter=str(item.get("adapter") or ""),
         )
 
 

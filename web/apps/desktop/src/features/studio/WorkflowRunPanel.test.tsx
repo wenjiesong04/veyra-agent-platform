@@ -94,7 +94,7 @@ describe("WorkflowRunPanel", () => {
       status: "waiting",
       result: null,
       finished_at: null,
-      waiting: { kind: "approval", node_id: "call", prompt: "Write notes.txt?", agent_id: "agent-1", child_run_id: "child-1" },
+      waiting: { kind: "approval", node_id: "call", prompt: "Write notes.txt?", request_id: "write-1", agent_id: "agent-1", child_run_id: "child-1" },
       children: [{ node_id: "call", agent_id: "agent-1", version_id: "version-1", child_run_id: "child-1", status: "waiting" }],
     };
     const commandWorkflowRun = vi.fn().mockResolvedValue({ ...run, status: "unverified", waiting: null });
@@ -106,12 +106,12 @@ describe("WorkflowRunPanel", () => {
     await user.click(screen.getByRole("button", { name: "Test run" }));
     expect(await screen.findByText("Write notes.txt?")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(commandWorkflowRun).toHaveBeenCalledWith("project-1", "wf-1", "run-w1", { command: "approve" }));
+    await waitFor(() => expect(commandWorkflowRun).toHaveBeenCalledWith("project-1", "wf-1", "run-w1", { command: "approve", expected_request_id: "write-1" }));
   });
 
   it("collects declared fields and replies to a human-input wait", async () => {
     const inputSource: WorkflowSource = { ...source, nodes: [...source.nodes, { id: "input", component_type: "HumanApproval", prompt: "Which model?", review: "input", inputs: { model: "string" } }] };
-    const waiting: WorkflowRunResponse = { ...run, status: "waiting", result: null, finished_at: null, waiting: { kind: "input", node_id: "input", prompt: "Which model?", expected_fields: ["model"] } };
+    const waiting: WorkflowRunResponse = { ...run, status: "waiting", result: null, finished_at: null, waiting: { kind: "input", node_id: "input", prompt: "Which model?", request_id: "input-1", expected_fields: ["model"] } };
     const commandWorkflowRun = vi.fn().mockResolvedValue({ ...run, waiting: null });
     const api = { runWorkflow: vi.fn().mockResolvedValue(waiting), getWorkflowRun: vi.fn().mockResolvedValue(waiting), commandWorkflowRun } as unknown as LocalProjectApi;
     const user = userEvent.setup();
@@ -122,7 +122,7 @@ describe("WorkflowRunPanel", () => {
     expect(within(reply).queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     await user.type(within(reply).getByRole("textbox"), "ABC-1");
     await user.click(within(reply).getByRole("button", { name: "Submit and continue" }));
-    await waitFor(() => expect(commandWorkflowRun).toHaveBeenCalledWith("project-1", "wf-1", "run-w1", { command: "reply", inputs: { model: "ABC-1" } }));
+    await waitFor(() => expect(commandWorkflowRun).toHaveBeenCalledWith("project-1", "wf-1", "run-w1", { command: "reply", expected_request_id: "input-1", inputs: { model: "ABC-1" } }));
   });
 
   it("collapses the overlay chrome without leaving the JSON editor behind", async () => {
@@ -134,5 +134,27 @@ describe("WorkflowRunPanel", () => {
     await user.click(screen.getByRole("button", { name: "Collapse test panel" }));
     expect(screen.queryByRole("button", { name: "Test run" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Expand test panel" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("refreshes a stale request without resending it to the next request", async () => {
+    const first: WorkflowRunResponse = { ...run, status: "waiting", result: null, finished_at: null, waiting: { kind: "approval", node_id: "call", prompt: "First approval", request_id: "request-old" } };
+    const second = { ...first, waiting: { ...first.waiting!, prompt: "Second approval", request_id: "request-new" } };
+    let current = first;
+    const commandWorkflowRun = vi.fn().mockImplementation(async () => {
+      if (current === first) { current = second; throw new Error("Request changed"); }
+      return current;
+    });
+    const api = { runWorkflow: vi.fn().mockResolvedValue(first), getWorkflowRun: vi.fn().mockImplementation(async () => current), commandWorkflowRun } as unknown as LocalProjectApi;
+    render(<WorkflowRunPanel api={api} projectId="project-1" workflowId="wf-1" source={source} disabled={false} locale="en" />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Expand test panel" }));
+    await user.click(screen.getByRole("button", { name: "Test run" }));
+    await screen.findByText("First approval");
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Second approval")).toBeInTheDocument();
+    expect(commandWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(commandWorkflowRun).toHaveBeenLastCalledWith("project-1", "wf-1", "run-w1", { command: "approve", expected_request_id: "request-old" });
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    expect(commandWorkflowRun).toHaveBeenLastCalledWith("project-1", "wf-1", "run-w1", { command: "reject", expected_request_id: "request-new" });
   });
 });

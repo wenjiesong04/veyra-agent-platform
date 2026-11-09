@@ -1,9 +1,10 @@
 import * as React from "react";
-import { Code2, LayoutPanelTop, Play, Save, SlidersHorizontal } from "lucide-react";
+import { AppWindow, ArrowUpToLine, Code2, Download, LayoutPanelTop, LoaderCircle, MessageSquare, RotateCw, SlidersHorizontal } from "lucide-react";
 import type { ResourceDescriptor, StudioSource, TypedFields, ValidateResponse } from "@veyra/api-contracts";
 import { isTypedFieldSpec, projectRoutePaths } from "@veyra/api-contracts";
-import { Button, Alert, LinkButton, Panel, SectionHeading, StatusBadge, useLocale } from "@veyra/ui";
+import { Button, Alert, LinkButton, Panel, SectionHeading, StatusBadge, toast, useLocale } from "@veyra/ui";
 import { committedVersions } from "../features/agents/interaction-mode";
+import { chatTargetHref } from "../features/agents/chat/chat-scope";
 import { LocalApiClientError } from "../api/local-client";
 import { useProjectWorkspace } from "../api/project-workspace";
 import { StudioWorkbench } from "../features/studio/StudioWorkbench";
@@ -24,16 +25,16 @@ type StudioView = "canvas" | "form" | "source";
 
 const studioCopy = {
   zh: {
-    saved: "已保存", dirty: "草稿变更", committed: "已提交", saving: "正在保存",
-    save: "保存草稿", commit: "校验并提交版本", loading: "正在加载草稿…", unavailable: "本地草稿不可用", retry: "重试", loadDisk: "加载磁盘版本",
+    saved: "已保存", dirty: "等待自动保存", saving: "正在保存", saveFailed: "保存失败", conflict: "草稿冲突", invalid: "草稿待修正", retrySave: "重试保存",
+    commit: "校验并提交版本", commitHint: "校验当前草稿并创建不可变版本", loading: "正在加载草稿…", unavailable: "本地草稿不可用", retry: "重试", loadDisk: "加载磁盘版本",
     canvas: "Canvas", form: "表单", source: "源码", capabilities: "能力", view: "Studio 视图", revision: "修订",
-    openApp: "打开应用", commitFirst: "请先提交一个可运行版本",
+    openApp: "打开应用", appHint: "使用已提交版本，跳转前先保存当前草稿", commitFirst: "请先提交一个可运行版本", chatEdit: "用对话修改", chatEditHint: "在 Veyra 对话中继续修改，跳转前先保存当前草稿", export: "导出 Agent", exportHint: "下载已保存的 Agent 定义（YAML）", exporting: "正在导出…", exportPending: "请先修正并保存草稿，再导出", retrySaveHint: "重新保存当前草稿，保留你的修改", autosave: "修改会在停止编辑 2 秒后自动保存",
   },
   en: {
-    saved: "Saved", dirty: "Draft changes", committed: "Committed", saving: "Saving",
-    save: "Save draft", commit: "Validate & commit", loading: "Loading draft…", unavailable: "Draft unavailable", retry: "Retry", loadDisk: "Load disk version",
+    saved: "Saved", dirty: "Autosave pending", saving: "Saving", saveFailed: "Save failed", conflict: "Draft conflict", invalid: "Draft needs attention", retrySave: "Retry save",
+    commit: "Validate & commit", commitHint: "Validate this Draft and create an immutable version", loading: "Loading draft…", unavailable: "Draft unavailable", retry: "Retry", loadDisk: "Load disk version",
     canvas: "Canvas", form: "Form", source: "Source", capabilities: "Capabilities", view: "Studio view", revision: "revision",
-    openApp: "Open App", commitFirst: "Commit a version before opening the App",
+    openApp: "Open App", appHint: "Use a committed version; save the current Draft before leaving", commitFirst: "Commit a version before opening the App", chatEdit: "Edit with Veyra", chatEditHint: "Continue editing in Veyra Chat; save this Draft before leaving", export: "Export Agent", exportHint: "Download the saved Agent definition as YAML", exporting: "Exporting…", exportPending: "Finish and save the Draft before exporting", retrySaveHint: "Save this Draft again while retaining your edits", autosave: "Changes save automatically after 2 seconds of idle time",
   },
 } as const;
 
@@ -64,7 +65,7 @@ export function StudioPage(props: StudioPageProps) {
   if (runId && isAgentDesignRoute && props.agentId) {
     return <RunExecutionCanvas api={api} projectId={props.projectId} agentId={props.agentId} runId={runId} locale={locale} />;
   }
-  if (runId) return <Panel><RunDetail api={api} {...props} runId={runId} locale={locale} /></Panel>;
+  if (runId) return <div className="run-detail-page"><RunDetail api={api} {...props} runId={runId} locale={locale} /></div>;
   return <StudioEditor key={`${props.projectId}:${props.agentId ?? props.workflowId}`} {...props} />;
 }
 
@@ -80,6 +81,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   const [hasCommittedVersion, setHasCommittedVersion] = React.useState(false);
   const writing = React.useRef(false);
   const [writeBusy, setWriteBusy] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
   const [invalidBuffers, setInvalidBuffers] = React.useState<Set<string>>(new Set());
   const bufferValidity = React.useCallback((field: string, invalid: boolean) => {
     setInvalidBuffers((fields) => { const next = new Set(fields); if (invalid) next.add(field); else next.delete(field); return next; });
@@ -135,8 +137,9 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
   const diagnostics = source ? graphDiagnostics(source, catalog) : [];
   const updateSource = React.useCallback((next: StudioSource) => {
     const source = adoptStudioSource(next);
+    if (status !== "conflict") setMessage("");
     setSource(source); setDirty(JSON.stringify(source) !== cleanSnapshot.current); setStatus((status) => status === "conflict" ? status : "ready"); setValidation(null);
-  }, []);
+  }, [status]);
   const editorBlocked = writeBusy || invalidBuffers.size > 0 || status === "conflict";
   const canSaveDraft = !editorBlocked && (isWorkflow ? Boolean(api.saveWorkflowDraft) : Boolean(api.saveDraft));
   const canReloadDraft = isWorkflow ? Boolean(api.reloadWorkflowDraft) : Boolean(api.reloadDraft);
@@ -145,7 +148,7 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
     if (writing.current || invalidBuffers.size || status === "conflict" || !source || diagnostics.length || (isWorkflow ? !api.saveWorkflowDraft : !api.saveDraft)) return false;
     writing.current = true; setWriteBusy(true);
     const sentSnapshot = JSON.stringify(source);
-    setStatus("saving");
+    setMessage(""); setStatus("saving");
     try {
       const saved = isWorkflow && workflowId && api.saveWorkflowDraft && source.component_type === "Workflow"
         ? await api.saveWorkflowDraft(projectId, workflowId, { source, expected_revision: revision }, { etag })
@@ -171,6 +174,14 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
     return false;
   }, [api, projectId, agentId, workflowId, isWorkflow, source, diagnostics.length, revision, etag, locale, invalidBuffers.size, status]);
   const navigate = async (href: string) => {
+    if (writing.current) {
+      setMessage(locale === "zh" ? "请等待当前保存或提交完成。当前输入已保留。" : "Wait for the current save or commit to finish. Your input is retained.");
+      return;
+    }
+    if (invalidBuffers.size || status === "conflict") {
+      setMessage(locale === "zh" ? "请先修正当前草稿或加载磁盘版本，再离开 Studio。当前输入已保留。" : "Correct this Draft or load the disk version before leaving Studio. Your input is retained.");
+      return;
+    }
     if (status === "saving" || (dirty && !(await save("manual")))) {
       setMessage(locale === "zh" ? "请先完成并保存当前草稿，再打开引用资源。当前修改已保留。" : "Complete and save this draft before opening the resource. Your edits are retained.");
       return;
@@ -208,11 +219,27 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
       setMessage(error instanceof Error ? error.message : (locale === "zh" ? "校验或提交失败。" : "Validation or commit failed."));
     } finally { writing.current = false; setWriteBusy(false); }
   };
+  const exportAgent = async () => {
+    if (!agentId || !api.exportAgent || writing.current || dirty || editorBlocked || diagnostics.length || status === "offline" || exporting) return;
+    setExporting(true);
+    try {
+      const exported = await api.exportAgent(projectId, agentId);
+      const url = URL.createObjectURL(new Blob([exported.source_text], { type: "application/yaml" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : (locale === "zh" ? "导出失败，请重试。" : "Export failed. Try again."));
+    } finally { setExporting(false); }
+  };
   if (!project && status !== "loading") return <NotFoundPage backHref="#/projects" backLabel={locale === "zh" ? "返回项目" : "Back to Projects"} />;
   if (status === "loading") return <Panel><SectionHeading eyebrow="Studio" title={copy.loading} /></Panel>;
   if (!source) return <Panel><SectionHeading eyebrow="Studio" title={copy.unavailable} detail={message} action={status === "conflict" && canReloadDraft ? <Button onClick={() => void loadDiskVersion()}>{copy.loadDisk}</Button> : <Button onClick={() => void load()}>{copy.retry}</Button>} /></Panel>;
-  const statusLabel = status === "committed" ? copy.committed : status === "saving" ? copy.saving : dirty ? copy.dirty : copy.saved;
-  const statusTone = status === "offline" || status === "conflict" ? "bad" : dirty || status === "saving" ? "warn" : "good";
+  const needsAttention = invalidBuffers.size > 0 || diagnostics.length > 0;
+  const statusLabel = status === "conflict" ? copy.conflict : status === "offline" ? copy.saveFailed : needsAttention ? copy.invalid : status === "saving" ? copy.saving : dirty ? copy.dirty : copy.saved;
+  const statusError = status === "offline" || status === "conflict" || needsAttention;
+  const statusTone = statusError ? "bad" : status === "saving" || dirty ? "warn" : "good";
+  const exportBlocked = dirty || editorBlocked || diagnostics.length > 0 || status === "offline" || exporting;
   const loopAgent = source.component_type === "Flow" && source.extensions.veyra.execution_kind === "loop";
   const viewLabel = (item: StudioView) => (item === "form" && loopAgent ? copy.capabilities : copy[item]);
   return <div className="page-stack studio-page">
@@ -232,7 +259,36 @@ function StudioEditor({ projectId, agentId, workflowId }: StudioPageProps) {
               onLoadDisk={() => void loadDiskVersion()}
             />
           ) : null}
-          <div className="studio-toolbar"><div className="view-switcher" role="tablist" aria-label={copy.view}>{(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{viewLabel(item)}</span></button>)}</div><div className="studio-toolbar-end">{agentId || workflowId ? (hasCommittedVersion ? <LinkButton href={isWorkflow && workflowId ? projectRoutePaths.workflowRun(projectId, workflowId) : projectRoutePaths.agent(projectId, agentId ?? "")} icon={Play} variant="secondary">{copy.openApp}</LinkButton> : <Button icon={Play} disabled title={copy.commitFirst}>{copy.openApp}</Button>) : null}{view === "canvas" ? <><span className="toolbar-meta">{copy.revision} <strong>{revision}</strong>{behaviorHash ? <> · behavior <strong>{behaviorHash.slice(0, 10)}</strong></> : null}</span><StatusBadge label={statusLabel} tone={statusTone} /><Button icon={Save} variant="primary" disabled={!dirty || status === "saving" || diagnostics.length > 0 || !canSaveDraft} onClick={() => void save("manual")}>{copy.save}</Button><Button className="studio-toolbar-commit" disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()}>{copy.commit}</Button>{!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-export" onClick={() => { void api.exportAgent!(projectId, agentId).then((exported) => { const blob = new Blob([exported.source_text], { type: "application/yaml" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${exported.source.slug}.vagent.yaml`; link.click(); URL.revokeObjectURL(url); }).catch(() => undefined); }}>{locale === "zh" ? "导出 Agent" : "Export Agent"}</Button> : null}</> : null}</div></div>
+          <div className="studio-toolbar">
+            <div className="view-switcher" role="tablist" aria-label={copy.view}>
+              {(["canvas", "form", "source"] as StudioView[]).map((item) => <button className={view === item ? "active" : ""} key={item} role="tab" aria-selected={view === item} onClick={() => setView(item)}>{item === "canvas" ? <LayoutPanelTop size={15} /> : item === "form" ? <SlidersHorizontal size={15} /> : <Code2 size={15} />}<span className="studio-view-label">{viewLabel(item)}</span></button>)}
+            </div>
+            <div className="studio-toolbar-end" role="group" aria-label={locale === "zh" ? "草稿操作" : "Draft actions"}>
+              <span className={`studio-save-status${status === "saving" ? " is-saving" : ""}`} role="status" aria-live="polite" title={`${statusError ? message || statusLabel : copy.autosave} · ${copy.revision} ${revision}${behaviorHash ? ` · behavior ${behaviorHash.slice(0, 10)}` : ""}`}><StatusBadge label={statusLabel} tone={statusTone} /></span>
+              <Button className="studio-toolbar-icon studio-toolbar-commit" icon={ArrowUpToLine} variant="primary" size="sm" aria-label={copy.commit} title={`${copy.commit} · ${copy.commitHint}`} disabled={dirty || status === "saving" || !canCommit || diagnostics.length > 0} onClick={() => void validateAndCommit()} />
+              {status === "offline" && dirty ? <Button className="studio-toolbar-icon" icon={RotateCw} variant="ghost" size="sm" aria-label={copy.retrySave} title={`${copy.retrySave} · ${copy.retrySaveHint}`} disabled={!canSaveDraft || diagnostics.length > 0} onClick={() => void save("manual")} /> : null}
+              <span className="studio-toolbar-divider" aria-hidden="true" />
+              {!isWorkflow && agentId ? <LinkButton
+                href={chatTargetHref({ kind: "agent", projectId, agentId, name: source.name, projectName: project?.name ?? "" })}
+                className="studio-toolbar-icon"
+                icon={MessageSquare}
+                variant="ghost"
+                size="sm"
+                aria-label={copy.chatEdit}
+                title={`${copy.chatEdit} · ${copy.chatEditHint}`}
+                onClick={(event) => {
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                  event.preventDefault();
+                  void navigate(event.currentTarget.getAttribute("href") ?? "");
+                }}
+              /> : null}
+              {agentId || workflowId ? (hasCommittedVersion ? <LinkButton className="studio-toolbar-icon studio-toolbar-app" href={isWorkflow && workflowId ? projectRoutePaths.workflowRun(projectId, workflowId) : projectRoutePaths.agent(projectId, agentId ?? "")} icon={AppWindow} variant="ghost" size="sm" aria-label={copy.openApp} title={`${copy.openApp} · ${copy.appHint}`} onClick={(event) => {
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                event.preventDefault(); void navigate(event.currentTarget.getAttribute("href") ?? "");
+              }} /> : <Button className="studio-toolbar-icon studio-toolbar-app" icon={AppWindow} variant="ghost" size="sm" disabled aria-label={copy.openApp} title={`${copy.openApp} · ${copy.commitFirst}`} />) : null}
+              {!isWorkflow && agentId && api.exportAgent ? <Button className="studio-toolbar-icon studio-toolbar-export" icon={exporting ? LoaderCircle : Download} variant="ghost" size="sm" aria-label={copy.export} aria-busy={exporting} title={`${copy.export} · ${exporting ? copy.exporting : exportBlocked ? copy.exportPending : copy.exportHint}`} disabled={exportBlocked} onClick={() => void exportAgent()} /> : null}
+            </div>
+          </div>
           <StudioStage view={view}>
             {view === "canvas" ? <StudioWorkbench source={source} onChange={updateSource} locale={locale} catalog={catalog} api={api} projectId={projectId} agentId={agentId} workflowId={workflowId} mode={isWorkflow ? "workflow" : "agent"} agents={project?.agents ?? []} knowledge={project?.knowledge ?? []} onNavigate={(href) => { void navigate(href); }} /> : view === "form" ? <FormView source={source} onChange={updateSource} onBufferValidity={bufferValidity} /> : <SourceView source={source} onChange={updateSource} onBufferValidity={bufferValidity} />}
             {isWorkflow && workflowId && source.component_type === "Workflow" ? <StudioRunDock locale={locale}><WorkflowRunPanel key={workflowId} api={api} projectId={projectId} workflowId={workflowId} source={source} disabled={dirty || diagnostics.length > 0} locale={locale} /></StudioRunDock> : null}

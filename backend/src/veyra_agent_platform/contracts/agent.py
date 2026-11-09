@@ -27,13 +27,14 @@ from .common import (
     require_uuid7,
     thaw_json,
 )
-from .condition import parse_value_path
+from .condition import parse_condition_expression, parse_value_path
 from .dataflow import (
     DataEdge,
     data_edges_to_wire,
     parse_data_edges,
     validate_data_edges,
 )
+from .finalization import FinalizationContract
 from .interaction import INTERACTION_AUTO, INTERACTION_MODES, resolve_interaction_mode
 from .resource import (
     AgentVersionRef,
@@ -50,6 +51,7 @@ from .typed_io import (
     parse_typed_fields,
     typed_fields_to_wire,
 )
+from .verification import parse_verifier_check
 
 MAX_REVISIONS = 10
 _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -83,6 +85,7 @@ class ComponentType(StrEnum):
     HUMAN_APPROVAL = "HumanApproval"
     VERIFIER = "Verifier"
     OUTPUT = "Output"
+    STOP = "Stop"
     CUSTOM_COMPONENT = "CustomComponent"
     AGENT_CALL = "AgentCall"
 
@@ -114,6 +117,7 @@ _ALLOWED_PORTS: dict[ComponentType, frozenset[TransitionPort]] = {
     ),
     ComponentType.VERIFIER: frozenset({TransitionPort.PASSED, TransitionPort.FAILED}),
     ComponentType.OUTPUT: frozenset(),
+    ComponentType.STOP: frozenset(),
     ComponentType.CUSTOM_COMPONENT: frozenset({TransitionPort.NEXT}),
     ComponentType.AGENT_CALL: frozenset({TransitionPort.NEXT}),
 }
@@ -143,6 +147,7 @@ _WORKFLOW_GRAPH_TYPES = frozenset(
         ComponentType.HUMAN_APPROVAL,
         ComponentType.VERIFIER,
         ComponentType.OUTPUT,
+        ComponentType.STOP,
     }
 )
 
@@ -166,6 +171,8 @@ class PermissionContract:
     filesystem_read_roots: tuple[str, ...] = ()
     filesystem_write_roots: tuple[str, ...] = ()
     shell_workspace_only: bool = False
+    protect_input_files: bool = False
+    protected_input_fields: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> PermissionContract:
@@ -178,6 +185,8 @@ class PermissionContract:
                 "filesystem_read_roots",
                 "filesystem_write_roots",
                 "shell_workspace_only",
+                "protect_input_files",
+                "protected_input_fields",
             },
             required={"network_hosts", "tools"},
         )
@@ -185,6 +194,18 @@ class PermissionContract:
         if not isinstance(shell_workspace_only, bool):
             raise ContractValidationError(
                 "permissions.shell_workspace_only must be boolean"
+            )
+        protect_input_files = item.get("protect_input_files", False)
+        if not isinstance(protect_input_files, bool):
+            raise ContractValidationError(
+                "permissions.protect_input_files must be boolean"
+            )
+        protected_input_fields = _strict_str_list(
+            item.get("protected_input_fields", []), "permissions.protected_input_fields"
+        )
+        if protected_input_fields and not protect_input_files:
+            raise ContractValidationError(
+                "protected_input_fields requires protect_input_files"
             )
         return cls(
             network_hosts=_strict_str_list(
@@ -200,16 +221,35 @@ class PermissionContract:
                 "permissions.filesystem_write_roots",
             ),
             shell_workspace_only=shell_workspace_only,
+            protect_input_files=protect_input_files,
+            protected_input_fields=protected_input_fields,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "network_hosts": list(self.network_hosts),
             "tools": list(self.tools),
             "filesystem_read_roots": list(self.filesystem_read_roots),
             "filesystem_write_roots": list(self.filesystem_write_roots),
             "shell_workspace_only": self.shell_workspace_only,
         }
+        # Absent opt-in fields preserve hashes of previously committed sources.
+        if self.protect_input_files:
+            result["protect_input_files"] = True
+        if self.protected_input_fields:
+            result["protected_input_fields"] = list(self.protected_input_fields)
+        return result
+
+    def validate_input_fields(self, inputs: Mapping[str, TypedField]) -> None:
+        for name in self.protected_input_fields:
+            field = inputs.get(name)
+            if field is None or (
+                (field.compact_type != "string" or field.multiple)
+                and not field.is_artifact()
+            ):
+                raise ContractValidationError(
+                    "protected_input_fields must name declared paths or file inputs"
+                )
 
 
 @dataclass(frozen=True)
@@ -291,6 +331,7 @@ class FlowNode:
         values = {key: item.get(key) for key in fields - {"id", "component_type"}}
         allowed_by_type: dict[ComponentType, set[str]] = {
             ComponentType.START: set(),
+            ComponentType.STOP: set(),
             ComponentType.AGENT: {"model_ref", "system_prompt", "inputs", "outputs"},
             ComponentType.MODEL: {"model_ref", "system_prompt", "inputs", "outputs"},
             ComponentType.TOOL: {
@@ -316,7 +357,7 @@ class FlowNode:
                 "max_revisions",
                 "inputs",
             },
-            ComponentType.VERIFIER: {"checks"},
+            ComponentType.VERIFIER: {"checks", "input_mapping"},
             ComponentType.OUTPUT: {"output_name"},
             ComponentType.AGENT_CALL: {
                 "agent_ref",
@@ -336,6 +377,7 @@ class FlowNode:
             )
         required_by_type: dict[ComponentType, set[str]] = {
             ComponentType.START: set(),
+            ComponentType.STOP: set(),
             ComponentType.AGENT: {"model_ref", "system_prompt"},
             ComponentType.MODEL: {"model_ref", "system_prompt"},
             ComponentType.TOOL: {"uses"},
@@ -438,12 +480,20 @@ class FlowNode:
                 else None
             ),
             input_mapping=(
-                _call_mapping(item["input_mapping"], "node.input_mapping")
+                _call_mapping(
+                    item["input_mapping"],
+                    "node.input_mapping",
+                    tool_parameters=component_type is ComponentType.TOOL,
+                )
                 if "input_mapping" in present
                 else None
             ),
             output_mapping=(
-                _call_mapping(item["output_mapping"], "node.output_mapping")
+                _call_mapping(
+                    item["output_mapping"],
+                    "node.output_mapping",
+                    tool_parameters=component_type is ComponentType.TOOL,
+                )
                 if "output_mapping" in present
                 else None
             ),
@@ -492,15 +542,19 @@ class FlowNode:
         return result
 
 
-def _call_mapping(value: Any, field_name: str) -> Mapping[str, str]:
+def _call_mapping(
+    value: Any, field_name: str, *, tool_parameters: bool = False
+) -> Mapping[str, str]:
     """Child field names map to Workflow values; expressions are not accepted."""
     mapping = require_mapping(value, field_name)
     parsed = {
-        require_string(key, field_name, pattern=_SLUG): require_string(
-            target, field_name, pattern=NODE_ID_RE
-        )
+        require_string(
+            key, field_name, pattern=None if tool_parameters else _SLUG
+        ): require_string(target, field_name, pattern=NODE_ID_RE)
         for key, target in mapping.items()
     }
+    if tool_parameters and any(len(name) > 128 for name in parsed):
+        raise ContractValidationError("Tool parameter names exceed 128 characters")
     return cast(Mapping[str, str], freeze_json(parsed))
 
 
@@ -1203,6 +1257,7 @@ class AgentSource:
     max_turns: int = DEFAULT_MAX_TURNS
     handoff_agent_refs: tuple[str, ...] = ()
     state_contract: StateRequirement | None = None
+    finalization: FinalizationContract | None = None
     _version_present: bool = field(default=False, repr=False, compare=False)
 
     @property
@@ -1260,6 +1315,7 @@ class AgentSource:
                 "max_turns",
                 "handoff_agent_refs",
                 "state_contract",
+                "finalization",
             },
             required={"runtime_profile", "secret_refs", "permissions", "verification"},
         )
@@ -1323,6 +1379,9 @@ class AgentSource:
                 veyra.get("handoff_agent_refs", []), "handoff_agent_refs"
             ),
             state_contract=_agent_state_contract(veyra.get("state_contract")),
+            finalization=FinalizationContract.from_dict(veyra["finalization"])
+            if "finalization" in veyra
+            else None,
             _version_present="version" in item,
         )
         if any(
@@ -1372,6 +1431,35 @@ class AgentSource:
                 "every Tool, Skill, Policy, and catalog binding "
                 "reference must be locked"
             )
+        source.permissions.validate_input_fields(source.inputs)
+        if source.finalization is not None:
+            if any(
+                name not in source.inputs
+                for name in source.finalization.evidence_inputs
+            ):
+                raise ContractValidationError(
+                    "finalization.evidence_inputs must reference declared inputs"
+                )
+            if not source.is_loop:
+                raise ContractValidationError("finalization requires a loop Agent")
+            for check in source.finalization.checks:
+                kind, argument = parse_verifier_check(check)
+                root = None
+                if kind in {"required_fields", "artifact_exists"}:
+                    root = argument
+                elif kind == "constraint_match":
+                    root = parse_condition_expression(argument).root
+                elif kind == "schema_valid":
+                    root = "result"
+                if root is not None and root not in source.outputs:
+                    raise ContractValidationError(
+                        "finalization checks must reference declared outputs"
+                    )
+            if source.finalization.review_images and not any(
+                output.is_artifact() and output.artifact_kind == "image"
+                for output in source.outputs.values()
+            ):
+                raise ContractValidationError("image review requires image outputs")
         return source
 
     def to_dict(self) -> dict[str, Any]:
@@ -1422,6 +1510,8 @@ class AgentSource:
             result["extensions"]["veyra"]["state_contract"] = (
                 self.state_contract.to_dict()
             )
+        if self.finalization is not None:
+            result["extensions"]["veyra"]["finalization"] = self.finalization.to_dict()
         if self._version_present or self.version != "1.0.0":
             result["version"] = self.version
         if self.data_edges:

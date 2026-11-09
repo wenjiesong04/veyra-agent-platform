@@ -51,6 +51,18 @@ function reviewSession(): FactorySession {
 }
 
 describe("Factory review canvas", () => {
+  it("labels a Workflow Stop terminal without disguising it as a Transform", () => {
+    const candidate = reviewSession();
+    candidate.target_kind = "workflow";
+    candidate.blueprint = {
+      nodes: [{ id: "start", component_type: "Start" }, { id: "stop", component_type: "Stop" }],
+      transitions: [{ from: "start", port: "next", to: "stop" }],
+    };
+    render(<FactoryAssemblyCanvas locale="zh" session={candidate} busy={null} phase="review" canGenerate={false} canApply studioHref={null} createdAgentId={null} drafted={false} focusChild={false} embedded onClose={() => undefined} onApply={() => undefined} />);
+    expect(screen.getByText("停止")).toBeInTheDocument();
+    expect(screen.queryByText("转换")).not.toBeInTheDocument();
+  });
+
   it("shows a blocked plan without a live clock, stage pulse, or creation actions", () => {
     const onApply = vi.fn();
     const onGenerate = vi.fn();
@@ -77,8 +89,9 @@ describe("Factory review canvas", () => {
       />,
     );
     expect(screen.getByRole("heading", { name: "方案暂时无法生成" })).toBeInTheDocument();
+    expect(screen.getByText(/原始需求已保留；可以重试/)).toBeInTheDocument();
+    expect(screen.queryByText(/补充你希望它如何工作|调整任务要求/)).not.toBeInTheDocument();
     expect(screen.getByText(/尚未创建 Agent 或 Workflow/)).toBeInTheDocument();
-    expect(screen.getByText(/可补充你希望它如何工作，再重新发送/)).toBeInTheDocument();
     expect(screen.getByText("方案未完整保留你的要求，因此没有创建。")).toBeInTheDocument();
     expect(screen.getByText("查看阻塞原因").closest("details")).not.toHaveAttribute("open");
     expect(screen.queryByText(/已进行|这一步仍在进行/)).not.toBeInTheDocument();
@@ -124,6 +137,8 @@ describe("Factory review canvas", () => {
       onClose={() => undefined} onApply={() => undefined} />);
     expect(screen.getByText("查看阻塞原因")).toBeInTheDocument();
     expect(screen.getByText("当前无法按要求保存和恢复任务状态。")).toBeInTheDocument();
+    expect(screen.getByText(/当前还不能完整实现这类任务/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看可用资源" })).toHaveAttribute("href", "#/resources");
   });
 
   it("shows product shape and execution plan on review", () => {

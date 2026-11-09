@@ -8,12 +8,13 @@ from veyra_agent_platform.local.builder.capability_requirements import (
     requirement_for,
 )
 
-_MODEL_ONLY = {
+_BUILTIN_CAPABILITIES = {
     "vision",
     "text_generation",
     "structured_output",
     "tool_calling",
     "human_approval",
+    "ask_user",
 }
 
 
@@ -26,7 +27,9 @@ def derive_plan_capabilities(plan: ExecutionPlan) -> tuple[CapabilityRequirement
     for actor in plan.actors:
         names.extend(actor.capabilities)
     unique = list(
-        dict.fromkeys(name for name in names if name and name not in _MODEL_ONLY)
+        dict.fromkeys(
+            name for name in names if name and name not in _BUILTIN_CAPABILITIES
+        )
     )
     # image_generation stays required so missing is honest.
     return tuple(requirement_for(name) for name in unique)

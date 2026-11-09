@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 
@@ -183,6 +183,7 @@ class HttpKimiTransport:
         response_format: Mapping[str, Any] | None = None,
         read_timeout: float | None | object = _DEFAULT_READ_TIMEOUT,
         on_visible: Callable[[str], None] | None = None,
+        reasoning_effort: Literal["low", "high", "max"] | None = None,
     ) -> KimiCompletion:
         body: dict[str, Any] = {
             "model": self.settings.model_id,
@@ -191,7 +192,9 @@ class HttpKimiTransport:
         }
         profile = derive_provider_capability_profile(self.settings)
         if profile.reasoning_effort:
-            body["reasoning_effort"] = self.settings.reasoning_effort
+            body["reasoning_effort"] = (
+                reasoning_effort or self.settings.reasoning_effort
+            )
         if response_format is not None:
             body["response_format"] = dict(response_format)
         if read_timeout is _DEFAULT_READ_TIMEOUT:
@@ -386,6 +389,7 @@ class KimiClient:
         response_format: Mapping[str, Any] | None = None,
         read_timeout: float | None | object = _DEFAULT_READ_TIMEOUT,
         on_visible: Callable[[str], None] | None = None,
+        reasoning_effort: Literal["low", "high", "max"] | None = None,
     ) -> KimiCompletion:
         transport = self._transport()
         if isinstance(transport, HttpKimiTransport) and on_visible is not None:
@@ -394,15 +398,16 @@ class KimiClient:
                 response_format=response_format,
                 read_timeout=read_timeout,
                 on_visible=on_visible,
+                reasoning_effort=reasoning_effort,
             )
-        if (
-            isinstance(transport, HttpKimiTransport)
-            and read_timeout is not _DEFAULT_READ_TIMEOUT
+        if isinstance(transport, HttpKimiTransport) and (
+            read_timeout is not _DEFAULT_READ_TIMEOUT or reasoning_effort is not None
         ):
             return transport.complete(
                 messages,
                 response_format=response_format,
                 read_timeout=read_timeout,
+                reasoning_effort=reasoning_effort,
             )
         return transport.complete(messages, response_format=response_format)
 
@@ -428,10 +433,32 @@ def _raise_for_provider(response: httpx.Response) -> None:
             details=status_details,
         )
     if response.status_code == 429:
+        facts = _provider_error_facts(response)
+        rate_details = {
+            **status_details,
+            **{
+                key: value
+                for key, value in facts.items()
+                if key
+                in {"provider_error_type", "provider_error_code", "rejected_field"}
+            },
+        }
+        retry_after = response.headers.get("Retry-After", "").strip()
+        if rate_details.get("provider_error_type") in {
+            "exceeded_current_quota_error",
+            "insufficient_quota",
+        }:
+            raise FactoryProviderError(
+                "factory_quota_exhausted",
+                "Provider account quota is exhausted",
+                details=rate_details,
+            )
+        if re.fullmatch(r"\d{1,5}", retry_after) and int(retry_after) <= 86_400:
+            rate_details["retry_after_seconds"] = str(int(retry_after))
         raise FactoryProviderError(
             "factory_rate_limited",
             "Factory model service is rate limited",
-            details=status_details,
+            details=rate_details,
         )
     if response.status_code >= 500:
         raise FactoryProviderError(
@@ -470,7 +497,7 @@ def _provider_error_facts(response: httpx.Response) -> dict[str, str]:
     for source, destination in mapping:
         value = error.get(source)
         if isinstance(value, str) and value.strip():
-            facts[destination] = value.strip()[:80]
+            facts[destination] = _REDACT.sub("<redacted>", value.strip())[:80]
     message = error.get("message")
     if not isinstance(message, str) or not message.strip():
         return facts
@@ -480,7 +507,7 @@ def _provider_error_facts(response: httpx.Response) -> dict[str, str]:
     facts["bounded_message"] = cleaned
     match = _ERROR_PATH.search(message)
     if match is not None and "rejected_field" not in facts:
-        facts["rejected_field"] = match.group(1)[:160]
+        facts["rejected_field"] = _REDACT.sub("<redacted>", match.group(1))[:160]
     return facts
 
 

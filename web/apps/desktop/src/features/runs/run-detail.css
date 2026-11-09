@@ -1,0 +1,115 @@
+.run-detail-view {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+.run-detail-page { min-width: 0; width: min(1120px, 100%); margin: 0 auto; padding: 4px 0 24px; }
+.page-content:has(> .run-detail-page) { background: var(--surface); }
+:root[data-theme="dark"] .page-content:has(> .run-detail-page) {
+  --surface: #1b1c1f;
+  --surface-soft: #24262a;
+  --line: #34363b;
+  --line-strong: #45484e;
+  --ink: #f1f2f4;
+  --muted: #b5bac3;
+  --subtle: #a7adb7;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .page-content:has(> .run-detail-page) {
+    --surface: #1b1c1f;
+    --surface-soft: #24262a;
+    --line: #34363b;
+    --line-strong: #45484e;
+    --ink: #f1f2f4;
+    --muted: #b5bac3;
+    --subtle: #a7adb7;
+  }
+}
+.run-detail-raw { min-width: 0; padding-bottom: 16px; }
+.run-detail-raw > summary { min-height: 36px; align-content: center; cursor: pointer; font-size: 13px; color: var(--muted); }
+.run-detail-raw pre { max-width: 100%; overflow-x: auto; font-size: 12px; }
+
+.run-detail-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.run-detail-title,
+.run-detail-navigation,
+.run-detail-meta,
+.run-detail-meta > span,
+.run-detail-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+
+.run-detail-title h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+.run-detail-navigation { gap: 4px; }
+.run-detail-meta { grid-column: 1 / -1; gap: 8px 20px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.run-detail-meta > span { gap: 6px; }
+.run-detail-controls:empty { display: none; }
+.run-detail-controls > .ui-alert, .run-detail-controls > .agent-input-reply { flex: 1 1 100%; }
+.run-detail-result { display: grid; gap: 20px; min-width: 0; padding: 4px 0 12px; }
+.run-detail-result > h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.run-detail-result > .runtime-output-reading { max-width: 800px; }
+.run-detail-result .runtime-output-reading { font-size: 14px; }
+
+.run-detail-disclosure {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+}
+
+.run-detail-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  list-style: none;
+}
+
+.run-detail-disclosure > summary::-webkit-details-marker { display: none; }
+.run-detail-disclosure > summary > svg { color: var(--muted); flex: none; }
+.run-detail-disclosure > summary > .run-detail-chevron { margin-left: auto; transform: rotate(-90deg); }
+.run-detail-disclosure[open] > summary > .run-detail-chevron { transform: rotate(0); }
+.run-detail-disclosure > summary > small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.run-detail-disclosure > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.run-detail-record { display: grid; gap: 16px; min-width: 0; padding: 4px 0 20px; }
+.run-detail-record > .studio-event-list { margin: 0; }
+.run-detail-record .studio-event-row { font-size: 13px; }
+.run-detail-record pre { max-width: 100%; overflow-x: auto; }
+.run-detail-identities { display: grid; gap: 0; margin: 0; padding: 0 0 16px; font-size: 12px; }
+.run-detail-identities > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px; padding: 10px 0; }
+.run-detail-identities dt { color: var(--muted); }
+.run-detail-identities dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.run-detail-view > .run-evaluation-disclosure { margin: 0; border-top: 1px solid var(--line); }
+.run-detail-view > .run-evaluation-disclosure > summary { padding: 16px 0; font-size: 14px; }
+
+@media (max-width: 680px) {
+  .run-detail-heading { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .run-detail-title h1 { font-size: 22px; }
+  .run-detail-navigation { order: -1; }
+  .run-detail-navigation .ui-button { min-height: 44px; }
+  .run-detail-meta { gap: 8px 16px; }
+  .run-detail-identities > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .run-detail-record .studio-event-row { grid-template-columns: 24px minmax(0, 1fr); }
+  .run-detail-record .studio-event-row > small { grid-column: 2; overflow-wrap: anywhere; }
+  .run-detail-controls > .ui-button { min-height: 44px; }
+}

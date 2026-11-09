@@ -159,6 +159,7 @@ def test_runtime_executes_persists_and_replays(tmp_path: Path) -> None:
             "Verifier",
             "Output",
             "CustomComponent",
+            "Stop",
         }
         project = client.post("/api/v1/projects", json={"agents": [source]}).json()
         agent = project["agents"][0]
@@ -1711,8 +1712,16 @@ def test_loop_agent_runtime_stops_at_max_turns(tmp_path: Path) -> None:
         agent = project["agents"][0]
         url = f"/api/v1/projects/{project['project_id']}/agents/{agent['agent_id']}/run"
         response = _run_until_settled(client, url, {"text": "你好"})
-        assert response["status"] == "failed", response
-        assert response["error"]["code"] == "agent_max_turns_exceeded"
+        assert response["status"] == "waiting", response
+        assert response["error"] is None and response["result"] is None
+        assert (
+            next(
+                event["payload"]
+                for event in reversed(response["events"])
+                if event["kind"] == "approval.requested"
+            )["kind"]
+            == "budget"
+        )
         assert len(transport.calls) == 2
 
 

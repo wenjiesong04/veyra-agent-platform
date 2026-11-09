@@ -54,7 +54,7 @@ export function bindWorkflowAgentCall(source: WorkflowSource, nodeId: string, ve
   ]));
   const outputMapping = Object.fromEntries(Object.keys(version.source.outputs).map((name) => [
     name,
-    target.agent_ref === ref && target.output_mapping?.[name]
+    target.output_mapping?.[name]
       ? target.output_mapping[name]
       : name in source.outputs ? name : `${nodeId}_${name}`,
   ]));
@@ -63,7 +63,7 @@ export function bindWorkflowAgentCall(source: WorkflowSource, nodeId: string, ve
   return {
     ...source,
     nodes,
-    lock: { ...Object.fromEntries(Object.entries(source.lock).filter(([key]) => used.has(key))), [ref]: version.source_hash },
+    lock: { ...Object.fromEntries(Object.entries(source.lock).filter(([key]) => !parseAgentCallRef(key) || used.has(key))), [ref]: version.source_hash },
   };
 }
 

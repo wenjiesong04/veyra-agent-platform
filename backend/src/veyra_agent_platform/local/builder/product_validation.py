@@ -10,7 +10,19 @@ from veyra_agent_platform.contracts.task_structure import TaskStructure
 from veyra_agent_platform.contracts.workflow import WorkflowSource
 
 from .agent_state import source_state_schema
+from .approval_routing import approval_outcome
+from .product_shape import (
+    native_loop_input,
+    native_loop_state,
+    native_loop_verification,
+    stage_key,
+)
 from .workflow_orchestration import WorkflowOrchestration
+
+TASK_UNCERTAINTY_PREFIX = (
+    "Resolve this uncertainty as runtime inputs/questions if supported; "
+    "retain genuinely unsupported duties: "
+)
 
 
 def validate_product_fidelity(
@@ -24,17 +36,18 @@ def validate_product_fidelity(
     issues: list[str] = []
     if structure.uncertainty:
         issues.append("task_requires_clarification")
-        issues.extend(
-            "Resolve this uncertainty as runtime inputs/questions if supported; "
-            "retain genuinely unsupported duties: " + item
-            for item in structure.uncertainty
-        )
+        issues.extend(TASK_UNCERTAINTY_PREFIX + item for item in structure.uncertainty)
     if (
         structure.lifecycle.interaction != "single_run"
         and not any(
             step.kind in {"human_input", "human_approval"} for step in plan.steps
         )
         and not (source is not None and source.is_loop)
+        and not any(
+            boundary.kind == "human_input"
+            and native_loop_input(structure, boundary.stage)
+            for boundary in structure.execution_boundaries
+        )
     ):
         issues.append("human_interaction_not_represented")
     if structure.lifecycle.persistent and structure.state is None:
@@ -66,10 +79,66 @@ def validate_product_fidelity(
         "condition": "condition",
     }
     for boundary in structure.execution_boundaries:
-        if not boundary.required or boundary.approval_class == "tool":
+        if not boundary.required or (
+            boundary.kind == "human_approval" and boundary.approval_class == "tool"
+        ):
             continue
         expected = boundary_steps.get(boundary.kind)
+        if approval_outcome(structure, boundary) is not None and any(
+            step.kind == "human_approval" for step in plan.steps
+        ):
+            continue
+        if boundary.kind == "verification" and native_loop_verification(
+            structure, boundary.stage
+        ):
+            owner = next(
+                stage.actor
+                for stage in structure.stages
+                if stage_key(stage.id) == stage_key(boundary.stage)
+            )
+            matched = (
+                [source]
+                if source is not None
+                else [
+                    agent
+                    for actor, agent in zip(plan.actors, agents, strict=True)
+                    if actor.id == owner
+                ]
+            )
+            if any(
+                agent is not None
+                and agent.finalization is not None
+                and boundary.reason in agent.finalization.criteria
+                for agent in matched
+            ):
+                continue
         if boundary.kind == "human_input" and source is not None and source.is_loop:
+            continue
+        if boundary.kind == "human_input" and native_loop_input(
+            structure, boundary.stage
+        ):
+            owner = next(
+                stage.actor
+                for stage in structure.stages
+                if stage_key(stage.id) == stage_key(boundary.stage)
+            )
+            if orchestration and any(
+                actor.id == owner
+                and (boundary.question or boundary.reason) in agent.instructions
+                for actor, agent in zip(
+                    plan.actors, orchestration.companions, strict=True
+                )
+            ):
+                continue
+        if (
+            boundary.kind == "state"
+            and plan.state is not None
+            and native_loop_state(structure, boundary.stage)
+            and any(
+                agent.is_loop and source_state_schema(agent) == plan.state.to_dict()
+                for agent in agents
+            )
+        ):
             continue
         if expected and not any(step.kind == expected for step in plan.steps):
             issues.append(f"required_boundary_not_represented:{boundary.stage}")

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { isArtifactCollection, isArtifactRef, type JsonObject, type JsonValue } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
 import { ArtifactCard } from "./RuntimeInputForm";
+import { RuntimeMarkdown } from "./RuntimeMarkdown";
 import "./runtime-output-reading.css";
 
 type Props = {
@@ -50,7 +51,9 @@ function ReadableValue({ depth = 0, ...props }: Props) {
   const { value, locale } = props;
   if (isArtifactRef(value)) return <ArtifactCard item={value} locale={locale} projectId={props.projectId} api={props.api} />;
   if (isArtifactCollection(value)) return <ReadableArray {...props} value={value.items} depth={depth} />;
-  if (typeof value === "string") return <p className={value ? "runtime-reading-text" : "runtime-reading-empty"}>{value || (locale === "zh" ? "空" : "Empty")}</p>;
+  if (typeof value === "string") return value
+    ? <RuntimeMarkdown value={value} locale={locale} />
+    : <p className="runtime-reading-empty">{locale === "zh" ? "空" : "Empty"}</p>;
   if (typeof value === "number") return <span className="runtime-reading-number">{new Intl.NumberFormat(locale === "zh" ? "zh-CN" : "en", { maximumSignificantDigits: 21 }).format(value)}</span>;
   if (typeof value === "boolean") return <span>{locale === "zh" ? (value ? "是" : "否") : (value ? "Yes" : "No")}</span>;
   if (value === null) return <span className="runtime-reading-empty" aria-label={locale === "zh" ? "空值" : "Null"}>—</span>;

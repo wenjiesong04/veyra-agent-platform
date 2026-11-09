@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from veyra_agent_platform.contracts.task_structure import TaskIOField
 from veyra_agent_platform.local.builder.generate_product import (
+    GenerationProduct,
     generate_builder_product,
     proposal_preview,
+)
+from veyra_agent_platform.local.builder.task_planner import plan_task_structure
+from veyra_agent_platform.local.factory.service import (
+    _project_generation_model_readiness,
 )
 from veyra_agent_platform.local.models.contracts import (
     CAPABILITY_NAMES,
@@ -13,6 +24,7 @@ from veyra_agent_platform.local.models.contracts import (
     ModelCapabilityRequirement,
     ModelMetadata,
     ModelProfile,
+    ModelResolutionIssue,
     ModelResolutionStatus,
     ModelRoleDefault,
     ModelVerification,
@@ -312,3 +324,185 @@ def test_proposal_candidate_is_stable_when_profile_rows_reorder() -> None:
     assert first_model["status"] == "will_bind"
     assert first_model["selected_model_profile_id"] == "alpha"
     assert reordered_model["selected_model_profile_id"] == "alpha"
+
+
+def _image_product(
+    profiles: tuple[ModelProfile, ...],
+    bindings: dict[str, dict[str, str]] | None = None,
+) -> GenerationProduct:
+    structure = plan_task_structure("Translate supplied text into English").structure
+    assert structure is not None
+    outputs = (*structure.outputs, TaskIOField(name="view", type="image"))
+    actor = replace(
+        structure.actors[0],
+        capabilities=("text_generation", "image_generation"),
+        outputs=outputs,
+    )
+    structure = replace(structure, actors=(actor,), outputs=outputs)
+    product = generate_builder_product(
+        structure.goal,
+        ResourceCatalog(),
+        model_profiles=profiles,
+        model_bindings=bindings,
+        planner_provider=SimpleNamespace(
+            complete_json=lambda prompt, schema: structure.to_dict()
+        ),
+    )
+    assert product.status == "review", product.diagnostics
+    assert product.plan is not None and product.plan.product_shape == "PURE_AGENT"
+    assert {item.slot for item in product.model_requirements} == {"primary", "image"}
+    return product
+
+
+def _model_plan() -> list[dict[str, str]]:
+    return [
+        {
+            "kind": "component",
+            "reference": "veyra.component.model@1.0.0",
+            "availability": "requires_configuration",
+            "runtime_status": "runtime_not_configured",
+        },
+        {
+            "kind": "tool",
+            "reference": "external.tool@1.0.0",
+            "availability": "requires_configuration",
+            "runtime_status": "runtime_not_configured",
+        },
+    ]
+
+
+@pytest.mark.parametrize("already_bound", [False, True])
+def test_verified_model_roles_project_static_model_setup_only(
+    already_bound: bool,
+) -> None:
+    primary = _profile("primary", {"text_generation": CapabilityStatus.SUPPORTED})
+    image = _profile("image", {"image_generation": CapabilityStatus.SUPPORTED})
+    bindings = (
+        {"project": {"primary_model": "primary", "image_model": "image"}}
+        if already_bound
+        else None
+    )
+    product = _image_product((primary, image), bindings)
+    plan = _model_plan()
+    projected = _project_generation_model_readiness(product, plan)
+    assert projected[0]["availability"] == "ready"
+    assert projected[0]["runtime_status"] == "supported"
+    assert projected[1] == plan[1]
+    assert plan[0]["availability"] == "requires_configuration"
+    assert (
+        ResourceCatalog().by_reference("veyra.component.model@1.0.0")["availability"]
+        == "requires_configuration"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing_primary_profile",
+        "missing_image_profile",
+        "unknown_image",
+        "declared_image",
+        "explicit_mismatch",
+        "stale_binding",
+        "missing_resolution",
+        "missing_profile_id",
+        "duplicate_resolution",
+        "requirement_mismatch",
+        "optional_issue",
+        "workflow",
+    ],
+)
+def test_incomplete_model_proof_never_projects_ready(failure: str) -> None:
+    primary = _profile("primary", {"text_generation": CapabilityStatus.SUPPORTED})
+    image = _profile(
+        "image",
+        {
+            "image_generation": CapabilityStatus.UNKNOWN
+            if failure == "unknown_image"
+            else CapabilityStatus.SUPPORTED
+        },
+        evidence_source=CapabilityEvidenceSource.USER_DECLARED
+        if failure == "declared_image"
+        else CapabilityEvidenceSource.PROVIDER_METADATA,
+    )
+    profiles = (
+        (primary,)
+        if failure == "missing_image_profile"
+        else (image,)
+        if failure == "missing_primary_profile"
+        else (primary, image)
+    )
+    binding_id = (
+        "primary"
+        if failure == "explicit_mismatch"
+        else "missing-profile"
+        if failure == "stale_binding"
+        else None
+    )
+    product = _image_product(
+        profiles, {"project": {"image_model": binding_id}} if binding_id else None
+    )
+    if failure == "missing_resolution":
+        product = replace(
+            product,
+            model_resolutions=tuple(
+                item for item in product.model_resolutions if item.slot != "image"
+            ),
+        )
+    elif failure in {"missing_profile_id", "requirement_mismatch"}:
+        product = replace(
+            product,
+            model_resolutions=(
+                replace(
+                    product.model_resolutions[0],
+                    **(
+                        {"selected_model_profile_id": None}
+                        if failure == "missing_profile_id"
+                        else {"required": ()}
+                    ),
+                ),
+                *product.model_resolutions[1:],
+            ),
+        )
+    elif failure == "duplicate_resolution":
+        product = replace(
+            product,
+            model_resolutions=(
+                *product.model_resolutions,
+                product.model_resolutions[0],
+            ),
+        )
+    elif failure == "optional_issue":
+        product = replace(
+            product,
+            model_resolutions=(
+                replace(
+                    product.model_resolutions[0],
+                    issue=ModelResolutionIssue(
+                        code="optional_model_capability_unavailable",
+                        message="A declared capability still needs a fallback.",
+                        unknown=("structured_output",),
+                    ),
+                ),
+                *product.model_resolutions[1:],
+            ),
+        )
+    elif failure == "workflow":
+        assert product.plan is not None
+        product = replace(
+            product,
+            plan=replace(
+                product.plan, shape=replace(product.plan.shape, shape="AGENT_WORKFLOW")
+            ),
+        )
+    plan = _model_plan()
+    assert _project_generation_model_readiness(product, plan) == plan
+
+
+def test_model_projection_does_not_override_an_unavailable_component() -> None:
+    primary = _profile("primary", {"text_generation": CapabilityStatus.SUPPORTED})
+    image = _profile("image", {"image_generation": CapabilityStatus.SUPPORTED})
+    product = _image_product((primary, image))
+    plan = _model_plan()
+    plan[0]["availability"] = "quarantined"
+    assert _project_generation_model_readiness(product, plan) == plan

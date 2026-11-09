@@ -105,7 +105,7 @@ describe("ModelRegistryPanel", () => {
   it.each([
     ["runtime_endpoint_not_found", /No matching model endpoint/],
     ["runtime_unauthorized", /The key was rejected/],
-    ["runtime_permission_denied", /lacks permission/],
+    ["runtime_permission_denied", /HTTP 403/],
     ["runtime_model_unavailable", /could not find this model/],
     ["runtime_parameters_unsupported", /rejected the test parameters/],
     ["runtime_insufficient_balance", /balance or quota is exhausted/],

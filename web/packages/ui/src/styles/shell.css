@@ -1297,9 +1297,11 @@
 
 .header-copy.has-breadcrumbs { display: flex; align-items: center; }
 
-.header-breadcrumbs { display: flex; min-width: 0; max-width: 48vw; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
-.breadcrumb-part { display: inline-flex; min-width: 0; align-items: center; gap: 8px; }
+.header-breadcrumbs { display: flex; min-width: 0; max-width: 48vw; overflow: hidden; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.breadcrumb-part { display: inline-flex; min-width: 0; overflow: hidden; align-items: center; gap: 8px; }
 .breadcrumb-part > a, .breadcrumb-part > span { display: inline-flex; min-width: 0; align-items: center; gap: 6px; color: inherit; text-decoration: none; }
+.breadcrumb-part svg, .breadcrumb-separator { flex: 0 0 auto; }
+.breadcrumb-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .breadcrumb-part > a:hover { color: var(--accent-strong); }
 .breadcrumb-part > span[aria-current="page"] { overflow: hidden; color: var(--ink); text-overflow: ellipsis; }
 .breadcrumb-separator { color: var(--subtle); }

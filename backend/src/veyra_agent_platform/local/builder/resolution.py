@@ -33,6 +33,7 @@ class BuilderMessage(ClosedModel):
 class ResolveRequest(ClosedModel):
     content: str = Field(min_length=1, max_length=10_000)
     history: list[BuilderMessage] = Field(default_factory=list, max_length=20)
+    requirement_context: str = Field(default="", max_length=100_000)
     focus: BuilderTarget | None = None
     locale: Literal["zh", "en"] = "en"
 
@@ -72,11 +73,22 @@ class DirectComponentIntent(ClosedModel):
     outputs: list[ComponentIntentField] = Field(min_length=1, max_length=8)
 
 
+CreationScope = Literal["single_product", "independent_products"]
+
+
 class Intent(ClosedModel):
     intent: Literal["create", "create_component", "edit", "discuss", "clarify"]
     create_kind: Literal["agent", "workflow", "resource", "custom_component"] | None
     targets: list[TargetEvidence] = Field(max_length=20)
     multi_object: bool
+    creation_scope: CreationScope | None = Field(
+        default=None,
+        description=(
+            "For Agent/Workflow creation: single_product includes one Workflow "
+            "and its new companion Agents; independent_products means separate "
+            "top-level products. Null for non-creation or unresolved scope."
+        ),
+    )
     instruction: str = Field(max_length=10_000)
     message: str = Field(min_length=1, max_length=4000)
     plan: list[str] = Field(max_length=12)
@@ -132,6 +144,7 @@ class BuilderResolutionService:
             completion = self.edits.client.complete(
                 messages,
                 response_format={"type": "json_object"},
+                reasoning_effort=self.edits.client.settings.intent_reasoning_effort,
                 **({"on_visible": on_visible} if on_visible is not None else {}),
             )
         except Exception as exc:
@@ -164,6 +177,8 @@ class BuilderResolutionService:
             "instruction": intent.instruction,
             "plan": intent.plan,
             "targets": [],
+            "model_multi_object": intent.multi_object,
+            "creation_scope": intent.creation_scope,
         }
         if intent.component_plan is not None:
             result["component_plan"] = intent.component_plan.model_dump()
@@ -276,6 +291,7 @@ class BuilderResolutionService:
                 return self._clarify(result, request, mentioned)
             if intent.multi_object or len(result["targets"]) != 1:
                 result["status"] = "unsupported"
+                result["decision_reason"] = "multi_object_edit"
                 result["message"] = (
                     "这是跨对象 / Workflow 级修改；当前尚不支持多对象事务，"
                     "未生成或应用部分修改。"
@@ -314,44 +330,72 @@ class BuilderResolutionService:
             else:
                 result.update(status="resolved", create_kind="custom_component")
                 result["intent"] = "create_component"
-        elif (
-            intent.intent == "create"
-            and intent.create_kind
-            in {
-                "agent",
-                "workflow",
-            }
-            and not intent.multi_object
-            and not intent.targets
-        ):
-            classified = classify_builder_target(request.content)
-            result["create_kind"] = classified.create_kind
-            result["user_requested_surface"] = classified.user_requested_surface
-            result["status"] = "resolved"
+        elif intent.intent == "create":
             result["instruction"] = request.content.strip()
-            result["message"] = (
-                classified.message_zh
-                if request.locale == "zh"
-                else classified.message_en
-            )
-            result["plan"] = [
-                classified.reason,
-                *list(intent.plan or []),
-            ][:12]
-        elif intent.intent == "create" and (
-            intent.create_kind not in {"agent", "workflow"}
-            or intent.multi_object
-            or intent.targets
-        ):
-            result["status"] = "unsupported"
-            result["message"] = (
-                "已识别创建需求；当前创建适配器仅支持单个 Agent 或 Workflow，"
-                "不会改为创建错误类型或部分对象。"
-                if request.locale == "zh"
-                else "Creation recognized. The current creation adapter supports "
-                "one Agent or one Workflow; it will not substitute another type "
-                "or create only part of the request."
-            )
+            if intent.create_kind not in {"agent", "workflow"}:
+                result.update(
+                    status="unsupported", decision_reason="unsupported_creation_kind"
+                )
+                result["message"] = (
+                    "当前创建入口支持 Agent、Workflow 和独立组件，"
+                    "尚不能创建这类资源；未创建任何对象。"
+                    if request.locale == "zh"
+                    else "This entry supports Agent, Workflow and component creation, "
+                    "not this resource type. Nothing was created."
+                )
+            elif intent.targets:
+                result.update(
+                    status="unsupported",
+                    decision_reason="creation_with_existing_mutations",
+                )
+                result["message"] = (
+                    "这次创建还包含对已有对象的修改，尚不支持把这些修改合并为一个事务；未创建或修改任何对象。"
+                    if request.locale == "zh"
+                    else "This creation also changes existing objects. That combined "
+                    "transaction is not supported; nothing was created or modified."
+                )
+            elif intent.creation_scope == "independent_products":
+                result.update(
+                    status="unsupported",
+                    decision_reason="independent_products_requested",
+                )
+                result["message"] = (
+                    "这次要求创建多个彼此独立的产品，请分别确认；"
+                    "一个 Workflow 内的多个协作 Agent 不受此限制。未创建任何对象。"
+                    if request.locale == "zh"
+                    else "These are separate top-level products; "
+                    "confirm each separately. "
+                    "Multiple companion Agents inside one Workflow are supported. "
+                    "Nothing was created."
+                )
+            elif intent.multi_object and intent.creation_scope is None:
+                result.update(
+                    status="clarification",
+                    intent="clarify",
+                    decision_reason="creation_scope_ambiguous",
+                )
+                result["message"] = (
+                    "你希望这些角色组成一个 Workflow，"
+                    "还是分别创建可独立使用的多个产品？"
+                    if request.locale == "zh"
+                    else "Should these roles form one Workflow, or be separate "
+                    "independent products?"
+                )
+            else:
+                classified = classify_builder_target(request.content)
+                result.update(
+                    create_kind=classified.create_kind,
+                    user_requested_surface=classified.user_requested_surface,
+                    status="resolved",
+                    creation_scope="single_product",
+                    decision_reason="single_product_creation",
+                )
+                result["message"] = (
+                    classified.message_zh
+                    if request.locale == "zh"
+                    else classified.message_en
+                )
+                result["plan"] = [classified.reason, *list(intent.plan or [])][:12]
         return result
 
     @staticmethod
@@ -365,6 +409,7 @@ class BuilderResolutionService:
             )
         )
         result.update(status="clarification", intent="clarify", targets=[], plan=[])
+        result["decision_reason"] = "target_ambiguous"
         if request.locale == "zh":
             result["message"] = (
                 f"你指的是哪一个对象：{choices}？"

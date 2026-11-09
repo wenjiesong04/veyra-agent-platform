@@ -89,7 +89,7 @@ describe("historical run navigation", () => {
     vi.mocked(api.getAgentRun!).mockResolvedValue(detail);
     api.commandAgentRun = vi.fn();
     mount(api, <RunDetail api={api} {...identity} locale="en" />);
-    await screen.findByRole("heading", { name: run.run_id });
+    await screen.findByRole("heading", { name: "Run detail" });
     expect(screen.queryByRole("button", { name: "Resume from checkpoint" })).not.toBeInTheDocument();
     if (kind === "approval") expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
@@ -127,7 +127,8 @@ describe("historical run navigation", () => {
     const { api } = setup();
     vi.mocked(api.getAgentRun!).mockResolvedValue({ ...run, events: [{ ...run.events![0], kind: "run.created", node_id: null, payload: { retry_of_run_id: "parent-run", retry_command_id: "command-1", inputs: { prompt: "original" } } }] });
     mount(api, <RunDetail api={api} {...identity} locale="en" />);
-    expect(await screen.findByRole("link", { name: "Original run" })).toHaveAttribute("href", runDetailHref({ ...identity, runId: "parent-run" }));
+    await userEvent.setup().click(await screen.findByText("Run information", { selector: "summary span" }));
+    expect(screen.getByRole("link", { name: "Original run" })).toHaveAttribute("href", runDetailHref({ ...identity, runId: "parent-run" }));
     expect(screen.getByText("version-original")).toBeInTheDocument();
     expect(screen.getByText(/command-1/)).toBeInTheDocument();
   });
@@ -135,6 +136,7 @@ describe("historical run navigation", () => {
   it("links Agent history and every Monitor attempt to the explicit original run", async () => {
     const { api } = setup();
     const view = mount(api, <AgentRunPage projectId="project-1" agentId="agent-1" />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Task context" }));
     await waitFor(() => expect(document.querySelector(`a[href="${runDetailHref(identity)}"]`)).not.toBeNull());
     expect(screen.queryByText(identity.runId)).not.toBeInTheDocument();
     expect(api.getAgentRun).not.toHaveBeenCalled();
@@ -151,7 +153,7 @@ describe("historical run navigation", () => {
     const page = entry === "history" ? <AgentRunPage projectId="project-1" agentId="agent-1" /> : <MonitorPage />;
     let view = mount(api, page);
     for (let attempt = 0; attempt < 2; attempt++) {
-      expect(await screen.findByRole("heading", { name: identity.runId })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "Run detail" })).toBeInTheDocument();
       expect(screen.getByText("Original failure")).toBeInTheDocument();
       expect(screen.getByText(run.created_at)).toBeInTheDocument();
       expect(screen.getByText(/original-evidence/)).toBeInTheDocument();
@@ -181,7 +183,7 @@ describe("historical run navigation", () => {
     cleanup();
     window.history.replaceState(null, "", runDetailHref(identity));
     mount(api, <StudioPage projectId="project-1" agentId="agent-1" />);
-    expect(await screen.findByRole("heading", { name: identity.runId })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Run detail" })).toBeInTheDocument();
     expect(screen.getByText("Original failure")).toBeInTheDocument();
   });
 
@@ -215,7 +217,7 @@ describe("historical run navigation", () => {
     const { agent_id: _, ...summary } = run;
     api.getWorkflowRun = vi.fn().mockResolvedValue({ ...summary, workflow_id: "workflow-1", children: [], waiting: null });
     mount(api, <RunDetail api={api} projectId="project-1" workflowId="workflow-1" runId={run.run_id} locale="en" />);
-    expect(await screen.findByRole("heading", { name: run.run_id })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Run detail" })).toBeInTheDocument();
     expect(api.getWorkflowRun).toHaveBeenCalledWith("project-1", "workflow-1", run.run_id);
     expect(api.getAgentRun).not.toHaveBeenCalled();
   });
@@ -240,11 +242,13 @@ describe("historical run navigation", () => {
 
   it("approves a restored waiting Run and reloads its authoritative detail", async () => {
     const { api } = setup();
-    vi.mocked(api.getAgentRun!).mockResolvedValueOnce({ ...run, status: "waiting", error: null, finished_at: null });
+    vi.mocked(api.getAgentRun!).mockResolvedValueOnce({ ...run, status: "waiting", error: null, finished_at: null,
+      events: [...run.events!, { ...run.events![0], event_id: "approval-event", sequence: 2, kind: "approval.requested", payload: { prompt: "Continue the restored Run?" } }],
+    });
     api.commandAgentRun = vi.fn().mockResolvedValue({ ...run, events: undefined });
     mount(api, <RunDetail api={api} {...identity} locale="en" />);
     await userEvent.setup().click(await screen.findByRole("button", { name: "Approve" }));
-    expect(api.commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "historical-1", { command: "approve" });
+    expect(api.commandAgentRun).toHaveBeenCalledWith("project-1", "agent-1", "historical-1", { command: "approve", expected_request_id: "approval-event" });
     expect(await screen.findByText("Original failure")).toBeInTheDocument();
     expect(screen.getByText(/original-evidence/)).toBeInTheDocument();
     expect(api.getAgentRun).toHaveBeenCalledTimes(2);

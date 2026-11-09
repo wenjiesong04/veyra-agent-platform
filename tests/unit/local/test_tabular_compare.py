@@ -415,7 +415,7 @@ def test_generator_pins_table_tool_without_model_capability_inflation() -> None:
     assert product.status == "review", product.diagnostics
     assert "veyra.tool.tabular.compare" in product.source.permissions.tools
     assert product.source.permissions.filesystem_read_roots == ("project",)
-    resource = catalog.detail("veyra.tool.tabular.compare", "1.0.0")
+    resource = catalog.detail("veyra.tool.tabular.compare", "1.2.0")
     assert product.source.lock[resource["reference"]] == resource["content_hash"]
     needs = derive_model_requirements(TaskStructure.from_dict(payload), product.plan)
     assert all(need.required == ("text_generation",) for need in needs)
