@@ -1,32 +1,72 @@
 # Veyra Agent Platform
 
-**Build and run Agents and Workflows in a local AI studio.**
+**Turn a request into a personalized Agent or Workflow you can see, edit, and reuse.**
 
-Describe a task in your own words, review what Veyra proposes, and edit the
-Agent or Workflow in Studio. Commit a version before running it with your own
-inputs, then inspect the results and execution records.
+Describe what you want to accomplish in Veyra Chat. Veyra's builder agent
+uses your goal, expected outputs, and constraints to propose an Agent or
+Workflow for your Project. Review the proposal, apply it, and keep refining
+the resulting definition in the visual Studio.
 
-![English Veyra Studio showing an example gift-packaging Workflow draft](docs/images/gift-studio-en.jpg)
+## From request to reusable automation
 
-The screenshot shows an example draft in the English Studio. The walkthrough
-uses recorded Workflow screens and an existing image candidate. The parent
-run failed, and the candidate still needs review.
+```mermaid
+flowchart LR
+    Request["Describe your task"] --> Builder["Veyra Builder<br/>Propose a design"]
+    Builder --> Studio["Review and apply<br/>Edit and test in Studio"]
+    Studio --> Version["Commit a version"]
+    Version --> Run["Run and review"]
+    Run -->|Refine the draft| Studio
+```
+
+1. **Describe the job.** Explain what you want to deliver, provide relevant
+   materials, and specify limits such as permitted tools or steps that need
+   your approval.
+2. **Review what Builder proposes.** Inspect the proposed inputs, outputs,
+   resources, and permissions. Apply the proposal when it fits your task.
+3. **Make it yours in Studio.** Use the Canvas to inspect an Agent's
+   capabilities or a Workflow's steps and branches. Edit the same definition
+   in the canvas, form, or source view, then test the draft.
+4. **Run, reuse, and improve it.** Commit a version and run that version with
+   new inputs. Use the results and execution records to decide what to change,
+   then edit the draft and commit a new version. Earlier runs retain their
+   original version.
+
+An **Agent** follows instructions and chooses among its permitted tools as it
+works. A **Workflow** gives you explicit control over steps, branches,
+approvals, and handoffs to specific Agent versions.
+
+## Example · Design packaging for a gift
+
+> Use my product photo to design a festive candy box. Keep the round,
+> divided structure, suggest colors and materials, and make a concept image
+> I can review.
+
+The example below shows how that brief can become a Workflow in Studio.
+Analysis, rendering, and output checks are visible as separate steps. A
+reviewer can open the draft, adjust a step or its inputs, and commit the next
+version for future runs.
+
+![English Veyra Studio showing the editable gift-packaging Workflow draft](docs/images/gift-studio-en.jpg)
+
+| Product photo | Generated design candidate |
+| --- | --- |
+| <img src="web/apps/community/public/showcase/gift-input.jpg" alt="Original round candy box with divided compartments" width="250"> | <img src="web/apps/community/public/showcase/gift-output.jpg" alt="Generated festive packaging concept for review" width="250"> |
+
+The Studio screenshot shows an illustrative draft. The recorded walkthrough
+uses the original case and its image candidate. The overall run failed, and
+the candidate still needs review.
 [Watch the 40-second walkthrough](web/apps/community/public/showcase/veyra-gift-tour.mp4) ·
 [Read the case notes](docs/SHOWCASE_MEDIA.md)
 
-## What you can do
+## Local workspace and Community
 
-- **Build in Desktop.** Create Projects, describe tasks in Chat, and review,
-  edit, test, and version your Agents and Workflows in Studio. Project files,
-  Builder conversations, and Run records are stored locally. Configured model
-  providers and tools may connect to external services.
-- **Share through the Community website.** Export an Agent in Desktop, then
-  sign in on the website to preview and publish the file. The website accepts
-  Agent definitions and Plugin Packs. Downloaded packages are imported and
-  inspected in Desktop. [Community guide](docs/COMMUNITY_WEBSITE.md)
-- **Inspect what ran.** Open the execution record to see the version, inputs,
-  outputs, and verification status. An execution can finish before its
-  result has been verified.
+Projects, Builder conversations, files, and run records stay in the local
+workspace. Configured model providers and tools may receive selected inputs.
+
+To share an Agent, export its definition in Desktop and review it for
+publication on the Community website. Community also accepts Plugin Packs.
+You can download a shared resource and inspect it in Desktop before use.
+[Community publishing and import guide](docs/COMMUNITY_WEBSITE.md)
 
 ## Quick start
 
