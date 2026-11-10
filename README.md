@@ -70,6 +70,11 @@ You can download a shared resource and inspect it in Desktop before use.
 
 ## Quick start
 
+These commands run a source checkout for development. In a hosted setup,
+the operator runs the Community website and account API on a server.
+Desktop users use the hosted service once the app's production sign-in
+connection is configured. [Community deployment guide](docs/community_production_storage.md)
+
 Use Conda, Python 3.11, and Node.js 24 with npm. Run these commands from the
 repository root. Create the Conda environment once and reuse it on later runs.
 
@@ -80,29 +85,49 @@ make install PYTHON=python
 npm --prefix web ci
 ```
 
-### Preview the website
+### Start the Desktop development workspace
 
-Run `npm --prefix web run dev:community` and open
-[the local product showcase](http://127.0.0.1:5174). The demo and project
-documentation are available before signing in.
-
-### Start the desktop workspace
-
-Start each service in its own terminal from the repository root. Activate
-`veyra-agent-platform` in each Python terminal.
+Run the Local API and Desktop interface in separate terminals. Activate
+`veyra-agent-platform` in the Python terminal.
 
 | Service | Command | Local address |
 | --- | --- | --- |
 | Local API | `veyra-local` | `127.0.0.1:8771` |
-| Community API | `make migrate-community PYTHON=python && veyra-community` | `127.0.0.1:8772` |
 | Desktop interface | `npm --prefix web run dev:desktop` | `127.0.0.1:5173` |
-| Community website | `npm --prefix web run dev:community` | `127.0.0.1:5174` |
 
-Open [Desktop](http://127.0.0.1:5173) and sign in with an account on the
-Community API you started. To create an account, set the SMTP variables shown
-in [.env.example](.env.example) in the Community API terminal before starting
-the service. Configure a model provider in Desktop Settings before asking
-Builder to generate an Agent or running a model-backed task.
+The current Desktop app requires a Community session before it opens the
+workspace. In development, the Vite proxy sends account requests to the
+Community API at `127.0.0.1:8772`. Start that API using the next section, then
+sign in to [Desktop](http://127.0.0.1:5173). If the API is unreachable when
+Desktop checks the session, the app shows the sign-in screen. Project data
+and execution stay on the device.
+
+Configure a model provider in Desktop Settings before asking Builder to
+generate an Agent or running a model-backed task.
+
+### Start the Community API for local sign-in and testing
+
+Activate `veyra-agent-platform` in a separate terminal and run the Community
+API from the repository root.
+
+```sh
+make migrate-community PYTHON=python
+veyra-community
+```
+
+To create a test account, export the SMTP settings in the Community API
+terminal before starting the service. [.env.example](.env.example)
+
+### Preview the Community website
+
+Run `npm --prefix web run dev:community` and open
+[the local product showcase](http://127.0.0.1:5174). The demo and project
+documentation are available before signing in. This website process is
+optional for Desktop sign-in.
+
+The release candidate still needs a production account API connection for
+packaged Desktop sign-in. The website address controls the external Community
+link in Desktop. [Community and Desktop guide](docs/COMMUNITY_WEBSITE.md)
 
 ## Build and validate
 
