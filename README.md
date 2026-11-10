@@ -35,26 +35,49 @@ An **Agent** follows instructions and chooses among its permitted tools as it
 works. A **Workflow** gives you explicit control over steps, branches,
 approvals, and handoffs to specific Agent versions.
 
-## Example · Design packaging for a gift
+## Example · Build a Gift Packaging Assistant
 
-> Use my product photo to design a festive candy box. Keep the round,
-> divided structure, suggest colors and materials, and make a concept image
-> I can review.
+### 1. Describe the Agent in Veyra Chat
 
-The example below shows how that brief can become a Workflow in Studio.
-Analysis, rendering, and output checks are visible as separate steps. A
-reviewer can open the draft, adjust a step or its inputs, and commit the next
-version for future runs.
+> Build a Gift Packaging Assistant. Use a product photo and gift brief to
+> propose a festive candy box. Keep the original round, divided shape.
 
-![English Veyra Studio showing the editable gift-packaging Workflow draft](docs/images/gift-studio-en.jpg)
+In this example, Veyra asks what to do if the photo leaves out the box
+dimensions. The user asks the Agent to request those dimensions and return a
+design brief for review.
+
+![English Veyra Chat showing the request and clarification for a gift packaging Agent](docs/images/gift-builder-chat-en.jpg)
+
+### 2. Review the generated Agent proposal
+
+Builder turns the conversation into a proposal with a goal, inputs, outputs,
+and instructions. The example accepts a product photo and brief and returns
+a design brief. Review the proposal and select **Review and create Draft** to
+create an editable Agent in the Project. Configure its model and any required
+tools before testing.
+
+![English Builder workbench showing the Gift Packaging Assistant proposal and draft creation action](docs/images/gift-agent-proposal-en.jpg)
+
+The conversation and proposal above are examples displayed in the Veyra UI.
+
+### 3. Edit, test, and reuse the draft in Studio
+
+Open the Agent in Studio to adjust its instructions, input fields, and
+capabilities. Test the draft, then commit a version you can run again with
+new product photos and briefs.
+
+For a job with explicit analysis, rendering, and output checks, ask Veyra for
+a **Workflow**. The English Studio screenshot below shows an illustrative
+Workflow draft for the same gift packaging task.
+
+![English Studio showing an editable gift packaging Workflow with analysis, rendering, and output checks](docs/images/gift-studio-en.jpg)
 
 | Product photo | Generated design candidate |
 | --- | --- |
-| <img src="web/apps/community/public/showcase/gift-input.jpg" alt="Original round candy box with divided compartments" width="250"> | <img src="web/apps/community/public/showcase/gift-output.jpg" alt="Generated festive packaging concept for review" width="250"> |
+| <img src="docs/images/gift-input.png" alt="Original round candy box with divided compartments" width="250"> | <img src="web/apps/community/public/showcase/gift-output.jpg" alt="Generated festive packaging concept for review" width="250"> |
 
-The Studio screenshot shows an illustrative draft. The recorded walkthrough
-uses the original case and its image candidate. The overall run failed, and
-the candidate still needs review.
+The recorded walkthrough shows the original Workflow case and its image
+candidate. The overall run failed, and the candidate still needs review.
 [Watch the 40-second walkthrough](web/apps/community/public/showcase/veyra-gift-tour.mp4) ·
 [Read the case notes](docs/SHOWCASE_MEDIA.md)
 
@@ -138,9 +161,10 @@ npm --prefix web test
 npm --prefix web run build
 ```
 
-The macOS arm64 desktop package is a release candidate. The repository contains
-the source and build instructions, and CI checks the sidecar, application
-signature, and DMG. [Desktop packaging guide](docs/desktop_packaging.md)
+The current desktop build targets Apple Silicon macOS. Tauri bundles the
+interface with the PyInstaller Local API executable, and CI checks startup,
+the application signature, and the DMG. The installer is a release candidate.
+[Desktop packaging guide](docs/desktop_packaging.md)
 
 ## Project documentation
 
