@@ -8,6 +8,8 @@ import re
 import tempfile
 from pathlib import Path
 
+from .durability import fsync_directory
+
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -33,7 +35,7 @@ def write_object(object_root: Path, contents: bytes) -> tuple[str, Path]:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_name, destination)
-        _fsync_directory(destination.parent)
+        fsync_directory(destination.parent)
     finally:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)
@@ -61,11 +63,3 @@ def read_object(object_root: Path, digest: str) -> bytes:
     if hashlib.sha256(payload).hexdigest() != digest:
         raise ValueError("content-addressed object verification failed")
     return payload
-
-
-def _fsync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)

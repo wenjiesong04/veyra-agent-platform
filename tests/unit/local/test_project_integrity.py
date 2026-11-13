@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -15,6 +16,7 @@ from veyra_agent_platform.contracts.common import new_uuid7
 from veyra_agent_platform.local.library import LibraryService
 from veyra_agent_platform.local.library.service import DraftConflict
 from veyra_agent_platform.local.projects import ProjectService
+from veyra_agent_platform.local.projects import service as project_service
 from veyra_agent_platform.local.projects.layout import BLANK_AGENT_NOTE_TEXT
 from veyra_agent_platform.local.projects.service import (
     MAX_INDEXED_FILE_BYTES,
@@ -23,6 +25,7 @@ from veyra_agent_platform.local.projects.service import (
 from veyra_agent_platform.local.storage import (
     IdempotencyConflict,
     LocalRepository,
+    durability,
     migrate_local_database,
 )
 from veyra_agent_platform.local.storage.bootstrap import HEAD_REVISION
@@ -242,6 +245,37 @@ def test_empty_project_creates_required_layout_and_reopens(tmp_path: Path) -> No
     assert created["workflows"] == []
     assert created["indexed_at"]
     assert projects.index(root)["project_id"] == created["project_id"]
+
+
+def test_windows_staging_flushes_files_without_opening_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    manifest = stage / "project.vproject.yaml"
+    manifest.write_bytes(b"project")
+    windows = SimpleNamespace(platform="win32")
+    monkeypatch.setattr(project_service, "sys", windows)
+    monkeypatch.setattr(durability, "sys", windows)
+
+    def reject_directory_open(*_args: object) -> None:
+        raise PermissionError("Windows CRT cannot open a directory")
+
+    real_open = Path.open
+    flushed: list[Path] = []
+
+    def open_for_flush(path: Path, mode: str):
+        assert mode == "r+b"
+        flushed.append(path)
+        return real_open(path, mode)
+
+    monkeypatch.setattr(durability, "os", SimpleNamespace(open=reject_directory_open))
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "open", open_for_flush)
+        ProjectService._fsync_tree(stage)
+
+    assert flushed == [manifest]
+    assert manifest.read_bytes() == b"project"
 
 
 def test_legacy_manifest_without_description_indexes_as_empty(tmp_path: Path) -> None:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
+from veyra_agent_platform.local.storage.durability import fsync_directory
+
 _CHUNK_SIZE = 1024 * 1024
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -86,7 +88,7 @@ def materialize_stream(
             destination.flush()
             os.fsync(destination.fileno())
         os.replace(temporary_name, target)
-        _fsync_directory(target.parent)
+        fsync_directory(target.parent)
     except ProjectMaterializeError:
         raise
     except OSError as exc:
@@ -135,11 +137,3 @@ def _safe_target(root: Path, relative_path: str) -> Path:
     if not resolved.is_relative_to(project_root.resolve()):
         raise ProjectMaterializeError("Project relative path escapes its root")
     return target
-
-
-def _fsync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)

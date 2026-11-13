@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import unicodedata
@@ -65,6 +66,7 @@ from veyra_agent_platform.local.projects.packaging import (
     pack_project_files,
     unpack_project_archive,
 )
+from veyra_agent_platform.local.storage.durability import fsync_directory
 from veyra_agent_platform.local.storage.objects import write_object
 from veyra_agent_platform.local.storage.project_sync import project_metadata_hash
 from veyra_agent_platform.local.storage.repositories import LocalRepository
@@ -219,7 +221,7 @@ class ProjectService:
                 raise ProjectError("selected Project directory already exists")
             os.replace(staging, root)
             installed = True
-            self._fsync_directory(root.parent)
+            fsync_directory(root.parent)
             if imported_bundle is not None:
                 manifest_path = root / "project.vproject.yaml"
                 return self._index_manifest(
@@ -237,7 +239,7 @@ class ProjectService:
                     shutil.rmtree(root)
                     if root_preexisted:
                         root.mkdir(mode=root_mode or 0o700)
-                    self._fsync_directory(root.parent)
+                    fsync_directory(root.parent)
                 except BaseException as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if staging.exists():
@@ -354,7 +356,7 @@ class ProjectService:
             os.replace(root, desired)
         except OSError as exc:
             raise ProjectError("managed Project folder could not be renamed") from exc
-        self._fsync_directory(desired.parent)
+        fsync_directory(desired.parent)
         self._rewrite_stored_root(project_id, desired.name)
         return desired
 
@@ -1182,7 +1184,7 @@ class ProjectService:
                 raise ProjectError("Project Agent path already exists")
             os.replace(staging, target)
             installed = True
-            self._fsync_directory(agents_root)
+            fsync_directory(agents_root)
             self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
             manifest_replaced = True
             self.index(root)
@@ -1197,7 +1199,7 @@ class ProjectService:
             if installed and target.exists():
                 try:
                     shutil.rmtree(target)
-                    self._fsync_directory(agents_root)
+                    fsync_directory(agents_root)
                 except BaseException as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if staging.exists():
@@ -1652,8 +1654,8 @@ class ProjectService:
             try:
                 os.replace(source, target)
                 moved = True
-                self._fsync_directory(source.parent)
-                self._fsync_directory(target.parent)
+                fsync_directory(source.parent)
+                fsync_directory(target.parent)
                 self.atomic_write(
                     manifest_path, self._canonical_source(validated.to_dict())
                 )
@@ -1683,8 +1685,8 @@ class ProjectService:
                 if moved and target.exists():
                     try:
                         os.replace(target, source)
-                        self._fsync_directory(source.parent)
-                        self._fsync_directory(target.parent)
+                        fsync_directory(source.parent)
+                        fsync_directory(target.parent)
                     except BaseException as rollback_exc:
                         rollback_errors.append(rollback_exc)
                 for rollback_error in rollback_errors:
@@ -1772,16 +1774,16 @@ class ProjectService:
             try:
                 os.replace(source, target)
                 moved = True
-                self._fsync_directory(source.parent)
-                self._fsync_directory(target.parent)
+                fsync_directory(source.parent)
+                fsync_directory(target.parent)
                 if not self.repository.remove_project(project_id, removed_at):
                     raise ProjectError("unknown Project")
             except BaseException as exc:
                 if moved:
                     try:
                         os.replace(target, source)
-                        self._fsync_directory(source.parent)
-                        self._fsync_directory(target.parent)
+                        fsync_directory(source.parent)
+                        fsync_directory(target.parent)
                     except BaseException as rollback_exc:
                         exc.add_note(f"rollback failed: {rollback_exc}")
                 raise
@@ -1840,7 +1842,7 @@ class ProjectService:
                 raise ProjectError("Project Workflow path already exists")
             os.replace(staging, target)
             installed = True
-            self._fsync_directory(workflows_root)
+            fsync_directory(workflows_root)
             self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
             manifest_replaced = True
             self.index(root)
@@ -1855,7 +1857,7 @@ class ProjectService:
             if installed and target.exists():
                 try:
                     shutil.rmtree(target)
-                    self._fsync_directory(workflows_root)
+                    fsync_directory(workflows_root)
                 except BaseException as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if staging.exists():
@@ -1991,8 +1993,8 @@ class ProjectService:
             try:
                 os.replace(source, target)
                 moved = True
-                self._fsync_directory(source.parent)
-                self._fsync_directory(target.parent)
+                fsync_directory(source.parent)
+                fsync_directory(target.parent)
                 self.atomic_write(
                     manifest_path, self._canonical_source(validated.to_dict())
                 )
@@ -2022,8 +2024,8 @@ class ProjectService:
                 if moved and target.exists():
                     try:
                         os.replace(target, source)
-                        self._fsync_directory(source.parent)
-                        self._fsync_directory(target.parent)
+                        fsync_directory(source.parent)
+                        fsync_directory(target.parent)
                     except BaseException as rollback_exc:
                         rollback_errors.append(rollback_exc)
                 for rollback_error in rollback_errors:
@@ -2285,7 +2287,7 @@ class ProjectService:
                 raise ProjectError("Project Knowledge path already exists")
             os.replace(staging, target)
             installed = True
-            self._fsync_directory(knowledge_root)
+            fsync_directory(knowledge_root)
             manifest_replaced = True
             self.atomic_write(manifest_path, self._canonical_source(updated_manifest))
             self.index(root)
@@ -2300,7 +2302,7 @@ class ProjectService:
             if installed and target.exists():
                 try:
                     shutil.rmtree(target)
-                    self._fsync_directory(knowledge_root)
+                    fsync_directory(knowledge_root)
                 except BaseException as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if staging.exists():
@@ -2620,8 +2622,8 @@ class ProjectService:
             try:
                 os.replace(source, target)
                 moved = True
-                self._fsync_directory(source.parent)
-                self._fsync_directory(target.parent)
+                fsync_directory(source.parent)
+                fsync_directory(target.parent)
                 self.atomic_write(
                     manifest_path, self._canonical_source(validated.to_dict())
                 )
@@ -2643,8 +2645,8 @@ class ProjectService:
                 if moved and target.exists():
                     try:
                         os.replace(target, source)
-                        self._fsync_directory(source.parent)
-                        self._fsync_directory(target.parent)
+                        fsync_directory(source.parent)
+                        fsync_directory(target.parent)
                     except BaseException as rollback_exc:
                         rollback_errors.append(rollback_exc)
                 for rollback_error in rollback_errors:
@@ -3051,28 +3053,22 @@ class ProjectService:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_name, path)
-            ProjectService._fsync_directory(path.parent)
+            fsync_directory(path.parent)
         finally:
             if os.path.exists(temporary_name):
                 os.unlink(temporary_name)
 
     @staticmethod
-    def _fsync_directory(directory: Path) -> None:
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-
-    @classmethod
-    def _fsync_tree(cls, root: Path) -> None:
+    def _fsync_tree(root: Path) -> None:
+        # Windows requires a writable handle to flush a regular file.
+        mode = "r+b" if sys.platform == "win32" else "rb"
         for path in sorted(root.rglob("*"), reverse=True):
             if path.is_file():
-                with path.open("rb") as stream:
+                with path.open(mode) as stream:
                     os.fsync(stream.fileno())
             elif path.is_dir():
-                cls._fsync_directory(path)
-        cls._fsync_directory(root)
+                fsync_directory(path)
+        fsync_directory(root)
 
     @staticmethod
     def _canonical_source(value: dict[str, Any]) -> str:

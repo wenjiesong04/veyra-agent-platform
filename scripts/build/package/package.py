@@ -92,10 +92,12 @@ def _verify_native_window(executable: Path, resources: Path, *, target: str) -> 
             f"packaged Electron executable is missing: {executable}"
         )
     with tempfile.TemporaryDirectory(prefix="veyra-electron-smoke-cwd-") as temporary:
+        environment = {**os.environ, "VEYRA_PACKAGE_SMOKE_DIR": temporary}
         try:
             result = subprocess.run(
                 [str(executable), "--veyra-package-smoke"],
                 cwd=temporary,
+                env=environment,
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",

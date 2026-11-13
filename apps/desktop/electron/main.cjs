@@ -1,7 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, session, shell } = require('electron');
 const { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeSync } = require('node:fs');
-const { mkdir, readFile, rm, writeFile } = require('node:fs/promises');
-const os = require('node:os');
+const { mkdir, readFile, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 const { createDesktopProtocol, DESKTOP_ORIGIN, isDesktopUrl } = require('./desktop-protocol.cjs');
 const { availablePort, existingDataRoot, LOCAL_PORT, startSidecar } = require('./sidecar.cjs');
@@ -15,8 +14,11 @@ const { productName } = require('../package.json');
 app.setName(productName);
 const icon = path.join(__dirname, '..', 'assets', 'icon.png');
 const smoke = process.argv.includes('--veyra-package-smoke');
+const smokeDirectory = process.env.VEYRA_PACKAGE_SMOKE_DIR;
+if (smoke && !smokeDirectory) throw new Error('The package smoke test requires a temporary directory.');
+// The launcher cleans up the smoke profile after Chromium releases its files.
 const dataRoot = smoke
-  ? realpathSync(mkdtempSync(path.join(os.tmpdir(), 'veyra-electron-smoke-')))
+  ? realpathSync(mkdtempSync(path.join(smokeDirectory, 'veyra-electron-smoke-')))
   : existingDataRoot(app);
 const profile = path.join(dataRoot, 'electron');
 mkdirSync(profile, { recursive: true });
@@ -167,10 +169,7 @@ function quit(code, smokePassed = false) {
       await startup?.catch(() => {});
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
       await sidecar?.stop();
-      if (smoke) {
-        if (sidecar) await availablePort(sidecar.port);
-        await rm(dataRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 });
-      }
+      if (smoke && sidecar) await availablePort(sidecar.port);
       if (smokePassed) writeSync(1, 'electron_package_smoke=ok\n');
     } catch (error) {
       console.error(error);
