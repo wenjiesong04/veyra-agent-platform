@@ -1,7 +1,6 @@
 {
   "appId": "com.veyra.agentplatform",
   "asar": true,
-  "electronDist": "node_modules/electron/dist",
   "directories": {
     "output": "../../build/desktop-package/dist"
   },

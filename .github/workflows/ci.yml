@@ -146,6 +146,10 @@ jobs:
           python -m pip install --no-deps --no-build-isolation --editable .
           python -m pip install "PyInstaller==6.22.0"
 
+      - name: Verify Windows HTTP dependency
+        if: runner.os == 'Windows'
+        run: python -c "import httpx; print(httpx.__version__, httpx.__file__)"
+
       - name: Install locked frontend and Electron dependencies
         run: |
           npm --prefix web ci

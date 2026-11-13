@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import httpx  # noqa: F401  # Explicit PyInstaller dependency
 import sys
 from pathlib import Path
 
