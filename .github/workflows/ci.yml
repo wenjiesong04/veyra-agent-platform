@@ -141,14 +141,16 @@ jobs:
             apps/desktop/package-lock.json
 
       - name: Install locked Local dependencies
-        run: |
-          python -m pip install --require-hashes --requirement requirements/runtime-py311.txt --requirement requirements/desktop-windows-py311.txt
-          python -m pip install --no-deps --no-build-isolation --editable .
-          python -m pip install "PyInstaller==6.22.0"
+        run: python -m pip install --require-hashes --requirement requirements/runtime-py311.txt --requirement requirements/desktop-windows-py311.txt
 
-      - name: Verify Windows HTTP dependency
-        if: runner.os == 'Windows'
-        run: python -c "import httpx; print(httpx.__version__, httpx.__file__)"
+      - name: Install Local package
+        run: python -m pip install --no-deps --no-build-isolation --editable .
+
+      - name: Install PyInstaller
+        run: python -m pip install "PyInstaller==6.22.0"
+
+      - name: Verify packaging dependencies
+        run: python -m pip check
 
       - name: Install locked frontend and Electron dependencies
         run: |
