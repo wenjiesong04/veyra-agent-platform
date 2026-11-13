@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from build_sidecar import SUPPORTED_TARGETS, default_target, repository_root
 
@@ -130,14 +130,8 @@ def _wait_for_health(
     last_error = "no health response"
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            stderr = (
-                process.stderr.read().decode("utf-8", errors="replace")
-                if process.stderr
-                else ""
-            )
             raise PackageSmokeError(
-                "sidecar exited before health "
-                f"({process.returncode}): {stderr[-2_000:]}"
+                f"sidecar exited before health ({process.returncode})"
             )
         try:
             payload = _health(port)
@@ -166,7 +160,7 @@ def _wait_for_health(
     raise PackageSmokeError(f"sidecar health timeout: {last_error}")
 
 
-def _stop(process: subprocess.Popen[bytes], port: int) -> None:
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is None:
         if sys.platform == "win32":
             # PyInstaller's one-file bootloader owns the real service process.
@@ -188,6 +182,9 @@ def _stop(process: subprocess.Popen[bytes], port: int) -> None:
         process.kill()
         process.wait(timeout=5)
         raise PackageSmokeError("sidecar did not stop after termination") from exc
+
+
+def _check_port_closed(port: int) -> None:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         try:
@@ -199,13 +196,20 @@ def _stop(process: subprocess.Popen[bytes], port: int) -> None:
     raise PackageSmokeError(f"sidecar port {port} remained open after process exit")
 
 
+def _log_tail(log: BinaryIO) -> str:
+    size = log.seek(0, os.SEEK_END)
+    log.seek(max(0, size - 4_096))
+    return log.read().decode("utf-8", errors="replace").strip()
+
+
 def _check_port_conflict(sidecar: Path, build_sha: str) -> None:
     port = _free_port()
-    with tempfile.TemporaryDirectory(
-        prefix="veyra-package-port-conflict-"
-    ) as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="veyra-package-port-conflict-") as temporary,
+        tempfile.TemporaryFile() as log,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener,
+    ):
         data_root = Path(temporary) / "app-data"
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         if sys.platform == "win32":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         else:
@@ -217,34 +221,30 @@ def _check_port_conflict(sidecar: Path, build_sha: str) -> None:
             cwd=temporary,
             env=_environment(data_root, port, build_sha),
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=log,
         )
         try:
-            # The Local lifespan migrates an empty SQLite database before
-            # uvicorn attempts to bind. Give that real startup path the same
-            # bounded window as the health probe, then require a non-zero exit.
-            deadline = time.monotonic() + 35
-            while process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.1)
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
-                raise PackageSmokeError(
-                    "sidecar did not fail on a loopback port conflict"
-                )
-            if process.returncode == 0:
-                raise PackageSmokeError(
-                    "sidecar unexpectedly succeeded on a port conflict"
-                )
-        finally:
-            listener.close()
+            status = process.wait(timeout=35)
+        except subprocess.TimeoutExpired as exc:
+            _stop_process(process)
+            raise PackageSmokeError(
+                f"sidecar did not fail on a loopback port conflict\n{_log_tail(log)}"
+            ) from exc
+        if status == 0:
+            raise PackageSmokeError(
+                f"sidecar unexpectedly succeeded on a port conflict\n{_log_tail(log)}"
+            )
     print("port_conflict=ok")
 
 
 def run_runtime_smoke(sidecar: Path, *, build_sha: str) -> None:
     if not sidecar.is_file() or not os.access(sidecar, os.X_OK):
         raise PackageSmokeError(f"executable sidecar is missing: {sidecar}")
-    with tempfile.TemporaryDirectory(prefix="veyra-package-health-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="veyra-package-health-") as temporary,
+        # Alembic logs before the port opens and can fill an undrained pipe.
+        tempfile.TemporaryFile() as log,
+    ):
         temporary_root = Path(temporary)
         data_root = temporary_root / "app-data"
         sentinel = data_root / "v1" / "projects" / "upgrade-sentinel.txt"
@@ -256,7 +256,7 @@ def run_runtime_smoke(sidecar: Path, *, build_sha: str) -> None:
             cwd=temporary,
             env=_environment(data_root, port, build_sha),
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=log,
         )
         try:
             payload = _wait_for_health(port, build_sha, process)
@@ -277,8 +277,13 @@ def run_runtime_smoke(sidecar: Path, *, build_sha: str) -> None:
             print(f"health_status={payload.get('status')}")
             print(f"health_build_sha={payload.get('build_sha')}")
             print(f"health_port={port}")
+        except PackageSmokeError as exc:
+            _stop_process(process)
+            raise PackageSmokeError(f"{exc}\n{_log_tail(log)}") from exc
         finally:
-            _stop(process, port)
+            if process.poll() is None:
+                _stop_process(process)
+            _check_port_closed(port)
     print("sidecar_stop=ok")
     _check_port_conflict(sidecar, build_sha)
 
