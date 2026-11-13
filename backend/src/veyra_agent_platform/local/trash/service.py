@@ -20,6 +20,7 @@ from veyra_agent_platform.local.builder.conversation_service import (
 )
 from veyra_agent_platform.local.plugins.service import PluginService
 from veyra_agent_platform.local.projects.service import ProjectError, ProjectService
+from veyra_agent_platform.local.storage.durability import fsync_directory
 
 TRASH_RETENTION_DAYS = 30
 TRASH_KINDS = (
@@ -250,10 +251,10 @@ class TrashService:
                 )
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.replace(source, destination)
-            self.projects._fsync_directory(destination.parent)
+            fsync_directory(destination.parent)
             trash_parent = source.parent
             if trash_parent.is_dir():
-                self.projects._fsync_directory(trash_parent)
+                fsync_directory(trash_parent)
             if not self.projects.repository.restore_project(project_id):
                 raise ProjectError("unknown Project in trash", "trash_not_found")
             self.projects.index(destination)
@@ -287,7 +288,7 @@ class TrashService:
                 )
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.replace(source, destination)
-            self.projects._fsync_directory(destination.parent)
+            fsync_directory(destination.parent)
             updated = manifest.to_dict()
             entry = {
                 "agent_id": agent_id,
@@ -342,7 +343,7 @@ class TrashService:
                 )
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.replace(source, destination)
-            self.projects._fsync_directory(destination.parent)
+            fsync_directory(destination.parent)
             source_file = destination / "workflow.vworkflow.yaml"
             workflow = WorkflowSource.from_dict(
                 self.projects._parse_yaml(
@@ -394,7 +395,7 @@ class TrashService:
                 )
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.replace(target, destination)
-            self.projects._fsync_directory(destination.parent)
+            fsync_directory(destination.parent)
             updated = manifest.to_dict()
             updated["knowledge"] = [item.to_dict() for item in manifest.knowledge] + [
                 {
