@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@veyra/ui";
@@ -35,7 +32,7 @@ describe("Desktop Community website boundary", () => {
     expect(resolveCommunityWebsite(" ", false)).toEqual({ status: "missing" });
   });
 
-  it.each(["javascript:alert(1)", "file:///tmp/community", "tauri://localhost", "mailto:user@example.com", "/community", "https://user:password@community.example", "https://community.example/?token=private", "https://community.example/#/community"])("rejects unsafe or non-base website configuration %s", (url) => {
+  it.each(["javascript:alert(1)", "file:///tmp/community", "veyra://desktop", "mailto:user@example.com", "/community", "https://user:password@community.example", "https://community.example/?token=private", "https://community.example/#/community"])("rejects unsafe or non-base website configuration %s", (url) => {
     expect(resolveCommunityWebsite(url, true)).toEqual({ status: "invalid" });
   });
 
@@ -96,25 +93,25 @@ describe("Desktop Community website boundary", () => {
     expect(open).toHaveBeenCalledWith("https://community.example/veyra/?lang=en#/community/ada/gift-box/versions/1.2.0", "_blank", "noopener,noreferrer");
   });
 
-  it("uses the existing Tauri shell open command instead of browser window.open", async () => {
-    const invoke = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("__TAURI__", { core: { invoke } });
+  it("opens Community through the Electron bridge", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("veyraDesktop", { openExternal });
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await openCommunityWebsite("https://community.example/?lang=en#/community");
-    expect(invoke).toHaveBeenCalledWith("plugin:shell|open", { path: "https://community.example/?lang=en#/community" });
+    expect(openExternal).toHaveBeenCalledWith("https://community.example/?lang=en#/community");
     expect(open).not.toHaveBeenCalled();
   });
 
   it("does not fall back to an embedded webview when the native bridge is unavailable", async () => {
-    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    vi.stubGlobal("veyraDesktop", {});
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await expect(openCommunityWebsite("https://community.example/#/community")).rejects.toThrow("community_browser_bridge_unavailable");
     expect(open).not.toHaveBeenCalled();
   });
 
   it("provides a copyable link after a native failure and clears the notice on an explicit retry", async () => {
-    const invoke = vi.fn().mockRejectedValueOnce(new Error("permission denied")).mockResolvedValue(undefined);
-    vi.stubGlobal("__TAURI__", { core: { invoke } });
+    const openExternal = vi.fn().mockRejectedValueOnce(new Error("permission denied")).mockResolvedValue(undefined);
+    vi.stubGlobal("veyraDesktop", { openExternal });
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     renderBoundary();
     fireEvent.click(screen.getByRole("link", { name: "Community" }));
@@ -122,28 +119,18 @@ describe("Desktop Community website boundary", () => {
     expect(screen.getByRole("textbox", { name: "Copy link" })).toHaveValue("https://community.example/veyra/?lang=en#/community");
     fireEvent.click(screen.getByRole("link", { name: "Community" }));
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Could not open the Community website" })).not.toBeInTheDocument());
-    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(openExternal).toHaveBeenCalledTimes(2);
     expect(open).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#/projects/project-1/chat");
   });
 
   it("rejects an unsafe destination before invoking native code", async () => {
-    const invoke = vi.fn();
-    vi.stubGlobal("__TAURI__", { core: { invoke } });
+    const openExternal = vi.fn();
+    vi.stubGlobal("veyraDesktop", { openExternal });
     await expect(openCommunityWebsite("file:///tmp/community")).rejects.toThrow("unsafe_community_website");
+    await expect(openCommunityWebsite("veyra://desktop")).rejects.toThrow("unsafe_community_website");
     await expect(openCommunityWebsite("https://user:password@community.example")).rejects.toThrow("unsafe_community_website");
-    expect(invoke).not.toHaveBeenCalled();
+    expect(openExternal).not.toHaveBeenCalled();
   });
 
-  it("keeps the packaged shell open scope restricted to HTTP(S), with no execution permission", () => {
-    const nativeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../../apps/desktop/src-tauri");
-    const config = JSON.parse(readFileSync(resolve(nativeRoot, "tauri.conf.json"), "utf8")) as { app: { withGlobalTauri: boolean }; plugins: { shell: { open: string } } };
-    const capability = JSON.parse(readFileSync(resolve(nativeRoot, "capabilities/default.json"), "utf8")) as { permissions: unknown[] };
-    const allowed = new RegExp(`^(?:${config.plugins.shell.open})$`);
-    expect(config.app.withGlobalTauri).toBe(true);
-    expect(capability.permissions).toContain("shell:allow-open");
-    expect(capability.permissions).not.toContain("shell:allow-execute");
-    for (const value of ["http://127.0.0.1:5174/?lang=en#/community", "https://community.example/#/community", "http://[::1]:5174/"]) expect(allowed.test(value)).toBe(true);
-    for (const value of ["file:///tmp/file", "javascript:alert(1)", "mailto:user@example.com", "tel:1234", "--execute", "https://user:pass@community.example"]) expect(allowed.test(value)).toBe(false);
-  });
 });

@@ -1,0 +1,51 @@
+{
+  "appId": "com.veyra.agentplatform",
+  "asar": true,
+  "electronDist": "node_modules/electron/dist",
+  "directories": {
+    "output": "../../build/desktop-package/dist"
+  },
+  "files": [
+    "electron/**/*",
+    "assets/icon.png",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "../../build/desktop-package/${env.VEYRA_ELECTRON_STAGE_NAME}/renderer",
+      "to": "renderer"
+    },
+    {
+      "from": "../../build/desktop-package/${env.VEYRA_ELECTRON_STAGE_NAME}/sidecar",
+      "to": "sidecar"
+    },
+    {
+      "from": "../../build/desktop-package/${env.VEYRA_ELECTRON_STAGE_NAME}/build-info.json",
+      "to": "build-info.json"
+    }
+  ],
+  "mac": {
+    "target": "dmg",
+    "icon": "assets/icon.icns",
+    "category": "public.app-category.productivity",
+    "minimumSystemVersion": "13.0"
+  },
+  "win": {
+    "target": "nsis",
+    "icon": "assets/icon.ico"
+  },
+  "toolsets": {
+    "appimage": "1.0.3"
+  },
+  "linux": {
+    "target": "AppImage",
+    "executableName": "veyra",
+    "icon": "assets/icon.png",
+    "category": "Utility"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true
+  }
+}

@@ -1,18 +1,19 @@
-"""Build the Local FastAPI service as the Tauri sidecar."""
+"""Build the Local FastAPI executable bundled with Electron."""
 
 from __future__ import annotations
 
 import argparse
 import os
+import platform
 import re
-import shutil
-import stat
 import subprocess
 import sys
 from pathlib import Path
 
-TARGET = "aarch64-apple-darwin"
-SIDECAR_NAME = "veyra-local"
+MAC_TARGET = "aarch64-apple-darwin"
+WINDOWS_TARGET = "x86_64-pc-windows-msvc"
+LINUX_TARGET = "x86_64-unknown-linux-gnu"
+SUPPORTED_TARGETS = (MAC_TARGET, WINDOWS_TARGET, LINUX_TARGET)
 _SHA = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
@@ -22,6 +23,31 @@ class SidecarBuildError(RuntimeError):
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def default_target() -> str:
+    return {"win32": WINDOWS_TARGET, "linux": LINUX_TARGET}.get(
+        sys.platform, MAC_TARGET
+    )
+
+
+def sidecar_name(target: str) -> str:
+    return "veyra-local.exe" if target == WINDOWS_TARGET else "veyra-local"
+
+
+def _require_native_target(target: str) -> None:
+    host = (sys.platform, platform.machine().lower())
+    targets = {
+        ("darwin", "arm64"): MAC_TARGET,
+        ("win32", "amd64"): WINDOWS_TARGET,
+        ("win32", "x86_64"): WINDOWS_TARGET,
+        ("linux", "x86_64"): LINUX_TARGET,
+    }
+    if target not in SUPPORTED_TARGETS or targets.get(host) != target:
+        raise SidecarBuildError(
+            f"cannot build {target} on {host[0]}/{host[1]}; "
+            "build on a native macOS arm64, Windows x64, or Linux x64 host"
+        )
 
 
 def resolve_build_sha(value: str | None = None, *, root: Path | None = None) -> str:
@@ -67,14 +93,12 @@ def _require_python() -> None:
 def build_sidecar(
     *,
     root: Path | None = None,
-    target: str = TARGET,
+    target: str | None = None,
     build_sha: str | None = None,
 ) -> Path:
     root = root or repository_root()
-    if target != TARGET:
-        raise SidecarBuildError(
-            f"the release lane currently supports macOS arm64 only ({TARGET})"
-        )
+    target = target or default_target()
+    _require_native_target(target)
     _require_python()
     sha = resolve_build_sha(build_sha, root=root)
 
@@ -107,23 +131,18 @@ def build_sidecar(
             f"PyInstaller failed with exit code {exc.returncode}"
         ) from exc
 
-    built = dist_path / SIDECAR_NAME
+    built = dist_path / sidecar_name(target)
     if not built.is_file():
         raise SidecarBuildError(f"PyInstaller did not produce {built}")
 
-    binaries = root / "apps" / "desktop" / "src-tauri" / "binaries"
-    binaries.mkdir(parents=True, exist_ok=True)
-    output = binaries / f"{SIDECAR_NAME}-{target}"
-    shutil.copy2(built, output)
-    output.chmod(output.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    print(f"sidecar={output}")
+    print(f"sidecar={built}")
     print(f"sidecar_build_sha={sha}")
-    return output
+    return built
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", default=TARGET)
+    parser.add_argument("--target", choices=SUPPORTED_TARGETS, default=default_target())
     parser.add_argument("--build-sha")
     arguments = parser.parse_args()
     try:

@@ -1,15 +1,16 @@
 import * as React from "react";
 import { Boxes, FileText, Gauge, Globe2, MessageCirclePlus } from "lucide-react";
-import { desktopLoginHash, desktopPathAfterAuth, desktopRoutePaths, isDesktopPublicAuthRoute, parseDesktopRoute, projectRoutePaths, type DesktopRouteLocation } from "@veyra/api-contracts";
+import { communityRoutePaths, desktopLoginHash, desktopPathAfterAuth, desktopRoutePaths, isDesktopPublicAuthRoute, parseDesktopRoute, projectRoutePaths, type CommunityAccount, type DesktopRouteLocation } from "@veyra/api-contracts";
 import { accountInitials, AuthProvider, createCommunityApi, ForgotPasswordPage, LoginPage, RegisterPage, useAuth, type CommunityApi } from "@veyra/connected-account";
 import { ApplicationShell, BrandLoading, ThemeProvider, useLocale } from "@veyra/ui";
 import type { NavigationGroup } from "@veyra/ui";
-import { createLocalApiClient, type LocalProjectApi } from "./api/local-client";
+import { createLocalApiClient, DEFAULT_LOCAL_API_BASE_URL, type LocalProjectApi } from "./api/local-client";
 import { ProjectWorkspaceProvider, useProjectWorkspace } from "./api/project-workspace";
 import { desktopHeader } from "./desktop-header";
 import { isAgentContextRoute, projectContextActiveHref, projectContextNavigation, projectTreeSelection, workspaceNavRoute } from "./features/agents/agent-navigation";
 import { useRecentConversationNavigation } from "./features/builder/recent-conversations";
 import { CommunityWebsiteBoundary, CommunityWebsitePage } from "./features/community/community-website-entry";
+import { isElectronDesktop } from "./electron";
 import { isCommunityWebsiteRoute } from "./features/community/community-website";
 import { resourceLibraryHref, rememberProjectId } from "./features/resources/library-navigation";
 import { AccountPage } from "./pages/account";
@@ -38,6 +39,7 @@ import { StudioPage } from "./pages/studio";
 import { TrashPage } from "./pages/trash";
 
 const desktopCommunityApi = createCommunityApi({ baseUrl: "/community-api/api/v1" });
+const communityAccountRoute = parseDesktopRoute(communityRoutePaths.mine);
 
 function homeNavigation(libraryHref: string, locale: "zh" | "en"): NavigationGroup {
   const resourceCatalog = locale === "zh" ? "资源目录" : "Resource catalog";
@@ -121,9 +123,12 @@ function DesktopSession({ children }: { children: React.ReactNode }) {
   return children;
 }
 
-function PageContent({ route }: { route: DesktopRouteLocation }) {
+function PageContent({ route, native }: { route: DesktopRouteLocation; native: boolean }) {
   const { locale } = useLocale();
   const zh = locale === "zh";
+  if (native && (route.kind === "account" || isDesktopPublicAuthRoute(route.kind))) {
+    return <CommunityWebsitePage route={communityAccountRoute} />;
+  }
   if (route.kind === "login") return <LoginPage />;
   if (route.kind === "register") return <RegisterPage />;
   if (route.kind === "forgot-password") return <ForgotPasswordPage />;
@@ -161,11 +166,10 @@ function PageContent({ route }: { route: DesktopRouteLocation }) {
   return <NotFoundPage />;
 }
 
-function DesktopWorkspace() {
+function DesktopWorkspace({ native = false, account, onSignOut }: { native?: boolean; account?: CommunityAccount | null; onSignOut?: () => void }) {
   const { locale, t } = useLocale();
   const zh = locale === "zh";
   const route = useHashRoute();
-  const { account, logout } = useAuth();
   const { projects } = useProjectWorkspace();
   const agentContextRoute = isAgentContextRoute(route) ? route : undefined;
   const workspaceRoute = workspaceNavRoute(route);
@@ -221,26 +225,29 @@ function DesktopWorkspace() {
         accountHref: desktopRoutePaths.account,
         settingsHref: desktopRoutePaths.settings,
         trashHref: desktopRoutePaths.trash,
-        onSignOut: () => {
-          void logout().catch(() => undefined);
-        },
+        onSignOut,
       } : {
         displayName: t("localWorkspace"),
         detail: t("notSignedIn"),
         initials: zh ? "本" : "LW",
         authenticated: false,
-        accountHref: desktopRoutePaths.account,
+        accountHref: native ? communityRoutePaths.mine : desktopRoutePaths.account,
         settingsHref: desktopRoutePaths.settings,
         trashHref: desktopRoutePaths.trash,
       }}
     >
       <PageErrorBoundary resetKey={route.path} locale={locale}>
-        <PageContent route={route} />
+        <PageContent route={route} native={native} />
       </PageErrorBoundary>
       {dialogs}
       {recentDialogs}
     </ApplicationShell>
   );
+}
+
+function BrowserDesktopWorkspace() {
+  const { account, logout } = useAuth();
+  return <DesktopWorkspace account={account} onSignOut={() => { void logout().catch(() => undefined); }} />;
 }
 
 export type DesktopAppProps = {
@@ -249,18 +256,28 @@ export type DesktopAppProps = {
 };
 
 export function DesktopApp({ api, communityApi }: DesktopAppProps = {}) {
-  const projectApi = React.useMemo(() => api ?? createLocalApiClient(), [api]);
-  const accountApi = React.useMemo(() => communityApi ?? desktopCommunityApi, [communityApi]);
+  const native = isElectronDesktop();
+  const projectApi = React.useMemo(
+    () => api ?? createLocalApiClient({ baseUrl: native ? DEFAULT_LOCAL_API_BASE_URL : undefined }),
+    [api, native],
+  );
+  const accountApi = communityApi ?? desktopCommunityApi;
   return (
     <ThemeProvider>
       <CommunityWebsiteBoundary>
-        <AuthProvider api={accountApi}>
-          <DesktopSession>
-            <ProjectWorkspaceProvider api={projectApi} cloudApi={accountApi}>
-              <DesktopWorkspace />
-            </ProjectWorkspaceProvider>
-          </DesktopSession>
-        </AuthProvider>
+        {native ? (
+          <ProjectWorkspaceProvider api={projectApi}>
+            <DesktopWorkspace native />
+          </ProjectWorkspaceProvider>
+        ) : (
+          <AuthProvider api={accountApi}>
+            <DesktopSession>
+              <ProjectWorkspaceProvider api={projectApi} cloudApi={accountApi}>
+                <BrowserDesktopWorkspace />
+              </ProjectWorkspaceProvider>
+            </DesktopSession>
+          </AuthProvider>
+        )}
       </CommunityWebsiteBoundary>
     </ThemeProvider>
   );

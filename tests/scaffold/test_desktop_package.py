@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-import json
+import plistlib
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -23,82 +23,97 @@ def package(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 
 
 @pytest.mark.parametrize(
-    ("configured", "provided", "expected", "mode"),
+    ("configured_identity", "environment", "expected"),
     [
-        (None, None, "-", "ad-hoc-preview"),
-        (None, "", "-", "ad-hoc-preview"),
-        (None, "-", "-", "ad-hoc-preview"),
+        (None, {}, ["--config.mac.identity=-", "--config.mac.hardenedRuntime=false"]),
+        (None, {"CSC_LINK": "certificate.p12"}, []),
+        (None, {"CSC_NAME": "Developer ID Application: Example"}, []),
+        ("Developer ID Application: Example", {}, []),
         (
             None,
-            "Developer ID Application: Example",
-            "Developer ID Application: Example",
-            "configured",
+            {"APPLE_SIGNING_IDENTITY": "Developer ID Application: Example"},
+            ["--config.mac.identity=Developer ID Application: Example"],
         ),
-        ("Developer ID Application: Example", None, None, "configured"),
     ],
 )
-def test_signing_preserves_configured_identity_and_labels_local_preview(
+def test_signing_preserves_provided_identity(
     package: ModuleType,
-    tmp_path: Path,
-    configured: str | None,
-    provided: str | None,
-    expected: str | None,
-    mode: str,
+    configured_identity: str | None,
+    environment: dict[str, str],
+    expected: list[str],
 ) -> None:
-    config = tmp_path / "apps/desktop/src-tauri/tauri.conf.json"
-    config.parent.mkdir(parents=True)
-    config.write_text(
-        json.dumps({"bundle": {"macOS": {"signingIdentity": configured}}}),
-        encoding="utf-8",
-    )
-    environment = {} if provided is None else {"APPLE_SIGNING_IDENTITY": provided}
-    assert package._configure_signing(tmp_path, environment) == mode
-    assert environment.get("APPLE_SIGNING_IDENTITY") == expected
+    config = {"mac": {"identity": configured_identity}}
+    assert package._mac_signing_arguments(config, environment) == expected
 
 
-def test_package_rejects_a_missing_bundled_sidecar(
+def test_native_smoke_rejects_a_missing_bundled_sidecar(
     package: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bundled = tmp_path / "macos/Veyra.app/Contents/MacOS/veyra-local"
-    bundled.parent.mkdir(parents=True)
+    executable = tmp_path / "Veyra.exe"
+    executable.touch()
     calls: list[object] = []
     monkeypatch.setattr(package.subprocess, "run", lambda *a, **kw: calls.append(a))
     with pytest.raises(package.DesktopPackageError, match="missing"):
-        package._verify_app_bundle(tmp_path, build_sha="a" * 40)
+        package._verify_native_window(
+            executable,
+            tmp_path / "resources",
+            target="x86_64-pc-windows-msvc",
+        )
     assert not calls
 
 
 @pytest.mark.parametrize("valid", [True, False])
-def test_bundle_signature_verification_is_mandatory(
+def test_disk_image_checks_signature_before_launch_and_always_detaches(
     package: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     valid: bool,
 ) -> None:
-    application = tmp_path / "macos/Veyra.app"
-    bundled = application / "Contents/MacOS/veyra-local"
-    bundled.parent.mkdir(parents=True)
-    bundled.write_bytes(b"signed build")
-    calls: list[list[str]] = []
-    probes: list[tuple[Path, str]] = []
+    installer = tmp_path / "Veyra.dmg"
+    commands: list[list[str]] = []
+    launches: list[tuple[Path, Path, str]] = []
 
-    def verify(command: list[str], *, check: bool) -> None:
+    def run(command: list[str], *, check: bool) -> None:
         assert check
-        calls.append(command)
-        if not valid:
+        commands.append(command)
+        if command[:2] == ["hdiutil", "attach"]:
+            mount = Path(command[command.index("-mountpoint") + 1])
+            contents = mount / "Veyra Agent Platform.app" / "Contents"
+            resources = contents / "Resources"
+            resources.mkdir(parents=True)
+            with (contents / "Info.plist").open("wb") as bundle_metadata:
+                plistlib.dump(
+                    {
+                        "CFBundleName": "Veyra Agent Platform",
+                        "CFBundleDisplayName": "Veyra Agent Platform",
+                        "CFBundleIdentifier": "com.veyra.agentplatform",
+                        "CFBundleIconFile": "icon.icns",
+                    },
+                    bundle_metadata,
+                )
+            (resources / "icon.icns").touch()
+        if command[0] == "codesign" and not valid:
             raise subprocess.CalledProcessError(1, command)
 
-    monkeypatch.setattr(package.subprocess, "run", verify)
-    monkeypatch.setattr(
-        package,
-        "run_runtime_smoke",
-        lambda path, *, build_sha: probes.append((path, build_sha)),
-    )
+    def launch(executable: Path, resources: Path, *, target: str) -> None:
+        launches.append((executable, resources, target))
+
+    monkeypatch.setattr(package.subprocess, "run", run)
+    monkeypatch.setattr(package, "_verify_native_window", launch)
+
     if valid:
-        assert package._verify_app_bundle(tmp_path, build_sha="a" * 40) == application
-        assert probes == [(bundled, "a" * 40)]
+        package._verify_disk_image(installer)
+        [(executable, resources, target)] = launches
+        assert executable == resources.parent / "MacOS" / "Veyra Agent Platform"
+        assert target == "aarch64-apple-darwin"
     else:
         with pytest.raises(package.DesktopPackageError, match="signature is invalid"):
-            package._verify_app_bundle(tmp_path, build_sha="a" * 40)
-        assert not probes
-    assert calls == [["codesign", "--verify", "--deep", "--strict", str(application)]]
+            package._verify_disk_image(installer)
+        assert not launches
+
+    assert [command[:2] for command in commands] == [
+        ["hdiutil", "verify"],
+        ["hdiutil", "attach"],
+        ["codesign", "--verify"],
+        ["hdiutil", "detach"],
+    ]

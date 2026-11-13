@@ -40,17 +40,15 @@ export function communityWebsiteHref(config: Extract<CommunityWebsiteConfig, { s
   return url.href;
 }
 
-type TauriWindow = Window & { __TAURI__?: { core?: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> } } };
-
 export async function openCommunityWebsite(href: string): Promise<void> {
   const url = new URL(href);
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("unsafe_community_website");
-  const runtime = window as TauriWindow;
-  if (runtime.__TAURI__ || "__TAURI_INTERNALS__" in window || window.location.protocol === "tauri:" || window.location.hostname === "tauri.localhost") {
-    const invoke = runtime.__TAURI__?.core?.invoke;
-    if (!invoke) throw new Error("community_browser_bridge_unavailable");
-    await invoke("plugin:shell|open", { path: url.href });
+  if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error("unsafe_community_website");
+  if (typeof window.veyraDesktop?.openExternal === "function") {
+    await window.veyraDesktop.openExternal(url.href);
     return;
+  }
+  if (window.veyraDesktop || window.location.protocol === "veyra:") {
+    throw new Error("community_browser_bridge_unavailable");
   }
   // noopener intentionally provides no reliable Window return value; null is not proof of a blocked popup.
   window.open(url.href, "_blank", "noopener,noreferrer");

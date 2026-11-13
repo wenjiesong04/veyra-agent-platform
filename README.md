@@ -94,9 +94,10 @@ You can download a shared resource and inspect it in Desktop before use.
 ## Quick start
 
 These commands run a source checkout for development. In a hosted setup,
-the operator runs the Community website and account API on a server.
-Desktop users use the hosted service once the app's production sign-in
-connection is configured. [Community deployment guide](docs/community_production_storage.md)
+the operator runs the Community website and account API on a server. The
+Electron application opens the local workspace when its bundled Local API is
+ready. The Community entry opens the hosted site in the system browser.
+[Community deployment guide](docs/community_production_storage.md)
 
 Use Conda, Python 3.11, and Node.js 24 with npm. Run these commands from the
 repository root. Create the Conda environment once and reuse it on later runs.
@@ -118,12 +119,11 @@ Run the Local API and Desktop interface in separate terminals. Activate
 | Local API | `veyra-local` | `127.0.0.1:8771` |
 | Desktop interface | `npm --prefix web run dev:desktop` | `127.0.0.1:5173` |
 
-The current Desktop app requires a Community session before it opens the
-workspace. In development, the Vite proxy sends account requests to the
-Community API at `127.0.0.1:8772`. Start that API using the next section, then
-sign in to [Desktop](http://127.0.0.1:5173). If the API is unreachable when
-Desktop checks the session, the app shows the sign-in screen. Project data
-and execution stay on the device.
+The Desktop browser preview uses a Community session. Its Vite proxy sends
+account requests to the Community API at `127.0.0.1:8772`. Start that API using
+the next section, then sign in to [Desktop](http://127.0.0.1:5173). The native
+Electron application starts the Local API and opens the local workspace
+directly.
 
 Configure a model provider in Desktop Settings before asking Builder to
 generate an Agent or running a model-backed task.
@@ -148,9 +148,9 @@ Run `npm --prefix web run dev:community` and open
 documentation are available before signing in. This website process is
 optional for Desktop sign-in.
 
-The release candidate still needs a production account API connection for
-packaged Desktop sign-in. The website address controls the external Community
-link in Desktop. [Community and Desktop guide](docs/COMMUNITY_WEBSITE.md)
+Set the Community website address when building Desktop to enable the
+external Community link. The browser handles sign-in and publishing.
+[Community and Desktop guide](docs/COMMUNITY_WEBSITE.md)
 
 ## Build and validate
 
@@ -161,10 +161,9 @@ npm --prefix web test
 npm --prefix web run build
 ```
 
-The current desktop build targets Apple Silicon macOS. Tauri bundles the
-interface with the PyInstaller Local API executable, and CI checks startup,
-the application signature, and the DMG. The installer is a release candidate.
-[Desktop packaging guide](docs/desktop_packaging.md)
+Electron bundles the Desktop interface with the PyInstaller Local API
+executable. The package workflow builds a macOS arm64 DMG, Windows x64
+installer, and Linux x64 AppImage on their respective hosts. [Desktop packaging guide](docs/desktop_packaging.md)
 
 ## Project documentation
 

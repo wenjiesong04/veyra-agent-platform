@@ -4,6 +4,7 @@ import { ArrowUpRight, CircleAlert, RefreshCw, X } from "lucide-react";
 import type { ModelCapabilityName, ModelProfile, RuntimeSetupIssue } from "@veyra/api-contracts";
 import { Button } from "@veyra/ui";
 import type { LocalProjectApi } from "../../api/local-client";
+import { isElectronDesktop } from "../../electron";
 import { modelCapabilityLabel } from "./model-capability-ui";
 import { RuntimeProviderSetup } from "./RuntimeProviderSetup";
 import "./runtime-setup.css";
@@ -108,6 +109,7 @@ export function RuntimeSetupPanel({ issues, locale, returnTo, onRecheck, recheck
     return () => { previous?.focus(); };
   }, [open]);
   const zh = locale === "zh";
+  const native = isElectronDesktop();
   const groups = groupIssues(issues, zh, resourceNames);
   const busy = saving !== null || checking || rechecking;
   const recheck = async () => {
@@ -219,7 +221,7 @@ export function RuntimeSetupPanel({ issues, locale, returnTo, onRecheck, recheck
         {group.requirement.includes("image_generation") ? <p className="runtime-setup-hint">{zh ? "图片理解与图片生成是不同能力，请选择能生成图片的模型。" : "Image input and image generation are different capabilities."}</p> : null}
         <div className="runtime-setup-row-actions">
           {api?.createRuntimeCredential ? <Button size="sm" variant={profile ? "secondary" : "primary"} disabled={busy} onClick={() => { setAddingFor(group.key); setError(""); }}>{zh ? "添加模型 API" : "Add a model API"}</Button> : null}
-          <a href={setupHref(group, returnTo)} target="_blank" rel="noopener noreferrer" aria-label={zh ? "在新标签中管理全部模型" : "Manage all models in a new tab"}>{zh ? "管理全部模型" : "Manage all models"}<ArrowUpRight size={14} aria-hidden="true" /></a>
+          <a href={setupHref(group, returnTo)} target={native ? undefined : "_blank"} rel="noopener noreferrer" aria-label={native ? undefined : (zh ? "在新标签中管理全部模型" : "Manage all models in a new tab")}>{zh ? "管理全部模型" : "Manage all models"}<ArrowUpRight size={14} aria-hidden="true" /></a>
         </div>
       </li>;
     })}</ol>}

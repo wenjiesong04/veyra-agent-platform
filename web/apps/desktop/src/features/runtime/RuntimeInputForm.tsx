@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Eye, FileText, Upload, X } from "lucide-react";
+import { Download, Eye, FileText, Upload, X } from "lucide-react";
 import {
   acceptedMediaTypes,
   compactFieldType,
@@ -16,6 +16,8 @@ import {
   type TypedFields,
 } from "@veyra/api-contracts";
 import type { LocalProjectApi } from "../../api/local-client";
+import { isElectronDesktop } from "../../electron";
+import { downloadArtifactBlob } from "./artifact-download";
 
 type Locale = "zh" | "en";
 
@@ -432,6 +434,9 @@ export function ArtifactCard({
   compact?: boolean;
 }) {
   const zh = locale === "zh";
+  const native = isElectronDesktop();
+  const action = native ? (zh ? "下载" : "Download") : (zh ? "查看" : "Open");
+  const ActionIcon = native ? Download : Eye;
   const [url, setUrl] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (!api?.artifactContent || !projectId || !item.media_type.startsWith("image/")) {
@@ -460,6 +465,10 @@ export function ArtifactCard({
   const open = async () => {
     if (!api?.artifactContent || !projectId) return;
     const blob = await api.artifactContent(projectId, item.artifact_id);
+    if (native) {
+      downloadArtifactBlob(blob, item.filename);
+      return;
+    }
     const href = URL.createObjectURL(blob);
     window.open(href, "_blank", "noopener,noreferrer");
   };
@@ -471,7 +480,7 @@ export function ArtifactCard({
       <strong>{item.filename}</strong>
       <small>{item.media_type}</small>
       {api?.artifactContent && projectId ? (
-        <button type="button" aria-label={compact ? `${zh ? "查看" : "Open"} ${item.filename}` : undefined} title={compact ? `${zh ? "查看" : "Open"} ${item.filename}` : undefined} onClick={() => void open()}>{compact ? <Eye size={16} aria-hidden="true" /> : zh ? "查看" : "Open"}</button>
+        <button type="button" aria-label={compact ? `${action} ${item.filename}` : undefined} title={compact ? `${action} ${item.filename}` : undefined} onClick={() => void open()}>{compact ? <ActionIcon size={16} aria-hidden="true" /> : action}</button>
       ) : null}
     </div>
   );

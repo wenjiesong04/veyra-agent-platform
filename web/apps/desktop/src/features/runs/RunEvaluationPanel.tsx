@@ -1,9 +1,11 @@
 import * as React from "react";
 import type { AgentRunResponse, EvaluationBaseline, EvaluationCheck, EvaluationMethod, EvaluationReport, EvaluationSpec, JsonValue, WorkflowRunResponse } from "@veyra/api-contracts";
 import { Alert, Button, StatusBadge } from "@veyra/ui";
-import { CheckCheck, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { CheckCheck, Download, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { LocalProjectApi } from "../../api/local-client";
 import { newUuidV7 } from "../../api/uuid";
+import { isElectronDesktop } from "../../electron";
+import { downloadArtifactBlob } from "../runtime/artifact-download";
 import { HumanReviewForm } from "./HumanReviewForm";
 import "./run-evaluation.css";
 
@@ -114,8 +116,9 @@ function reasonLabel(code: string, locale: Locale): string {
   return reasons[code]?.[locale === "zh" ? 0 : 1] ?? code;
 }
 
-function reportRows(report: EvaluationReport, locale: Locale, openArtifact: (id: string) => void, canOpen: boolean, disabled: boolean) {
+function reportRows(report: EvaluationReport, locale: Locale, openArtifact: (id: string) => void, canOpen: boolean, disabled: boolean, native: boolean) {
   const zh = locale === "zh";
+  const artifactAction = native ? (zh ? "下载产物" : "Download artifact") : (zh ? "查看产物" : "Open artifact");
   const statuses = zh ? { pass: "通过", fail: "未通过", unknown: "证据不足", not_evaluated: "未评估", awaiting_human: "等待人工评审" }
     : { pass: "Pass", fail: "Fail", unknown: "Unknown", not_evaluated: "Not evaluated", awaiting_human: "Awaiting human review" };
   return <ol className="run-evaluation-findings">{report.checks.map((finding) => <li key={finding.id}>
@@ -130,7 +133,7 @@ function reportRows(report: EvaluationReport, locale: Locale, openArtifact: (id:
     {finding.evidence.map((evidence) => <div className="run-evaluation-evidence" key={evidence.artifact_id}>
       <code>{evidence.artifact_id}</code><small>{evidence.size_bytes} bytes · SHA-256 {evidence.sha256}</small>
       {evidence.source_run_id ? <small>{zh ? "来源 Run" : "Source Run"}: {evidence.source_run_id}</small> : null}
-      {canOpen ? <Button icon={ExternalLink} size="sm" variant="ghost" disabled={disabled} onClick={() => openArtifact(evidence.artifact_id)}>{zh ? "查看产物" : "Open artifact"}</Button> : null}
+      {canOpen ? <Button icon={native ? Download : ExternalLink} size="sm" variant="ghost" disabled={disabled} onClick={() => openArtifact(evidence.artifact_id)}>{artifactAction}</Button> : null}
     </div>)}
   </li>)}</ol>;
 }
@@ -147,6 +150,7 @@ function reportTime(value: string, locale: Locale): string {
 
 export function RunEvaluationPanel({ api, run, locale }: { api: LocalProjectApi; run: Run; locale: Locale }) {
   const zh = locale === "zh";
+  const native = isElectronDesktop();
   const item = target(run);
   const identity = `${run.project_id}:${item.kind}:${item.id}:${run.run_id}:${run.version_id}:${run.status}`;
   const activeIdentity = React.useRef(identity);
@@ -229,8 +233,13 @@ export function RunEvaluationPanel({ api, run, locale }: { api: LocalProjectApi;
   const openArtifact = async (id: string) => {
     if (!api.artifactContent) return;
     try {
-      const blob = await api.artifactContent(run.project_id, id);
+      const record = native ? api.getArtifact?.(run.project_id, id).catch(() => null) : undefined;
+      const [blob, artifact] = await Promise.all([api.artifactContent(run.project_id, id), record]);
       if (!mounted.current || activeIdentity.current !== identity) return;
+      if (native) {
+        downloadArtifactBlob(blob, artifact?.filename ?? id);
+        return;
+      }
       const url = URL.createObjectURL(blob); urls.current.push(url);
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (cause) { if (activeIdentity.current === identity) setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -259,7 +268,7 @@ export function RunEvaluationPanel({ api, run, locale }: { api: LocalProjectApi;
         ]).map(([label, value]) => <div key={label}><dt>{label}</dt><dd><code>{value}</code></dd></div>)}
       </dl></details>
       <small>{zh ? "此报告只覆盖所选条件，不改变运行状态，也不代表完整业务或物理安全认证。" : "This report covers only the selected conditions. It does not change Run status or certify the full business outcome or physical safety."}</small>
-      {reportRows(selected, locale, (id) => void openArtifact(id), Boolean(api.artifactContent), busy)}
+      {reportRows(selected, locale, (id) => void openArtifact(id), Boolean(api.artifactContent), busy, native)}
       <HumanReviewForm key={identity} api={api} run={run} report={selected} reports={reports} locale={locale} busy={busy} operation={pending} onBusy={setBusy} onSelect={setSelectedId} onReports={adopt} onReport={(report) => { setReports((current) => [report, ...current.filter((entry) => entry.evaluation_id !== report.evaluation_id)]); setSelectedId(report.evaluation_id); }} />
     </> : null}</div> : !loading && !unavailable && get ? <p className="run-evaluation-empty">{zh ? "暂无验收报告。" : "No evaluation reports yet."}</p> : null}
     {get && evaluate && !unavailable && hasResult ? <div className="run-evaluation-compose">

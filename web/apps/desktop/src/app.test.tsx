@@ -154,6 +154,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   window.location.hash = "";
   document.cookie = "veyra-csrf=; Max-Age=0; path=/";
 });
@@ -1313,6 +1314,42 @@ describe("desktop Project workspace", () => {
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
     await waitFor(() => expect(window.location.hash.startsWith("#/login")).toBe(true));
     expect(screen.queryByRole("heading", { name: "What do you want to achieve in a new project?", level: 2 })).not.toBeInTheDocument();
+  });
+
+  it("opens the Electron workspace and Community website independently of the Community API", async () => {
+    vi.stubEnv("VITE_COMMUNITY_SITE_URL", "https://community.example/");
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("veyraDesktop", { openExternal });
+    document.cookie = "veyra-csrf=stale-csrf; path=/";
+    const fetcher = vi.fn(async () => jsonResponse(503, { detail: "community_unavailable" }));
+    const api = apiFor();
+    const user = userEvent.setup();
+    render(<DesktopApp api={api} communityApi={accountApi(fetcher)} />);
+
+    expect(await screen.findByRole("heading", { name: "What do you want to achieve in a new project?" })).toBeInTheDocument();
+    expect(api.listProjects).toHaveBeenCalled();
+    expect(window.location.hash).toBe("#/projects");
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Open account menu" }));
+    await user.click(screen.getByRole("menuitem", { name: "Sign in or register" }));
+    expect(openExternal).toHaveBeenCalledWith("https://community.example/?lang=en#/community/mine");
+    expect(window.location.hash).toBe("#/projects");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("offers the Community website from a legacy account route in Electron", async () => {
+    vi.stubEnv("VITE_COMMUNITY_SITE_URL", "https://community.example/");
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("veyraDesktop", { openExternal });
+    window.location.hash = "#/account";
+    const user = userEvent.setup();
+    render(<DesktopApp api={apiFor()} />);
+
+    expect(await screen.findByRole("heading", { name: "Community is on the web" })).toBeInTheDocument();
+    expect(openExternal).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Open Community website" }));
+    expect(openExternal).toHaveBeenCalledWith("https://community.example/?lang=en#/community/mine");
   });
 
   it("treats an unreachable Community restore as signed out and returns to login", async () => {
